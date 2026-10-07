@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.67.0
+// @version      1.68.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, and chat macros (type / in a chat).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -8504,6 +8504,52 @@
     return jobs;
   }
 
+  /**
+   * The work an order-info insert will do (pure, v1.68.0): per category, in
+   * the order of the plan, whether its category must be created and which
+   * tasks and subtasks are missing. `ops` counts one per category to create,
+   * per task to create and per subtask — what the progress bar counts.
+   * `phase` is the existing category it matched (case and spacing ignored), so
+   * the insert reuses that one rather than creating a second beside it.
+   */
+  function rlCatImportWork(plan, phases, tasks) {
+    const have = new Map();
+    for (const ph of phases || []) {
+      const k = rlCatNormText(rlCatPhaseName(ph));
+      if (k && !have.has(k)) have.set(k, ph);
+    }
+    const work = [];
+    for (const entry of plan || []) {
+      const label = entry?.preset?.label;
+      if (!label) continue;
+      const desired = Array.isArray(entry.desired) ? entry.desired : [];
+      const jobs = rlCatPlanBackfillJobs(label, desired, tasks || []);
+      const phase = have.get(rlCatNormText(label)) || null;
+      const createPhase = !phase;
+      const ops = (createPhase ? 1 : 0) + jobs.reduce((n, j) => n + (j.parentExists ? 0 : 1) + (j.subs || []).length, 0);
+      if (!ops) continue;
+      work.push({ label, desired, createPhase, phase, jobs, ops });
+    }
+    return { work, total: work.reduce((n, w) => n + w.ops, 0) };
+  }
+
+  /**
+   * A Rocketlane API error as one readable line for the progress card:
+   * "HTTP 400 — Invalid project phase" rather than the status and raw JSON body.
+   */
+  function rlCatErrorText(e) {
+    const s = String(e?.message ?? e ?? "").trim();
+    const m = /^HTTP (\d{3}):\s*([\s\S]*)$/.exec(s);
+    if (!m) return s || "Unknown error";
+    let detail = m[2].trim();
+    try {
+      const j = JSON.parse(detail);
+      const msg = j?.message ?? j?.error?.message ?? j?.errors?.[0]?.message ?? j?.error ?? "";
+      if (typeof msg === "string" && msg.trim()) detail = msg.trim();
+    } catch (_) {}
+    return "HTTP " + m[1] + (detail ? " — " + detail.slice(0, 160) : "");
+  }
+
   async function rlCatRunWithConcurrency(items, limit, worker) {
     const list = Array.from(items || []);
     if (!list.length) return;
@@ -11457,6 +11503,9 @@
   // ── Category / order-info engine (v1.11.0) — uses @@rlCategoryHelpers + gmRocketlaneRequest ──
 
   const rlCatPhaseByNameCache = new Map();
+  // Which POST /tasks body shape the tenant accepted last, per kind of task —
+  // tried first next time, so a shape it never takes costs one 400, not one per task.
+  const rlCatBodyHint = new Map();
   const rlCatTaskSampleCache = new Map();
   const rlCatTaskSampleInFlight = new Map();
   let rlCatOrderInfoImportBusy = false;
@@ -11595,9 +11644,10 @@
   async function rlCatFetchTasks(projectId) {
     const pid = String(projectId ?? "").trim();
     if (!pid) return [];
-    const json = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid) + "/tasks");
-    const { data } = rlCatUnwrapList(json);
-    return Array.isArray(data) ? data : [];
+    // Every page, like the Categories overview (v1.68.0). The first page alone
+    // made a large project look like it lacked tasks it had, and the insert
+    // then added them a second time.
+    return rlCoFetchTasks(pid);
   }
 
   async function rlCatFetchTaskSample(projectId) {
@@ -11635,6 +11685,21 @@
     if (Array.isArray(raw)) return raw;
     if (raw && typeof raw === "object") return [raw];
     return [];
+  }
+
+  async function rlCatPostTask(body) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await gmRocketlaneRequest("POST", "/tasks", null, body);
+      } catch (e) {
+        // Rate-limited means nothing was created, so sending it again cannot duplicate.
+        if (attempt < 3 && /HTTP 429/.test(String(e?.message || e))) {
+          await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+          continue;
+        }
+        throw e;
+      }
+    }
   }
 
   async function rlCatCreateTask(projectId, phase, taskName, parentTaskId, opts) {
@@ -11701,11 +11766,18 @@
     if (opts && typeof opts.private === "boolean") {
       bodies = bodies.map((b) => ({ ...b, private: opts.private }));
     }
+    const group = parentTaskIdRaw ? (phaseIdRaw ? "sub" : "subNoPhase") : "top";
+    const kinds = parentTaskIdRaw
+      ? (phaseIdRaw ? ["TASK", "Task"] : ["bare", "dated"])
+      : (assigneesMin.length ? ["assignees", "typed", "untyped"] : ["typed", "untyped"]);
+    let tries = bodies.map((body, i) => ({ body, kind: kinds[i] || String(i) }));
+    const hint = rlCatBodyHint.get(group);
+    if (hint) tries = tries.filter((t) => t.kind === hint).concat(tries.filter((t) => t.kind !== hint));
 
     let lastErr = null;
-    for (const body of bodies) {
+    for (const { body, kind } of tries) {
       try {
-        const json = await gmRocketlaneRequest("POST", "/tasks", null, body);
+        const json = await rlCatPostTask(body);
         const task = json?.data ?? json;
         if (!task) continue;
         if (parentTaskIdRaw) {
@@ -11734,6 +11806,7 @@
             }
           }
         }
+        rlCatBodyHint.set(group, kind);
         return task;
       } catch (e) {
         lastErr = e;
@@ -11775,12 +11848,210 @@
     }
   }
 
-  async function rlCatSyncCategoryJobs(projectId, label, jobs, opts, allTasks) {
+  // ── Progress card for order-info inserts (v1.68.0) ─────────────────────
+  // Bottom-right, so the board stays visible while it fills: a bar with
+  // "handled of total", what is being created right now, each category with
+  // its own count, Stop while running, and a summary with every failure.
+  function rlCatImportStyles() {
+    if (document.getElementById("rlCatImportStyles")) return;
+    const st = document.createElement("style");
+    st.id = "rlCatImportStyles";
+    st.textContent = `
+      #rlCatImport {
+        position: fixed; right: 20px; bottom: 20px; z-index: 2147482950; width: min(400px, calc(100vw - 40px));
+        background: #fff; color: #1f2937; border: 1px solid #e2e8f0; border-radius: 12px;
+        box-shadow: 0 16px 40px rgba(15, 23, 42, .22); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden;
+      }
+      #rlCatImport .rlCiHead { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; font-weight: 650; font-size: 14px; }
+      #rlCatImport .rlCiX { margin-left: auto; border: 0; background: transparent; font-size: 18px; line-height: 1; cursor: pointer; color: #64748b; padding: 0 2px; }
+      #rlCatImport .rlCiBarWrap { padding: 0 14px; }
+      #rlCatImport .rlCiTrack { height: 10px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+      #rlCatImport .rlCiFill { height: 100%; width: 0; background: #2563eb; border-radius: 999px; transition: width .25s ease; }
+      #rlCatImport.indeterminate .rlCiFill { width: 35%; animation: rlCiSlide 1.1s ease-in-out infinite; }
+      #rlCatImport.done .rlCiFill { background: #16a34a; }
+      #rlCatImport.warn .rlCiFill { background: #d97706; }
+      #rlCatImport.error .rlCiFill { background: #dc2626; }
+      #rlCatImport.final .rlCiStep { white-space: normal; }
+      @keyframes rlCiSlide { 0% { transform: translateX(-100%); } 100% { transform: translateX(290%); } }
+      #rlCatImport .rlCiNums { display: flex; justify-content: space-between; padding: 6px 14px 0; font-size: 12px; color: #475569; font-variant-numeric: tabular-nums; }
+      #rlCatImport .rlCiStep { padding: 4px 14px 8px; font-size: 12px; color: #334155; min-height: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #rlCatImport .rlCiCats { list-style: none; margin: 0; padding: 4px 14px 8px; max-height: 220px; overflow: auto; border-top: 1px solid #f1f5f9; }
+      #rlCatImport .rlCiCats:empty { display: none; }
+      #rlCatImport .rlCiCats li { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12.5px; }
+      #rlCatImport .rlCiIcon { width: 16px; flex: 0 0 16px; text-align: center; font-weight: 700; }
+      #rlCatImport .rlCiCats li[data-state="wait"] { color: #94a3b8; }
+      #rlCatImport .rlCiCats li[data-state="work"] .rlCiIcon::before {
+        content: ""; display: inline-block; width: 9px; height: 9px; vertical-align: -1px;
+        border: 2px solid #bfdbfe; border-top-color: #2563eb; border-radius: 50%; animation: rlCiSpin .8s linear infinite;
+      }
+      @keyframes rlCiSpin { to { transform: rotate(360deg); } }
+      #rlCatImport .rlCiCats li[data-state="ok"] .rlCiIcon { color: #16a34a; }
+      #rlCatImport .rlCiCats li[data-state="fail"] .rlCiIcon { color: #dc2626; }
+      #rlCatImport .rlCiCount { margin-left: auto; color: #64748b; font-variant-numeric: tabular-nums; }
+      #rlCatImport .rlCiFails { margin: 0; padding: 6px 14px 8px 30px; color: #b91c1c; font-size: 12px; max-height: 150px; overflow: auto; border-top: 1px solid #fee2e2; background: #fef2f2; }
+      #rlCatImport .rlCiFoot { display: flex; align-items: center; gap: 8px; padding: 8px 14px 12px; border-top: 1px solid #f1f5f9; }
+      #rlCatImport .rlCiSummary { font-size: 12px; color: #475569; margin-right: auto; }
+      #rlCatImport .rlCiBtn { border: 1px solid #d1d5db; background: #fff; border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; }
+      #rlCatImport .rlCiBtn.primary { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+      #rlCatImport .rlCiBtn:disabled { opacity: .6; cursor: default; }
+    `;
+    document.documentElement.appendChild(st);
+  }
+
+  function rlCatImportPanel(title) {
+    rlCatImportStyles();
+    document.getElementById("rlCatImport")?.remove();
+    const root = document.createElement("div");
+    root.id = "rlCatImport";
+    root.className = "indeterminate";
+    root.setAttribute("role", "region");
+    root.setAttribute("aria-label", title);
+    root.innerHTML =
+      '<div class="rlCiHead"><span class="rlCiTitle"></span>' +
+        '<button type="button" class="rlCiX" title="Close" aria-label="Close" hidden>×</button></div>' +
+      '<div class="rlCiBarWrap"><div class="rlCiTrack" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="rlCiFill"></div></div></div>' +
+      '<div class="rlCiNums"><span class="rlCiCountTxt"></span><span class="rlCiPct"></span></div>' +
+      '<div class="rlCiStep" aria-live="polite"></div>' +
+      '<ul class="rlCiCats"></ul>' +
+      '<ul class="rlCiFails" hidden></ul>' +
+      '<div class="rlCiFoot"><span class="rlCiSummary"></span>' +
+        '<button type="button" class="rlCiBtn rlCiStop">Stop</button>' +
+        '<button type="button" class="rlCiBtn primary rlCiClose" hidden>Close</button></div>';
+    root.querySelector(".rlCiTitle").textContent = title;
+    document.body.appendChild(root);
+    const $ = (s) => root.querySelector(s);
+    const st = { total: 0, done: 0, skipped: 0, failed: 0, stopped: false, cats: new Map() };
+    const close = () => root.remove();
+    $(".rlCiX").addEventListener("click", close);
+    $(".rlCiClose").addEventListener("click", close);
+    $(".rlCiStop").addEventListener("click", () => {
+      st.stopped = true;
+      $(".rlCiStop").disabled = true;
+      $(".rlCiStop").textContent = "Stopping…";
+    });
+    const settle = (c) => {
+      const handled = c.done + c.failed;
+      c.state = handled >= c.ops ? (c.failed ? "fail" : "ok") : c.active ? "work" : "wait";
+    };
+    const paint = () => {
+      const handled = st.done + st.failed;
+      const pct = st.total ? Math.min(100, Math.round((handled * 100) / st.total)) : 0;
+      if (st.total) {
+        $(".rlCiFill").style.width = pct + "%";
+        $(".rlCiTrack").setAttribute("aria-valuenow", String(pct));
+      }
+      $(".rlCiCountTxt").textContent = st.total ? handled + " of " + st.total + (st.failed ? " · " + st.failed + " failed" : "") : "";
+      $(".rlCiPct").textContent = st.total ? pct + "%" : "";
+      for (const c of st.cats.values()) {
+        c.li.dataset.state = c.state;
+        c.li.querySelector(".rlCiIcon").textContent = { wait: "·", work: "", ok: "✓", fail: "!" }[c.state] ?? "·";
+        c.li.querySelector(".rlCiCount").textContent = (c.done + c.failed) + " / " + c.ops;
+      }
+    };
+    return {
+      stopped: () => st.stopped,
+      step(textLine) { $(".rlCiStep").textContent = String(textLine || ""); },
+      begin(categories, total) {
+        st.total = total;
+        root.classList.remove("indeterminate");
+        const ul = $(".rlCiCats");
+        ul.textContent = "";
+        for (const c of categories) {
+          const li = document.createElement("li");
+          li.innerHTML = '<span class="rlCiIcon"></span><span class="rlCiLabel"></span><span class="rlCiCount"></span>';
+          li.querySelector(".rlCiLabel").textContent = c.label;
+          ul.appendChild(li);
+          st.cats.set(c.label, { li, ops: c.ops, done: 0, failed: 0, state: "wait", active: false });
+        }
+        paint();
+      },
+      working(label, on) {
+        const c = st.cats.get(label);
+        if (!c) return;
+        c.active = on !== false;
+        settle(c);
+        paint();
+      },
+      failRest(label) {
+        const c = st.cats.get(label);
+        if (!c) return;
+        const k = Math.max(0, c.ops - c.done - c.failed);
+        st.failed += k;
+        c.failed += k;
+        settle(c);
+        paint();
+      },
+      tick(label, ok, skipped) {
+        const c = st.cats.get(label);
+        if (ok) { st.done++; if (skipped) st.skipped++; } else st.failed++;
+        if (c) { if (ok) c.done++; else c.failed++; settle(c); }
+        paint();
+      },
+      failedOf(label) { return st.cats.get(label)?.failed || 0; },
+      recovered(label, n) {
+        const c = st.cats.get(label);
+        const k = Math.max(0, Math.min(n, c ? c.failed : st.failed));
+        if (!k) return;
+        st.failed -= k; st.done += k;
+        if (c) { c.failed -= k; c.done += k; settle(c); }
+        paint();
+      },
+      finish({ message, failures, stopped, error }) {
+        root.classList.remove("indeterminate");
+        root.classList.add("final", error ? "error" : st.failed || stopped ? "warn" : "done");
+        // Nothing was counted (nothing to do, or it ended before counting): a full bar in the outcome's colour.
+        if (!st.total) $(".rlCiFill").style.width = "100%";
+        for (const c of st.cats.values()) { c.active = false; settle(c); }
+        paint();
+        $(".rlCiStep").textContent = String(message || "");
+        $(".rlCiSummary").textContent = st.total
+          ? (st.done - st.skipped) + " added" + (st.skipped ? " · " + st.skipped + " already there" : "") + (st.failed ? " · " + st.failed + " failed" : "")
+          : "";
+        $(".rlCiStop").hidden = true;
+        $(".rlCiClose").hidden = false;
+        $(".rlCiX").hidden = false;
+        const list = Array.isArray(failures) ? failures : [];
+        if (list.length) {
+          const ul = $(".rlCiFails");
+          ul.hidden = false;
+          ul.textContent = "";
+          for (const f of list.slice(0, 30)) {
+            const li = document.createElement("li");
+            li.textContent = f.label + " › " + f.text + " — " + f.error;
+            ul.appendChild(li);
+          }
+          if (list.length > 30) {
+            const li = document.createElement("li");
+            li.textContent = "…and " + (list.length - 30) + " more";
+            ul.appendChild(li);
+          }
+        }
+        if (!st.failed && !stopped && !error) {
+          // A clean run closes itself; pointing at the card keeps it open.
+          const timer = setTimeout(() => { if (root.isConnected) root.remove(); }, 12000);
+          root.addEventListener("mouseenter", () => clearTimeout(timer), { once: true });
+        }
+      },
+    };
+  }
+
+  /**
+   * Create a category's missing tasks. One at a time, in the order of `jobs`:
+   * the board lists a category's tasks in the order they were created, and up
+   * to 1.67.0 four ran in parallel and landed in whatever order they finished.
+   * A task's subtasks follow it, in their order; if the task itself fails its
+   * subtasks are counted as failed instead of being created loose in the
+   * category. `hooks`: stopped(), onStart(name), onItem(name, ok, skipped,
+   * parentName) — parentName is null for a task, the task's name for a subtask.
+   */
+  async function rlCatSyncCategoryJobs(projectId, label, jobs, opts, allTasks, hooks) {
+    const h = hooks || {};
+    const stopped = () => !!(h.stopped && h.stopped());
+    const note = (name, ok, skipped, parentName) => { if (h.onItem) h.onItem(name, ok, skipped, parentName || null); };
     const phase = await rlCatGetOrCreatePhase(projectId, label, opts);
     const phaseName = rlCatPhaseName(phase);
     const existing = Array.isArray(allTasks) ? allTasks : await rlCatFetchTasks(projectId);
     const planned = jobs || rlCatPlanBackfillJobs(phaseName, [], existing);
-    // If caller passed explicit jobs from desired list, still dedupe against RL.
     const nrm = rlCatNormText;
     const phaseNorm = nrm(phaseName);
     const rlTopByName = new Map();
@@ -11794,148 +12065,271 @@
     }
 
     const taskOpts = { private: !!(opts && opts.private) };
+    // A 5xx, a time-out or a dropped connection may still have created the task.
+    // Look first, then try once more right away, so it keeps its place in the
+    // order instead of landing last in the retry at the end. If the look itself
+    // fails, leave it to that retry rather than risk a duplicate.
+    const createKeepingPlace = async (name, parentId) => {
+      try {
+        return rlCatTaskId(await rlCatCreateTask(projectId, phase, name, parentId, taskOpts));
+      } catch (e) {
+        if (!/HTTP 5\d\d|timed out|Network error/i.test(String(e?.message ?? e))) throw e;
+        await new Promise((r) => setTimeout(r, 1500));
+        let now;
+        try { now = await rlCatFetchTasks(projectId); } catch (_) { throw e; }
+        const there = (now || []).find((t) =>
+          nrm(rlCatTaskName(t)) === nrm(name) &&
+          (parentId
+            ? rlCatTaskParentTaskId(t) === String(parentId)
+            : !rlCatTaskParentTaskId(t) && nrm(rlCatTaskPhaseName(t)) === phaseNorm));
+        if (there) return rlCatTaskId(there);
+        return rlCatTaskId(await rlCatCreateTask(projectId, phase, name, parentId, taskOpts));
+      }
+    };
     let okTasks = 0;
     let failTasks = 0;
-
-    await rlCatRunWithConcurrency(planned, 4, async (it) => {
+    const failures = [];
+    for (const it of planned) {
+      if (stopped()) break;
       let parentRlId = String(it.parentRlId || "").trim();
       if (!it.parentExists) {
         const dupe = rlTopByName.get(nrm(it.text));
         if (dupe) {
           parentRlId = dupe;
+          note(it.text, true, true);
         } else {
+          if (h.onStart) h.onStart(it.text);
           try {
-            const created = await rlCatCreateTask(projectId, phase, it.text, undefined, taskOpts);
-            parentRlId = rlCatTaskId(created);
-            if (parentRlId) {
-              rlTopByName.set(nrm(it.text), parentRlId);
-              okTasks++;
-            } else failTasks++;
+            parentRlId = await createKeepingPlace(it.text, undefined);
+            if (!parentRlId) throw new Error("Rocketlane returned no task id.");
+            rlTopByName.set(nrm(it.text), parentRlId);
+            okTasks++;
+            note(it.text, true, false);
           } catch (e) {
-            failTasks++;
             console.warn("[rlCat] task create failed:", it.text, e);
+            const n = (it.subs || []).length;
+            failTasks += 1 + n;
+            failures.push({
+              label,
+              text: it.text + (n ? " (and its " + n + " subtask" + (n === 1 ? "" : "s") + ")" : ""),
+              error: rlCatErrorText(e),
+              parent: it.text,
+              sub: null,
+            });
+            note(it.text, false, false);
+            for (const s of it.subs || []) note(s, false, false, it.text);
+            continue;
           }
         }
       }
       for (const subText of it.subs || []) {
+        if (stopped()) break;
         const dupKey = parentRlId + "\0" + nrm(subText);
-        if (parentRlId && rlSubByKey.has(dupKey)) continue;
+        if (rlSubByKey.has(dupKey)) { note(subText, true, true, it.text); continue; }
+        if (h.onStart) h.onStart(subText);
         try {
-          const createdSub = await rlCatCreateTask(projectId, phase, subText, parentRlId || undefined, taskOpts);
-          const subRlId = rlCatTaskId(createdSub);
-          if (subRlId) {
-            if (parentRlId) rlSubByKey.set(dupKey, subRlId);
-            okTasks++;
-          } else failTasks++;
+          const subRlId = await createKeepingPlace(subText, parentRlId);
+          if (!subRlId) throw new Error("Rocketlane returned no task id.");
+          rlSubByKey.set(dupKey, subRlId);
+          okTasks++;
+          note(subText, true, false, it.text);
         } catch (e) {
-          failTasks++;
           console.warn("[rlCat] subtask create failed:", subText, e);
+          failTasks++;
+          failures.push({ label, text: it.text + " › " + subText, error: rlCatErrorText(e), parent: it.text, sub: subText });
+          note(subText, false, false, it.text);
         }
       }
-    });
-    return { okTasks, failTasks, phase };
+    }
+    return { okTasks, failTasks, phase, failures };
   }
 
+  /**
+   * One more go for what failed, and only that: re-planned against the project
+   * as it is now, so a task Rocketlane created despite answering with an error
+   * is not added twice, and a task the first pass created is left alone even if
+   * the list just read does not show it yet. Returns the failures that remain.
+   */
+  async function rlCatRetryImport(pid, work, failures, phaseOpts, ui) {
+    let fresh;
+    try { fresh = await rlCatFetchTasks(pid); } catch (_) { return failures; }
+    const remaining = [];
+    for (const label of [...new Set(failures.map((f) => f.label))]) {
+      const mine = failures.filter((f) => f.label === label);
+      const w = work.find((x) => x.label === label);
+      if (ui.stopped() || !w) { remaining.push(...mine); continue; }
+      let desired = w.desired;
+      if (!mine.some((f) => f.whole || !w.desired.some((d) => d.text === f.parent))) {
+        const want = new Map();
+        for (const f of mine) {
+          const d = w.desired.find((x) => x.text === f.parent);
+          const set = want.get(d.text) || new Set();
+          for (const s of f.sub ? [f.sub] : d.subs || []) set.add(s);
+          want.set(d.text, set);
+        }
+        desired = w.desired
+          .filter((d) => want.has(d.text))
+          .map((d) => ({ text: d.text, subs: (d.subs || []).filter((s) => want.get(d.text).has(s)) }));
+      }
+      const jobs = rlCatPlanBackfillJobs(label, desired, fresh);
+      const planned = jobs.reduce((n, j) => n + (j.parentExists ? 0 : 1) + (j.subs || []).length, 0);
+      const before = ui.failedOf(label);
+      let added = 0;
+      const done = new Set();
+      try {
+        const r = await rlCatSyncCategoryJobs(pid, label, jobs, phaseOpts, fresh, {
+          stopped: ui.stopped,
+          onStart: (name) => ui.step("Adding “" + name + "” to " + label + " (second try)"),
+          onItem: (name, ok, _skipped, parentName) => {
+            if (!ok) return;
+            added++;
+            done.add((parentName || "") + "\0" + name);
+          },
+        });
+        // Failed before but not planned now: it is there after all.
+        ui.recovered(label, Math.max(0, before - planned) + added);
+        remaining.push(...r.failures);
+        if (ui.stopped()) {
+          // Stopped part-way: what was never tried again is still missing, so it stays listed.
+          const open = new Set();
+          for (const j of jobs) {
+            if (!j.parentExists) open.add("\0" + j.text);
+            for (const s of j.subs || []) open.add(j.text + "\0" + s);
+          }
+          for (const k of done) open.delete(k);
+          const again = new Set(r.failures.map((f) => (f.sub ? f.parent : "") + "\0" + (f.sub || f.parent)));
+          for (const f of mine) {
+            if (again.has((f.sub ? f.parent : "") + "\0" + (f.sub || f.parent))) continue;
+            const d = w.desired.find((x) => x.text === f.parent);
+            const keys = f.whole
+              ? [...open]
+              : f.sub
+                ? [f.parent + "\0" + f.sub]
+                : ["\0" + f.parent, ...((d && d.subs) || []).map((s) => f.parent + "\0" + s)];
+            if (keys.some((k) => open.has(k))) remaining.push(f);
+          }
+        }
+      } catch (e) {
+        remaining.push({ label, text: "(the category itself)", error: rlCatErrorText(e), whole: true });
+      }
+    }
+    return remaining;
+  }
+
+  /**
+   * Insert the categories and tasks the order info lists and the project lacks.
+   * Categories first, one at a time in the order info's order, so the board
+   * lists them that way; then each category's tasks in order, two categories
+   * at a time; then one retry of whatever failed. Idempotent: running it again
+   * only adds what is still missing.
+   */
   async function rlCatImportFromOrderInfo(projectId, opts) {
     if (rlCatOrderInfoImportBusy) {
-      rlCatToast("Order-info import already running — wait a moment.");
+      rlCatToast("An order-info insert is already running — its progress is in the bottom-right corner.");
       return;
     }
     rlCatOrderInfoImportBusy = true;
+    const ui = rlCatImportPanel("Insert from order info");
+    let failures = [];
     try {
       const pid = String(projectId ?? "").trim();
-      if (!pid) {
-        rlCatToast("No Rocketlane project id.");
-        return;
-      }
-      rlCatToast("Reading order info…");
+      if (!pid) { ui.finish({ message: "No Rocketlane project id.", error: true }); return; }
+      ui.step("Reading the order info…");
       let html = "";
       try {
         html = await rlCatFetchOrderHtml(pid);
       } catch (e) {
-        rlCatToast("Couldn't read order info: " + (e?.message ?? e));
+        ui.finish({ message: "Couldn't read the order info: " + (e?.message ?? e), error: true });
         return;
       }
-      if (!String(html || "").trim()) {
-        rlCatToast("No order info found on this project.");
-        return;
-      }
-      const modules = rlCatParseOrderInfoModules(html);
-      const plan = rlCatBuildDesiredPlan(modules);
-      if (!plan.length) {
-        rlCatToast("No IWMAC modules found in the order info.");
-        return;
-      }
+      if (!String(html || "").trim()) { ui.finish({ message: "No order info on this project.", stopped: true }); return; }
+      const plan = rlCatBuildDesiredPlan(rlCatParseOrderInfoModules(html));
+      if (!plan.length) { ui.finish({ message: "No IWMAC modules found in the order info.", stopped: true }); return; }
 
-      let allTasks = [];
+      ui.step("Reading the project's categories and tasks…");
+      let allTasks;
+      let phases;
       try {
-        allTasks = await rlCatFetchTasks(pid);
-      } catch (_) {
-        allTasks = [];
-      }
-      let phases = [];
-      try {
-        phases = await rlCatFetchPhases(pid);
-      } catch (_) {
-        phases = [];
-      }
-      const phaseNormSet = new Set(phases.map((ph) => rlCatNormText(rlCatPhaseName(ph))));
-
-      const syncBatch = [];
-      let created = 0;
-      let backfilled = 0;
-      for (const entry of plan) {
-        const phaseName = entry.preset.label;
-        const jobs = rlCatPlanBackfillJobs(phaseName, entry.desired, allTasks);
-        const phaseExists = phaseNormSet.has(rlCatNormText(phaseName));
-        if (!phaseExists) {
-          syncBatch.push({ label: phaseName, desired: entry.desired });
-          created++;
-        } else if (jobs.length) {
-          syncBatch.push({ label: phaseName, desired: entry.desired });
-          backfilled += jobs.reduce((n, j) => n + (j.parentExists ? 0 : 1) + (j.subs || []).length, 0);
-        }
-      }
-
-      if (!syncBatch.length) {
-        rlCatToast("Everything from the order info is already on this project.");
+        [allTasks, phases] = await Promise.all([rlCatFetchTasks(pid), rlCatFetchPhases(pid)]);
+      } catch (e) {
+        // Carrying on as if the project were empty would add every task a second time.
+        ui.finish({ message: "Couldn't read the project's categories and tasks, so nothing was added: " + rlCatErrorText(e), error: true });
         return;
       }
-      const parts = [];
-      if (created) parts.push("creating " + created + " categor" + (created > 1 ? "ies" : "y"));
-      if (backfilled) parts.push("backfilling " + backfilled + " missing task(s)");
-      rlCatToast("Order info: " + parts.join("; ") + " — syncing…");
-
+      const { work, total } = rlCatImportWork(plan, phases, allTasks);
+      if (!work.length) {
+        ui.finish({ message: "Everything from the order info is already on this project." });
+        return;
+      }
+      // Fresh lookups for this run, seeded with the categories just read — also
+      // the one whose name differs from the preset only in case or spacing.
+      rlCatClearCaches(pid);
+      rlCatTaskSampleCache.set(pid, allTasks[0] || null);
+      for (const w of work) {
+        if (w.phase) rlCatPhaseByNameCache.set(pid + "\0" + String(w.label).trim().toLowerCase(), w.phase);
+      }
+      ui.begin(work.map((w) => ({ label: w.label, ops: w.ops })), total);
       const phaseOpts = {
         private: !!(opts && opts.private),
         startDate: opts && opts.startDate,
         dueDate: opts && opts.dueDate,
       };
-      let okTasks = 0;
-      let failTasks = 0;
-      await rlCatRunWithConcurrency(syncBatch, 2, async (b) => {
-        let tasksNow = allTasks;
+
+      const ready = [];
+      for (const w of work) {
+        if (ui.stopped()) break;
+        if (!w.createPhase) { ready.push(w); continue; }
+        ui.working(w.label);
+        ui.step("Creating the category “" + w.label + "”…");
         try {
-          tasksNow = await rlCatFetchTasks(pid);
-          allTasks = tasksNow;
-        } catch (_) {}
-        const jobs = rlCatPlanBackfillJobs(b.label, b.desired, tasksNow);
-        if (!jobs.length) {
-          await rlCatGetOrCreatePhase(pid, b.label, phaseOpts);
-          return;
+          await rlCatGetOrCreatePhase(pid, w.label, phaseOpts);
+          ui.tick(w.label, true);
+          ready.push(w);
+        } catch (e) {
+          // Without the category none of its tasks can go in.
+          ui.failRest(w.label);
+          failures.push({ label: w.label, text: "(the category itself)", error: rlCatErrorText(e), whole: true });
         }
-        const r = await rlCatSyncCategoryJobs(pid, b.label, jobs, phaseOpts, tasksNow);
-        if (r) {
-          okTasks += r.okTasks;
-          failTasks += r.failTasks;
+        ui.working(w.label, false);
+      }
+
+      await rlCatRunWithConcurrency(ready, 2, async (w) => {
+        if (ui.stopped() || !w.jobs.length) return;
+        ui.working(w.label);
+        try {
+          const r = await rlCatSyncCategoryJobs(pid, w.label, w.jobs, phaseOpts, allTasks, {
+            stopped: ui.stopped,
+            onStart: (name) => ui.step("Adding “" + name + "” to " + w.label),
+            onItem: (name, ok, skipped) => ui.tick(w.label, ok, skipped),
+          });
+          failures.push(...r.failures);
+        } catch (e) {
+          // One category going wrong must not take the others down with it.
+          ui.failRest(w.label);
+          failures.push({ label: w.label, text: "(the category itself)", error: rlCatErrorText(e), whole: true });
+        } finally {
+          ui.working(w.label, false);
         }
       });
-      rlCatToast(
-        failTasks > 0
-          ? "Rocketlane: " + okTasks + " task(s) synced, " + failTasks + " failed."
-          : "Rocketlane: all " + okTasks + " task(s) synced."
-      );
+
+      if (failures.length && !ui.stopped()) {
+        ui.step("Trying the " + failures.length + " failed one" + (failures.length === 1 ? "" : "s") + " again…");
+        failures = await rlCatRetryImport(pid, work, failures, phaseOpts, ui);
+      }
       rlCatClearCaches(pid);
+      if (document.body.classList.contains("rlCoActive")) void rlCoLoad(true);
+      const stopped = ui.stopped();
+      ui.finish({
+        stopped,
+        failures,
+        message: stopped
+          ? "Stopped. Run it again to add what is still missing — it only adds what is not there."
+          : failures.length
+            ? "Done, with " + failures.length + " problem" + (failures.length === 1 ? "" : "s") + " below. Running it again adds only what is missing."
+            : "Done — " + work.length + " categor" + (work.length === 1 ? "y" : "ies") + " up to date.",
+      });
+    } catch (e) {
+      ui.finish({ message: "Insert failed: " + (e?.message ?? e), failures, error: true });
     } finally {
       rlCatOrderInfoImportBusy = false;
     }
