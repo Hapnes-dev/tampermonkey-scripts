@@ -5,11 +5,16 @@ Power-user overlay for the **IWMAC Supermarket parameters page** (`…/supermark
 By ØTS / MATS / Hapnes. Console tag: `[Supermarket Parameters POC]`, CSS/id prefix `sm-poc-`.
 
 > **v5.0 rebased on the ØTS/MATS upstream.** The script body is now the upstream
-> `Supermarket-superuser-merged` build (Norwegian UI, graphics-panel lookup,
-> native-tab context menus, scaling helpers) with this fork's Excel export
-> re-applied on top. Only the export UI is in English, matching the export's own
-> column names. The sections below still describe the pre-5.0 feature set; the
-> graphics-panel features the upstream added are not documented here yet.
+> `Supermarket-superuser-merged` build (graphics-panel lookup, native-tab context
+> menus, scaling helpers) with this fork's Excel export re-applied on top. Since
+> v5.2.0 the whole UI is in English (the upstream build was Norwegian). The
+> sections below still describe the pre-5.0 feature set; the graphics-panel
+> features the upstream added are not documented here yet.
+>
+> **v5.2.0.** The whole UI is now in English — toolbar, hints, dialogs, context
+> menus and the help guide (e.g. **Enable edit mode**, **Hide 0.0**, **Save**,
+> **Show all parameters**, **Only in graphics**, **Show single group**). Labels
+> read from IWMAC's own page are still matched in its language.
 >
 > **v5.1.0.** Both Excel exports gain an **In graphics** column: the pictures each
 > parameter is placed in, so the sheet can be sorted and filtered by graphics use.
@@ -44,7 +49,7 @@ Floats as a fixed overlay aligned into the Kiona top bar's free space (ending ju
 
 | Control | What it does |
 |---|---|
-| **Enable Edit mode** | Turns on row selection, drag-move and the batch menus. Turning it off discards unsaved moves. |
+| **Enable edit mode** | Turns on row selection, drag-move and the batch menus. Turning it off discards unsaved moves. |
 | **Hide 0.0** | Hides rows whose Value is `0` / `0.0` (works in both the native panes and Show all parameters). |
 | **Save** + `N changes` | Writes the pending Measurements ⇄ Settings moves (`att` `r` ⇄ `rw`) to the plant DB. |
 | **Export all units** | Fetches **every unit on the plant** (after a confirmation warning — can take minutes) and downloads one `.xlsx` with a collapsible block per unit. Per-unit export lives inside Show all parameters (**Export unit**). |

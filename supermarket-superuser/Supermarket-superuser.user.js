@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Supermarket-superuser
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      5.1.0
+// @version      5.2.0
 // @description  filters, move mode, graphics lookup and batch editing of driver parameters, with Excel export
 // @author       ØTS/MATS/Hapnes
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -20,7 +20,7 @@
     const POC_STYLE_ID = 'sm_params_poc_style';
     // MÅ følge @version: brukes som `__SM_POC_WATCHER_VERSION`-nøkkel. Lik verdi i to installerte
     // kopier ville fått den andre til å hoppe over hele watcher-oppsettet (ingen kontekstmeny).
-    const SCRIPT_VERSION = '5.1.0';
+    const SCRIPT_VERSION = '5.2.0';
     const FILTER_PORTAL_ID = 'sm-poc-filter-portal';
     const GHOST_PORTAL_ID = 'sm-poc-ghost-portal';
     const UNIT_PORTAL_ID = 'sm-poc-unit-portal';
@@ -91,7 +91,7 @@
     };
     let hideZeroValuesEnabled = false;
     let pocAsleep = false;
-    let allParamsOnlyGraphics = false; // filter i Vis alle parameter: bare rader som brukes i grafikk
+    let allParamsOnlyGraphics = false; // filter i Show all parameters: bare rader som brukes i grafikk
     const pendingAttChanges = new Map();
     const selectionAnchor = { measurements: null, settings: null };
     const filterTimers = { measurements: null, settings: null };
@@ -209,7 +209,7 @@
             #${ALL_PARAMS_PORTAL_ID} {
                 /* ponytail: under IWMAC-modaler (z-index 1900) og under
                    enhetsportal (1899) slik at enhets-dropdownen ikke dekkes av
-                   "Vis alle parameter"-knappen. Viewet dekker sideinnholdet
+                   "Show all parameters"-knappen. Viewet dekker sideinnholdet
                    (<1898) men viker for modaler og enhetscombo. */
                 position: fixed; inset: 0; pointer-events: none; z-index: 1898;
             }
@@ -798,7 +798,7 @@
             return response;
         } catch (error) {
             if (error?.name === 'AbortError') {
-                throw new Error(`Tidsavbrudd etter ${Math.round(timeoutMs / 1000)} sekunder mot ${url}`);
+                throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)} seconds waiting for ${url}`);
             }
             throw error;
         } finally {
@@ -935,8 +935,8 @@
     }
 
     function defaultColumnLabels(count) {
-        const names = ['Måling', 'Status', 'Verdi', 'Enhet'];
-        return Array.from({ length: count }, (_, i) => names[i] || `Kol ${i + 1}`);
+        const names = ['Measurement', 'Status', 'Value', 'Unit'];
+        return Array.from({ length: count }, (_, i) => names[i] || `Col ${i + 1}`);
     }
 
     function bindUnitPickerOpen(input) {
@@ -960,10 +960,10 @@
             || th.querySelector('div')?.textContent
             || th.textContent
             || defaults[col]
-            || `Kol ${col + 1}`
+            || `Col ${col + 1}`
         ).replace(/\s+/g, ' ').trim());
 
-        return Array.from({ length: count }, (_, i) => labels[i] || defaults[i] || `Kol ${i + 1}`);
+        return Array.from({ length: count }, (_, i) => labels[i] || defaults[i] || `Col ${i + 1}`);
     }
 
     function persistFiltersFromDom() {
@@ -1177,8 +1177,8 @@
             button = document.createElement('button');
             button.id = ALL_PARAMS_BUTTON_ID;
             button.type = 'button';
-            button.textContent = 'Vis alle parameter';
-            button.title = 'Vis parameter fra alle grupper i valgt enhet';
+            button.textContent = 'Show all parameters';
+            button.title = 'Show parameters from all groups of the selected unit';
             button.className = 'group';
             button.dataset.smPocAllParamsButton = '1';
             button.addEventListener('click', (event) => {
@@ -1310,7 +1310,7 @@
         }, 25000).then(async (response) => {
             const data = await response.json();
             if (data?.error) {
-                throw new Error(data.error.message || data.error || `${method} feilet`);
+                throw new Error(data.error.message || data.error || `${method} failed`);
             }
             return data?.result;
         });
@@ -1418,7 +1418,7 @@
         const plantId = getPlantId();
         const unitId = getUnitId();
         if (!plantId || !unitId) {
-            throw new Error('Fant ikke plant_id eller unit_id.');
+            throw new Error('Could not find plant_id or unit_id.');
         }
         return fetchGroupParametersForUnit(plantId, unitId, onProgress, shouldContinue);
     }
@@ -1560,8 +1560,8 @@
         const total = view.querySelectorAll('tbody tr').length;
         const visible = Array.from(view.querySelectorAll('tbody tr')).filter(isVisibleRow).length;
         const failed = allParamsData?.failed?.length || 0;
-        const suffix = failed ? `, ${failed} gruppe(r) feilet` : '';
-        status.textContent = `Viser ${visible}/${total} parameter${suffix}`;
+        const suffix = failed ? `, ${failed} group${failed === 1 ? '' : 's'} failed` : '';
+        status.textContent = `Showing ${visible}/${total} parameters${suffix}`;
     }
 
     function filterAllParamsView() {
@@ -1706,8 +1706,8 @@
                 : Array.from(selectedRows).filter((r) => rowVisualSide(r) === acceptFrom);
             if (!rows.length) {
                 showHint(acceptFrom === 'measurements'
-                    ? 'Velg rader i Måling eller dra fra Innstillinger'
-                    : 'Velg rader i Innstillinger eller dra fra Måling');
+                    ? 'Select rows in Measurements or drag from Settings'
+                    : 'Select rows in Settings or drag from Measurements');
                 return;
             }
 
@@ -1723,7 +1723,7 @@
         const pane = document.createElement('div');
         pane.className = 'sm-poc-all-pane';
         pane.dataset.side = side;
-        const nameLabel = side === 'measurements' ? 'Måling' : 'Innstilling';
+        const nameLabel = side === 'measurements' ? 'Measurement' : 'Setting';
         const filters = allParamsFilters[side] || {};
         const colgroup = `
             <colgroup>
@@ -1739,16 +1739,16 @@
                 ${colgroup}
                 <thead>
                     <tr>
-                        <th data-sort="groupName">Gruppe</th>
+                        <th data-sort="groupName">Group</th>
                         <th data-sort="aliasText">${nameLabel}</th>
-                        <th data-sort="value">Verdi</th>
-                        <th data-sort="unit">Enhet</th>
+                        <th data-sort="value">Value</th>
+                        <th data-sort="unit">Unit</th>
                     </tr>
                     <tr class="sm-poc-all-filter-row">
-                        <th><input type="text" data-side="${side}" data-filter-key="groupName" placeholder="Gruppe" value="${escapeHtml(filters.groupName || '')}"></th>
+                        <th><input type="text" data-side="${side}" data-filter-key="groupName" placeholder="Group" value="${escapeHtml(filters.groupName || '')}"></th>
                         <th><input type="text" data-side="${side}" data-filter-key="aliasText" placeholder="${nameLabel}" value="${escapeHtml(filters.aliasText || '')}"></th>
-                        <th><input type="text" data-side="${side}" data-filter-key="value" placeholder="Verdi" value="${escapeHtml(filters.value || '')}"></th>
-                        <th><input type="text" data-side="${side}" data-filter-key="unit" placeholder="Enhet" value="${escapeHtml(filters.unit || '')}"></th>
+                        <th><input type="text" data-side="${side}" data-filter-key="value" placeholder="Value" value="${escapeHtml(filters.value || '')}"></th>
+                        <th><input type="text" data-side="${side}" data-filter-key="unit" placeholder="Unit" value="${escapeHtml(filters.unit || '')}"></th>
                     </tr>
                 </thead>
             </table>
@@ -1799,8 +1799,8 @@
         const button = document.querySelector(`#${ALL_PARAMS_VIEW_ID} [data-action="only-graphics"]`);
         if (!button) return;
         button.classList.toggle('sm-poc-active', allParamsOnlyGraphics);
-        button.textContent = allParamsOnlyGraphics ? 'Viser kun i grafikk' : 'Kun i grafikk';
-        button.title = 'Vis bare parametere som brukes i grafikk-bilder';
+        button.textContent = allParamsOnlyGraphics ? 'Showing only in graphics' : 'Only in graphics';
+        button.title = 'Show only parameters used in graphics pictures';
     }
 
     async function toggleOnlyGraphicsFilter() {
@@ -1846,12 +1846,12 @@
         });
 
         const failedText = allParamsData.failed?.length
-            ? `<span style="color:#c62828;">${allParamsData.failed.length} gruppe(r) feilet</span>`
+            ? `<span style="color:#c62828;">${allParamsData.failed.length} group${allParamsData.failed.length === 1 ? '' : 's'} failed</span>`
             : '';
         view.innerHTML = `
             <div class="sm-poc-all-toolbar">
-                <button type="button" data-action="close">Vis enkeltgruppe</button>
-                <button type="button" data-action="only-graphics">Kun i grafikk</button>
+                <button type="button" data-action="close">Show single group</button>
+                <button type="button" data-action="only-graphics">Only in graphics</button>
                 <button type="button" class="sm-poc-all-export-btn" data-action="export" title="Export this unit's parameters to an Excel file">Export unit (Excel)</button>
                 <span class="sm-poc-all-status"></span>
                 ${failedText}
@@ -1859,8 +1859,8 @@
             <div class="sm-poc-all-columns"></div>
         `;
         const columns = view.querySelector('.sm-poc-all-columns');
-        columns.appendChild(createAllParamsPane('Måling - alle grupper', allParamsData.measurements, 'measurements'));
-        columns.appendChild(createAllParamsPane('Innstillinger - alle grupper', allParamsData.settings, 'settings'));
+        columns.appendChild(createAllParamsPane('Measurements - all groups', allParamsData.measurements, 'measurements'));
+        columns.appendChild(createAllParamsPane('Settings - all groups', allParamsData.settings, 'settings'));
 
         view.querySelector('[data-action="close"]').addEventListener('click', () => deactivateAllParamsView());
         view.querySelector('[data-action="only-graphics"]').addEventListener('click', toggleOnlyGraphicsFilter);
@@ -1887,7 +1887,8 @@
 
     function allParamsTotalsText(data) {
         const total = (data?.measurements?.length || 0) + (data?.settings?.length || 0);
-        return `${total} parameter fra ${data?.groups?.length || 0} grupper`;
+        const groupCount = data?.groups?.length || 0;
+        return `${total} parameter${total === 1 ? '' : 's'} from ${groupCount} group${groupCount === 1 ? '' : 's'}`;
     }
 
     async function activateAllParamsView(forceReload = false) {
@@ -1912,19 +1913,19 @@
                 allParamsData = cached.data;
                 renderAllParamsView();
                 if (Date.now() - cached.at < ALL_PARAMS_CACHE_FRESH_MS) {
-                    showHint(`Viser ${allParamsTotalsText(cached.data)}.`);
+                    showHint(`Showing ${allParamsTotalsText(cached.data)}.`);
                     return;
                 }
-                showHint('Oppdaterer parameter...');
+                showHint('Updating parameters...');
             } else {
-                showHint('Laster parameter fra alle grupper...');
+                showHint('Loading parameters from all groups...');
             }
 
             let lastProgressRender = 0;
             const data = await fetchAllGroupParameters((getPartial, done, total) => {
                 if (generation !== allParamsGeneration) return;
                 if (cached) return;
-                showHint(`Laster parameter... ${done}/${total} grupper`);
+                showHint(`Loading parameters... ${done}/${total} groups`);
                 const now = Date.now();
                 if (
                     done === total
@@ -1945,11 +1946,11 @@
             }
             allParamsData = data;
             renderAllParamsView();
-            showHint(`Viser ${allParamsTotalsText(data)}.`);
+            showHint(`Showing ${allParamsTotalsText(data)}.`);
         } catch (error) {
             if (generation !== allParamsGeneration) return;
             console.log('[Supermarket Parameters POC] All parameters error:', error);
-            alert('Kunne ikke laste alle parameter: ' + error.message);
+            alert('Could not load all parameters: ' + error.message);
             deactivateAllParamsView();
         } finally {
             if (generation === allParamsGeneration) {
@@ -2010,7 +2011,7 @@
         return String(text).replace(/^\s*\[[^\]]*\]\s*/, '').split(/\s\[/)[0].replace(/\s+/g, ' ').trim().toLowerCase();
     }
 
-    // driver_id er unik per parameter og brukes når raden har den (Vis alle parameter).
+    // driver_id er unik per parameter og brukes når raden har den (Show all parameters).
     // IWMACs native rader har ingen driver_id — der brukes EKSAKT alias mot bildets alias_text,
     // ikke lenger delstreng-søk i hele json-blobben (det var kilden til feiltreff).
     function gfxPanelsForRow(rowData) {
@@ -2120,7 +2121,7 @@
         if (!toolbar) return;
         const badge = document.createElement('span');
         badge.className = 'sm-poc-gfx-badge';
-        badge.appendChild(document.createTextNode(gfxState.panels.length ? 'I grafikk:' : 'Ikke funnet i grafikk'));
+        badge.appendChild(document.createTextNode(gfxState.panels.length ? 'In graphics:' : 'Not found in graphics'));
         const plantId = getPlantId();
         gfxState.panels.forEach((p) => {
             const a = document.createElement('a');
@@ -2128,7 +2129,7 @@
             if (p.id) {
                 const link = graphicsLink(plantId, p.id);
                 a.href = link.href;
-                a.title = 'Åpne bildet — objektene for denne enheten blinker i 3 sekunder';
+                a.title = 'Open the picture — the objects of this unit flash for 3 seconds';
                 a.addEventListener('click', (event) => {
                     rememberGraphicsFlash(p, plantId); // overlever full sidelasting (sti-ruting)
                     if (!link.hash) return;            // sti-ruting: la lenken navigere selv
@@ -2142,7 +2143,7 @@
         const close = document.createElement('button');
         close.type = 'button';
         close.textContent = '✕';
-        close.title = 'Fjern highlight og paneler';
+        close.title = 'Clear highlight and pictures';
         close.addEventListener('click', clearGfxState);
         badge.appendChild(close);
         toolbar.appendChild(badge);
@@ -2171,7 +2172,7 @@
         fd.append('_cache_bust', Date.now());
         const response = await fetchWithTimeout('http://toolbox.iwmac.local/oets/api/index2.php', { method: 'POST', body: fd, cache: 'no-cache' });
         const data = await response.json();
-        if (!data?.success) throw new Error(data?.error || 'Panel-oppslag feilet');
+        if (!data?.success) throw new Error(data?.error || 'Panel lookup failed');
         // ponytail: SELECT * fordi json trengs til per-rad-tagging og navne-/id-kolonne er gjettet
         const idOf = (x) => {
             const keys = Object.keys(x);
@@ -2350,7 +2351,7 @@
         fd.append('_cache_bust', Date.now());
         const response = await fetchWithTimeout('http://toolbox.iwmac.local/oets/api/index2.php', { method: 'POST', body: fd, cache: 'no-cache' });
         const data = await response.json();
-        if (!data?.success) throw new Error(data?.error || 'Bilde-oppslag feilet');
+        if (!data?.success) throw new Error(data?.error || 'Picture lookup failed');
         const row = findRowsWithKey(data, 'json')[0];
         const elements = row ? pictureElements(row, null) : [];
         graphicElementsCache = { key, elements }; // ett bilde om gangen
@@ -2394,7 +2395,7 @@
         const response = await fetchWithTimeout(url, { cache: 'no-cache' });
         const data = await response.json();
         if (!data?.success || !Array.isArray(data.menu_list)) {
-            throw new Error(data?.error || 'Ukjent API-feil');
+            throw new Error(data?.error || 'Unknown API error');
         }
         return data.menu_list;
     }
@@ -2433,13 +2434,13 @@
         const unitId = getUnitId();
         const plantId = getPlantId();
         if (!unitId || !plantId) {
-            showHint('Kan ikke finne unit_id eller plant_id.');
+            showHint('Cannot find unit_id or plant_id.');
             return;
         }
         // Allerede hentet for denne enheten: bare tegn på nytt (markeringen står til ✕ trykkes)
         if (gfxStateIsCurrent() && (gfxState.menus.size || gfxState.loaded)) {
             const count = applyGfxStateToAllRows();
-            showHint(`Highlight used_in_graphics: ${count} rad(er) markert. Trykk ✕ i merkelappen for å fjerne.`);
+            showHint(`Highlight used_in_graphics: ${count} row${count === 1 ? '' : 's'} marked. Click ✕ on the badge to remove it.`);
             return;
         }
 
@@ -2447,10 +2448,10 @@
             const menuList = await fetchUnitMenuList(unitId, plantId);
             gfxState.panels = [];
             const count = highlightAllParamsUsedInGraphics(menuList);
-            showHint(`Highlight used_in_graphics: ${count} rad(er) markert. Henter grafikk-paneler...`);
+            showHint(`Highlight used_in_graphics: ${count} row${count === 1 ? '' : 's'} marked. Fetching graphics pictures...`);
         } catch (error) {
             console.log('[Supermarket Parameters POC] used_in_graphics error:', error);
-            showHint('Kunne ikke hente used_in_graphics: ' + error.message);
+            showHint('Could not fetch used_in_graphics: ' + error.message);
             return;
         }
         try {
@@ -2463,11 +2464,11 @@
             if (!gfxStateIsCurrent()) return;
             const marked = applyGfxStateToAllRows(); // nå med treff fra selve bildet
             showHint(panels.length
-                ? `Enheten er brukt i ${panels.length} grafikk-bilde(r): ${panels.map((p) => p.name).join(', ')} — ${marked} rad(er) markert.`
-                : 'Enheten ble ikke funnet i noen grafikk-bilder.');
+                ? `The unit is used in ${panels.length} graphics picture${panels.length === 1 ? '' : 's'}: ${panels.map((p) => p.name).join(', ')} — ${marked} row${marked === 1 ? '' : 's'} marked.`
+                : 'The unit was not found in any graphics pictures.');
         } catch (error) {
             console.log('[Supermarket Parameters POC] graphics panels error:', error);
-            showHint('Kunne ikke hente grafikk-paneler: ' + error.message);
+            showHint('Could not fetch graphics pictures: ' + error.message);
         }
     }
 
@@ -2480,7 +2481,7 @@
         const plantId = plantIdArg || getPlantId();
         const unitId = unitIdArg || getUnitId();
         if (!plantId || !unitId) {
-            throw new Error('Kan ikke finne unit_id eller plant_id.');
+            throw new Error('Cannot find unit_id or plant_id.');
         }
         // Native rader mangler driver_id i DOM-en — hent den fra gruppe-svaret først,
         // så identifiseres parameteren på driver_id og ikke på alias-tekst.
@@ -2530,7 +2531,7 @@
             if (exact?.driver_id) return wrap(exact);
             const fallback = await fetchDriverParameterDetailsByAliasSql(request, plantId, unitId).catch(() => null);
             if (fallback?.driver_id) return wrap(fallback);
-            throw new Error(data?.error || `Fant ikke parameter: ${request.alias_text}`);
+            throw new Error(data?.error || `Parameter not found: ${request.alias_text}`);
         }
         // API-et filtrerer ikke på driver_id — det returnerer alle alias-treff. Plukk vår.
         const rows = Array.isArray(data.data) ? data.data : [data.data].filter(Boolean);
@@ -2581,11 +2582,11 @@
         const title = floatyTitleText(floatybox);
         const parsed = parseGraphicsTitle(title);
         if (!parsed.unitId || !parsed.aliasText) {
-            showHint('Fant ikke enhet/parameter i tittelen.');
+            showHint('Could not find unit/parameter in the title.');
             return;
         }
         ensurePocStyles(); // modalen bruker skript-stilen, som kan være ryddet bort utenfor innstillinger
-        showHint('Henter driver parameter details...');
+        showHint('Fetching driver parameter details...');
         const plantId = parsed.plantId || getPlantId();
         // Objektet i bildet er linket til en driver_id — bruk den, og bildets eksakte alias_text
         const match = await pictureMatchForTitle(plantId, graphicIdFromRoute(), parsed.unitId, title);
@@ -2596,7 +2597,7 @@
             .then(handleAllParamsDriverParameterResponse)
             .catch((error) => {
                 console.log('[Supermarket Parameters POC] graphics details error:', error);
-                showHint('Kunne ikke hente driverdetaljer: ' + error.message);
+                showHint('Could not fetch driver details: ' + error.message);
             });
     }
 
@@ -2609,7 +2610,7 @@
         button.type = 'button';
         button.className = 'sm-poc-graphics-details';
         button.textContent = 'ℹ️';
-        button.title = 'Parameterdetaljer';
+        button.title = 'Parameter details';
         // inline stil: skript-stilarket kan være fjernet utenfor innstillinger
         button.style.cssText = 'margin-left:4px;padding:0 4px;border:0;background:transparent;cursor:pointer;line-height:1;font-size:15px;';
         button.addEventListener('click', (event) => {
@@ -2636,7 +2637,7 @@
         return `<option value="${escapeHtml(value)}" ${String(currentValue ?? '') === String(value) ? 'selected' : ''}>${escapeHtml(label)}</option>`;
     }
 
-    function formatOptionHtml(currentValue, emptyLabel = 'Velg...') {
+    function formatOptionHtml(currentValue, emptyLabel = 'Select...') {
         return [
             optionHtml('', emptyLabel, currentValue),
             ...['%.0f', '%.1f', '%.2f', '%.3f', '%.4f', '%e', '%X', '%s', '%d', '%i', '%u']
@@ -2672,7 +2673,7 @@
                     <button type="button" class="sm-poc-red-btn" data-close="1">Close</button>
                 </div>
                 <div class="sm-poc-batch-note">
-                    Flere parametere matcher ${escapeHtml(data.alias_text || '')}. Velg riktig driver_id.
+                    Several parameters match ${escapeHtml(data.alias_text || '')}. Select the correct driver_id.
                 </div>
                 <table class="sm-poc-select-table">
                     <thead>
@@ -2825,18 +2826,18 @@
         if (scalingInfo.isScaled) {
             explanation = `
                 <div class="sm-poc-dp-explain">
-                    <div class="sm-poc-dp-explain-title">⚠️ Skalering er aktiv på denne parameteren</div>
-                    <div><strong>Verdi vist i IWMAC:</strong> ${fmt(scalingInfo.currentValue)} (skalert / engineering unit)</div>
-                    <div><strong>Beregnet råverdi:</strong> <span style="color:#1976d2;font-weight:600;">${fmt(rawShown)}</span></div>
+                    <div class="sm-poc-dp-explain-title">⚠️ Scaling is active on this parameter</div>
+                    <div><strong>Value shown in IWMAC:</strong> ${fmt(scalingInfo.currentValue)} (scaled / engineering unit)</div>
+                    <div><strong>Calculated raw value:</strong> <span style="color:#1976d2;font-weight:600;">${fmt(rawShown)}</span></div>
                     <div class="sm-poc-dp-formula">
-                        <div><strong>Gjeldende skalering:</strong> raw_min=${fmt(scalingInfo.raw_min)}, raw_max=${fmt(scalingInfo.raw_max)}, eng_min=${fmt(scalingInfo.eng_min)}, eng_max=${fmt(scalingInfo.eng_max)}</div>
-                        <div><strong>Unscale (EU → rå):</strong> raw = raw_min + (eu - eng_min) × (raw_max - raw_min) / (eng_max - eng_min)</div>
+                        <div><strong>Current scaling:</strong> raw_min=${fmt(scalingInfo.raw_min)}, raw_max=${fmt(scalingInfo.raw_max)}, eng_min=${fmt(scalingInfo.eng_min)}, eng_max=${fmt(scalingInfo.eng_max)}</div>
+                        <div><strong>Unscale (EU → raw):</strong> raw = raw_min + (eu - eng_min) × (raw_max - raw_min) / (eng_max - eng_min)</div>
                         <div>raw = ${fmt(scalingInfo.raw_min)} + (${fmt(scalingInfo.currentValue)} - ${fmt(scalingInfo.eng_min)}) × (${fmt(scalingInfo.raw_max)} - ${fmt(scalingInfo.raw_min)}) / (${fmt(scalingInfo.eng_max)} - ${fmt(scalingInfo.eng_min)}) = <strong>${fmt(rawShown)}</strong></div>
                     </div>
-                    <div style="margin-top:6px;font-style:italic;color:#666;">Tabellen under viser hva <strong>resultatet blir</strong> hvis du bruker presetet på råverdien ${fmt(rawShown)}.</div>
+                    <div style="margin-top:6px;font-style:italic;color:#666;">The table below shows what <strong>the result will be</strong> if you apply the preset to the raw value ${fmt(rawShown)}.</div>
                 </div>`;
         } else if (scalingInfo.realRaw !== null) {
-            explanation = `<div class="sm-poc-dp-explain sm-poc-dp-explain-ok">✓ Ingen skalering aktiv – verdien som vises (${fmt(rawShown)}) er råverdien.</div>`;
+            explanation = `<div class="sm-poc-dp-explain sm-poc-dp-explain-ok">✓ No scaling active – the value shown (${fmt(rawShown)}) is the raw value.</div>`;
         }
 
         const modal = document.createElement('div');
@@ -2845,23 +2846,23 @@
         modal.innerHTML = `
             <div class="sm-poc-batch-box sm-poc-dp-box">
                 <div class="sm-poc-batch-head">
-                    <h2>Skalerings-presets</h2>
-                    <label class="sm-poc-dp-rawlabel">Råverdi (input)
+                    <h2>Scaling presets</h2>
+                    <label class="sm-poc-dp-rawlabel">Raw value (input)
                         <input id="sm-poc-dp-raw" type="number" step="any" value="${rawShown}">
                     </label>
-                    <button type="button" id="sm-poc-dp-toggle-calc" class="sm-poc-gray-btn" title="Vis/skjul utregningskolonne">📐 Formel</button>
-                    <button type="button" class="sm-poc-red-btn" data-close="1">Lukk</button>
+                    <button type="button" id="sm-poc-dp-toggle-calc" class="sm-poc-gray-btn" title="Show/hide the calculation column">📐 Formula</button>
+                    <button type="button" class="sm-poc-red-btn" data-close="1">Close</button>
                 </div>
                 ${explanation}
                 <div class="sm-poc-dp-calc">
-                    <div class="sm-poc-dp-calc-title">🧮 Kalkulator: "Råverdi X skal bli Y"</div>
+                    <div class="sm-poc-dp-calc-title">🧮 Calculator: "Raw value X should become Y"</div>
                     <div class="sm-poc-dp-calc-row">
-                        <span>Når råverdi</span>
+                        <span>When raw value</span>
                         <input id="sm-poc-dp-calc-raw" type="number" step="any" value="${rawShown}">
-                        <span>skal resultatet bli</span>
-                        <input id="sm-poc-dp-calc-eng" type="number" step="any" placeholder="ønsket verdi">
-                        <span class="sm-poc-dp-muted">(med raw_min=0, eng_min=0)</span>
-                        <button type="button" id="sm-poc-dp-calc-apply" class="sm-poc-primary-btn">Beregn & bruk</button>
+                        <span>the result should be</span>
+                        <input id="sm-poc-dp-calc-eng" type="number" step="any" placeholder="desired value">
+                        <span class="sm-poc-dp-muted">(with raw_min=0, eng_min=0)</span>
+                        <button type="button" id="sm-poc-dp-calc-apply" class="sm-poc-primary-btn">Calculate & apply</button>
                     </div>
                     <div id="sm-poc-dp-calc-result" class="sm-poc-dp-muted"></div>
                 </div>
@@ -2870,7 +2871,7 @@
                         <thead>
                             <tr style="background:#f5f7f8;">
                                 <th style="text-align:left;">Label</th><th>raw_min</th><th>raw_max</th><th>eng_min</th><th>eng_max</th>
-                                <th>Resultat</th><th class="sm-poc-dp-calc-col">Utregning</th><th>Bruk</th>
+                                <th>Result</th><th class="sm-poc-dp-calc-col">Calculation</th><th>Use</th>
                             </tr>
                         </thead>
                         <tbody id="sm-poc-dp-rows"></tbody>
@@ -2878,12 +2879,12 @@
                 </div>
                 <div class="sm-poc-dp-custom">
                     <div class="sm-poc-dp-custom-title">Custom</div>
-                    <label>raw_min<input id="sm-poc-dp-c-rawmin" type="text" inputmode="decimal" value="${formatScaleNumber(customDefaults.raw_min)}" title="${customDefaults.fromActiveScale ? 'Gjeldende skalering' : ''}"></label>
+                    <label>raw_min<input id="sm-poc-dp-c-rawmin" type="text" inputmode="decimal" value="${formatScaleNumber(customDefaults.raw_min)}" title="${customDefaults.fromActiveScale ? 'Current scaling' : ''}"></label>
                     <label>raw_max<input id="sm-poc-dp-c-rawmax" type="text" inputmode="decimal" value="${formatScaleNumber(customDefaults.raw_max)}"></label>
                     <label>eng_min<input id="sm-poc-dp-c-engmin" type="text" inputmode="decimal" value="${formatScaleNumber(customDefaults.eng_min)}"></label>
                     <label>eng_max<input id="sm-poc-dp-c-engmax" type="text" inputmode="decimal" value="${formatScaleNumber(customDefaults.eng_max)}"></label>
                     <div id="sm-poc-dp-c-result" class="sm-poc-dp-custom-result" title="">-</div>
-                    <button type="button" id="sm-poc-dp-c-apply" class="sm-poc-orange-btn">Velg</button>
+                    <button type="button" id="sm-poc-dp-c-apply" class="sm-poc-orange-btn">Select</button>
                     <span id="sm-poc-dp-c-calc" class="sm-poc-dp-calc-col"></span>
                 </div>
             </div>
@@ -2912,7 +2913,7 @@
                     <td>${fmt(preset.raw_min)}</td><td>${fmt(preset.raw_max)}</td><td>${fmt(preset.eng_min)}</td><td>${fmt(preset.eng_max)}</td>
                     <td style="color:#1976d2;font-weight:600;" title="${escapeHtml(calcStr(preset, raw))}">${fmt(engFromRaw(preset, raw))}</td>
                     <td class="sm-poc-dp-calc-col">${escapeHtml(calcStr(preset, raw))}</td>
-                    <td style="text-align:center;"><button type="button" class="sm-poc-green-btn" data-preset="${idx}">Velg</button></td>
+                    <td style="text-align:center;"><button type="button" class="sm-poc-green-btn" data-preset="${idx}">Select</button></td>
                 </tr>`).join('');
             updateCustomResult();
         };
@@ -2934,14 +2935,14 @@
                 const rawIn = Number(q('#sm-poc-dp-calc-raw').value);
                 const engOut = Number(q('#sm-poc-dp-calc-eng').value);
                 const result = q('#sm-poc-dp-calc-result');
-                if (!isFinite(rawIn) || rawIn === 0) { result.innerHTML = '<span style="color:#c62828;">⚠️ Råverdi kan ikke være 0 eller tom</span>'; return; }
-                if (!isFinite(engOut)) { result.innerHTML = '<span style="color:#c62828;">⚠️ Ønsket verdi må fylles inn</span>'; return; }
+                if (!isFinite(rawIn) || rawIn === 0) { result.innerHTML = '<span style="color:#c62828;">⚠️ Raw value cannot be 0 or empty</span>'; return; }
+                if (!isFinite(engOut)) { result.innerHTML = '<span style="color:#c62828;">⚠️ Enter the desired value</span>'; return; }
                 q('#sm-poc-dp-c-rawmin').value = '0';
                 q('#sm-poc-dp-c-rawmax').value = String(rawIn);
                 q('#sm-poc-dp-c-engmin').value = '0';
                 q('#sm-poc-dp-c-engmax').value = String(engOut);
                 updateCustomResult();
-                result.innerHTML = `<span style="color:#2e7d32;">✓ Skalering beregnet: faktor = ${fmt(engOut / rawIn)}</span><br>raw_min=0, raw_max=${rawIn}, eng_min=0, eng_max=${engOut}<br><em>Klikk «Velg» på Custom-raden for å bruke denne skaleringen.</em>`;
+                result.innerHTML = `<span style="color:#2e7d32;">✓ Scaling calculated: factor = ${fmt(engOut / rawIn)}</span><br>raw_min=0, raw_max=${rawIn}, eng_min=0, eng_max=${engOut}<br><em>Click "Select" on the Custom row to apply this scaling.</em>`;
                 q('.sm-poc-dp-custom').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }
         });
@@ -3039,18 +3040,18 @@
         const form = modal.querySelector('#sm-poc-parameter-form');
         const changes = computeDriverFormChanges(form, originalData);
         if (!Object.keys(changes).length) {
-            showHint('Ingen endringer å kopiere. Endre et felt først.');
+            showHint('No changes to copy. Change a field first.');
             return;
         }
         const plantId = getPlantId() || data?.plant_id;
         if (!plantId) {
-            alert('Kan ikke finne plant_id.');
+            alert('Cannot find plant_id.');
             return;
         }
         const aliasText = data?.alias_text || originalData?.alias_text || '';
         const menu = data?.menu || originalData?.menu || null;
         if (!aliasText) {
-            alert('Mangler alias for oppslag på andre enheter.');
+            alert('Missing alias for the lookup on other units.');
             return;
         }
         const baseRequests = [{
@@ -3058,15 +3059,15 @@
             data: { alias_text: aliasText, menu, row_text: aliasText }
         }];
         const units = await openUnitPickerModal({
-            title: 'Bruk endringene på andre enheter',
-            confirmLabel: 'Kjør på valgte enheter',
+            title: 'Apply the changes to other units',
+            confirmLabel: 'Run on selected units',
             currentUnitId: getUnitId(),
             changes,
             paramCount: baseRequests.length
         });
         if (!units) return;
         modal.remove();
-        await applyChangesAcrossUnits({ title: `Endre ${aliasText} (andre enheter)`, baseRequests, changes, plantId, units });
+        await applyChangesAcrossUnits({ title: `Change ${aliasText} (other units)`, baseRequests, changes, plantId, units });
     }
 
     async function saveAllParamsDriverParameterChanges(modal, originalData, plantId) {
@@ -3077,7 +3078,7 @@
             return;
         }
         if (!originalData?.driver_id) {
-            showHint('Mangler driver_id.');
+            showHint('Missing driver_id.');
             return;
         }
         const ok = window.confirm(`Save ${Object.keys(changes).length} change(s) for ${originalData.driver_id}?`);
@@ -3114,7 +3115,7 @@
         const param = getDriverDetailsRecord(data);
         const driverId = param?.driver_id;
         if (!driverId) {
-            showHint('Mangler driver_id.');
+            showHint('Missing driver_id.');
             return;
         }
         const ok = window.confirm('Delete the override row for this driver_id? This cannot be undone. Remember to stop and start Escape afterwards to regenerate the parameter with correct data from the tag list.');
@@ -3188,7 +3189,7 @@
                         ${formInputHtml('range_max', param?.range_max)}
                         <label>Scale:</label>
                         <select name="scale">
-                            ${optionHtml('', 'Velg...', param?.scale)}
+                            ${optionHtml('', 'Select...', param?.scale)}
                             ${optionHtml('1', '1 - Scale only', param?.scale)}
                             ${optionHtml('2', '2 - Format only', param?.scale)}
                             ${optionHtml('3', '3 - Scale, format and clipping', param?.scale)}
@@ -3266,12 +3267,12 @@
     }
 
     function openAllParamsDriverDetails(row) {
-        showHint('Henter driver parameter details...');
+        showHint('Fetching driver parameter details...');
         fetchAllParamsDriverDetailsResponse(row)
             .then(handleAllParamsDriverParameterResponse)
             .catch((error) => {
                 console.log('[Supermarket Parameters POC] driver details error:', error);
-                showHint('Kunne ikke hente driverdetaljer: ' + error.message);
+                showHint('Could not fetch driver details: ' + error.message);
             });
     }
 
@@ -3449,7 +3450,7 @@
         if (!options.length) {
             const empty = document.createElement('div');
             empty.className = 'sm-poc-unit-empty';
-            empty.textContent = recentOnly && !query ? 'Ingen nylig valgte enheter ennå' : 'Ingen treff';
+            empty.textContent = recentOnly && !query ? 'No recently picked units yet' : 'No matches';
             list.appendChild(empty);
             return;
         }
@@ -3546,7 +3547,7 @@
 
     async function loadUnitDates() {
         const plantId = getPlantId();
-        if (!plantId) throw new Error('Fant ikke plant_id.');
+        if (!plantId) throw new Error('Could not find plant_id.');
         if (unitDatesForPlant()) return unitDatesCache.byUnit;
         const fd = new FormData();
         fd.append('plant_id', plantId);
@@ -3554,7 +3555,7 @@
         fd.append('_cache_bust', Date.now());
         const response = await fetchWithTimeout('http://toolbox.iwmac.local/oets/api/index2.php', { method: 'POST', body: fd, cache: 'no-cache' });
         const data = await response.json();
-        if (!data?.success) throw new Error(data?.error || 'Enhetsoppslag feilet');
+        if (!data?.success) throw new Error(data?.error || 'Unit lookup failed');
         const byUnit = new Map();
         findRowsWithKey(data, 'unit_id').forEach((row) => {
             const id = String(row.unit_id ?? '').trim();
@@ -3705,13 +3706,13 @@
                 const mode = combo.dataset.sortMode;
                 const next = mode === 'newest' ? 'oldest' : mode === 'oldest' ? 'original' : 'newest';
                 if (next !== 'original' && !unitDatesForPlant()) {
-                    showHint('Henter enhetsdatoer...');
+                    showHint('Fetching unit dates...');
                     try {
                         await loadUnitDates();
                         showHint('');
                     } catch (error) {
                         console.log('[Supermarket Parameters POC] enhetsdatoer:', error);
-                        showHint('Kunne ikke hente enhetsdatoer: ' + error.message);
+                        showHint('Could not fetch unit dates: ' + error.message);
                         return;
                     }
                 }
@@ -3757,7 +3758,7 @@
             delete row.dataset.smPocPendingKey;
             delete row.dataset.smPocTargetSide;
             delete row.dataset.smPocWouldMoveTo;
-            row.title = 'Lagret. Venter på at IWMAC tegner listen på nytt.';
+            row.title = 'Saved. Waiting for IWMAC to redraw the list.';
         });
         applyAllFilters();
     }
@@ -3780,20 +3781,20 @@
     function requestNativeParameterRedraw(reason) {
         const before = computeContentSignature();
         const triedGroup = triggerSelectedGroupReload();
-        showHint(reason || 'Ber IWMAC oppdatere parameterlisten...');
+        showHint(reason || 'Asking IWMAC to refresh the parameter list...');
 
         setRedrawTimeout(() => {
             if (computeContentSignature() !== before) {
                 lastContentSignature = '';
                 refreshPoc();
                 applyAllFilters();
-                showHint('IWMAC-listen er oppdatert uten side-refresh.');
+                showHint('IWMAC list updated without a page reload.');
                 return;
             }
 
             const triedUnit = triggerUnitDropdownReload();
             if (!triedGroup && !triedUnit) {
-                showHint('Lagret, men fant ikke IWMAC-kontroll for myk oppdatering.');
+                showHint('Saved, but found no IWMAC control for a soft refresh.');
                 return;
             }
 
@@ -3802,9 +3803,9 @@
                 refreshPoc();
                 applyAllFilters();
                 if (computeContentSignature() !== before) {
-                    showHint('IWMAC-listen er oppdatert uten side-refresh.');
+                    showHint('IWMAC list updated without a page reload.');
                 } else {
-                    showHint('Lagret. IWMAC tegnet ikke listen på nytt automatisk.');
+                    showHint('Saved. IWMAC did not redraw the list automatically.');
                 }
             }, 900);
         }, 700);
@@ -3937,7 +3938,7 @@
         row.classList.toggle('sm-poc-row-pending-to-measurements', targetSide === 'measurements');
         row.classList.toggle(SELECTED_CLASS, selectedRows.has(sourceRow));
         row.draggable = moveModeEnabled;
-        row.title = 'Ikke lagret enna. Dra tilbake for a angre.';
+        row.title = 'Not saved yet. Drag back to undo.';
 
         getRowCells(sourceRow).forEach((cell) => {
             const td = document.createElement('td');
@@ -4034,7 +4035,7 @@
             host.textContent = '';
             const title = document.createElement('div');
             title.className = 'sm-poc-ghost-title';
-            title.textContent = `${rows.length} visuelt flyttet hit, ikke lagret`;
+            title.textContent = `${rows.length} moved here visually, not saved`;
             host.appendChild(title);
 
             const table = document.createElement('table');
@@ -4177,8 +4178,8 @@
         if (row.classList.contains('sm-poc-row-pending')) {
             row.classList.toggle(MOVED_CLASS, targetSide === 'settings');
             row.title = targetSide === 'settings'
-                ? 'Merket for flytting til Innstillinger (lagre for å skrive rw)'
-                : 'Merket for flytting til Måling (lagre for å skrive r)';
+                ? 'Marked to move to Settings (save to write rw)'
+                : 'Marked to move to Measurements (save to write r)';
             return;
         }
 
@@ -4250,8 +4251,8 @@
         return results;
     }
 
-    async function resolveDriverParameterRequests(requests, plantId, unitId, hintLabel = 'parametere') {
-        showHint(`Henter driver-ID-er for ${requests.length} ${hintLabel}...`);
+    async function resolveDriverParameterRequests(requests, plantId, unitId, hintLabel = 'parameters') {
+        showHint(`Fetching driver IDs for ${requests.length} ${hintLabel}...`);
         const results = new Array(requests.length);
         const lookupEntries = [];
 
@@ -4274,7 +4275,7 @@
         const chunks = chunkArray(lookupEntries, BATCH_LOOKUP_REQUEST_LIMIT);
         for (let i = 0; i < chunks.length; i++) {
             const chunk = chunks[i];
-            showHint(`Henter driver-ID-er ${i + 1}/${chunks.length}...`);
+            showHint(`Fetching driver IDs ${i + 1}/${chunks.length}...`);
             try {
                 const rows = await fetchDriverParameterRowsByAliasSql(
                     chunk.map((entry) => entry.request.data),
@@ -4285,7 +4286,7 @@
                     const param = findBestDriverParameterMatch(rows, entry.request.data, { fallbackFirst: false });
                     results[entry.index] = param?.driver_id
                         ? { ok: true, request: entry.request, param }
-                        : { ok: false, item: entry.request, error: new Error('Mangler driver_id') };
+                        : { ok: false, item: entry.request, error: new Error('Missing driver_id') };
                 });
             } catch (error) {
                 chunk.forEach((entry) => {
@@ -4301,15 +4302,15 @@
         const plantId = getPlantId();
         const unitId = getUnitId();
         if (!plantId || !unitId) {
-            throw new Error('Kan ikke finne plant_id eller unit_id.');
+            throw new Error('Cannot find plant_id or unit_id.');
         }
 
         const requests = getMarkedParameterRequests();
         if (!requests.length) {
-            throw new Error('Ingen merkede parametere i Endrings-modus.');
+            throw new Error('No marked parameters in edit mode.');
         }
 
-        const results = await resolveDriverParameterRequests(requests, plantId, unitId, 'merkede parametere');
+        const results = await resolveDriverParameterRequests(requests, plantId, unitId, 'marked parameters');
         return {
             plantId,
             unitId,
@@ -4350,23 +4351,23 @@
         const foundLines = resolved.found.slice(0, 12)
             .map((result) => `OK: ${result.request.label} -> ${result.param.driver_id}`);
         const failedLines = resolved.failed.slice(0, 12)
-            .map((result) => `FAIL: ${result.item?.label || 'ukjent'} -> ${result.error?.message || 'ukjent feil'}`);
-        const extraFound = resolved.found.length > foundLines.length ? `... ${resolved.found.length - foundLines.length} flere OK` : '';
-        const extraFailed = resolved.failed.length > failedLines.length ? `... ${resolved.failed.length - failedLines.length} flere feil` : '';
+            .map((result) => `FAIL: ${result.item?.label || 'unknown'} -> ${result.error?.message || 'unknown error'}`);
+        const extraFound = resolved.found.length > foundLines.length ? `... ${resolved.found.length - foundLines.length} more OK` : '';
+        const extraFailed = resolved.failed.length > failedLines.length ? `... ${resolved.failed.length - failedLines.length} more failed` : '';
         const fields = Object.entries(changes).map(([field, value]) => `${field}=${value}`).join(', ');
         const commandCount = resolved.found.length * 2;
         const batchCount = Math.ceil(commandCount / BATCH_SQL_COMMAND_LIMIT);
         const transactionNote = batchCount > 1
-            ? `ADVARSEL: Dette krever ${batchCount} API-batcher. Tidligere batcher kan være lagret hvis en senere batch feiler.`
-            : 'Dette sendes som én batch_sql-transaksjon.';
+            ? `WARNING: This needs ${batchCount} API batches. Earlier batches may already be saved if a later batch fails.`
+            : 'This is sent as a single batch_sql transaction.';
 
         return [
             title,
             '',
-            `Felter som skrives: ${fields}`,
-            `Funnet: ${resolved.found.length}`,
-            `Ikke funnet/feilet: ${resolved.failed.length}`,
-            `SQL-kommandoer: ${commandCount} (${batchCount} batch)`,
+            `Fields to write: ${fields}`,
+            `Found: ${resolved.found.length}`,
+            `Not found/failed: ${resolved.failed.length}`,
+            `SQL commands: ${commandCount} (${batchCount} batch${batchCount === 1 ? '' : 'es'})`,
             transactionNote,
             '',
             ...foundLines,
@@ -4374,7 +4375,7 @@
             ...failedLines,
             extraFailed,
             '',
-            'Fortsette med skriving til database?'
+            'Continue writing to the database?'
         ].filter(Boolean).join('\n');
     }
 
@@ -4382,7 +4383,7 @@
         const chunks = chunkArray(commands.map(normalizeBatchSqlCommand), BATCH_SQL_COMMAND_LIMIT);
         const responses = [];
         for (let i = 0; i < chunks.length; i++) {
-            showHint(`Skriver batch ${i + 1}/${chunks.length}...`);
+            showHint(`Writing batch ${i + 1}/${chunks.length}...`);
             const fd = new FormData();
             fd.append('plant_id', plantId);
             fd.append('action', 'batch_sql');
@@ -4397,8 +4398,8 @@
             const data = await response.json();
             responses.push(data);
             if (!data?.success) {
-                const partial = i > 0 ? ` ${i} tidligere batch(er) kan allerede være lagret.` : '';
-                throw new Error((data?.error || `Batch ${i + 1} feilet`) + partial);
+                const partial = i > 0 ? ` ${i} earlier batch${i === 1 ? '' : 'es'} may already be saved.` : '';
+                throw new Error((data?.error || `Batch ${i + 1} failed`) + partial);
             }
             if (i < chunks.length - 1) await sleep(120);
         }
@@ -4408,7 +4409,7 @@
     }
 
     async function verifyBatchChanges(resolved, changes) {
-        showHint('Verifiserer endringer...');
+        showHint('Verifying changes...');
         const driverIds = resolved.found
             .map((entry) => entry.param?.driver_id || entry.request?.data?.driver_id)
             .filter(Boolean);
@@ -4460,11 +4461,11 @@
         document.getElementById('sm-poc-batch-result-modal')?.remove();
         const totalAffected = batchResponses.reduce((sum, result) => sum + Number(result?.total_affected_rows || 0), 0);
         const failedLookup = resolved.failed.map((result) => {
-            return `Lookup failed: ${result.item?.label || 'ukjent'} -> ${result.error?.message || 'ukjent feil'}`;
+            return `Lookup failed: ${result.item?.label || 'unknown'} -> ${result.error?.message || 'unknown error'}`;
         });
         const failedVerify = verifyResult.failed.map((result) => {
-            const label = result.entry?.request?.label || 'ukjent';
-            const fields = result.mismatches?.map(([field]) => field).join(', ') || 'ukjent';
+            const label = result.entry?.request?.label || 'unknown';
+            const fields = result.mismatches?.map(([field]) => field).join(', ') || 'unknown';
             return `Verify failed: ${label} -> ${fields}`;
         });
         const lines = [
@@ -4499,7 +4500,7 @@
         document.getElementById('sm-poc-batch-result-modal')?.remove();
         const totalAffected = batchResponses.reduce((sum, result) => sum + Number(result?.total_affected_rows || 0), 0);
         const failedLookup = resolved.failed.map((result) => {
-            return `Lookup failed: ${result.item?.label || 'ukjent'} -> ${result.error?.message || 'ukjent feil'}`;
+            return `Lookup failed: ${result.item?.label || 'unknown'} -> ${result.error?.message || 'unknown error'}`;
         });
         const lines = [
             `Override delete commands sent: ${resolved.found.length}`,
@@ -4529,14 +4530,14 @@
 
     async function applyChangesToMarkedParameters(title, changes) {
         if (!Object.keys(changes).length) {
-            showHint('Ingen endringer valgt.');
+            showHint('No changes selected.');
             return;
         }
 
         try {
             const resolved = await resolveMarkedDriverParameters();
             if (!resolved.found.length) {
-                alert('Fant ingen driver_id for de merkede parameterne.');
+                alert('Found no driver_id for the marked parameters.');
                 return;
             }
 
@@ -4547,11 +4548,11 @@
             const batchResponses = await executeBatchSqlCommands(resolved.plantId, commands);
             const verifyResult = await verifyBatchChanges(resolved, changes);
             showBatchResultModal(title, resolved, verifyResult, batchResponses);
-            showHint(`${verifyResult.ok.length}/${resolved.found.length} verifisert etter batch-endring.`);
-            requestNativeParameterRedraw('Endringer lagret. Oppdaterer IWMAC-listen uten side-refresh...');
+            showHint(`${verifyResult.ok.length}/${resolved.found.length} verified after the batch change.`);
+            requestNativeParameterRedraw('Changes saved. Updating the IWMAC list without a page reload...');
         } catch (error) {
             console.log('[Supermarket Parameters POC] Batch change error:', error);
-            alert('Kunne ikke utføre batch-endring: ' + error.message);
+            alert('Could not run the batch change: ' + error.message);
         }
     }
 
@@ -4559,7 +4560,7 @@
         return getUnitOptionData(getUnitSelect()).filter((option) => option.value);
     }
 
-    function openUnitPickerModal({ title = 'Velg enheter', confirmLabel = 'Kjør på valgte enheter', currentUnitId = null, changes = null, paramCount = 0 } = {}) {
+    function openUnitPickerModal({ title = 'Select units', confirmLabel = 'Run on selected units', currentUnitId = null, changes = null, paramCount = 0 } = {}) {
         return new Promise((resolve) => {
             const units = getAllUnitOptions();
             closeBatchModal('sm-poc-unit-picker-modal');
@@ -4574,24 +4575,24 @@
                         <button type="button" class="sm-poc-red-btn" data-cancel="1">Close</button>
                     </div>
                     <div class="sm-poc-batch-note">
-                        Velg hvilke enheter endringene skal kjøres på. Parametere matches på alias + meny på hver enhet.
+                        Select the units to run the changes on. Parameters are matched by alias + menu on each unit.
                     </div>
                     ${fieldsText ? `
                     <div class="sm-poc-unit-picker-summary">
-                        <div><strong>Felter som skrives:</strong> ${escapeHtml(fieldsText)}</div>
-                        <div><strong>Parametere per enhet:</strong> ${paramCount}</div>
+                        <div><strong>Fields to write:</strong> ${escapeHtml(fieldsText)}</div>
+                        <div><strong>Parameters per unit:</strong> ${paramCount}</div>
                     </div>` : ''}
                     <div class="sm-poc-unit-picker-controls">
-                        <input type="text" id="sm-poc-unit-picker-search" placeholder="Søk enhet..." autocomplete="off" spellcheck="false">
-                        <label class="sm-poc-unit-picker-mode">Søk i:
+                        <input type="text" id="sm-poc-unit-picker-search" placeholder="Search unit..." autocomplete="off" spellcheck="false">
+                        <label class="sm-poc-unit-picker-mode">Search in:
                             <select id="sm-poc-unit-picker-mode">
-                                <option value="both">Navn + Unit ID</option>
-                                <option value="name">Navn</option>
+                                <option value="both">Name + Unit ID</option>
+                                <option value="name">Name</option>
                                 <option value="id">Unit ID</option>
                             </select>
                         </label>
-                        <button type="button" class="sm-poc-gray-btn" id="sm-poc-unit-picker-all">Velg alle (synlige)</button>
-                        <button type="button" class="sm-poc-gray-btn" id="sm-poc-unit-picker-none">Fjern alle</button>
+                        <button type="button" class="sm-poc-gray-btn" id="sm-poc-unit-picker-all">Select all (visible)</button>
+                        <button type="button" class="sm-poc-gray-btn" id="sm-poc-unit-picker-none">Clear all</button>
                         <span id="sm-poc-unit-picker-count" class="sm-poc-col-filter-meta"></span>
                     </div>
                     <div id="sm-poc-unit-picker-list" class="sm-poc-unit-picker-list"></div>
@@ -4619,7 +4620,7 @@
             };
             const confirmBtn = modal.querySelector('#sm-poc-unit-picker-confirm');
             const updateCount = () => {
-                countEl.textContent = `${selected.size} valgt`;
+                countEl.textContent = `${selected.size} selected`;
                 confirmBtn.textContent = selected.size ? `${confirmLabel} (${selected.size})` : confirmLabel;
                 confirmBtn.disabled = selected.size === 0;
             };
@@ -4630,7 +4631,7 @@
                     const empty = document.createElement('div');
                     empty.className = 'sm-poc-unit-empty';
                     empty.style.padding = '10px';
-                    empty.textContent = 'Ingen treff';
+                    empty.textContent = 'No matches';
                     listEl.appendChild(empty);
                     updateCount();
                     return;
@@ -4641,7 +4642,7 @@
                     row.className = 'sm-poc-unit-picker-row';
                     row.innerHTML = `
                         <input type="checkbox" ${selected.has(unit.value) ? 'checked' : ''}>
-                        <span class="sm-poc-unit-picker-name">${escapeHtml(unit.text)}${isCurrent ? ' (gjeldende)' : ''}</span>
+                        <span class="sm-poc-unit-picker-name">${escapeHtml(unit.text)}${isCurrent ? ' (current)' : ''}</span>
                         <span class="sm-poc-unit-picker-id">${escapeHtml(unit.value)}</span>
                     `;
                     const cb = row.querySelector('input');
@@ -4672,7 +4673,7 @@
             modal.querySelector('#sm-poc-unit-picker-confirm').addEventListener('click', () => {
                 const chosen = units.filter((unit) => selected.has(unit.value));
                 if (!chosen.length) {
-                    showHint('Velg minst én enhet.');
+                    showHint('Select at least one unit.');
                     return;
                 }
                 close(chosen);
@@ -4703,9 +4704,9 @@
             let statusCls = 'sm-poc-xunit-status-ok';
             let status = 'OK';
             if (entry.error) {
-                cls = 'sm-poc-xunit-row-fail'; statusCls = 'sm-poc-xunit-status-fail'; status = `Feil: ${entry.error}`;
+                cls = 'sm-poc-xunit-row-fail'; statusCls = 'sm-poc-xunit-status-fail'; status = `Error: ${entry.error}`;
             } else if (entry.failed) {
-                cls = 'sm-poc-xunit-row-warn'; statusCls = 'sm-poc-xunit-status-warn'; status = `${entry.failed} ikke funnet`;
+                cls = 'sm-poc-xunit-row-warn'; statusCls = 'sm-poc-xunit-status-warn'; status = `${entry.failed} not found`;
             }
             return `
                 <tr class="${cls}">
@@ -4723,26 +4724,26 @@
         modal.innerHTML = `
             <div class="sm-poc-batch-box" style="width:min(720px,96vw);">
                 <div class="sm-poc-batch-head">
-                    <h2>${escapeHtml(title)} – resultat</h2>
+                    <h2>${escapeHtml(title)} – result</h2>
                     <button type="button" class="sm-poc-red-btn" data-close="1">Close</button>
                 </div>
                 <div class="sm-poc-unit-picker-summary">
-                    <div><strong>Felter skrevet:</strong> ${escapeHtml(fieldsText)}</div>
-                    <div><strong>Enheter med endringer:</strong> ${okUnits.length}/${perUnit.length}</div>
-                    <div><strong>Parametere skrevet totalt:</strong> ${totalWritten}</div>
+                    <div><strong>Fields written:</strong> ${escapeHtml(fieldsText)}</div>
+                    <div><strong>Units with changes:</strong> ${okUnits.length}/${perUnit.length}</div>
+                    <div><strong>Parameters written in total:</strong> ${totalWritten}</div>
                 </div>
                 <div style="max-height:420px;overflow:auto;border:1px solid #cfd8dc;border-radius:4px;margin-top:8px;">
                     <table class="sm-poc-xunit-result-table">
                         <thead>
                             <tr style="background:#f5f7f8;">
-                                <th>Enhet</th><th>Unit ID</th><th>Skrevet</th><th>Ikke funnet</th><th>Status</th>
+                                <th>Unit</th><th>Unit ID</th><th>Written</th><th>Not found</th><th>Status</th>
                             </tr>
                         </thead>
                         <tbody>${rowsHtml}</tbody>
                     </table>
                 </div>
                 <div class="sm-poc-batch-actions">
-                    <button type="button" class="sm-poc-green-btn" data-close="1">Lukk</button>
+                    <button type="button" class="sm-poc-green-btn" data-close="1">Close</button>
                 </div>
             </div>
         `;
@@ -4754,25 +4755,25 @@
 
     async function applyChangesAcrossUnits({ title, baseRequests, changes, plantId, units }) {
         if (!Object.keys(changes).length) {
-            showHint('Ingen endringer valgt.');
+            showHint('No changes selected.');
             return;
         }
         if (!baseRequests.length) {
-            showHint('Ingen parametere å kopiere.');
+            showHint('No parameters to copy.');
             return;
         }
 
         const perUnit = [];
         for (let i = 0; i < units.length; i++) {
             const unit = units[i];
-            showHint(`Behandler enhet ${i + 1}/${units.length}: ${unit.text}...`);
+            showHint(`Processing unit ${i + 1}/${units.length}: ${unit.text}...`);
             try {
                 const requests = baseRequests.map(cloneRequestForOtherUnit);
-                const resolved = await resolveDriverParameterRequests(requests, plantId, unit.value, `parametere på ${unit.text}`);
+                const resolved = await resolveDriverParameterRequests(requests, plantId, unit.value, `parameters on ${unit.text}`);
                 const found = resolved.filter((result) => result?.ok);
                 const failed = resolved.filter((result) => !result?.ok);
                 if (!found.length) {
-                    perUnit.push({ unit, written: 0, failed: failed.length, error: 'Fant ingen parametere' });
+                    perUnit.push({ unit, written: 0, failed: failed.length, error: 'No parameters found' });
                     continue;
                 }
                 const commands = found.flatMap((entry) => buildDriverParameterSql(entry.param.driver_id, changes));
@@ -4786,41 +4787,41 @@
         const okUnits = perUnit.filter((entry) => entry.written > 0 && !entry.error);
         const totalWritten = perUnit.reduce((sum, entry) => sum + entry.written, 0);
         showCrossUnitResultModal(title, perUnit, changes);
-        showHint(`Kopiering ferdig: ${okUnits.length}/${units.length} enheter, ${totalWritten} parametere.`);
-        requestNativeParameterRedraw('Endringer kopiert til andre enheter. Oppdaterer IWMAC-listen...');
+        showHint(`Copy finished: ${okUnits.length}/${units.length} units, ${totalWritten} parameter${totalWritten === 1 ? '' : 's'}.`);
+        requestNativeParameterRedraw('Changes copied to other units. Updating the IWMAC list...');
     }
 
     async function applyMarkedChangesToOtherUnits(title, changes) {
         if (!Object.keys(changes).length) {
-            showHint('Ingen endringer valgt.');
+            showHint('No changes selected.');
             return;
         }
         const plantId = getPlantId();
         if (!plantId) {
-            alert('Kan ikke finne plant_id.');
+            alert('Cannot find plant_id.');
             return;
         }
         const baseRequests = getMarkedParameterRequests();
         if (!baseRequests.length) {
-            showHint('Marker parametere i Endrings-modus først.');
+            showHint('Mark parameters in edit mode first.');
             return;
         }
         const units = await openUnitPickerModal({
-            title: `${title} – velg enheter`,
-            confirmLabel: 'Kjør på valgte enheter',
+            title: `${title} – select units`,
+            confirmLabel: 'Run on selected units',
             currentUnitId: getUnitId(),
             changes,
             paramCount: baseRequests.length
         });
         if (!units) return;
-        await applyChangesAcrossUnits({ title: `${title} (andre enheter)`, baseRequests, changes, plantId, units });
+        await applyChangesAcrossUnits({ title: `${title} (other units)`, baseRequests, changes, plantId, units });
     }
 
     async function deleteOverridesForMarkedParameters() {
         try {
             const resolved = await resolveMarkedDriverParameters();
             if (!resolved.found.length) {
-                alert('Fant ingen driver_id for de merkede parameterne.');
+                alert('Found no driver_id for the marked parameters.');
                 return;
             }
 
@@ -4838,11 +4839,11 @@
             const commands = resolved.found.map((entry) => buildDeleteOverrideSql(entry.param.driver_id));
             const batchResponses = await executeBatchSqlCommands(resolved.plantId, commands);
             showDeleteOverrideResultModal('Delete overrides for marked', resolved, batchResponses);
-            showHint(`Slettet override for ${resolved.found.length} merket parameter(e).`);
-            requestNativeParameterRedraw('Overrides slettet. Oppdaterer IWMAC-listen uten side-refresh...');
+            showHint(`Deleted the override for ${resolved.found.length} marked parameter${resolved.found.length === 1 ? '' : 's'}.`);
+            requestNativeParameterRedraw('Overrides deleted. Updating the IWMAC list without a page reload...');
         } catch (error) {
             console.log('[Supermarket Parameters POC] delete marked overrides error:', error);
-            alert('Kunne ikke slette overrides: ' + error.message);
+            alert('Could not delete overrides: ' + error.message);
         }
     }
 
@@ -4854,7 +4855,7 @@
         if (!moveModeEnabled) return;
         const marked = getMarkedParameterRequests();
         if (!marked.length) {
-            showHint('Marker parametere i Endrings-modus først.');
+            showHint('Mark parameters in edit mode first.');
             return;
         }
 
@@ -4956,7 +4957,7 @@
         if (!moveModeEnabled) return;
         const marked = getMarkedParameterRequests();
         if (!marked.length) {
-            showHint('Marker parametere i Endrings-modus først.');
+            showHint('Mark parameters in edit mode first.');
             return;
         }
 
@@ -5123,7 +5124,7 @@
                 return v !== '' && !isFinite(Number(v));
             });
             if (invalid) {
-                alert(`${invalid} må være et tall.`);
+                alert(`${invalid} must be a number.`);
                 return null;
             }
             numericFields.forEach((field) => {
@@ -5133,11 +5134,11 @@
             if (!values.format) delete values.format;
             const hasNumeric = numericFields.some((field) => field in values);
             if (hasNumeric && !('scale' in values)) {
-                alert('Velg Scale-modus når raw/eng-verdier endres.');
+                alert('Select a Scale mode when raw/eng values are changed.');
                 return null;
             }
             if (!Object.keys(values).length) {
-                showHint('Ingen felter valgt.');
+                showHint('No fields selected.');
                 return null;
             }
             return values;
@@ -5446,7 +5447,7 @@
         clearBtn.type = 'button';
         clearBtn.className = 'sm-poc-clear-filter';
         clearBtn.textContent = 'x';
-        clearBtn.title = `Tøm filter: ${label}`;
+        clearBtn.title = `Clear filter: ${label}`;
         clearBtn.addEventListener('mousedown', (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -5489,7 +5490,7 @@
         for (let col = 0; col < colCount; col++) {
             const cell = document.createElement('div');
             cell.className = 'sm-poc-filter-grid-cell';
-            const label = labels[col] || `Kol ${col + 1}`;
+            const label = labels[col] || `Col ${col + 1}`;
 
             if (col === 0) {
                 const wrap = document.createElement('div');
@@ -5509,7 +5510,8 @@
     }
 
     function updateUnitFilterDatalist(host, tbody, key, labels) {
-        const unitCol = labels.lastIndexOf('Enhet');
+        // 'Enhet' = IWMAC's native header text; 'Unit' = the English fallback label from defaultColumnLabels.
+        const unitCol = Math.max(labels.lastIndexOf('Enhet'), labels.lastIndexOf('Unit'));
         if (unitCol < 0 || !tbody?.isConnected || !host) return;
         const input = host.querySelector(`.sm-poc-col-filter[data-col="${unitCol}"]`);
         if (!input) return;
@@ -5594,88 +5596,88 @@
         modal.innerHTML = `
             <div id="sm-poc-help-box" class="sm-poc-batch-box" style="width:min(860px,96vw);max-height:90vh;display:flex;flex-direction:column;">
                 <div id="sm-poc-help-head" class="sm-poc-batch-head">
-                    <h2>Hjelp – Supermarket Parameters (v${escapeHtml(SCRIPT_VERSION)})</h2>
-                    <button type="button" class="sm-poc-red-btn" data-close="1">Lukk</button>
+                    <h2>Help – Supermarket Parameters (v${escapeHtml(SCRIPT_VERSION)})</h2>
+                    <button type="button" class="sm-poc-red-btn" data-close="1">Close</button>
                 </div>
                 <div class="sm-poc-help-toc">
-                    <strong>Innhold:</strong>
-                    <a data-goto="sm-help-overview">Oversikt</a>
-                    <a data-goto="sm-help-toolbar">Verktøylinje</a>
-                    <a data-goto="sm-help-filter">Filter</a>
-                    <a data-goto="sm-help-unit">Enhetsvelger</a>
-                    <a data-goto="sm-help-move">Endrings-modus</a>
-                    <a data-goto="sm-help-all">Alle parameter</a>
+                    <strong>Contents:</strong>
+                    <a data-goto="sm-help-overview">Overview</a>
+                    <a data-goto="sm-help-toolbar">Toolbar</a>
+                    <a data-goto="sm-help-filter">Filters</a>
+                    <a data-goto="sm-help-unit">Unit selector</a>
+                    <a data-goto="sm-help-move">Edit mode</a>
+                    <a data-goto="sm-help-all">All parameters</a>
                     <a data-goto="sm-help-export">Excel export</a>
-                    <a data-goto="sm-help-details">Parameterdetaljer</a>
-                    <a data-goto="sm-help-batch">Batch på merkede</a>
-                    <a data-goto="sm-help-xunit">Bruk på andre enheter</a>
-                    <a data-goto="sm-help-keys">Hurtigtaster</a>
+                    <a data-goto="sm-help-details">Parameter details</a>
+                    <a data-goto="sm-help-batch">Batch on marked</a>
+                    <a data-goto="sm-help-xunit">Apply to other units</a>
+                    <a data-goto="sm-help-keys">Keyboard shortcuts</a>
                 </div>
                 <div class="sm-poc-help-body" style="overflow:auto;padding-right:6px;">
-                    <h3 id="sm-help-overview">Oversikt</h3>
-                    <p>Dette verktøyet legger seg oppå IWMAC Supermarket-siden og gir ekstra funksjoner for å
-                    filtrere, redigere og masse-endre driver-parametere. Selve IWMAC-headeren røres ikke –
-                    filter og kontroller ligger som et lag over tabellene.</p>
-                    <p>De fleste funksjonene er tilgjengelige på <em>innstillinger</em>-siden for en enhet.
-                    Begynn med å velge enhet i søkefeltet øverst, og bruk <span class="sm-poc-help-btnref">Hjelp</span>-knappen
-                    når som helst for å åpne denne veiledningen igjen.</p>
+                    <h3 id="sm-help-overview">Overview</h3>
+                    <p>This tool sits on top of the IWMAC Supermarket page and adds extra functions for
+                    filtering, editing and bulk-changing driver parameters. The IWMAC header itself is left untouched –
+                    filters and controls float as a layer above the tables.</p>
+                    <p>Most functions are available on a unit's <em>settings</em> page.
+                    Start by picking a unit in the search field at the top, and use the <span class="sm-poc-help-btnref">Help</span> button
+                    at any time to open this guide again.</p>
 
-                    <h3 id="sm-help-toolbar">Verktøylinje</h3>
+                    <h3 id="sm-help-toolbar">Toolbar</h3>
                     <ul>
-                        <li><span class="sm-poc-help-btnref">Aktiver Endrings-modus</span> – slår på redigerings-/markeringsmodus.
-                        Når den er på endres teksten til «Endrings-modus: PÅ». Slår du den av, forkastes ulagrede endringer.</li>
-                        <li><span class="sm-poc-help-btnref">Skjul 0.0</span> – skjuler rader der Verdi er 0 eller 0.0. Trykk igjen for å vise dem.</li>
-                        <li><span class="sm-poc-help-btnref">Lagre</span> – lagrer flyttede rader (r ↔ rw) til databasen. Aktiv kun når du har ulagrede endringer.</li>
-                        <li><code>0 endringer</code> – teller som viser hvor mange ulagrede flyttinger du har.</li>
-                        <li><span class="sm-poc-help-btnref">Export all units</span> – eksporterer <strong>alle enheter på anlegget</strong>
-                        til én Excel-fil. Spør først, og kan ta flere minutter – se
-                        <a data-goto="sm-help-export">Excel export</a> for hva fila inneholder.</li>
-                        <li><span class="sm-poc-help-btnref">Hjelp</span> – åpner denne veiledningen.</li>
+                        <li><span class="sm-poc-help-btnref">Enable edit mode</span> – turns on edit/selection mode.
+                        While it is on, the label reads "Edit mode: ON". Turning it off discards unsaved changes.</li>
+                        <li><span class="sm-poc-help-btnref">Hide 0.0</span> – hides rows whose Value is 0 or 0.0. Click again to show them.</li>
+                        <li><span class="sm-poc-help-btnref">Save</span> – saves moved rows (r ↔ rw) to the database. Only enabled when you have unsaved changes.</li>
+                        <li><code>0 changes</code> – counter showing how many unsaved moves you have.</li>
+                        <li><span class="sm-poc-help-btnref">Export all units</span> – exports <strong>every unit on the plant</strong>
+                        to one Excel file. Asks first, and can take several minutes – see
+                        <a data-goto="sm-help-export">Excel export</a> for what the file contains.</li>
+                        <li><span class="sm-poc-help-btnref">Help</span> – opens this guide.</li>
                     </ul>
 
-                    <h3 id="sm-help-filter">Kolonnefilter</h3>
-                    <p>Under hver kolonneoverskrift ligger et søkefelt. Skriv for å filtrere radene
-                    (treffer delvis tekst, uavhengig av store/små bokstaver). Aktive filterfelt får gul bakgrunn.</p>
+                    <h3 id="sm-help-filter">Column filters</h3>
+                    <p>Below each column heading there is a search field. Type to filter the rows
+                    (matches partial text, case-insensitive). Active filter fields get a yellow background.</p>
                     <ul>
-                        <li>Trykk <kbd>x</kbd> i feltet (eller <kbd>Esc</kbd> mens markøren står i feltet) for å tømme det filteret.</li>
-                        <li>Filter for «Måling» og «Innstillinger» fungerer hver for seg.</li>
+                        <li>Click <kbd>x</kbd> in the field (or press <kbd>Esc</kbd> while the cursor is in the field) to clear that filter.</li>
+                        <li>The filters for Measurements and Settings work independently.</li>
                     </ul>
 
-                    <h3 id="sm-help-unit">Søkbar enhetsvelger</h3>
-                    <p>Den vanlige enhets-nedtrekkslisten er erstattet med et søkbart felt øverst.</p>
+                    <h3 id="sm-help-unit">Searchable unit selector</h3>
+                    <p>The standard unit dropdown is replaced by a searchable field at the top.</p>
                     <ul>
-                        <li>Klikk feltet for å åpne, og skriv for å filtrere på enhetsnavn eller unit-id.</li>
-                        <li><span class="sm-poc-help-btnref">A-Z</span>/<span class="sm-poc-help-btnref">Orig</span> bytter mellom alfabetisk og opprinnelig rekkefølge.</li>
-                        <li><span class="sm-poc-help-btnref">Newest</span> → <span class="sm-poc-help-btnref">Oldest</span> → <span class="sm-poc-help-btnref">Orig</span> sorterer på datoen enheten har i databasen (<code>row_date</code> i <code>iw_sys_plant_units</code>), og viser datoen til høyre. Datoene hentes første gang du trykker, én gang per anlegg.</li>
-                        <li><span class="sm-poc-help-btnref">Recent</span> viser de 10 enhetene du sist valgte med klikk eller <kbd>Enter</kbd> på dette anlegget, nyeste først. Trykk igjen for hele listen.</li>
-                        <li><kbd>↑</kbd>/<kbd>↓</kbd> i åpen liste <strong>bytter enhet med en gang</strong> (som den vanlige velgeren), i listens rekkefølge – lista blir stående. <kbd>Enter</kbd>/<kbd>Esc</kbd> lukker.</li>
-                        <li>Etter et valg har enhetsfeltet fokus: <kbd>↑</kbd>/<kbd>↓</kbd> bytter da enhet <strong>uten å åpne listen</strong>. <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> gjør det samme fra hvor som helst på siden (forrige/neste i original rekkefølge).</li>
-                        <li>Søket huskes nå mellom hver gang du åpner feltet – teksten markeres, så du kan skrive over for nytt søk eller la den stå.</li>
+                        <li>Click the field to open it, and type to filter by unit name or unit ID.</li>
+                        <li><span class="sm-poc-help-btnref">A-Z</span>/<span class="sm-poc-help-btnref">Orig</span> switches between alphabetical and original order.</li>
+                        <li><span class="sm-poc-help-btnref">Newest</span> → <span class="sm-poc-help-btnref">Oldest</span> → <span class="sm-poc-help-btnref">Orig</span> sorts by the unit's date in the database (<code>row_date</code> in <code>iw_sys_plant_units</code>) and shows the date on the right. The dates are fetched the first time you click, once per plant.</li>
+                        <li><span class="sm-poc-help-btnref">Recent</span> shows the 10 units you last picked with a click or <kbd>Enter</kbd> on this plant, newest first. Click again for the full list.</li>
+                        <li><kbd>↑</kbd>/<kbd>↓</kbd> in the open list <strong>switch unit straight away</strong> (like the standard selector), in list order – the list stays open. <kbd>Enter</kbd>/<kbd>Esc</kbd> closes it.</li>
+                        <li>After a pick the unit field has focus: <kbd>↑</kbd>/<kbd>↓</kbd> then switch unit <strong>without opening the list</strong>. <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> does the same from anywhere on the page (previous/next in original order).</li>
+                        <li>The search is remembered between openings – the text is selected, so you can type over it for a new search or leave it as it is.</li>
                     </ul>
 
-                    <h3 id="sm-help-move">Endrings-modus (marker og flytt)</h3>
-                    <p>Slå på <span class="sm-poc-help-btnref">Aktiver Endrings-modus</span> først. Da kan du markere rader og dra dem mellom Måling og Innstillinger.</p>
+                    <h3 id="sm-help-move">Edit mode (mark and move)</h3>
+                    <p>Turn on <span class="sm-poc-help-btnref">Enable edit mode</span> first. You can then mark rows and drag them between Measurements and Settings.</p>
                     <ul>
-                        <li><strong>Marker:</strong> klikk en rad. <kbd>Shift</kbd>+klikk markerer et område, <kbd>Ctrl</kbd>+klikk legger til/fjerner enkeltrader.</li>
-                        <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> markerer alle synlige rader i aktiv tabell. <kbd>Esc</kbd> fjerner all markering.</li>
-                        <li><strong>Flytt:</strong> dra markerte rader over til motsatt tabell. De vises som «spøkelsesrader» (ikke lagret ennå) – grønt = blir <code>rw</code> (innstilling), blått = blir <code>r</code> (måling).</li>
-                        <li><strong>Angre:</strong> dra raden tilbake fra spøkelsestabellen.</li>
-                        <li><strong>Lagre:</strong> trykk <span class="sm-poc-help-btnref">Lagre</span> i verktøylinjen for å skrive endringene til databasen.</li>
+                        <li><strong>Mark:</strong> click a row. <kbd>Shift</kbd>+click marks a range, <kbd>Ctrl</kbd>+click adds/removes single rows.</li>
+                        <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> marks all visible rows in the active table. <kbd>Esc</kbd> clears all marking.</li>
+                        <li><strong>Move:</strong> drag marked rows to the opposite table. They are shown as "ghost rows" (not saved yet) – green = becomes <code>rw</code> (setting), blue = becomes <code>r</code> (measurement).</li>
+                        <li><strong>Undo:</strong> drag the row back from the ghost table.</li>
+                        <li><strong>Save:</strong> click <span class="sm-poc-help-btnref">Save</span> in the toolbar to write the changes to the database.</li>
                     </ul>
 
-                    <h3 id="sm-help-all">Vis alle parameter</h3>
-                    <p><span class="sm-poc-help-btnref">Vis alle parameter</span> viser parametere fra alle grupper i valgt enhet, i to ruter
-                    (Måling og Innstillinger) med kolonnene Gruppe, Navn, Verdi og Enhet. Klikk en kolonneoverskrift for å sortere.</p>
-                    <p>Egen verktøylinje i visningen har <span class="sm-poc-help-btnref">Vis enkeltgruppe</span> (tilbake til normal visning)
-                    og <span class="sm-poc-help-btnref">Export unit (Excel)</span> (eksporter kun denne enheten – se
+                    <h3 id="sm-help-all">Show all parameters</h3>
+                    <p><span class="sm-poc-help-btnref">Show all parameters</span> shows the parameters from all groups of the selected unit, in two panes
+                    (Measurements and Settings) with the columns Group, name (Measurement/Setting), Value and Unit. Click a column heading to sort.</p>
+                    <p>The view has its own toolbar with <span class="sm-poc-help-btnref">Show single group</span> (back to the normal view)
+                    and <span class="sm-poc-help-btnref">Export unit (Excel)</span> (exports this unit only – see
                     <a data-goto="sm-help-export">Excel export</a>).</p>
-                    <p><strong>Høyreklikk</strong> på en rad gir meny:</p>
+                    <p><strong>Right-click</strong> a row for a menu:</p>
                     <ul>
-                        <li><strong>Highlight used_in_graphics</strong> – markerer rader som brukes i grafikk (grønt), viser hvilke grafikk-bilder enheten er brukt i (lenker ved enhetsvelgeren) og tagger rader med bildenavn (🖼).
-                        Markeringen står til du trykker <strong>✕</strong> i merkelappen. Klikker du en bilde-lenke, blinker objektene for enheten i bildet i 3 sekunder.</li>
-                        <li><span class="sm-poc-help-btnref">Kun i grafikk</span> (i Vis alle parameter) – filtrerer lista til bare de parameterne som brukes i grafikk-bilder.</li>
-                        <li><strong>Get Driver Parameter Details</strong> – åpner detaljvinduet for parameteren.</li>
-                        <li>I Endrings-modus i tillegg: <strong>Change Plant pri for marked</strong>, <strong>Scale all marked</strong> og <strong>Clear marking</strong>.</li>
+                        <li><strong>Highlight used_in_graphics</strong> – marks rows used in graphics (green), shows which graphics pictures the unit is used in (links next to the unit selector) and tags rows with the picture name (🖼).
+                        The highlight stays until you click <strong>✕</strong> on the badge. Clicking a picture link makes the unit's objects in the picture flash for 3 seconds.</li>
+                        <li><span class="sm-poc-help-btnref">Only in graphics</span> (in Show all parameters) – filters the list down to the parameters used in graphics pictures.</li>
+                        <li><strong>Get Driver Parameter Details</strong> – opens the details window for the parameter.</li>
+                        <li>In edit mode also: <strong>Change Plant pri for marked</strong>, <strong>Scale all marked</strong> and <strong>Clear marking</strong>.</li>
                     </ul>
 
                     <h3 id="sm-help-export">Excel export</h3>
@@ -5687,7 +5689,7 @@
                         The <em>All units</em> sheet has a collapsible block per unit with the group blocks inside — use Excel's
                         <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> outline buttons (top-left corner) to collapse the whole plant to unit rows.
                         Columns: Unit ID, Unit name, Group, Alias text, Value, Eng unit, Access, Allowed values, Type, Application, Driver ID, In graphics.</li>
-                        <li><span class="sm-poc-help-btnref">Export unit (Excel)</span> (inside Vis alle parameter) – downloads the open
+                        <li><span class="sm-poc-help-btnref">Export unit (Excel)</span> (inside Show all parameters) – downloads the open
                         unit only, as one <em>Parameters</em> sheet (columns Group, Unit ID, Unit name, Alias text, Value, Eng unit, Access,
                         Allowed values, Type, Application, Driver ID, In graphics), with the writable rows first within each group. Column filters are
                         respected — filter first to export just those rows.</li>
@@ -5711,62 +5713,62 @@
                         exported parameters are writable.</li>
                     </ul>
 
-                    <h3 id="sm-help-details">Parameterdetaljer</h3>
-                    <p>I <strong>grafikk-visningen</strong> får boksen som spretter opp over et linket objekt en
-                    <strong>ℹ️</strong>-knapp som åpner det samme detaljvinduet for den parameteren.</p>
-                    <p>Detaljvinduet viser og lar deg redigere feltene for én parameter: alias, Plant Pri (alarmprioritet),
-                    Eng Unit, Format, Range, Scale, Raw/Eng min/maks, Att (<code>r</code>/<code>rw</code>/<code>vr</code>/<code>vrw</code>) og Format Extra.
-                    Felt med blå ramme har data i override-tabellen.</p>
+                    <h3 id="sm-help-details">Parameter details</h3>
+                    <p>In the <strong>graphics view</strong>, the box that pops up over a linked object gets an
+                    <strong>ℹ️</strong> button that opens the same details window for that parameter.</p>
+                    <p>The details window shows the fields of one parameter and lets you edit them: alias, Plant Pri (alarm priority),
+                    Eng Unit, Format, Range, Scale, Raw/Eng min/max, Att (<code>r</code>/<code>rw</code>/<code>vr</code>/<code>vrw</code>) and Format Extra.
+                    Fields with a blue border have data in the override table.</p>
                     <ul>
-                        <li><span class="sm-poc-help-btnref">Save Changes</span> – lagrer endringene til denne parameteren.</li>
-                        <li><span class="sm-poc-help-btnref">Apply to other units...</span> – kjør de samme endringene på andre enheter (se neste seksjon).</li>
-                        <li><span class="sm-poc-help-btnref">Scaling Presets...</span> – ferdige skaleringsoppsett med forhåndsvisning.</li>
-                        <li><span class="sm-poc-help-btnref">Delete Override</span> – sletter override-raden (kan ikke angres; stopp/start Escape etterpå ved behov).</li>
-                        <li><strong>Copy</strong> ved Meter ID kopierer <code>plant_id;unit_id;element_id</code>.</li>
+                        <li><span class="sm-poc-help-btnref">Save Changes</span> – saves the changes to this parameter.</li>
+                        <li><span class="sm-poc-help-btnref">Apply to other units...</span> – runs the same changes on other units (see the next section).</li>
+                        <li><span class="sm-poc-help-btnref">Scaling Presets...</span> – ready-made scaling setups with a preview.</li>
+                        <li><span class="sm-poc-help-btnref">Delete Override</span> – deletes the override row (cannot be undone; stop/start Escape afterwards if needed).</li>
+                        <li><strong>Copy</strong> next to Meter ID copies <code>plant_id;unit_id;element_id</code>.</li>
                     </ul>
 
-                    <h3 id="sm-help-batch">Batch på merkede parametere</h3>
-                    <p>I Endrings-modus kan du endre mange parametere samtidig (høyreklikk i «Vis alle parameter»):</p>
+                    <h3 id="sm-help-batch">Batch on marked parameters</h3>
+                    <p>In edit mode you can change many parameters at once (right-click in "Show all parameters"):</p>
                     <ul>
-                        <li><strong>Change Plant pri for marked</strong> – setter alarmprioritet (A/B/C/N/blank) på alle merkede.</li>
-                        <li><strong>Scale all marked</strong> – setter skalering på alle merkede. Inneholder kalkulator («raw X skal bli Y»),
-                        egendefinerte verdier og en tabell med presets med forhåndsvisning.</li>
-                        <li><strong>Delete overrides for marked</strong> – sletter override-rad for alle merkede.</li>
+                        <li><strong>Change Plant pri for marked</strong> – sets the alarm priority (A/B/C/N/blank) on all marked rows.</li>
+                        <li><strong>Scale all marked</strong> – sets scaling on all marked rows. Includes a calculator ("raw X should become Y"),
+                        custom values and a preset table with a preview.</li>
+                        <li><strong>Delete overrides for marked</strong> – deletes the override row for all marked rows.</li>
                     </ul>
-                    <p>Knappen <span class="sm-poc-help-btnref">Apply to marked</span> / <span class="sm-poc-help-btnref">Apply scaling to marked</span>
-                    skriver til <em>gjeldende</em> enhet.</p>
+                    <p>The <span class="sm-poc-help-btnref">Apply to marked</span> / <span class="sm-poc-help-btnref">Apply scaling to marked</span> button
+                    writes to the <em>current</em> unit.</p>
 
-                    <h3 id="sm-help-xunit">Bruk på andre enheter (kopier endring til flere enheter)</h3>
-                    <p>Når du har gjort en endring (r/rw, alarmpri eller skalering) kan du kjøre den samme endringen på andre enheter
-                    via knappen <span class="sm-poc-help-btnref">Apply to other units...</span> – finnes i detaljvinduet og i batch-vinduene.</p>
-                    <p><strong>Slik gjør du det:</strong></p>
+                    <h3 id="sm-help-xunit">Apply to other units (copy a change to several units)</h3>
+                    <p>Once you have made a change (r/rw, alarm priority or scaling) you can run the same change on other units
+                    with the <span class="sm-poc-help-btnref">Apply to other units...</span> button – found in the details window and in the batch windows.</p>
+                    <p><strong>How to:</strong></p>
                     <ul>
-                        <li>Gjør endringen (eller marker parametere + velg endring i batch-vinduet).</li>
-                        <li>Trykk <span class="sm-poc-help-btnref">Apply to other units...</span>. Det åpnes en enhetsvelger som viser
-                        hvilke felter som skrives og antall parametere per enhet.</li>
-                        <li>Søk/filtrer på <strong>navn</strong> eller <strong>unit-id</strong> (velg søkemodus), og kryss av enhetene du vil endre.
-                        Bruk «Velg alle (synlige)» / «Fjern alle» ved behov.</li>
-                        <li>Trykk <span class="sm-poc-help-btnref">Kjør på valgte enheter</span>.</li>
-                        <li>Etterpå vises en resultattabell: per enhet ser du hvor mange parametere som ble skrevet, hvor mange som
-                        ikke ble funnet, og eventuelle feil (grønn = OK, gul = noen ikke funnet, rød = feil).</li>
+                        <li>Make the change (or mark parameters and choose the change in the batch window).</li>
+                        <li>Click <span class="sm-poc-help-btnref">Apply to other units...</span>. A unit picker opens that shows
+                        which fields will be written and the number of parameters per unit.</li>
+                        <li>Search/filter by <strong>name</strong> or <strong>unit ID</strong> (choose the search mode), and tick the units you want to change.
+                        Use "Select all (visible)" / "Clear all" as needed.</li>
+                        <li>Click <span class="sm-poc-help-btnref">Run on selected units</span>.</li>
+                        <li>A result table follows: per unit you see how many parameters were written, how many
+                        were not found, and any errors (green = OK, yellow = some not found, red = error).</li>
                     </ul>
                     <div class="sm-poc-help-note">
-                        Parametere finnes igjen på hver enhet ut fra <code>alias</code> + <code>meny</code> (ikke den interne driver-id-en,
-                        som er unik per enhet). Mangler en parameter på en enhet, rapporteres den som «ikke funnet» – ingenting skrives feil.
-                        Hver enhet kjøres som egen batch, så feil på én enhet stopper ikke de andre.
+                        Parameters are found again on each unit by <code>alias</code> + <code>menu</code> (not the internal driver ID,
+                        which is unique per unit). If a parameter is missing on a unit, it is reported as "not found" – nothing is written to the wrong parameter.
+                        Each unit runs as its own batch, so an error on one unit does not stop the others.
                     </div>
 
-                    <h3 id="sm-help-keys">Hurtigtaster</h3>
+                    <h3 id="sm-help-keys">Keyboard shortcuts</h3>
                     <ul>
-                        <li><strong>Endrings-modus:</strong> klikk = marker · <kbd>Shift</kbd>+klikk = område · <kbd>Ctrl</kbd>+klikk = legg til/fjern ·
-                        <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> = marker alle synlige · <kbd>Esc</kbd> = fjern markering</li>
-                        <li><strong>Enhetsvelger (åpen):</strong> <kbd>↑</kbd>/<kbd>↓</kbd> = bytt enhet med en gang · <kbd>Enter</kbd>/<kbd>Esc</kbd> = lukk</li>
-                        <li><strong>Enhetsvelger (lukket):</strong> <kbd>↑</kbd>/<kbd>↓</kbd> med fokus i feltet, ellers <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> = forrige/neste enhet i original rekkefølge</li>
-                        <li><strong>Filterfelt:</strong> <kbd>Esc</kbd> = tøm filteret</li>
+                        <li><strong>Edit mode:</strong> click = mark · <kbd>Shift</kbd>+click = range · <kbd>Ctrl</kbd>+click = add/remove ·
+                        <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> = mark all visible · <kbd>Esc</kbd> = clear marking</li>
+                        <li><strong>Unit selector (open):</strong> <kbd>↑</kbd>/<kbd>↓</kbd> = switch unit straight away · <kbd>Enter</kbd>/<kbd>Esc</kbd> = close</li>
+                        <li><strong>Unit selector (closed):</strong> <kbd>↑</kbd>/<kbd>↓</kbd> with focus in the field, otherwise <kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> = previous/next unit in original order</li>
+                        <li><strong>Filter field:</strong> <kbd>Esc</kbd> = clear the filter</li>
                     </ul>
                 </div>
                 <div class="sm-poc-batch-actions">
-                    <button type="button" class="sm-poc-gray-btn" data-close="1">Lukk</button>
+                    <button type="button" class="sm-poc-gray-btn" data-close="1">Close</button>
                 </div>
             </div>
         `;
@@ -6174,7 +6176,7 @@
     }
 
     async function exportParametersToExcel() {
-        // The only button for this sits in the Vis alle parameter toolbar, so the rows come from that view.
+        // The only button for this sits in the Show all parameters toolbar, so the rows come from that view.
         let measurements = collectAllParamsExportRows('measurements');
         let settings = collectAllParamsExportRows('settings');
         if (!measurements.length && !settings.length) {
@@ -6318,8 +6320,8 @@
         const moveBtn = document.createElement('button');
         moveBtn.type = 'button';
         moveBtn.className = 'sm-poc-move-toggle';
-        moveBtn.textContent = 'Aktiver Endrings-modus';
-        moveBtn.title = 'Slå på for å velge rader og bruke batch-endringer. Slå av for vanlig høyreklikk.';
+        moveBtn.textContent = 'Enable edit mode';
+        moveBtn.title = 'Turn on to select rows and use batch changes. Turn off for the normal right-click menu.';
         moveBtn.addEventListener('click', () => {
             const wasMoveModeEnabled = moveModeEnabled;
             moveModeEnabled = !moveModeEnabled;
@@ -6331,8 +6333,8 @@
         const zeroBtn = document.createElement('button');
         zeroBtn.type = 'button';
         zeroBtn.className = 'sm-poc-zero-toggle';
-        zeroBtn.textContent = 'Skjul 0.0';
-        zeroBtn.title = 'Skjul rader der Verdi er 0 eller 0.0';
+        zeroBtn.textContent = 'Hide 0.0';
+        zeroBtn.title = 'Hide rows where Value is 0 or 0.0';
         zeroBtn.addEventListener('click', () => {
             hideZeroValuesEnabled = !hideZeroValuesEnabled;
             applyZeroValueFilterMode();
@@ -6342,30 +6344,30 @@
         const saveBtn = document.createElement('button');
         saveBtn.type = 'button';
         saveBtn.className = 'sm-poc-save-btn';
-        saveBtn.textContent = 'Lagre';
-        saveBtn.title = 'Lagre flyttede rader til database';
+        saveBtn.textContent = 'Save';
+        saveBtn.title = 'Save moved rows to the database';
         saveBtn.disabled = true;
         saveBtn.addEventListener('click', savePendingAttChanges);
         bar.appendChild(saveBtn);
 
         const saveCount = document.createElement('span');
         saveCount.className = 'sm-poc-save-count';
-        saveCount.textContent = '0 endringer';
+        saveCount.textContent = '0 changes';
         bar.appendChild(saveCount);
 
         const exportBtn = document.createElement('button');
         exportBtn.type = 'button';
         exportBtn.className = 'sm-poc-export-btn';
         exportBtn.textContent = 'Export all units';
-        exportBtn.title = 'Export EVERY unit on this plant to one Excel file (asks for confirmation first — can take several minutes). For just the open unit, use the Export unit button inside "Vis alle parameter".';
+        exportBtn.title = 'Export EVERY unit on this plant to one Excel file (asks for confirmation first — can take several minutes). For just the open unit, use the Export unit button inside "Show all parameters".';
         exportBtn.addEventListener('click', exportAllUnitsToExcel);
         bar.appendChild(exportBtn);
 
         const helpBtn = document.createElement('button');
         helpBtn.type = 'button';
         helpBtn.className = 'sm-poc-help-btn';
-        helpBtn.textContent = 'Hjelp';
-        helpBtn.title = 'Vis hjelp / brukerveiledning';
+        helpBtn.textContent = 'Help';
+        helpBtn.title = 'Show help / user guide';
         helpBtn.addEventListener('click', showHelpModal);
         bar.appendChild(helpBtn);
 
@@ -6462,7 +6464,7 @@
         const btn = document.querySelector('#sm-poc-toolbar .sm-poc-save-btn');
         const label = document.querySelector('#sm-poc-toolbar .sm-poc-save-count');
         if (btn) btn.disabled = count === 0;
-        if (label) label.textContent = `${count} endring${count === 1 ? '' : 'er'}`;
+        if (label) label.textContent = `${count} change${count === 1 ? '' : 's'}`;
     }
 
     function updateZeroValueUi() {
@@ -6471,8 +6473,8 @@
         btn.classList.toggle('sm-poc-active', hideZeroValuesEnabled);
         btn.setAttribute('aria-pressed', hideZeroValuesEnabled ? 'true' : 'false');
         btn.title = hideZeroValuesEnabled
-            ? '0.0-rader er skjult. Klikk for å vise dem igjen.'
-            : 'Skjul rader der Verdi er 0 eller 0.0';
+            ? '0.0 rows are hidden. Click to show them again.'
+            : 'Hide rows where Value is 0 or 0.0';
         styleToolbarLikeNativeTabs();
     }
 
@@ -6480,7 +6482,7 @@
         updateZeroValueUi();
         if (allParamsActive) filterAllParamsView();
         applyAllFilters();
-        showHint(hideZeroValuesEnabled ? 'Skjuler rader med Verdi 0.0.' : 'Viser 0.0-rader igjen.');
+        showHint(hideZeroValuesEnabled ? 'Hiding rows with Value 0.0.' : 'Showing 0.0 rows again.');
     }
 
     function compactAliasForLookup(value) {
@@ -6569,7 +6571,7 @@
         });
         const data = await response.json();
         if (!data?.success) {
-            throw new Error(data?.error || 'Driver-lookup feilet');
+            throw new Error(data?.error || 'Driver lookup failed');
         }
         return extractDriverParameterRows(data);
     }
@@ -6613,7 +6615,7 @@
             });
             const data = await response.json();
             if (!data?.success) {
-                throw new Error(data?.error || 'Driver-verifisering feilet');
+                throw new Error(data?.error || 'Driver verification failed');
             }
             rows.push(...extractDriverParameterRows(data));
         }
@@ -6639,7 +6641,7 @@
         if (!data || !data.success) {
             const fallback = await fetchDriverParameterDetailsByAliasSql(change, plantId, unitId).catch(() => null);
             if (fallback?.driver_id) return fallback;
-            throw new Error(data?.error || `Fant ikke parameter: ${change.alias_text}`);
+            throw new Error(data?.error || `Parameter not found: ${change.alias_text}`);
         }
 
         const rows = extractDriverParameterRows(data);
@@ -6690,47 +6692,47 @@
         });
         const data = await response.json();
         if (!data?.success) {
-            throw new Error(data?.error || `Fant ikke driver_id: ${driverId}`);
+            throw new Error(data?.error || `driver_id not found: ${driverId}`);
         }
         const row = findFirstObjectWithDriverId(data);
-        if (!row) throw new Error(`Fant ikke driver_id: ${driverId}`);
+        if (!row) throw new Error(`driver_id not found: ${driverId}`);
         return row;
     }
 
     async function savePendingAttChanges() {
         const changes = Array.from(pendingAttChanges.values());
         if (!changes.length) {
-            showHint('Ingen endringer å lagre');
+            showHint('No changes to save');
             return;
         }
 
         const plantId = getPlantId();
         const unitId = getUnitId();
         if (!plantId || !unitId) {
-            alert('Kan ikke finne plant_id eller unit_id.');
+            alert('Cannot find plant_id or unit_id.');
             return;
         }
 
-        const ok = window.confirm(`Lagre ${changes.length} endring${changes.length === 1 ? '' : 'er'} til database?`);
+        const ok = window.confirm(`Save ${changes.length} change${changes.length === 1 ? '' : 's'} to the database?`);
         if (!ok) return;
 
         const btn = document.querySelector('#sm-poc-toolbar .sm-poc-save-btn');
-        const oldText = btn?.textContent || 'Lagre';
+        const oldText = btn?.textContent || 'Save';
         if (btn) {
             btn.disabled = true;
-            btn.textContent = 'Lagrer...';
+            btn.textContent = 'Saving...';
         }
 
         try {
             const requests = changes.map((change, index) => ({
                 data: change,
-                label: change.row_text || change.alias_text || `endring ${index + 1}`
+                label: change.row_text || change.alias_text || `change ${index + 1}`
             }));
-            const resolved = await resolveDriverParameterRequests(requests, plantId, unitId, 'ulagrede att-endringer');
+            const resolved = await resolveDriverParameterRequests(requests, plantId, unitId, 'unsaved att changes');
             const failed = resolved.filter((result) => !result?.ok);
             if (failed.length) {
                 const first = failed[0];
-                throw new Error(`Fant ikke driver_id for ${failed.length} endring(er). Første: ${first.item?.label || first.error?.message || 'ukjent'}`);
+                throw new Error(`Could not find driver_id for ${failed.length} change${failed.length === 1 ? '' : 's'}. First: ${first.item?.label || first.error?.message || 'unknown'}`);
             }
 
             const found = resolved.filter((result) => result?.ok);
@@ -6743,10 +6745,10 @@
             markPendingRowsAwaitingNativeRedraw();
             pendingAttChanges.clear();
             updatePendingUi();
-            requestNativeParameterRedraw(`Lagret ${changes.length} endring${changes.length === 1 ? '' : 'er'} (${totalAffected} rows affected). Oppdaterer IWMAC-listen uten side-refresh...`);
+            requestNativeParameterRedraw(`Saved ${changes.length} change${changes.length === 1 ? '' : 's'} (${totalAffected} rows affected). Updating the IWMAC list without a page reload...`);
         } catch (error) {
             console.log('[Supermarket Parameters POC] Save error:', error);
-            alert('Kunne ikke lagre: ' + error.message);
+            alert('Could not save: ' + error.message);
             updatePendingUi();
         } finally {
             if (btn) {
@@ -6760,11 +6762,11 @@
         document.body.classList.toggle('sm-poc-move-mode', moveModeEnabled);
         const btn = document.querySelector('.sm-poc-move-toggle');
         if (btn) {
-            btn.textContent = moveModeEnabled ? 'Endrings-modus: PÅ' : 'Aktiver Endrings-modus';
+            btn.textContent = moveModeEnabled ? 'Edit mode: ON' : 'Enable edit mode';
             btn.classList.toggle('sm-poc-active', moveModeEnabled);
             btn.title = moveModeEnabled
-                ? 'Slå av for vanlig høyreklikk uten batch-endringer'
-                : 'Slå på for å velge rader og bruke batch-endringer';
+                ? 'Turn off for the normal right-click menu without batch changes'
+                : 'Turn on to select rows and use batch changes';
         }
 
         [measurementsTable, settingsTable].forEach((tbody) => {
@@ -6790,9 +6792,9 @@
 
         if (!moveModeEnabled) clearSelection();
         if (moveModeEnabled) {
-            showHint('Endrings-modus: klikk, Shift+klikk område, Ctrl+Shift+A / Velg. Høyreklikk for batch-endringer.', { defaultHint: true });
+            showHint('Edit mode: click, Shift+click for a range, Ctrl+Shift+A to select all. Right-click for batch changes.', { defaultHint: true });
         } else if (discardedPendingCount) {
-            showHint(`Endrings-modus av: ${discardedPendingCount} ulagrede endring${discardedPendingCount === 1 ? '' : 'er'} forkastet.`);
+            showHint(`Edit mode off: ${discardedPendingCount} unsaved change${discardedPendingCount === 1 ? '' : 's'} discarded.`);
         } else {
             showHint('', { defaultHint: true }); // idle: ingen fast tekst, skjul etter at handlingshint har stått sin tid
         }
@@ -6831,17 +6833,17 @@
     function updateSelectionHint() {
         if (!moveModeEnabled) return;
         if (!selectedRows.size) {
-            showHint('Klikk / Shift+klikk område / Ctrl+klikk / Ctrl+Shift+A');
+            showHint('Click / Shift+click range / Ctrl+click / Ctrl+Shift+A');
             return;
         }
         const nMeas = Array.from(selectedRows).filter((r) => rowVisualSide(r) === 'measurements').length;
         const nSet = selectedRows.size - nMeas;
         if (nMeas && nSet) {
-            showHint(`${selectedRows.size} valgt — dra til motsatt side for å flytte`);
+            showHint(`${selectedRows.size} selected — drag to the opposite side to move`);
         } else if (nMeas) {
-            showHint(`${nMeas} valgt — dra til Innstillinger (høyre)`);
+            showHint(`${nMeas} selected — drag to Settings (right)`);
         } else {
-            showHint(`${nSet} valgt — dra til Måling (venstre)`);
+            showHint(`${nSet} selected — drag to Measurements (left)`);
         }
     }
 
@@ -6886,7 +6888,7 @@
         if (!tbody?.isConnected) return;
         const visible = getVisibleRows(tbody);
         if (!visible.length) {
-            showHint('Ingen synlige rader å velge');
+            showHint('No visible rows to select');
             return;
         }
         clearSelection();
@@ -6894,10 +6896,10 @@
             selectedRows.add(row);
             row.classList.add(SELECTED_CLASS);
         });
-        const side = tbody === measurementsTable ? 'Måling' : 'Innstillinger';
+        const side = tbody === measurementsTable ? 'Measurements' : 'Settings';
         const key = tbody === measurementsTable ? 'measurements' : 'settings';
         if (visible.length) selectionAnchor[key] = visible[0];
-        showHint(`${visible.length} synlige valgt i ${side} — dra til motsatt tabell`);
+        showHint(`${visible.length} visible selected in ${side} — drag to the opposite table`);
         updateSelectionHint();
     }
 
@@ -6938,7 +6940,7 @@
 
             if (e.key === 'Escape') {
                 clearSelection();
-                showHint('Markering tømt');
+                showHint('Selection cleared');
                 e.preventDefault();
                 return;
             }
@@ -6995,9 +6997,9 @@
         });
 
         if (moved) {
-            showHint(`${moved} rad(er) merket for Innstillinger (lagre for å skrive rw)`);
+            showHint(`${moved} row${moved === 1 ? '' : 's'} marked for Settings (save to write rw)`);
         } else if (skipped) {
-            showHint('Ingen flyttet — finnes allerede i Innstillinger?');
+            showHint('None moved — already in Settings?');
         }
         return moved;
     }
@@ -7022,9 +7024,9 @@
         });
 
         if (moved) {
-            showHint(`${moved} rad(er) merket for Måling (lagre for å skrive r)`);
+            showHint(`${moved} row${moved === 1 ? '' : 's'} marked for Measurements (save to write r)`);
         } else if (skipped) {
-            showHint('Ingen flyttet — finnes allerede i Måling?');
+            showHint('None moved — already in Measurements?');
         }
         return moved;
     }
@@ -7108,8 +7110,8 @@
                 : Array.from(selectedRows).filter((r) => rowVisualSide(r) === acceptFrom);
             if (!rows.length) {
                 showHint(acceptFrom === 'measurements'
-                    ? 'Velg rader i Måling (Ctrl+klikk) eller dra fra Innstillinger'
-                    : 'Velg rader i Innstillinger eller dra fra Måling');
+                    ? 'Select rows in Measurements (Ctrl+click) or drag from Settings'
+                    : 'Select rows in Settings or drag from Measurements');
                 return;
             }
 
@@ -7183,14 +7185,14 @@
         const markedCount = getMarkedParameterRequests().length;
         const plantPriItem = createBatchContextMenuItem(templateItem, 'Change Plant pri for marked', () => {
             if (!markedCount) {
-                showHint('Marker parametere i Endrings-modus først.');
+                showHint('Mark parameters in edit mode first.');
                 return;
             }
             openPlantPriBatchModal();
         });
         const scaleItem = createBatchContextMenuItem(templateItem, 'Scale all marked', () => {
             if (!markedCount) {
-                showHint('Marker parametere i Endrings-modus først.');
+                showHint('Mark parameters in edit mode first.');
                 return;
             }
             openScaleMarkedModal();
@@ -7240,7 +7242,7 @@
             () => highlightUsedInGraphicsFromAllParams());
         const detailsItem = createBatchContextMenuItem(templateItem, 'Get Driver Parameter Details', () => {
             if (!lastNativeContextRow?.isConnected) {
-                showHint('Ingen rad valgt. Høyreklikk på en rad først.');
+                showHint('No row selected. Right-click a row first.');
                 return;
             }
             openAllParamsDriverDetails(lastNativeContextRow);
