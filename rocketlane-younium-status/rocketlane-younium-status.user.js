@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.64.0
-// @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, and desktop notifications for new chat messages in the projects you own.
+// @version      1.65.0
+// @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, and chat macros (type / in a chat).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-younium-status/rocketlane-younium-status.user.js
@@ -86,6 +86,9 @@
  *     projects the user owns, instant through Rocketlane's own Pusher
  *     connection, with a poll as the safety net. On/off switch in the
  *     Notifications panel header and in the Tampermonkey menu.
+ *  1g. Chat macros (section 5d++, v1.65.0). Typing "/" in a chat message box
+ *     lists ready-made messages (/Request_Feedback, /Project_Closed) with a
+ *     preview of each; Enter, Tab or a click fills the box. Nothing is sent.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -6000,6 +6003,296 @@
     setInterval(() => void rlCnTick(), RL_CN_TICK_MS);
     // The switch: mount as soon as the panel opens, repaint while it is open.
     setInterval(() => { try { rlCnMountToggle(); } catch (_) {} }, 700);
+  });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 5d++. Chat macros (v1.65.0). Typing "/" at the start of a word in a chat
+  //     message box opens a list of ready-made messages with a preview of the
+  //     highlighted one's full text; typing narrows it, ↑↓ choose, Enter, Tab
+  //     or a click put the text in the box in place of the "/word", Esc closes.
+  //     A box holding nothing but "/Name" of a macro expands on Enter too.
+  //     Nothing is ever sent — a macro only fills the box.
+  //     The box is Rocketlane's CKEditor 5 (span[data-cy="messages-comment-rte"]
+  //     › .ck-editor__editable), and the editable carries its editor instance
+  //     as `ckeditorInstance`: the text goes in through
+  //     editor.model.insertContent, so CKEditor keeps its own state and
+  //     paragraphs (checked live 2026-10-07; "/" alone opens nothing of
+  //     Rocketlane's). Keys are taken in the window's capture phase, before
+  //     CKEditor and Rocketlane see them — a capture listener there stopped a
+  //     real Shift+Enter from reaching the editor in the same test — because
+  //     Enter in an open list must never send "/Request_Feedback" as a message.
+  // ════════════════════════════════════════════════════════════════════════
+  // @@rlChatMacroHelpers:start
+  const RL_CHAT_MACROS = [
+    {
+      name: "Request_Feedback",
+      title: "Ask for a rating of the delivery",
+      paragraphs: [
+        "Hei,",
+        "Hvis du har anledning, setter vi pris på om du kan gi en vurdering av leveranseprosessen. Du skal ha mottatt en oppgave for dette, så den bør være enkel å finne.",
+        "Jeg planlegger å avslutte prosjektet om omtrent en uke. Dersom du har spørsmål eller trenger bistand før den tid, er det bare å ta kontakt.",
+      ],
+    },
+    {
+      name: "Project_Closed",
+      title: "Tell the customer the project is closed",
+      paragraphs: [
+        "Hei,",
+        "Vi avslutter nå prosjektet.",
+        "Dersom du har spørsmål eller det er noe vi kan bistå med videre, er du hjertelig velkommen til å kontakte oss på e-post (support@kiona.com) eller telefon (+47 982 50 007).",
+      ],
+    },
+  ];
+
+  /** The "/word" right before the caret, or null. "/" must start the text or follow whitespace, so a URL never matches. */
+  function rlMacroToken(textBeforeCaret) {
+    const s = String(textBeforeCaret || "").replace(/[\u200B\u2060\uFEFF]/g, "");
+    const m = s.match(/(?:^|\s)(\/([A-Za-z0-9_\-ÆØÅæøå]*))$/);
+    return m ? { token: m[1], query: m[2] } : null;
+  }
+
+  /** Macros matching what follows the "/": names starting with it first, then names or titles containing it. */
+  function rlMacroFilter(macros, query) {
+    const list = Array.isArray(macros) ? macros : [];
+    const q = String(query || "").toLowerCase();
+    if (!q) return list.slice();
+    const starts = list.filter((m) => m.name.toLowerCase().startsWith(q));
+    const contains = list.filter((m) => !starts.includes(m) &&
+      (m.name.toLowerCase().includes(q) || String(m.title || "").toLowerCase().includes(q)));
+    return starts.concat(contains);
+  }
+
+  /** The macro whose "/Name" is the whole message (any case), or null. */
+  function rlMacroExact(text, macros) {
+    const s = String(text || "").replace(/[\u200B\u2060\uFEFF]/g, "").trim();
+    const m = s.match(/^\/([A-Za-z0-9_\-ÆØÅæøå]+)$/);
+    if (!m) return null;
+    const want = m[1].toLowerCase();
+    return (Array.isArray(macros) ? macros : []).find((x) => x.name.toLowerCase() === want) || null;
+  }
+
+  /** The macro as CKEditor data: one <p> per paragraph, text escaped. */
+  function rlMacroHtml(macro) {
+    const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return (Array.isArray(macro?.paragraphs) ? macro.paragraphs : []).map((p) => "<p>" + esc(p) + "</p>").join("");
+  }
+  // @@rlChatMacroHelpers:end
+
+  const RL_MC_POPUP_ID = "rlChatMacroPopup";
+  const rlMc = { el: null, token: "", items: [], index: 0, dismissedEl: null, dismissedToken: "" };
+
+  /** The chat message box `node` sits in (its CKEditor editable), or null. */
+  function rlMcEditable(node) {
+    const el = node && (node.nodeType === 1 ? node : node.parentElement);
+    const ed = el && typeof el.closest === "function" ? el.closest(".ck-editor__editable") : null;
+    return ed && ed.closest('[data-cy="messages-comment-rte"]') && ed.ckeditorInstance ? ed : null;
+  }
+  /** The caret in a chat message box: its editable, the text before it in the same text node, and the range. */
+  function rlMcCaret() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return null;
+    const el = rlMcEditable(sel.anchorNode);
+    if (!el) return null;
+    const node = sel.anchorNode;
+    const before = node.nodeType === 3 ? String(node.textContent || "").slice(0, sel.anchorOffset) : "";
+    return { el, before, range: sel.getRangeAt(0) };
+  }
+  function rlMcStyles() {
+    if (document.getElementById("rlChatMacroStyles")) return;
+    const st = document.createElement("style");
+    st.id = "rlChatMacroStyles";
+    st.textContent = `
+      #${RL_MC_POPUP_ID} {
+        position: fixed; z-index: 2147483000; width: min(480px, calc(100vw - 24px));
+        background: #fff; color: #1f2937; border: 1px solid #e2e8f0; border-radius: 10px;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, .18); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden;
+      }
+      #${RL_MC_POPUP_ID} .rlMcHead { padding: 6px 12px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: #64748b; border-bottom: 1px solid #f1f5f9; }
+      #${RL_MC_POPUP_ID} .rlMcItem { display: flex; gap: 10px; align-items: baseline; padding: 7px 12px; cursor: pointer; }
+      #${RL_MC_POPUP_ID} .rlMcItem.active { background: #eef2ff; }
+      #${RL_MC_POPUP_ID} .rlMcName { font-weight: 600; color: #3730a3; white-space: nowrap; }
+      #${RL_MC_POPUP_ID} .rlMcTitle { color: #64748b; font-size: 12px; }
+      #${RL_MC_POPUP_ID} .rlMcPreview { margin: 0; padding: 10px 12px; border-top: 1px solid #f1f5f9; background: #f8fafc; color: #334155; white-space: pre-wrap; font: inherit; max-height: 240px; overflow: auto; }
+      #${RL_MC_POPUP_ID} .rlMcHint { padding: 5px 12px; font-size: 11px; color: #94a3b8; border-top: 1px solid #f1f5f9; }
+    `;
+    document.documentElement.appendChild(st);
+  }
+  function rlMcClose() {
+    document.getElementById(RL_MC_POPUP_ID)?.remove();
+    rlMc.el = null;
+    rlMc.token = "";
+    rlMc.items = [];
+  }
+  function rlMcSetActive(i) {
+    rlMc.index = i;
+    const box = document.getElementById(RL_MC_POPUP_ID);
+    if (!box) return;
+    box.querySelectorAll(".rlMcItem").forEach((row, k) => row.classList.toggle("active", k === i));
+    const pre = box.querySelector(".rlMcPreview");
+    if (pre) pre.textContent = (rlMc.items[i]?.paragraphs || []).join("\n\n");
+  }
+  function rlMcRender(rect) {
+    rlMcStyles();
+    let box = document.getElementById(RL_MC_POPUP_ID);
+    if (!box) {
+      box = document.createElement("div");
+      box.id = RL_MC_POPUP_ID;
+      box.setAttribute("role", "listbox");
+      // Keep the caret in the message box: a click in here must not blur CKEditor.
+      box.addEventListener("mousedown", (ev) => ev.preventDefault());
+      document.body.appendChild(box);
+    }
+    box.textContent = "";
+    const head = document.createElement("div");
+    head.className = "rlMcHead";
+    head.textContent = "Macros";
+    box.appendChild(head);
+    rlMc.items.forEach((m, i) => {
+      const row = document.createElement("div");
+      row.className = "rlMcItem" + (i === rlMc.index ? " active" : "");
+      row.setAttribute("role", "option");
+      const name = document.createElement("span");
+      name.className = "rlMcName";
+      name.textContent = "/" + m.name;
+      const title = document.createElement("span");
+      title.className = "rlMcTitle";
+      title.textContent = m.title || "";
+      row.appendChild(name);
+      row.appendChild(title);
+      row.addEventListener("mouseenter", () => rlMcSetActive(i));
+      row.addEventListener("click", () => rlMcInsert(m));
+      box.appendChild(row);
+    });
+    const pre = document.createElement("pre");
+    pre.className = "rlMcPreview";
+    pre.textContent = (rlMc.items[rlMc.index]?.paragraphs || []).join("\n\n");
+    box.appendChild(pre);
+    const hint = document.createElement("div");
+    hint.className = "rlMcHint";
+    hint.textContent = "↑↓ choose · Enter or Tab inserts · Esc closes";
+    box.appendChild(hint);
+    // Above the caret: the message box sits at the bottom of the page.
+    const w = box.offsetWidth;
+    const h = box.offsetHeight;
+    let top = rect.top - h - 8;
+    if (top < 8) top = rect.bottom + 8;
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - w - 8));
+    box.style.top = Math.round(top) + "px";
+    box.style.left = Math.round(left) + "px";
+  }
+  function rlMcUpdate() {
+    const c = rlMcCaret();
+    const tok = c ? rlMacroToken(c.before) : null;
+    if (!c || !tok) { rlMcClose(); return; }
+    if (rlMc.dismissedEl === c.el && rlMc.dismissedToken === tok.token) return; // closed with Esc for this "/word"
+    rlMc.dismissedEl = null;
+    rlMc.dismissedToken = "";
+    const items = rlMacroFilter(RL_CHAT_MACROS, tok.query);
+    if (!items.length) { rlMcClose(); return; }
+    const same = rlMc.el === c.el && rlMc.items.length === items.length && rlMc.items.every((m, i) => m === items[i]);
+    rlMc.el = c.el;
+    rlMc.token = tok.token;
+    if (!same) { rlMc.items = items; rlMc.index = 0; }
+    let rect = c.range.getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height && !rect.top && !rect.left)) rect = c.el.getBoundingClientRect();
+    rlMcRender(rect);
+  }
+  /** Replace the "/word" before the caret with the macro, through CKEditor's model. */
+  function rlMcInsert(macro) {
+    const el = rlMc.el;
+    const token = rlMc.token;
+    rlMcClose();
+    const editor = el && el.ckeditorInstance;
+    if (!editor || !macro) return;
+    try {
+      editor.model.change((writer) => {
+        const pos = editor.model.document.selection.getFirstPosition();
+        if (token && pos && pos.offset >= token.length) {
+          const range = writer.createRange(pos.getShiftedBy(-token.length), pos);
+          const typed = [...range.getItems()].map((it) => it.data || "").join("");
+          if (typed === token) writer.remove(range);
+        }
+        // Text already before the caret ("Takk! /…"): the macro starts its own
+        // paragraph instead of gluing "Hei," onto it. A model split, not the
+        // "enter" command, which an integration may tie to sending.
+        let at = editor.model.document.selection.getFirstPosition();
+        if (at && at.offset > 0 && at.parent && at.parent.is("element", "paragraph")) {
+          // The space typed before "/" would end that line as &nbsp;.
+          const head = writer.createRange(writer.createPositionAt(at.parent, 0), at);
+          const tail = [...head.getItems()].map((it) => it.data || "").join("").match(/[ \u00a0]+$/);
+          if (tail) {
+            writer.remove(writer.createRange(at.getShiftedBy(-tail[0].length), at));
+            at = editor.model.document.selection.getFirstPosition();
+          }
+          if (at.offset > 0) writer.setSelection(writer.split(at).range.end);
+        }
+      });
+      editor.model.insertContent(editor.data.toModel(editor.data.processor.toView(rlMacroHtml(macro))));
+      editor.editing.view.focus();
+    } catch (e) {
+      console.warn("[Rocketlane improvements] chat macro failed:", e?.message || e);
+    }
+  }
+  /** The whole box is "/Name": swap it for the macro and put the caret at the end. */
+  function rlMcExpandWhole(el, macro) {
+    const editor = el.ckeditorInstance;
+    try {
+      editor.setData(rlMacroHtml(macro));
+      editor.model.change((w) => w.setSelection(w.createPositionAt(editor.model.document.getRoot(), "end")));
+      editor.editing.view.focus();
+    } catch (e) {
+      console.warn("[Rocketlane improvements] chat macro failed:", e?.message || e);
+    }
+  }
+  function rlMcKeyDown(ev) {
+    if (ev.isComposing) return;
+    const el = rlMcEditable(ev.target);
+    if (!el) return;
+    const open = rlMc.el === el && rlMc.items.length > 0 && !!document.getElementById(RL_MC_POPUP_ID);
+    if (open) {
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        const n = rlMc.items.length;
+        rlMcSetActive((rlMc.index + (ev.key === "ArrowDown" ? 1 : n - 1)) % n);
+      } else if ((ev.key === "Enter" && !ev.shiftKey) || ev.key === "Tab") {
+        rlMcInsert(rlMc.items[rlMc.index]);
+      } else if (ev.key === "Escape") {
+        rlMc.dismissedEl = el;
+        rlMc.dismissedToken = rlMc.token;
+        rlMcClose();
+      } else {
+        return;
+      }
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      return;
+    }
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+      const macro = rlMacroExact(el.textContent, RL_CHAT_MACROS);
+      if (!macro) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      rlMcExpandWhole(el, macro);
+    }
+  }
+
+  rlWhenDomReady(() => {
+    window.addEventListener("keydown", rlMcKeyDown, true);
+    // A timer, not requestAnimationFrame: frames pause in a tab Chrome counts as hidden.
+    let queued = false;
+    const schedule = () => {
+      if (queued) return;
+      queued = true;
+      setTimeout(() => { queued = false; try { rlMcUpdate(); } catch (_) {} }, 0);
+    };
+    document.addEventListener("selectionchange", schedule);
+    document.addEventListener("keyup", (ev) => { if (rlMcEditable(ev.target)) schedule(); }, true);
+    window.addEventListener("resize", () => { if (rlMc.el) schedule(); });
+    document.addEventListener("scroll", () => { if (rlMc.el) schedule(); }, true);
+    // A click anywhere else closes the list (a mousedown inside it is prevented above).
+    document.addEventListener("mousedown", (ev) => {
+      const box = document.getElementById(RL_MC_POPUP_ID);
+      if (box && !box.contains(ev.target)) rlMcClose();
+    }, true);
   });
 
   // ════════════════════════════════════════════════════════════════════════
