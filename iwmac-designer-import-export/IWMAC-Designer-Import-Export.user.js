@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.32.0
+// @version      1.32.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.32.0';
+var IWDIE_VERSION = '1.32.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6560,11 +6560,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       wireDrawUi();
 
       // Pointer input on the layer, kept from the Designer's own handlers above it.
-      svg.addEventListener('pointerdown', drawDown);
-      svg.addEventListener('pointermove', drawMove);
-      svg.addEventListener('pointerup', drawUp);
-      svg.addEventListener('pointercancel', drawUp);
-      svg.addEventListener('dblclick', drawDblClick);
+      svg.addEventListener('pointerdown', drawPointerDown);
+      svg.addEventListener('pointermove', drawPointerMove);
+      svg.addEventListener('pointerup', drawPointerUp);
+      svg.addEventListener('pointercancel', drawPointerUp);
+      window.addEventListener('pointerup', drawPointerUpOutside, true);
       ['mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'wheel'].forEach(function (t) {
         svg.addEventListener(t, function (ev) { ev.stopPropagation(); if (t === 'contextmenu') ev.preventDefault(); });
       });
@@ -7030,6 +7030,75 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /* Presses that never arrive (v1.32.1). The Designer Toolkit extension stops
+       every pointerdown over the canvas at window level - stopImmediatePropagation
+       and preventDefault, before any listener of ours runs - while moves and
+       releases still come through. Measured live on plant 2349, 2026-10-11. So a
+       press is also inferred: a move with the button held, or a release, with no
+       press seen before it, starts one where the pointer last was. Double-clicks
+       are counted here from the presses, not taken from dblclick, because a page
+       that eats presses may eat that too. Without such a tool the real
+       pointerdown arrives first and nothing is inferred. */
+    function drawLike(src, live) {
+      var t = document.elementFromPoint(src.clientX, src.clientY);
+      if (!t || !draw.svg.contains(t)) t = draw.svg;
+      return { button: 0, buttons: 1, clientX: src.clientX, clientY: src.clientY, pointerId: live.pointerId,
+        shiftKey: !!live.shiftKey, ctrlKey: !!live.ctrlKey, metaKey: !!live.metaKey, altKey: !!live.altKey,
+        target: t, preventDefault: function () {}, stopPropagation: function () {} };
+    }
+
+    function drawPointerDown(ev) {
+      var d = draw;
+      if (!d || ev.button !== 0) return;
+      d.pressed = { x: ev.clientX, y: ev.clientY, t: Date.now() };
+      drawDown(ev);
+    }
+
+    function drawPointerMove(ev) {
+      var d = draw;
+      if (!d) return;
+      var held = (ev.buttons & 1) === 1;
+      if (held && !d.pressed) {
+        var from = d.hover || ev;
+        d.pressed = { x: from.clientX, y: from.clientY, t: Date.now() };
+        drawDown(drawLike(from, ev));
+        if (!draw) return;
+      } else if (!held && d.pressed) {
+        drawPointerUp(ev);                     // released somewhere we did not hear it
+        return;
+      }
+      if (!held) d.hover = { clientX: ev.clientX, clientY: ev.clientY };
+      drawMove(ev);
+    }
+
+    function drawPointerUp(ev) {
+      var d = draw;
+      if (!d) return;
+      if (!d.pressed) {                        // a click whose press never arrived
+        d.pressed = { x: ev.clientX, y: ev.clientY, t: Date.now() };
+        drawDown(drawLike(ev, ev));
+        if (!draw) return;
+      }
+      var p = d.pressed;
+      d.pressed = null;
+      drawUp(ev);
+      if (!draw) return;
+      var now = Date.now();
+      var still = Math.abs(ev.clientX - p.x) < 4 && Math.abs(ev.clientY - p.y) < 4 && now - p.t < 500;
+      if (!still) { d.lastClick = null; return; }
+      var lc = d.lastClick;
+      if (lc && now - lc.t < 450 && Math.abs(ev.clientX - lc.x) < 6 && Math.abs(ev.clientY - lc.y) < 6) {
+        d.lastClick = null;
+        drawDblClick(drawLike(ev, ev));
+      } else {
+        d.lastClick = { x: ev.clientX, y: ev.clientY, t: now };
+      }
+    }
+
+    function drawPointerUpOutside(ev) {
+      if (draw && draw.pressed && draw.svg && !draw.svg.contains(ev.target)) drawPointerUp(ev);
+    }
+
     function drawCapture(ev) {
       try { draw.svg.setPointerCapture(ev.pointerId); } catch (e) {}
     }
@@ -7200,7 +7269,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!d || d.opening) return;
       if (confirmOverlay) return;                       // the discard question owns the keyboard
       var t = ev.target;
-      if (t && d.ui && d.ui.contains(t) && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;   // our own fields; the UI root keeps their keys from the page
+      if (t && t.nodeType === 1 && d.ui && d.ui.contains(t) && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;   // our own fields; the UI root keeps their keys from the page
       ev.stopPropagation();
       if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
       if (ev.type !== 'keydown') return;
@@ -7301,6 +7370,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       window.removeEventListener('keyup', drawKey, true);
       window.removeEventListener('keypress', drawKey, true);
       window.removeEventListener('beforeunload', drawBeforeUnload);
+      window.removeEventListener('pointerup', drawPointerUpOutside, true);
       if (d.onScroll) { window.removeEventListener('scroll', d.onScroll, true); window.removeEventListener('resize', d.onScroll); }
       if (d.raf) cancelAnimationFrame(d.raf);
       if (d.svg && d.svg.parentNode) d.svg.parentNode.removeChild(d.svg);

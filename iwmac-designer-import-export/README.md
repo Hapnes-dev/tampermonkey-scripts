@@ -187,6 +187,14 @@ While Draw mode is open, everything outside the canvas is dimmed and blocked. No
 reaches the Designer: its own hotkeys (Delete, arrows, Ctrl+A/C/V/G) act on the objects,
 so they must not fire while you draw.
 
+**With the Designer Toolkit extension (v1.32.1).** That extension stops every `pointerdown` over
+the canvas at window level (`stopImmediatePropagation` and `preventDefault`), before any other
+listener runs. Moves and releases still get through. Measured live on plant 2349, where Draw
+mode received no presses at all. Draw now infers a press it never saw: a move with the
+button held, or a release, starts one where the pointer last was. It counts double-clicks
+itself instead of waiting for `dblclick`. Without such a tool the real press arrives first,
+and nothing is inferred.
+
 **Not yet:** editing the points of an existing path, rotation, layers, a symbol library,
 snapping to objects, and zoom inside the editor. The bar stays out of the canvas when the
 window has room for it, and its grip moves it when it does not.
