@@ -215,13 +215,14 @@ still went wrong:
 
 A key pressed straight after Enter on a label no longer vanishes into the hidden label field.
 
-**Not yet:** editing the points of an existing path, rotation, layers, a symbol library,
-snapping to objects, and zoom inside the editor. The bar stays out of the canvas when the
-window has room for it, and its grip moves it when it does not.
+**Not yet:** editing the points of an existing path, rotation, layers, snapping to objects,
+and zoom inside the editor. The bar stays out of the canvas when the window has room for it,
+and its grip moves it when it does not.
 
-Not yet tested against the live Designer. Every flow above ran in a stub host page that
-loads this script with the Designer's loaders and `iw_set_base_image` stubbed, over the
-Maskin style reference:
+Tested live on plant 2349 with 1.32.2, with the Designer Toolkit running: drawing, moving,
+deleting, undo, Done, reopening and removing a drawing. Every flow also runs in a stub host
+page that loads this script with the Designer's loaders and `iw_set_base_image` stubbed, over
+the Maskin style reference:
 - drawing with each tool;
 - moving, deleting and undoing;
 - Done, then reopening with all shapes editable;
@@ -233,6 +234,66 @@ Maskin style reference:
 through Save. If it re-encodes the picture, the drawing shows as drawn but reopens as a
 locked picture.
 
+## Draw library: components from Illustrator (v1.33.0)
+
+The Maskin artwork's Illustrator files keep their components around the artboard: fans,
+pumps, compressors, tanks, valves, alarm and temperature symbols, arrows. **▦ Library** on the
+Draw bar opens a panel down the left. **Import .ai…** reads a `.ai` file, and every visible
+object lying wholly outside its artboard becomes a component there. Components are grouped by
+their Illustrator layer and carry their Illustrator name where they have one, their size where
+they do not.
+
+Click a component, and every click on the drawing places it, centred where you click and on
+the grid when the grid is on. Esc or V stops. A placed component is a group: it moves and
+resizes as one and keeps its own colours. **Ungroup** (Ctrl+Shift+G) turns it back into its
+shapes, which then take the style row like any other shape. **Group** (Ctrl+G) joins a
+selection into one.
+
+How the file is read:
+- A PDF-compatible `.ai` carries two copies of the drawing. The PDF page that previews the
+  file shows only the artboard. Illustrator's own native data, split over the file's
+  `AIPrivateData` streams, holds everything, and that is what is read. Illustrator 2020 and
+  later pack it with zstd, which browsers cannot unpack, so the script carries its own
+  decoder; older files use zlib, which the browser unpacks.
+- CMYK colours go through the ICC profile the file carries, as Illustrator shows them. For
+  the Maskin files that is U.S. Web Coated (SWOP) v2, and the house palette comes out within
+  1 of 255 per channel. A file without a usable profile falls back to the plain formula.
+- Groups wider or taller than 700 px are opened into their parts, so a sheet of components
+  becomes the components. A group that straddles the artboard's edge gives up the parts that
+  lie outside it.
+- Hidden objects and hidden layers are left out, as Illustrator hides them; the panel says how
+  many.
+- Compound paths stay one path, so their holes stay holes. Opacity, dash patterns, caps and
+  joins come along.
+- Text, placed pictures, gradients and clipping are not read: Draw cannot show them yet.
+
+`2349_Maskin.ai` (Illustrator 2020 or later) gives 386 components in about half a second. The
+kit's Maskin template (Illustrator 23) gives 418.
+
+The library is kept in this browser's storage (`localStorage`, key `iwdie.draw.library.v1`,
+about 0.5 MB for these files). It comes back the next time Draw opens, on any panel of the
+Designer, and a new import replaces it. Nothing is uploaded. If the browser has no room left,
+the library lasts until the page reloads, and the panel says so.
+
+A stored library is cleaned on the way in, the same way a drawing is. Components bring two new
+shape kinds into drawings, and both are checked:
+- path data: absolute M, L, C and Z only, rebuilt from its numbers;
+- groups: at most nine deep, at most 5000 shapes each.
+
+So neither a hostile file nor a doctored storage entry can put markup into the page. Undo keeps
+up to 200 steps and, since components make big steps, at most about 50 MB of history.
+
+Verified in the stub host with real mouse and keyboard:
+- importing `2349_Maskin.ai`;
+- placing components from three layers;
+- moving one by its middle;
+- Ungroup and undo, then Group;
+- Done, and reopening with the groups intact;
+- the library still there after a reload.
+
+The kit's `tests/test-draw-library.js` holds the reader, the decoder, the colours and the
+cleaning.
+
 ## What it handles for you
 
 | Concern | Behaviour |
@@ -242,6 +303,7 @@ locked picture.
 | A target panel that is not empty | Replace-or-add is asked before anything is touched; Replace clears the canvas and the host's own object/container caches the way a full panel load does, Add keeps everything and merges |
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
 | Drawing background artwork | *Draw background…* draws on the canvas between the background and the objects; Done applies one PNG through `iw_set_base_image`, carrying the editable drawing inside it (v1.32.0) |
+| Components from Illustrator | *▦ Library* in Draw mode reads the objects around a `.ai` file's artboard and places them as groups (v1.33.0) |
 | Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green when every object and container arrived and red when any did not, and says how many (since v1.31.1 the file's own warnings are listed but never colour it) |
 | Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
 | Not-a-panel-file / VV sketch file on **insert** | Blocked with an itemised error panel, canvas untouched |

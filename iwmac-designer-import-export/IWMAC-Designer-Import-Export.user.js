@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.32.3
+// @version      1.33.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.32.3';
+var IWDIE_VERSION = '1.33.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -4378,13 +4378,33 @@ function iwdieDrawColor(c) {
 /** A shape as it may be trusted: a known type, finite numbers, checked colours,
  *  text as text - or null to drop it. The drawing travels inside a picture that
  *  Insert can bring from any file, so it is cleaned on the way in. */
-function iwdieDrawShape(s) {
+function iwdieDrawShape(s, depth) {
   if (!s || typeof s !== 'object') return null;
+  depth = depth || 0;
   var n = iwdieDrawNum, st = (s.st && typeof s.st === 'object') ? s.st : {};
   var style = {
     stroke: iwdieDrawColor(st.stroke), fill: iwdieDrawColor(st.fill),
     sw: Math.max(0, Math.min(60, n(st.sw) || 0)), dash: !!st.dash, arrow: !!st.arrow
   };
+  // v1.33.0, for drawings imported from Illustrator: an explicit dash pattern, caps, joins
+  if (Array.isArray(st.da)) {
+    var da = st.da.slice(0, 12).map(n).filter(function (v) { return v !== null && v >= 0; });
+    if (da.length && da.some(function (v) { return v > 0; })) style.da = da;
+  }
+  if (st.cap === 'round' || st.cap === 'square') style.cap = st.cap;
+  if (st.join === 'round' || st.join === 'bevel') style.join = st.join;
+  var op = n(st.op);
+  if (op !== null && op < 1) style.op = Math.max(0, op);
+  if (s.t === 'd') {
+    var dd = iwdieDrawCleanD(s.d);
+    return dd ? { t: 'd', d: dd, rule: s.rule === 'evenodd' ? 'evenodd' : '', st: style } : null;
+  }
+  if (s.t === 'group') {
+    if (depth > 8) return null;
+    var items = (Array.isArray(s.items) ? s.items : []).slice(0, 5000)
+      .map(function (c) { return iwdieDrawShape(c, depth + 1); }).filter(Boolean);
+    return items.length ? { t: 'group', name: typeof s.name === 'string' ? s.name.slice(0, 80) : '', items: items } : null;
+  }
   var pt = function (p) {
     return (Array.isArray(p) && n(p[0]) !== null && n(p[1]) !== null) ? [n(p[0]), n(p[1])] : null;
   };
@@ -4424,7 +4444,51 @@ function iwdieDrawShape(s) {
 
 /** A whole list of shapes, cleaned; anything unusable is left out. */
 function iwdieDrawShapes(list) {
-  return (Array.isArray(list) ? list : []).slice(0, 20000).map(iwdieDrawShape).filter(Boolean);
+  return (Array.isArray(list) ? list : []).slice(0, 20000).map(function (s) { return iwdieDrawShape(s, 0); }).filter(Boolean);
+}
+
+/** SVG path data as Draw keeps it: absolute M, L, C and Z only, every number
+ *  finite and rounded - rebuilt from its tokens, so nothing else gets through. */
+function iwdieDrawCleanD(d) {
+  if (typeof d !== 'string' || d.length > 400000) return null;
+  var toks = d.match(/[MLCZ]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g);
+  if (!toks || toks.join('').length < d.replace(/[\s,]/g, '').length) return null;   // anything else in it
+  var need = { M: 2, L: 2, C: 6, Z: 0 }, out = [], i = 0, started = false;
+  while (i < toks.length) {
+    var c = toks[i++];
+    if (!(c in need)) return null;
+    if (c !== 'M' && !started) return null;
+    started = true;
+    var part = c;
+    for (var k = 0; k < need[c]; k++) {
+      var v = iwdieDrawNum(toks[i++]);
+      if (v === null || i > toks.length) return null;
+      part += (k ? ' ' : '') + v;
+    }
+    out.push(part);
+  }
+  return out.length ? out.join(' ') : null;
+}
+
+/** A library's components as they may be trusted. The library is kept in the
+ *  browser's storage between sessions, so it is cleaned on the way in, the same
+ *  way a drawing is. */
+function iwdieDrawLibItems(list) {
+  var str = function (v) { return typeof v === 'string' ? v.slice(0, 80) : ''; };
+  return (Array.isArray(list) ? list : []).slice(0, 5000).map(function (it) {
+    if (!it || typeof it !== 'object') return null;
+    var shapes = iwdieDrawShapes(it.shapes);
+    if (!shapes.length) return null;
+    var w = iwdieDrawNum(it.w), h = iwdieDrawNum(it.h);
+    return { name: str(it.name), layer: str(it.layer), w: w > 0 ? w : 0, h: h > 0 ? h : 0, shapes: shapes };
+  }).filter(Boolean);
+}
+
+/** Every x, y pair of clean path data, in order. */
+function iwdieDrawDPairs(d) {
+  var nums = d.match(/-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [], out = [];
+  for (var i = 0; i + 1 < nums.length; i += 2) out.push([parseFloat(nums[i]), parseFloat(nums[i + 1])]);
+  return out;
 }
 
 function iwdieDrawFmt(v) { return String(Math.round(v * 100) / 100); }
@@ -4443,12 +4507,16 @@ function iwdieDrawMarkerSvg(color) {
 }
 
 function iwdieDrawStyleAttrs(st, isText) {
-  if (isText) return ' fill="' + (st.fill || 'none') + '"';
+  var op = (typeof st.op === 'number' && st.op < 1) ? ' opacity="' + iwdieDrawFmt(st.op) + '"' : '';
+  if (isText) return ' fill="' + (st.fill || 'none') + '"' + op;
   var stroked = !!(st.stroke && st.sw > 0);
-  var a = ' fill="' + (st.fill || 'none') + '" stroke="' + (stroked ? st.stroke : 'none') + '"';
+  var a = ' fill="' + (st.fill || 'none') + '" stroke="' + (stroked ? st.stroke : 'none') + '"' + op;
   if (stroked) {
     a += ' stroke-width="' + iwdieDrawFmt(st.sw) + '"';
-    if (st.dash) a += ' stroke-dasharray="' + iwdieDrawFmt(st.sw * 4) + ' ' + iwdieDrawFmt(st.sw * 3) + '"';
+    if (st.da) a += ' stroke-dasharray="' + st.da.map(iwdieDrawFmt).join(' ') + '"';
+    else if (st.dash) a += ' stroke-dasharray="' + iwdieDrawFmt(st.sw * 4) + ' ' + iwdieDrawFmt(st.sw * 3) + '"';
+    if (st.cap) a += ' stroke-linecap="' + st.cap + '"';
+    if (st.join) a += ' stroke-linejoin="' + st.join + '"';
   }
   return a;
 }
@@ -4474,6 +4542,13 @@ function iwdieDrawPathD(nodes, closed) {
 function iwdieDrawShapeSvg(s, extra) {
   var f = iwdieDrawFmt, st = s.st;
   extra = extra || '';
+  if (s.t === 'group') {
+    return '<g' + extra + '>' + s.items.map(function (c) { return iwdieDrawShapeSvg(c); }).join('') + '</g>';
+  }
+  if (s.t === 'd') {
+    var mk = (st.arrow && st.stroke && st.sw > 0) ? ' marker-end="url(#' + iwdieDrawArrowId(st.stroke) + ')"' : '';
+    return '<path d="' + s.d + '"' + (s.rule ? ' fill-rule="evenodd"' : '') + iwdieDrawStyleAttrs(st) + mk + extra + '/>';
+  }
   if (s.t === 'rect') {
     return '<rect x="' + f(s.x) + '" y="' + f(s.y) + '" width="' + f(s.w) + '" height="' + f(s.h) + '"' +
       (s.rx > 0 ? ' rx="' + f(s.rx) + '"' : '') + iwdieDrawStyleAttrs(st) + extra + '/>';
@@ -4500,7 +4575,13 @@ function iwdieDrawShapeSvg(s, extra) {
 /** The markers a list of shapes needs, once per arrow colour. */
 function iwdieDrawDefsSvg(shapes) {
   var seen = {};
-  (shapes || []).forEach(function (s) { if (s && s.st && s.st.arrow && s.st.stroke) seen[s.st.stroke] = 1; });
+  var walk = function (list) {
+    (list || []).forEach(function (s) {
+      if (s && s.t === 'group') walk(s.items);
+      else if (s && s.st && s.st.arrow && s.st.stroke) seen[s.st.stroke] = 1;
+    });
+  };
+  walk(shapes);
   return Object.keys(seen).map(iwdieDrawMarkerSvg).join('');
 }
 
@@ -4522,7 +4603,9 @@ function iwdieDrawBounds(s) {
   if (s.t === 'rect') return { x: s.x, y: s.y, w: s.w, h: s.h };
   if (s.t === 'ellipse') return { x: s.cx - s.rx, y: s.cy - s.ry, w: 2 * s.rx, h: 2 * s.ry };
   if (s.t === 'text') return { x: s.x, y: s.y - s.size * 0.8, w: s.text.length * s.size * 0.56, h: s.size };
+  if (s.t === 'group') return iwdieDrawUnion(s.items.map(iwdieDrawBounds));
   var xs = [], ys = [];
+  if (s.t === 'd') iwdieDrawDPairs(s.d).forEach(function (p) { xs.push(p[0]); ys.push(p[1]); });
   if (s.t === 'line') s.pts.forEach(function (p) { xs.push(p[0]); ys.push(p[1]); });
   if (s.t === 'path') s.nodes.forEach(function (k) { xs.push(k.x, k.ix, k.ox); ys.push(k.y, k.iy, k.oy); });
   var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys);
@@ -4547,7 +4630,19 @@ function iwdieDrawUnion(boxes) {
 function iwdieDrawMap(s, ax, bx, ay, by) {
   var N = iwdieDrawNum;
   var X = function (x) { return N(ax * x + bx); }, Y = function (y) { return N(ay * y + by); };
+  if (s.t === 'group') {
+    return { t: 'group', name: s.name, items: s.items.map(function (k) { return iwdieDrawMap(k, ax, bx, ay, by); }) };
+  }
   var c = JSON.parse(JSON.stringify(s));
+  if (s.t === 'd') {
+    var nums = s.d.match(/-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [], at = 0;
+    c.d = s.d.replace(/-?\d*\.?\d+(?:[eE][-+]?\d+)?/g, function () {
+      var v = parseFloat(nums[at]), r = (at % 2 === 0) ? X(v) : Y(v);
+      at++;
+      return String(r);
+    });
+    return c;
+  }
   if (s.t === 'rect') {
     var x1 = X(s.x), x2 = X(s.x + s.w), y1 = Y(s.y), y2 = Y(s.y + s.h);
     c.x = Math.min(x1, x2); c.w = Math.max(1, N(Math.abs(x2 - x1)));
@@ -4755,6 +4850,765 @@ function iwdieDrawExtract(png) {
   };
 }
 
+/* ---- Zstandard decoder (RFC 8878) ----
+   Illustrator 2020+ stores a document's native data (the part that holds the
+   objects outside the artboard) as "%AI24_ZStandard_Data" + one zstd frame, and
+   browsers' DecompressionStream has no zstd. Decoding only, whole buffer in
+   memory, no dictionaries; skippable frames are skipped; the checksum is read
+   but not verified. */
+
+var IWDIE_ZSTD_LL_BASE = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 40, 48, 64,
+  128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536];
+var IWDIE_ZSTD_LL_BITS = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11,
+  12, 13, 14, 15, 16];
+var IWDIE_ZSTD_ML_BASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+  29, 30, 31, 32, 33, 34, 35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387,
+  32771, 65539];
+var IWDIE_ZSTD_ML_BITS = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+var IWDIE_ZSTD_LL_DEFAULT = [4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1,
+  1, -1, -1, -1, -1];
+var IWDIE_ZSTD_ML_DEFAULT = [1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1];
+var IWDIE_ZSTD_OF_DEFAULT = [1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1];
+
+function iwdieZstdHighBit(v) { return 31 - Math.clz32(v); }
+
+/** Backward bit reader over src[start, end): zstd's FSE and Huffman streams are
+ *  read from the last byte towards the first, after its padding marker. */
+function iwdieZstdBackBits(src, start, end) {
+  var last = src[end - 1];
+  if (!last) throw new Error('zstd: bitstream without its end marker');
+  return { src: src, start: start, pos: (end - start) * 8 - (8 - iwdieZstdHighBit(last)), base: start };
+}
+
+/** Read n (0..32) bits; past the start of the stream it reads zeros and the
+ *  position goes negative, which is how the end is detected. */
+function iwdieZstdRead(br, n) {
+  if (!n) return 0;
+  var v = 0, got = 0;
+  while (got < n) {
+    var take = Math.min(n - got, 24);
+    br.pos -= take;
+    var p = br.pos, val = 0;
+    for (var i = 0; i < take; i++) {
+      var bit = p + i, byteIndex = bit >> 3;
+      if (bit >= 0 && byteIndex < (br.src.length - br.base)) val |= ((br.src[br.base + byteIndex] >> (bit & 7)) & 1) << i;
+    }
+    v = v * Math.pow(2, take) + val;   // higher bits were read first
+    got += take;
+  }
+  return v;
+}
+
+/** An FSE decoding table from normalised counts. */
+function iwdieZstdFseTable(norm, accuracyLog) {
+  var size = 1 << accuracyLog, high = size - 1, symbol = new Uint16Array(size), nbBits = new Uint8Array(size),
+    baseline = new Uint16Array(size), next = [];
+  for (var s = 0; s < norm.length; s++) {
+    if (norm[s] === -1) { symbol[high--] = s; next[s] = 1; } else next[s] = norm[s];
+  }
+  var step = (size >> 1) + (size >> 3) + 3, mask = size - 1, pos = 0;
+  for (s = 0; s < norm.length; s++) {
+    for (var i = 0; i < norm[s]; i++) {
+      symbol[pos] = s;
+      do { pos = (pos + step) & mask; } while (pos > high);
+    }
+  }
+  if (pos !== 0) throw new Error('zstd: bad FSE distribution');
+  for (var u = 0; u < size; u++) {
+    var sym = symbol[u], ns = next[sym]++;
+    nbBits[u] = accuracyLog - iwdieZstdHighBit(ns);
+    baseline[u] = (ns << nbBits[u]) - size;
+  }
+  return { log: accuracyLog, symbol: symbol, nbBits: nbBits, baseline: baseline };
+}
+
+/** An FSE table description at src[pos]: {table, end}. */
+function iwdieZstdReadFse(src, pos, maxSymbol, maxLog) {
+  var bitPos = 0;
+  var bits = function (n) {
+    var v = 0;
+    for (var i = 0; i < n; i++, bitPos++) v |= ((src[pos + (bitPos >> 3)] >> (bitPos & 7)) & 1) << i;
+    return v;
+  };
+  var peek = function (n) {
+    var v = 0;
+    for (var i = 0; i < n; i++) { var b = bitPos + i; v |= ((src[pos + (b >> 3)] >> (b & 7)) & 1) << i; }
+    return v;
+  };
+  var log = bits(4) + 5;
+  if (log > maxLog) throw new Error('zstd: FSE accuracy too large');
+  var remaining = (1 << log) + 1, threshold = 1 << log, nb = log + 1, sym = 0, norm = [], prev0 = false;
+  while (remaining > 1 && sym <= maxSymbol) {
+    if (prev0) {
+      var rep;
+      do { rep = bits(2); for (var r = 0; r < rep; r++) norm[sym++] = 0; } while (rep === 3);
+      if (sym > maxSymbol) break;
+    }
+    var max = (2 * threshold - 1) - remaining, count, low = peek(nb - 1);
+    if (low < max) { count = low; bitPos += nb - 1; }
+    else { count = peek(nb); if (count >= threshold) count -= max; bitPos += nb; }
+    count--;
+    remaining -= count < 0 ? -count : count;
+    norm[sym++] = count;
+    prev0 = count === 0;
+    while (remaining < threshold) { nb--; threshold >>= 1; }
+  }
+  if (remaining !== 1) throw new Error('zstd: FSE counts do not add up');
+  while (norm.length <= maxSymbol && norm.length < sym) norm.push(0);
+  return { table: iwdieZstdFseTable(norm, log), end: pos + ((bitPos + 7) >> 3) };
+}
+
+function iwdieZstdHuffTable(weights) {
+  var total = 0, i;
+  for (i = 0; i < weights.length; i++) if (weights[i]) total += 1 << (weights[i] - 1);
+  if (!total) throw new Error('zstd: empty Huffman weights');
+  var maxBits = iwdieZstdHighBit(total) + 1, rest = (1 << maxBits) - total;
+  if (rest & (rest - 1)) throw new Error('zstd: Huffman weights do not complete a tree');
+  weights = weights.concat([iwdieZstdHighBit(rest) + 1]);
+  var size = 1 << maxBits, symbol = new Uint8Array(size), nbBits = new Uint8Array(size), at = 0;
+  for (var w = 1; w <= maxBits; w++) {
+    for (var s = 0; s < weights.length; s++) {
+      if (weights[s] !== w) continue;
+      var span = 1 << (w - 1), len = maxBits + 1 - w;
+      for (var k = 0; k < span; k++) { symbol[at] = s; nbBits[at] = len; at++; }
+    }
+  }
+  return { maxBits: maxBits, symbol: symbol, nbBits: nbBits };
+}
+
+/** Huffman tree description at src[pos]: {table, end}. */
+function iwdieZstdReadHuff(src, pos) {
+  var head = src[pos], weights = [];
+  if (head < 128) {
+    var start = pos + 1, f = iwdieZstdReadFse(src, start, 255, 6), br = iwdieZstdBackBits(src, f.end, start + head);
+    var t = f.table, s1 = iwdieZstdRead(br, t.log), s2 = iwdieZstdRead(br, t.log);
+    for (;;) {
+      weights.push(t.symbol[s1]);
+      s1 = t.baseline[s1] + iwdieZstdRead(br, t.nbBits[s1]);
+      if (br.pos < 0) { weights.push(t.symbol[s2]); break; }
+      weights.push(t.symbol[s2]);
+      s2 = t.baseline[s2] + iwdieZstdRead(br, t.nbBits[s2]);
+      if (br.pos < 0) { weights.push(t.symbol[s1]); break; }
+      if (weights.length > 255) throw new Error('zstd: too many Huffman weights');
+    }
+    return { table: iwdieZstdHuffTable(weights), end: start + head };
+  }
+  var n = head - 127;
+  for (var i = 0; i < n; i++) {
+    var b = src[pos + 1 + (i >> 1)];
+    weights.push(i & 1 ? b & 15 : b >> 4);
+  }
+  return { table: iwdieZstdHuffTable(weights), end: pos + 1 + ((n + 1) >> 1) };
+}
+
+function iwdieZstdHuffStream(src, start, end, table, out, outPos, count) {
+  var br = iwdieZstdBackBits(src, start, end), mb = table.maxBits;
+  for (var i = 0; i < count; i++) {
+    var save = br.pos, peek = iwdieZstdRead(br, mb);
+    br.pos = save - table.nbBits[peek];
+    out[outPos + i] = table.symbol[peek];
+  }
+  if (br.pos !== 0) throw new Error('zstd: Huffman stream size mismatch');
+}
+
+function iwdieZstdSeqTable(src, pos, mode, defaults, defaultLog, maxSymbol, maxLog, prev) {
+  if (mode === 0) return { table: iwdieZstdFseTable(defaults, defaultLog), end: pos };
+  if (mode === 1) return { table: { log: 0, symbol: [src[pos]], nbBits: [0], baseline: [0] }, end: pos + 1 };
+  if (mode === 2) return iwdieZstdReadFse(src, pos, maxSymbol, maxLog);
+  if (!prev) throw new Error('zstd: repeat mode without a previous table');
+  return { table: prev, end: pos };
+}
+
+/** All frames of a zstd buffer, concatenated. */
+function iwdieZstdDecompress(src) {
+  var cap = 1 << 16, out = new Uint8Array(cap), outLen = 0, pos = 0;
+  var grow = function (need) {
+    if (outLen + need <= cap) return;
+    while (outLen + need > cap) cap *= 2;
+    var n = new Uint8Array(cap); n.set(out.subarray(0, outLen)); out = n;
+  };
+  while (pos + 4 <= src.length) {
+    var magic = (src[pos] | (src[pos + 1] << 8) | (src[pos + 2] << 16) | (src[pos + 3] << 24)) >>> 0;
+    pos += 4;
+    if ((magic & 0xFFFFFFF0) === 0x184D2A50) {           // skippable frame
+      pos += 4 + (src[pos] | (src[pos + 1] << 8) | (src[pos + 2] << 16) | (src[pos + 3] << 24));
+      continue;
+    }
+    if (magic !== 0xFD2FB528) {
+      if (outLen) break;                                   // padding after the last frame
+      throw new Error('zstd: not a zstd frame');
+    }
+    var fhd = src[pos++], fcsFlag = fhd >> 6, single = (fhd >> 5) & 1, checksum = (fhd >> 2) & 1, dictFlag = fhd & 3;
+    if (!single) pos++;                                    // window descriptor: everything stays in memory anyway
+    if (dictFlag) {
+      var did = [0, 1, 2, 4][dictFlag], dictId = 0;
+      for (var q = 0; q < did; q++) dictId |= src[pos + q] << (8 * q);
+      if (dictId) throw new Error('zstd: frames that need a dictionary are not supported');
+      pos += did;
+    }
+    pos += [single ? 1 : 0, 2, 4, 8][fcsFlag];
+    var rep = [1, 4, 8], huff = null, llT = null, ofT = null, mlT = null, last = 0;
+    while (!last) {
+      if (pos + 3 > src.length) throw new Error('zstd: the data ends early');
+      var bh = src[pos] | (src[pos + 1] << 8) | (src[pos + 2] << 16);
+      pos += 3;
+      last = bh & 1;
+      var type = (bh >> 1) & 3, size = bh >> 3;
+      if (pos + (type === 1 ? 1 : size) > src.length) throw new Error('zstd: the data ends early');
+      if (type === 0) { grow(size); out.set(src.subarray(pos, pos + size), outLen); outLen += size; pos += size; continue; }
+      if (type === 1) { grow(size); out.fill(src[pos], outLen, outLen + size); outLen += size; pos += 1; continue; }
+      if (type !== 2) throw new Error('zstd: reserved block type');
+      var blockEnd = pos + size;
+      // literals
+      var lh = src[pos], lType = lh & 3, sf = (lh >> 2) & 3, litSize, compSize = 0, streams = 1, lit;
+      if (lType < 2) {
+        if (sf === 0 || sf === 2) { litSize = lh >> 3; pos += 1; }
+        else if (sf === 1) { litSize = (lh >> 4) + (src[pos + 1] << 4); pos += 2; }
+        else { litSize = (lh >> 4) + (src[pos + 1] << 4) + (src[pos + 2] << 12); pos += 3; }
+        if (lType === 0) { lit = src.subarray(pos, pos + litSize); pos += litSize; }
+        else { lit = new Uint8Array(litSize); lit.fill(src[pos]); pos += 1; }
+      } else {
+        var hdrBytes = sf < 2 ? 3 : sf === 2 ? 4 : 5, bitsEach = sf < 2 ? 10 : sf === 2 ? 14 : 18, hv = 0;
+        for (var hb = 0; hb < hdrBytes; hb++) hv += src[pos + hb] * Math.pow(2, 8 * hb);
+        streams = sf === 0 ? 1 : 4;
+        litSize = Math.floor(hv / 16) % Math.pow(2, bitsEach);
+        compSize = Math.floor(hv / Math.pow(2, 4 + bitsEach)) % Math.pow(2, bitsEach);
+        pos += hdrBytes;
+        var litEnd = pos + compSize;
+        if (lType === 2) { var h = iwdieZstdReadHuff(src, pos); huff = h.table; pos = h.end; }
+        else if (!huff) throw new Error('zstd: treeless literals without a previous tree');
+        lit = new Uint8Array(litSize);
+        if (streams === 1) iwdieZstdHuffStream(src, pos, litEnd, huff, lit, 0, litSize);
+        else {
+          var s1 = src[pos] | (src[pos + 1] << 8), s2 = src[pos + 2] | (src[pos + 3] << 8), s3 = src[pos + 4] | (src[pos + 5] << 8);
+          var st = pos + 6, per = Math.floor((litSize + 3) / 4), bounds = [st, st + s1, st + s1 + s2, st + s1 + s2 + s3, litEnd];
+          for (var k = 0; k < 4; k++) iwdieZstdHuffStream(src, bounds[k], bounds[k + 1], huff, lit, k * per, k < 3 ? per : litSize - 3 * per);
+        }
+        pos = litEnd;
+      }
+      // sequences
+      var nbSeq = src[pos++];
+      if (nbSeq >= 128) {
+        if (nbSeq < 255) nbSeq = ((nbSeq - 128) << 8) + src[pos++];
+        else { nbSeq = src[pos] + (src[pos + 1] << 8) + 0x7F00; pos += 2; }
+      }
+      var litPos = 0;
+      if (nbSeq) {
+        var modes = src[pos++];
+        var r1 = iwdieZstdSeqTable(src, pos, modes >> 6, IWDIE_ZSTD_LL_DEFAULT, 6, 35, 9, llT); llT = r1.table; pos = r1.end;
+        var r2 = iwdieZstdSeqTable(src, pos, (modes >> 4) & 3, IWDIE_ZSTD_OF_DEFAULT, 5, 31, 8, ofT); ofT = r2.table; pos = r2.end;
+        var r3 = iwdieZstdSeqTable(src, pos, (modes >> 2) & 3, IWDIE_ZSTD_ML_DEFAULT, 6, 52, 9, mlT); mlT = r3.table; pos = r3.end;
+        var br = iwdieZstdBackBits(src, pos, blockEnd);
+        var sLL = iwdieZstdRead(br, llT.log), sOF = iwdieZstdRead(br, ofT.log), sML = iwdieZstdRead(br, mlT.log);
+        for (var n = 0; n < nbSeq; n++) {
+          var ofCode = ofT.symbol[sOF], mlCode = mlT.symbol[sML], llCode = llT.symbol[sLL];
+          var ofVal = Math.pow(2, ofCode) + iwdieZstdRead(br, ofCode);
+          var ml = IWDIE_ZSTD_ML_BASE[mlCode] + iwdieZstdRead(br, IWDIE_ZSTD_ML_BITS[mlCode]);
+          var ll = IWDIE_ZSTD_LL_BASE[llCode] + iwdieZstdRead(br, IWDIE_ZSTD_LL_BITS[llCode]);
+          var offset;
+          if (ofVal > 3) { offset = ofVal - 3; rep[2] = rep[1]; rep[1] = rep[0]; rep[0] = offset; }
+          else {
+            var idx = ofVal - 1 + (ll === 0 ? 1 : 0);
+            if (idx === 0) offset = rep[0];
+            else {
+              offset = idx === 3 ? rep[0] - 1 : rep[idx];
+              if (idx !== 1) rep[2] = rep[1];
+              rep[1] = rep[0];
+              rep[0] = offset;
+            }
+          }
+          if (n < nbSeq - 1) {
+            sLL = llT.baseline[sLL] + iwdieZstdRead(br, llT.nbBits[sLL]);
+            sML = mlT.baseline[sML] + iwdieZstdRead(br, mlT.nbBits[sML]);
+            sOF = ofT.baseline[sOF] + iwdieZstdRead(br, ofT.nbBits[sOF]);
+          }
+          grow(ll + ml);
+          out.set(lit.subarray(litPos, litPos + ll), outLen);
+          outLen += ll; litPos += ll;
+          if (offset > outLen) throw new Error('zstd: match offset before the start');
+          var from = outLen - offset;
+          if (offset >= ml) { out.copyWithin(outLen, from, from + ml); outLen += ml; }
+          else { for (var c = 0; c < ml; c++) out[outLen++] = out[from + c]; }
+        }
+        if (br.pos !== 0) throw new Error('zstd: sequence stream size mismatch');
+      }
+      var restLen = lit.length - litPos;
+      grow(restLen);
+      out.set(lit.subarray(litPos), outLen);
+      outLen += restLen;
+      pos = blockEnd;
+    }
+    if (checksum) pos += 4;
+  }
+  return out.slice(0, outLen);
+}
+
+/* ---- CMYK colours through the document's own ICC profile ----
+   Illustrator writes a CMYK document's colours as CMYK; what the screen shows is
+   their conversion through the profile embedded in the file. The naive formula
+   is far off (a pale grey comes out bluish), so the profile's A2B0 (perceptual)
+   lookup table is evaluated here: input curves, a multilinear CLUT, output
+   curves to Lab D50, then the Bradford-adapted sRGB matrix and gamma. Profiles
+   with 8- or 16-bit LUTs (mft1/mft2 - every Adobe CMYK profile) are read; any
+   other kind returns null and the naive formula is used. */
+
+function iwdieIccTag(u8, sig) {
+  var n = ((u8[128] << 24) | (u8[129] << 16) | (u8[130] << 8) | u8[131]) >>> 0;
+  for (var i = 0; i < n && 132 + 12 * i + 12 <= u8.length; i++) {
+    var p = 132 + 12 * i;
+    if (String.fromCharCode(u8[p], u8[p + 1], u8[p + 2], u8[p + 3]) === sig) {
+      return { off: ((u8[p + 4] << 24) | (u8[p + 5] << 16) | (u8[p + 6] << 8) | u8[p + 7]) >>> 0,
+               len: ((u8[p + 8] << 24) | (u8[p + 9] << 16) | (u8[p + 10] << 8) | u8[p + 11]) >>> 0 };
+    }
+  }
+  return null;
+}
+
+/** A CMYK (0..1 each) to '#rrggbb' converter for an ICC profile, or null. */
+function iwdieIccCmykConverter(u8) {
+  if (!u8 || u8.length < 132) return null;
+  var str = function (o) { return String.fromCharCode(u8[o], u8[o + 1], u8[o + 2], u8[o + 3]); };
+  if (str(16) !== 'CMYK') return null;
+  var pcs = str(20), tag = iwdieIccTag(u8, 'A2B0') || iwdieIccTag(u8, 'A2B1');
+  if (!tag || tag.off + 52 > u8.length) return null;
+  var o = tag.off, type = str(o);
+  if (type !== 'mft2' && type !== 'mft1') return null;
+  var wide = type === 'mft2', inCh = u8[o + 8], outCh = u8[o + 9], grid = u8[o + 10];
+  if (inCh !== 4 || outCh !== 3 || grid < 2) return null;
+  var n = wide ? (u8[o + 48] << 8) | u8[o + 49] : 256, m = wide ? (u8[o + 50] << 8) | u8[o + 51] : 256;
+  if (n < 2 || m < 2) return null;
+  var p = o + (wide ? 52 : 48), size = wide ? 2 : 1, top = wide ? 65535 : 255;
+  var cells = Math.pow(grid, inCh);
+  if (p + (inCh * n + cells * outCh + outCh * m) * size > u8.length) return null;   // a damaged profile, not a huge table
+  var val = function (at) { return (wide ? (u8[at] << 8) | u8[at + 1] : u8[at]) / top; };
+  var inT = [], outT = [], i, j;
+  for (i = 0; i < inCh; i++) { var t = new Float64Array(n); for (j = 0; j < n; j++) t[j] = val(p + (i * n + j) * size); inT.push(t); }
+  p += inCh * n * size;
+  var clut = new Float64Array(cells * outCh);
+  for (i = 0; i < cells * outCh; i++) clut[i] = val(p + i * size);
+  p += cells * outCh * size;
+  for (i = 0; i < outCh; i++) { var u = new Float64Array(m); for (j = 0; j < m; j++) u[j] = val(p + (i * m + j) * size); outT.push(u); }
+  var curve = function (t, x) {
+    var f = Math.max(0, Math.min(1, x)) * (t.length - 1), k = Math.min(t.length - 2, Math.floor(f));
+    return t[k] + (t[k + 1] - t[k]) * (f - k);
+  };
+  var cache = {};
+  return function (c, mm, y, k) {
+    var key = [c, mm, y, k].map(function (v) { return Math.round(v * 10000); }).join(',');
+    if (cache[key]) return cache[key];
+    var x = [curve(inT[0], c), curve(inT[1], mm), curve(inT[2], y), curve(inT[3], k)];
+    var base = [], frac = [];
+    for (var d = 0; d < 4; d++) {
+      var g = x[d] * (grid - 1), b = Math.min(grid - 2, Math.floor(g));
+      base.push(b); frac.push(g - b);
+    }
+    var res = [0, 0, 0];
+    for (var corner = 0; corner < 16; corner++) {
+      var w = 1, idx = 0;
+      for (d = 0; d < 4; d++) {
+        var bit = (corner >> (3 - d)) & 1;
+        w *= bit ? frac[d] : 1 - frac[d];
+        idx = idx * grid + base[d] + bit;
+      }
+      if (!w) continue;
+      for (var ch = 0; ch < 3; ch++) res[ch] += w * clut[idx * 3 + ch];
+    }
+    var e = [curve(outT[0], res[0]), curve(outT[1], res[1]), curve(outT[2], res[2])], X, Y, Z;
+    if (pcs === 'Lab ') {
+      var L = wide ? e[0] * 65535 / 65280 * 100 : e[0] * 100;
+      var A = wide ? e[1] * 65535 / 256 - 128 : e[1] * 255 - 128;
+      var B = wide ? e[2] * 65535 / 256 - 128 : e[2] * 255 - 128;
+      var fy = (L + 16) / 116, fx = fy + A / 500, fz = fy - B / 200;
+      var inv = function (f) { return f > 6 / 29 ? f * f * f : 3 * (6 / 29) * (6 / 29) * (f - 4 / 29); };
+      X = 0.9642 * inv(fx); Y = inv(fy); Z = 0.8249 * inv(fz);
+    } else {
+      X = e[0] * 65535 / 32768; Y = e[1] * 65535 / 32768; Z = e[2] * 65535 / 32768;
+    }
+    var lin = [3.1338561 * X - 1.6168667 * Y - 0.4906146 * Z, -0.9787684 * X + 1.9161415 * Y + 0.0334540 * Z,
+      0.0719453 * X - 0.2289914 * Y + 1.4052427 * Z];
+    var hex = '#' + lin.map(function (v) {
+      v = Math.max(0, Math.min(1, v));
+      v = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+      var s = Math.round(v * 255).toString(16);
+      return s.length < 2 ? '0' + s : s;
+    }).join('');
+    cache[key] = hex;
+    return hex;
+  };
+}
+
+/** The naive CMYK formula - only when there is no usable profile. */
+function iwdieCmykNaive(c, m, y, k) {
+  return '#' + [c, m, y].map(function (v) {
+    var s = Math.round(255 * (1 - v) * (1 - k)).toString(16);
+    return s.length < 2 ? '0' + s : s;
+  }).join('');
+}
+
+/* ---- Illustrator .ai: the objects outside the artboard (v1.33.0) ----
+   A PDF-compatible .ai has two copies of the drawing. The PDF page shows the
+   artboard only; the native document - zstd- or zlib-compressed in the
+   AIPrivateData streams - holds everything, including the components a designer
+   keeps around the artboard. The native art is Illustrator's PostScript-like
+   line format. Symbol instances carry their art commented out ("%_") as "AI
+   Local Art"; plugin groups carry theirs between X= and X+. Text lives in a
+   separate text document and is not read; neither are pictures, gradients and
+   clipping, which Draw cannot show. */
+
+function iwdieLatin1(u8) {
+  var s = '';
+  for (var i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return s;
+}
+
+/** A PostScript string's content as text: escapes resolved, and UTF-8 decoded
+ *  when it is UTF-8 - Illustrator writes names that way (Rør, not RÃ¸r). */
+function iwdieAiText(s) {
+  var raw = String(s).replace(/\\([nrtbf\\()]|[0-7]{1,3})/g, function (m, e) {
+    if (/^[0-7]/.test(e)) return String.fromCharCode(parseInt(e, 8) & 255);
+    return { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' }[e] || e;
+  });
+  if (!/[\x80-\xff]/.test(raw)) return raw;
+  try {
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i) & 255;
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch (e) {
+    return raw;
+  }
+}
+
+/** An object's name as people wrote it: Illustrator's unique ids turn spaces
+ *  into underscores and number duplicates as _2_, _3_. */
+function iwdieAiName(id) {
+  return String(id || '').replace(/_\d+_$/, '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Where each PDF object starts, by number - the last definition wins, as in an
+ *  incrementally saved file. Only "N G obj" at the start of a line counts. */
+function iwdiePdfIndex(text) {
+  var idx = {}, re = /(?:^|[\r\n])(\d+)\s+\d+\s+obj\b/g, m;
+  while ((m = re.exec(text))) idx[m[1]] = m.index + m[0].length;
+  return idx;
+}
+
+/** Object `num`'s stream: {dict, data, filter}; data is still encoded. */
+function iwdiePdfStream(u8, text, idx, num) {
+  var at = idx[num];
+  if (at === undefined) return null;
+  var s = text.indexOf('stream', at), e = text.indexOf('endobj', at);
+  if (s < 0 || (e >= 0 && e < s)) return null;
+  var dict = text.slice(at, s), start = s + 6;
+  if (text.charCodeAt(start) === 13) start++;
+  if (text.charCodeAt(start) === 10) start++;
+  var lm = /\/Length\s+(\d+)(\s+\d+\s+R)?/.exec(dict), len = -1;
+  if (lm && !lm[2]) len = parseInt(lm[1], 10);
+  else if (lm && idx[lm[1]] !== undefined) len = parseInt(text.slice(idx[lm[1]], idx[lm[1]] + 40), 10);
+  if (!(len >= 0) || start + len > u8.length) len = text.indexOf('endstream', start) - start;
+  if (!(len >= 0)) return null;
+  var fm = /\/Filter\s*\/(\w+)/.exec(dict);
+  return { dict: dict, data: u8.subarray(start, start + len), filter: fm ? fm[1] : null };
+}
+
+/** The pieces of a .ai: its native-data blocks in order, the CMYK ICC profile
+ *  of its PDF page if there is one, and whether it is a bare PostScript .ai.
+ *  Blocks and profile may still be Flate-encoded (`filter`). */
+function iwdieAiContainer(u8) {
+  var text = iwdieLatin1(u8);
+  if (text.indexOf('%!PS-Adobe') === 0) return { bare: true, blocks: [{ data: u8, filter: null }], icc: null };
+  if (text.indexOf('%PDF-') !== 0) throw new Error('this is not an Illustrator file');
+  var idx = iwdiePdfIndex(text), refs = [], re = /\/AIPrivateData(\d+)\s+(\d+)\s+\d+\s+R/g, m;
+  while ((m = re.exec(text))) refs.push([parseInt(m[1], 10), m[2]]);
+  if (!refs.length) throw new Error('the file has no Illustrator data in it - it was saved without "Create PDF Compatible File", or by another program');
+  var seen = {};
+  refs = refs.filter(function (r) { if (seen[r[0]]) return false; seen[r[0]] = 1; return true; }).sort(function (a, b) { return a[0] - b[0]; });
+  var blocks = refs.map(function (r) {
+    var st = iwdiePdfStream(u8, text, idx, r[1]);
+    if (!st) throw new Error('Illustrator data block ' + r[0] + ' is missing');
+    return { data: st.data, filter: st.filter };
+  });
+  var icc = null, ir = /\/ICCBased\s+(\d+)\s+\d+\s+R/g;
+  while (!icc && (m = ir.exec(text))) {
+    var st2 = iwdiePdfStream(u8, text, idx, m[1]);
+    if (st2 && /\/N\s+4\b/.test(st2.dict)) icc = { data: st2.data, filter: st2.filter };
+  }
+  return { bare: false, blocks: blocks, icc: icc };
+}
+
+/** The native document from the joined blocks: decompressed here when it is
+ *  zstd (Illustrator 2020+); {inflate: bytes} when it is zlib (older), which the
+ *  browser inflates asynchronously. Older files put a plain header block before
+ *  the compressed part, so the marker is looked for, not assumed at the start. */
+function iwdieAiNative(joined) {
+  var head = iwdieLatin1(joined.subarray(0, Math.min(joined.length, 1 << 17)));
+  var z = head.indexOf('%AI24_ZStandard_Data'), c = head.indexOf('%AI12_CompressedData');
+  if (z >= 0) return { bytes: iwdieZstdDecompress(joined.subarray(z + 20)) };
+  if (c >= 0) return { inflate: joined.subarray(c + 20) };
+  return { bytes: joined };
+}
+
+/** Illustrator's native art as a tree: {artboards: [{x0, y0, x1, y1}],
+ *  layers: [{name, visible, items}]}. Items are {kind: 'group', name, children}
+ *  or {kind: 'path', name, d, rule, style}, in native coordinates (y up); hidden
+ *  ones carry hidden: true. Each line is read as PostScript: numbers, arrays,
+ *  strings and names go on a stack and every operator takes what it needs - a
+ *  line may carry several ("0 J 0 j 1 w 10 M []0 d"). Paint state carries over
+ *  from object to object, as Illustrator writes only what changes. Compound
+ *  paths come out as one path, so their holes stay holes. */
+function iwdieAiParse(text) {
+  // Each artboard records its two corners, in either order (Illustrator 23 writes
+  // PositionPoint2 first, 30 writes PositionPoint1 first), in ruler-origin units.
+  var artboards = [], ab = /%_(-?[\d.]+) (-?[\d.]+) \/RealPointRelToROrigin\r?\n?%_ \(PositionPoint([12])\)/g, am, corner = {};
+  while ((am = ab.exec(text))) {
+    corner[am[3]] = [+am[1], +am[2]];
+    if (corner['1'] && corner['2']) {
+      var p1 = corner['1'], p2 = corner['2'];
+      artboards.push({ x0: Math.min(p1[0], p2[0]), y0: Math.min(p1[1], p2[1]), x1: Math.max(p1[0], p2[0]), y1: Math.max(p1[1], p2[1]) });
+      corner = {};
+    }
+  }
+  var start = text.indexOf('%AI5_BeginLayer');
+  var lines = text.slice(start < 0 ? 0 : start).split(/\r\n?|\n/);
+  var layers = [], layer = null, stack = [], last = null, hidden = false;
+  var st = { fill: null, stroke: null, w: 1, cap: 0, join: 0, da: null, rule: 0, op: 1 };
+  var path = [], clip = false, inSymbolDef = 0, inText = 0, inRaster = false, inst = null, instArt = 0, instHead = false;
+  var tokRe = /\[[^\]]*\]|\((?:\\.|[^\\)])*\)|\/[^\s\/\[\]()]+|[^\s\[\]()]+/g, num = /^-?\d*\.?\d+(?:[eE][-+]?\d+)?$/;
+  var parentList = function () {
+    var top = stack.length ? stack[stack.length - 1] : null;
+    return top ? (top.kind === 'compound' ? null : top.children) : (layer ? layer.items : null);
+  };
+  // "1 Xw" hides the next object Illustrator writes
+  var push = function (item) {
+    if (hidden) { item.hidden = true; hidden = false; }
+    var list = parentList();
+    if (list) list.push(item);
+    last = item;
+  };
+  var paint = function (op) {
+    return { fill: /^[fFbB]$/.test(op) ? st.fill : null, stroke: /^[sSbB]$/.test(op) ? st.stroke : null,
+      w: st.w, cap: st.cap, join: st.join, da: st.da, op: st.op };
+  };
+  var emit = function (op) {
+    if (/^[fsbn]$/.test(op) && path.length && path[path.length - 1] !== 'Z') path.push('Z');
+    var paints = !clip && /^[fFsSbB]$/.test(op), d = path.join(' ');
+    var top = stack.length ? stack[stack.length - 1] : null;
+    if (d && top && top.kind === 'compound') {
+      if (!clip) top.parts.push(d);
+      if (paints && !top.style) top.style = paint(op);
+      top.rule = st.rule;
+    } else if (d && paints) {
+      push({ kind: 'path', name: '', d: d, rule: st.rule, style: paint(op) });
+    }
+    path = []; clip = false;
+  };
+  for (var li = 0; li < lines.length; li++) {
+    var line = lines[li];
+    if (!line) continue;
+    if (line.charCodeAt(0) === 37) {                                   // '%'
+      if (line.indexOf('%AI5_BeginLayer') === 0) { layer = { name: '', visible: true, items: [] }; layers.push(layer); stack = []; last = null; hidden = false; continue; }
+      if (line.indexOf('%AI5_EndLayer') === 0) { layer = null; continue; }
+      if (line.indexOf('%AI14_BeginSymbol') === 0) { inSymbolDef++; continue; }
+      if (line.indexOf('%AI10_EndSymbol') === 0) { inSymbolDef--; continue; }
+      if (line.indexOf('%AI5_BeginRaster') === 0) { inRaster = true; continue; }
+      if (line.indexOf('%AI5_EndRaster') === 0) { inRaster = false; continue; }
+      if (inSymbolDef || inRaster) continue;
+      if (line.indexOf('%_/XMLUID : (') === 0) {
+        var nm = /\((.*?)\) ; \(AI10_ArtUID\)/.exec(line);
+        if (nm && !(inst && !instArt) && last && !last.name) last.name = iwdieAiText(nm[1]);
+        continue;
+      }
+      if (inst && line.indexOf('%_') === 0) {
+        var inner = line.slice(2).trim();
+        if (inner === 'X=') {
+          if (++instArt === 1) {
+            var g = { kind: 'group', name: inst.name, children: [] };
+            if (inst.hidden) g.hidden = true;
+            push(g); stack.push(g);
+          }
+          continue;
+        }
+        if (inner === 'X+') { if (--instArt === 0) { last = stack.pop() || last; inst = null; } continue; }
+        if (instArt > 0) line = inner; else continue;                // the local art is drawn, its dictionaries are not
+      } else continue;
+    }
+    if (inSymbolDef || inRaster) continue;
+    var trimmed = line.trim();
+    if (inText) {                                                      // /AI11Text : ... ; is skipped whole
+      if (/:\s*$/.test(trimmed)) inText++;
+      else if (/^;/.test(trimmed)) inText--;
+      continue;
+    }
+    if (trimmed.indexOf('/AI11Text') === 0) { inText = 1; continue; }
+    if (trimmed.indexOf('/SymbolInstance') === 0) {
+      var sn = /^\(((?:\\.|[^\\)])*)\)/.exec((lines[li + 1] || '').trim());
+      inst = { name: sn ? iwdieAiText(sn[1]) : 'symbol', hidden: hidden }; instHead = true; hidden = false;
+      continue;
+    }
+    if (instHead) { if (trimmed === ';') instHead = false; continue; }  // the instance header: ref, matrix, ';'
+    var toks = trimmed.match(tokRe) || [], ops = [];
+    for (var ti = 0; ti < toks.length; ti++) {
+      var t = toks[ti], c0 = t.charAt(0);
+      if (num.test(t)) { ops.push(parseFloat(t)); continue; }
+      if (c0 === '[') { ops.push(t.slice(1, -1).trim().split(/\s+/).filter(function (v) { return num.test(v); }).map(parseFloat)); continue; }
+      if (c0 === '(') { ops.push(t.slice(1, -1)); continue; }
+      if (c0 === '/') { ops.push(t); continue; }
+      var n = [];
+      for (var oi = 0; oi < ops.length; oi++) if (typeof ops[oi] === 'number') n.push(ops[oi]);
+      var L = n.length;
+      switch (t) {
+        case 'k': if (L >= 4) st.fill = { cmyk: n.slice(L - 4) }; break;
+        case 'K': if (L >= 4) st.stroke = { cmyk: n.slice(L - 4) }; break;
+        case 'Xa': if (L >= 3) st.fill = { rgb: n.slice(L - 3) }; break;
+        case 'XA': if (L >= 3) st.stroke = { rgb: n.slice(L - 3) }; break;
+        case 'g': if (L >= 1) st.fill = { cmyk: [0, 0, 0, 1 - n[L - 1]] }; break;
+        case 'G': if (L >= 1) st.stroke = { cmyk: [0, 0, 0, 1 - n[L - 1]] }; break;
+        case 'w': if (L >= 1) st.w = n[L - 1]; break;
+        case 'J': if (L >= 1) st.cap = n[L - 1]; break;
+        case 'j': if (L >= 1) st.join = n[L - 1]; break;
+        case 'XR': if (L >= 1) st.rule = n[L - 1]; break;
+        case 'Xy': if (L >= 5) st.op = Math.max(0, Math.min(1, n[L - 4])); break;   // mode opacity isolated knockout ...
+        case 'Xw': if (L >= 1) hidden = n[L - 1] === 1; break;
+        case 'Lb': if (L >= 1 && layer) layer.visible = n[Math.max(0, L - 14)] !== 0; break;
+        case 'd': {
+          var arr = null;
+          for (var ai = 0; ai < ops.length; ai++) if (Array.isArray(ops[ai])) arr = ops[ai];
+          st.da = arr && arr.length ? arr : null;
+          break;
+        }
+        case 'm': if (L >= 2) path.push('M' + n[L - 2] + ' ' + n[L - 1]); break;
+        case 'l': case 'L': if (L >= 2) path.push('L' + n[L - 2] + ' ' + n[L - 1]); break;
+        case 'c': case 'C': if (L >= 6) path.push('C' + n.slice(L - 6).join(' ')); break;
+        case 'v': case 'V': if (L >= 4) path.push('V' + n.slice(L - 4).join(' ')); break;
+        case 'y': case 'Y': if (L >= 4) path.push('Y' + n.slice(L - 4).join(' ')); break;
+        case 'h': if (path.length && path[path.length - 1] !== 'Z') path.push('Z'); break;
+        case 'W': clip = true; break;
+        case 'f': case 'F': case 's': case 'S': case 'b': case 'B': case 'n': case 'N': emit(t); break;
+        case 'u': case 'q': case 'X=': {
+          var grp = { kind: 'group', name: '', children: [], clip: t === 'q' };
+          push(grp); stack.push(grp); break;
+        }
+        case '*u': {
+          var cp = { kind: 'compound', parts: [], style: null, rule: st.rule, hidden: hidden };
+          hidden = false;
+          stack.push(cp); break;
+        }
+        case '*U': {
+          var done = stack.pop();
+          if (done && done.kind === 'compound' && done.parts.length && done.style) {
+            var whole = { kind: 'path', name: '', d: done.parts.join(' '), rule: done.rule, style: done.style };
+            if (done.hidden) whole.hidden = true;
+            push(whole);
+          }
+          break;
+        }
+        case 'U': case 'Q': case 'X+': {
+          var closed = stack.pop();
+          if (closed) last = closed;
+          break;
+        }
+        case 'Ln': {
+          for (var si = ops.length - 1; si >= 0; si--) if (typeof ops[si] === 'string' && ops[si].charAt(0) !== '/') { if (layer) layer.name = iwdieAiText(ops[si]); break; }
+          break;
+        }
+        default: break;
+      }
+      ops = [];
+    }
+  }
+  return { artboards: artboards, layers: layers };
+}
+
+/* Path data with Illustrator's v/y shorthands resolved, as absolute M/L/C/Z. */
+function iwdieAiPathD(d) {
+  var out = [], cx = 0, cy = 0, sx = 0, sy = 0;
+  d.split(/ (?=[MLCVYZ])/).forEach(function (seg) {
+    var c = seg.charAt(0), n = seg.slice(1).trim() ? seg.slice(1).trim().split(/\s+/).map(parseFloat) : [];
+    if (c === 'M') { cx = sx = n[0]; cy = sy = n[1]; out.push(['M', cx, cy]); }
+    else if (c === 'L') { cx = n[0]; cy = n[1]; out.push(['L', cx, cy]); }
+    else if (c === 'C') { out.push(['C'].concat(n)); cx = n[4]; cy = n[5]; }
+    else if (c === 'V') { out.push(['C', cx, cy, n[0], n[1], n[2], n[3]]); cx = n[2]; cy = n[3]; }
+    else if (c === 'Y') { out.push(['C', n[0], n[1], n[2], n[3], n[2], n[3]]); cx = n[2]; cy = n[3]; }
+    else if (c === 'Z') { out.push(['Z']); cx = sx; cy = sy; }
+  });
+  return out;
+}
+
+/** The visible objects of a parsed .ai that lie wholly outside its artboard(s),
+ *  as a Draw library: {items: [{name, layer, w, h, shapes}], hidden} - items in
+ *  their own coordinates (top-left 0, 0, y down), colours converted by
+ *  `color(c, m, y, k)`; `hidden` counts the objects outside the artboard that
+ *  were left out for being hidden in Illustrator. Groups bigger than `maxSize`
+ *  are opened into their children, so a sheet of components becomes the
+ *  components. */
+function iwdieAiLibrary(parsed, color, maxSize) {
+  maxSize = maxSize || 700;
+  var abs = parsed.artboards.length ? parsed.artboards : [];
+  var top = abs.length ? Math.max.apply(null, abs.map(function (a) { return a.y1; })) : 0;
+  var left = abs.length ? Math.min.apply(null, abs.map(function (a) { return a.x0; })) : 0;
+  var hidden = 0;
+  var hex = function (c) {
+    if (!c) return null;
+    if (c.rgb) return '#' + c.rgb.map(function (v) { var s = Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16); return s.length < 2 ? '0' + s : s; }).join('');
+    return color(c.cmyk[0], c.cmyk[1], c.cmyk[2], c.cmyk[3]);
+  };
+  var union = function (list) {
+    return list.reduce(function (a, k) { return { x0: Math.min(a.x0, k.box.x0), y0: Math.min(a.y0, k.box.y0), x1: Math.max(a.x1, k.box.x1), y1: Math.max(a.y1, k.box.y1) }; }, list[0].box);
+  };
+  // native y up, origin at the artboard's top-left -> panel coordinates; what is
+  // hidden keeps its box, so it can be told apart from what was never outside
+  var conv = function (item, hid) {
+    hid = hid || !!item.hidden;
+    if (item.kind === 'path') {
+      var segs = iwdieAiPathD(item.d), xs = [], ys = [];
+      var d = segs.map(function (s) {
+        if (s[0] === 'Z') return 'Z';
+        var o = s[0];
+        for (var i = 1; i < s.length; i += 2) {
+          var x = Math.round((s[i] - left) * 100) / 100, y = Math.round((top - s[i + 1]) * 100) / 100;
+          xs.push(x); ys.push(y); o += (i > 1 ? ' ' : '') + x + ' ' + y;
+        }
+        return o;
+      }).join(' ');
+      if (!xs.length) return null;
+      var box = { x0: Math.min.apply(null, xs), y0: Math.min.apply(null, ys), x1: Math.max.apply(null, xs), y1: Math.max.apply(null, ys) };
+      if (hid) return { hid: true, box: box };
+      var sty = item.style, cap = ['butt', 'round', 'square'][sty.cap] || 'butt', join = ['miter', 'round', 'bevel'][sty.join] || 'miter';
+      var st = { stroke: hex(sty.stroke), fill: hex(sty.fill), sw: sty.stroke ? sty.w : 0,
+        dash: false, arrow: false, da: sty.da, cap: cap, join: join };
+      if (sty.op < 1) st.op = sty.op;
+      return { shape: { t: 'd', d: d, rule: item.rule ? 'evenodd' : '', st: st }, box: box };
+    }
+    var all = (item.children || []).map(function (k) { return conv(k, hid); }).filter(Boolean);
+    if (!all.length) return null;
+    var shown = all.filter(function (k) { return !k.hid; });
+    if (!shown.length) return { hid: true, box: union(all), kids: all };
+    return { shape: { t: 'group', name: iwdieAiName(item.name), items: shown.map(function (k) { return k.shape; }) }, box: union(shown), kids: all };
+  };
+  var art = { x0: 0, y0: 0, x1: abs.length ? Math.max.apply(null, abs.map(function (a) { return a.x1; })) - left : 0, y1: abs.length ? top - Math.min.apply(null, abs.map(function (a) { return a.y0; })) : 0 };
+  var outside = function (b) { return b.x1 < art.x0 || b.x0 > art.x1 || b.y1 < art.y0 || b.y0 > art.y1; };
+  var lib = [];
+  var take = function (c, layerName) {
+    if (!c) return;
+    var w = c.box.x1 - c.box.x0, h = c.box.y1 - c.box.y0;
+    if (c.kids && (w > maxSize || h > maxSize)) { c.kids.forEach(function (k) { take(k, layerName); }); return; }
+    if (!outside(c.box)) {
+      // a group straddling the artboard may still hold components that are outside it
+      if (c.kids) c.kids.forEach(function (k) { take(k, layerName); });
+      return;
+    }
+    if (c.hid) { hidden++; return; }
+    var shape = iwdieDrawMap(c.shape, 1, -c.box.x0, 1, -c.box.y0);
+    lib.push({ name: (shape.t === 'group' && shape.name) || '', layer: layerName, w: Math.round(w * 100) / 100, h: Math.round(h * 100) / 100,
+      shapes: shape.t === 'group' ? shape.items : [shape] });
+  };
+  parsed.layers.forEach(function (l) {
+    l.items.forEach(function (it) { take(conv(it, l.visible === false), l.name); });
+  });
+  return { items: lib, hidden: hidden };
+}
+
 /* ===================== browser body ===================== */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   (function () {
@@ -4899,6 +5753,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-draw-layer.iwdie-tool-select [data-i]{cursor:move}',
       '.iwdie-draw-layer.iwdie-tool-text{cursor:text}',
       '.iwdie-draw-layer .iwdie-draw-hit{stroke-opacity:0;fill:none;pointer-events:stroke}',
+      '.iwdie-draw-layer .iwdie-draw-hitbox{fill:#000;fill-opacity:0;stroke:none;pointer-events:all}',
+      '.iwdie-draw-layer.iwdie-tool-stamp{cursor:copy}',
+      /* The library (v1.33.0): components from an Illustrator file, down the left. */
+      '.iwdie-draw-lib{position:fixed;left:8px;top:120px;bottom:8px;width:284px;z-index:2147483647;background:#fff;border:1px solid #c9d1d9;border-radius:8px;',
+      '  box-shadow:0 6px 24px rgba(0,0,0,.3);display:flex;flex-direction:column;font:12.5px/1.4 Roboto,Arial,sans-serif;color:#222;box-sizing:border-box}',
+      '.iwdie-draw-lib[hidden]{display:none}',
+      '.iwdie-draw-lib-head{display:flex;align-items:center;gap:6px;padding:8px 8px 4px 10px}',
+      '.iwdie-draw-lib-head b{flex:0 0 auto}',
+      '.iwdie-draw-lib-count{flex:1 1 auto;color:#5a6570;font-size:12px}',
+      '.iwdie-draw-lib-head button{border:none;background:transparent;font-size:17px;line-height:1;cursor:pointer;color:#5a6570;padding:2px 6px;border-radius:4px}',
+      '.iwdie-draw-lib-head button:hover{background:#eef4fa}',
+      '.iwdie-draw-lib-tools{display:flex;gap:6px;padding:4px 10px}',
+      '.iwdie-draw-lib-tools input{flex:1 1 auto;min-width:0;font:12.5px Roboto,Arial,sans-serif;padding:3px 6px;border:1px solid #c9d1d9;border-radius:4px}',
+      '.iwdie-draw-lib-tools button{white-space:nowrap;font:12.5px Roboto,Arial,sans-serif;border:1px solid #c9d1d9;background:#f6f8fa;border-radius:4px;padding:3px 8px;cursor:pointer;color:#222}',
+      '.iwdie-draw-lib-tools button:hover:not(:disabled){background:#eef4fa;border-color:#9fb6cc}',
+      '.iwdie-draw-lib-status{padding:2px 10px 6px;color:#5a6570;font-size:12px;line-height:1.45}',
+      '.iwdie-draw-lib-status.iwdie-bad{color:#b3261e}',
+      '.iwdie-draw-lib-list{flex:1 1 auto;overflow:auto;padding:0 6px 8px 10px}',
+      '.iwdie-draw-lib-list details{margin:2px 0 6px}',
+      '.iwdie-draw-lib-list summary{cursor:pointer;font-weight:600;color:#33414d;padding:3px 0}',
+      '.iwdie-draw-lib-list summary span{font-weight:400;color:#7a8692}',
+      '.iwdie-draw-lib-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}',
+      '.iwdie-draw-lib-item{display:flex;flex-direction:column;align-items:stretch;gap:2px;border:1px solid #d5dbe1;background:#f8f9fb;border-radius:6px;padding:4px;cursor:pointer;min-width:0;font:inherit;color:inherit}',
+      '.iwdie-draw-lib-item:hover{border-color:#9fb6cc;background:#eef4fa}',
+      '.iwdie-draw-lib-item.iwdie-on{border-color:#2f6fb2;box-shadow:0 0 0 2px rgba(47,111,178,.35)}',
+      '.iwdie-draw-lib-item img{display:block;width:100%;height:58px;object-fit:contain;background:#e5e7ea;border-radius:4px}',
+      '.iwdie-draw-lib-item span{font-size:11px;color:#425664;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}',
+      '.iwdie-draw-lib-empty{color:#5a6570;padding:8px 4px;line-height:1.5}',
       '.iwdie-draw-layer text{pointer-events:bounding-box}',
       '.iwdie-draw-selbox{fill:none;stroke:#2f6fb2;stroke-width:1;stroke-dasharray:4 3;pointer-events:none}',
       '.iwdie-draw-handle{fill:#fff;stroke:#2f6fb2;stroke-width:1.2}',
@@ -6476,8 +7358,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         hint: 'Click where the label starts, type, press Enter.' }
     ];
 
+    /** Placing a library component: a tool of its own, picked from the library
+     *  rather than the bar. */
+    var DRAW_STAMP_TOOL = { id: 'stamp', key: '', icon: '', label: 'Place', hint: '' };
+
     function drawToolById(id) {
       for (var i = 0; i < DRAW_TOOLS.length; i++) if (DRAW_TOOLS[i].id === id) return DRAW_TOOLS[i];
+      if (id === 'stamp' && draw && draw.stamp) return DRAW_STAMP_TOOL;
       return DRAW_TOOLS[0];
     }
 
@@ -6596,7 +7483,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (draw !== d) return;
         var r = d.svg.getBoundingClientRect(), key = [r.left, r.top, r.width, r.height].join();
         if (key !== d.rectKey) { d.rectKey = key; drawShade(); }
-        if (++frames % 30 === 0) drawKeepOnTop();
+        if (++frames % 30 === 0) { drawKeepOnTop(); drawPlaceLib(); }
         d.watch = requestAnimationFrame(watch);
       };
       d.watch = requestAnimationFrame(watch);
@@ -6652,6 +7539,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         doc.addEventListener('pointercancel', function (ev) { drawPointerUp(proxy(ev)); });
         doc.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
         doc.addEventListener('wheel', drawForwardWheel, { passive: true });
+        win.addEventListener('mouseout', function (ev) {
+          if (!ev.relatedTarget && draw && draw.live && draw.live.kind === 'stamp') { draw.live = null; drawRenderLive(); }
+        });
         ['keydown', 'keyup', 'keypress'].forEach(function (t) { win.addEventListener(t, drawKey, true); });
         d.surfInput.addEventListener('keydown', function (ev) {
           if (ev.key === 'Enter') { ev.preventDefault(); drawCommitText(); drawSurfaceFocus(); }
@@ -6738,6 +7628,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         DRAW_TOOLS.map(function (t) {
           return '<button class="iwdie-draw-tool" data-tool="' + t.id + '" title="' + esc2(t.label) + ' (' + t.key.toUpperCase() + ')">' + t.icon + ' ' + esc2(t.label) + '</button>';
         }).join(''),
+        '    <button data-act="lib" class="iwdie-draw-libbtn" title="Components from an Illustrator file (.ai): the objects placed around its artboard">▦ Library</button>',
         '    <span class="iwdie-draw-sep"></span>',
         '    <button data-act="undo" title="Undo (Ctrl+Z)">↶</button>',
         '    <button data-act="redo" title="Redo (Ctrl+Shift+Z)">↷</button>',
@@ -6762,6 +7653,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '      <label data-for="rx">Corners <input type="number" data-ctl="rx" min="0" max="200" step="1"></label>',
         '      <label data-for="size">Text size <input type="number" data-ctl="size" min="4" max="200" step="1"></label>',
         '    </span>',
+        '    <span class="iwdie-draw-grow"></span>',
+        '    <button data-act="group" title="Group the selected shapes (Ctrl+G)">Group</button>',
+        '    <button data-act="ungroup" title="Split the selected group back into its shapes (Ctrl+Shift+G)">Ungroup</button>',
         '  </div>',
         '  <div class="iwdie-draw-row iwdie-draw-foot">',
         '    <div class="iwdie-draw-hint"></div>',
@@ -6771,6 +7665,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '      <option value="show">Objects shown</option><option value="dim">Objects dimmed</option><option value="hide">Objects hidden</option>',
         '    </select>',
         '  </div>',
+        '</div>',
+        '<div class="iwdie-draw-lib" hidden>',
+        '  <div class="iwdie-draw-lib-head"><b>Library</b><span class="iwdie-draw-lib-count"></span>' +
+        '<button data-lib="close" title="Close the library">×</button></div>',
+        '  <div class="iwdie-draw-lib-tools"><button data-lib="import" title="Read the objects placed around the artboard of an Illustrator file">Import .ai…</button>' +
+        '<input type="search" data-lib="search" placeholder="Search" spellcheck="false"></div>',
+        '  <div class="iwdie-draw-lib-status"></div>',
+        '  <div class="iwdie-draw-lib-list"></div>',
+        '  <input type="file" data-lib="file" accept=".ai,.pdf" style="display:none">',
         '</div>',
         '<input class="iwdie-draw-text" type="text" spellcheck="false" style="display:none">'
       ].join('\n');
@@ -6828,6 +7731,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (ev.key === 'Enter') { ev.preventDefault(); drawCommitText(); }
         else if (ev.key === 'Escape') { ev.preventDefault(); drawCloseText(); }
       });
+      var lib = d.lib = ui.querySelector('.iwdie-draw-lib');
+      lib.addEventListener('click', function (ev) {
+        var b = ev.target.closest ? ev.target.closest('[data-lib], .iwdie-draw-lib-item') : null;
+        if (!b || !draw) return;
+        var what = b.getAttribute('data-lib');
+        if (what === 'close') drawLibToggle(false);
+        else if (what === 'import') { if (!draw.libBusy) lib.querySelector('[data-lib="file"]').click(); return; }
+        else if (what) return;
+        else drawLibArm(parseInt(b.getAttribute('data-k'), 10));
+        drawSurfaceFocus();
+      });
+      lib.querySelector('[data-lib="file"]').addEventListener('change', function (ev) {
+        var f = ev.target.files && ev.target.files[0];
+        ev.target.value = '';
+        if (f) drawLibImport(f);
+      });
+      lib.querySelector('[data-lib="search"]').addEventListener('input', function (ev) { drawLibRender(ev.target.value); });
       ti.addEventListener('blur', function () { if (draw && draw.textEdit) drawCommitText(); });
     }
 
@@ -6868,6 +7788,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        unfilled box is as easy to pick as a filled one. */
     function drawHitSvg(s, i) {
       if (s.t === 'text') return '';
+      if (s.t === 'group') {
+        // a component is picked anywhere inside its box, not only on its lines
+        var b = iwdieDrawBounds(s), f = iwdieDrawFmt;
+        return b ? '<rect data-i="' + i + '" class="iwdie-draw-hitbox" x="' + f(b.x - 3) + '" y="' + f(b.y - 3) + '" width="' + f(b.w + 6) + '" height="' + f(b.h + 6) + '"/>' : '';
+      }
       var c = JSON.parse(JSON.stringify(s));
       c.st = { stroke: '#000000', fill: null, sw: Math.max(10, (s.st.sw || 0) + 8), dash: false, arrow: false };
       return iwdieDrawShapeSvg(c, ' data-i="' + i + '" class="iwdie-draw-hit"');
@@ -6911,6 +7836,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       } else if (L.kind === 'marquee') {
         html = '<rect class="iwdie-draw-marquee" x="' + f(L.box.x) + '" y="' + f(L.box.y) + '" width="' + f(L.box.w) + '" height="' + f(L.box.h) + '"/>';
+      } else if (L.kind === 'stamp' && L.at && d.stamp) {
+        var at = drawStampAt(L.at);
+        html = '<g opacity=".55" pointer-events="none" transform="translate(' + f(at.x) + ' ' + f(at.y) + ')">' + d.stamp.svg + '</g>';
       }
       d.gLive.innerHTML = html;
     }
@@ -6953,6 +7881,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (d.tool !== 'select') d.sel = [];
       d.svg.setAttribute('class', 'iwdie-draw-layer iwdie-tool-' + d.tool);
       drawSurfaceCursor();
+      drawLibMarkArmed();
       drawRender();
     }
 
@@ -6961,7 +7890,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function drawStyleView() {
       var d = draw;
       if (d.sel.length) {
-        var s = d.shapes[d.sel[0]];
+        // a group keeps its own colours; Ungroup gets at its shapes
+        var styled = d.sel.map(function (i) { return d.shapes[i]; }).filter(function (x) { return x && x.t !== 'group'; });
+        if (!styled.length) return null;
+        var s = styled[0];
         return { st: s.st, kind: s.t, rx: s.t === 'rect' ? s.rx : null, size: s.t === 'text' ? s.size : null };
       }
       var ts = d.styles[d.tool];
@@ -6977,9 +7909,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       bar.querySelector('[data-act="undo"]').disabled = !d.past.length;
       bar.querySelector('[data-act="redo"]').disabled = !d.future.length;
       ['front', 'back', 'dup', 'del'].forEach(function (a) { bar.querySelector('[data-act="' + a + '"]').disabled = !d.sel.length; });
+      var groups = d.sel.filter(function (i) { return d.shapes[i] && d.shapes[i].t === 'group'; }).length;
+      bar.querySelector('[data-act="group"]').disabled = d.sel.length < 2;
+      bar.querySelector('[data-act="ungroup"]').disabled = !groups;
+      var libBtn = bar.querySelector('[data-act="lib"]'), libNow = drawLibLoad();
+      libBtn.classList.toggle('iwdie-on', !!(d.lib && !d.lib.hidden));
+      libBtn.textContent = '▦ Library' + (libNow ? ' (' + libNow.items.length + ')' : '');
       var row = bar.querySelector('.iwdie-draw-style');
       row.classList.toggle('iwdie-off', !v);
-      var hint = drawToolById(d.tool).hint;
+      var hint = d.tool === 'stamp' && d.stamp
+        ? 'Click to place ' + (d.stamp.item.name ? '“' + d.stamp.item.name + '” ' : 'the component ') + '(' + Math.round(d.stamp.w) + ' × ' + Math.round(d.stamp.h) + ') · it goes on centred where you click · keep clicking for more · Esc or V when done.'
+        : (groups && groups === d.sel.length && d.tool === 'select')
+          ? 'A group keeps its own colours and moves and resizes as one · Ungroup (Ctrl+Shift+G) to change its shapes one by one.'
+          : drawToolById(d.tool).hint;
       var hintEl = bar.querySelector('.iwdie-draw-hint');
       hintEl.innerHTML = (d.note ? d.note + ' · ' : '') + iwdieEscHtml(hint);
       hintEl.title = hintEl.textContent;
@@ -7015,10 +7957,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         drawChange(function () {
           d.sel.forEach(function (i) {
             var s = d.shapes[i];
+            if (s.t === 'group') return;
             Object.keys(patch).forEach(function (k) {
               if (k === 'rx') { if (s.t === 'rect') s.rx = patch.rx; }
               else if (k === 'size') { if (s.t === 'text') s.size = patch.size; }
-              else s.st[k] = patch[k];
+              else {
+                s.st[k] = patch[k];
+                if (k === 'dash') delete s.st.da;          // Illustrator's own dash pattern gives way to the switch
+              }
             });
             d.shapes[i] = iwdieDrawShape(s) || s;
           });
@@ -7039,13 +7985,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var d = draw, before = drawState();
       fn();
       if (drawState() !== before) {
-        d.past.push(before);
-        if (d.past.length > 200) d.past.shift();
-        d.future = [];
-        d.dirty = true;
+        drawPushPast(before);
         d.note = '';   // the opening note has been read by now; the hint line needs the room
       }
       drawRender();
+    }
+
+    /** One undo step. Components make big steps, so the history is held to
+     *  about 50 MB as well as to 200 steps. */
+    function drawPushPast(before) {
+      var d = draw, total = 0, i;
+      d.past.push(before);
+      for (i = 0; i < d.past.length; i++) total += d.past[i].length;
+      while (d.past.length > 200 || (d.past.length > 20 && total > 5e7)) total -= d.past.shift().length;
+      d.future = [];
+      d.dirty = true;
     }
 
     function drawUndo(redo) {
@@ -7073,7 +8027,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function drawShapeIndex(el) {
-      var v = el && el.getAttribute ? el.getAttribute('data-i') : null;
+      var at = el && el.closest ? el.closest('[data-i]') : el;
+      if (at && draw && draw.svg && !draw.svg.contains(at)) at = null;     // only the drawing's own shapes count
+      var v = at && at.getAttribute ? at.getAttribute('data-i') : null;
       return v === null || v === undefined ? null : parseInt(v, 10);
     }
 
@@ -7120,6 +8076,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         drawRender();
         return;
       }
+      if (d.tool === 'stamp') { drawLibPlace(raw); return; }
       if (d.tool === 'dot') {
         var r = d.styles.dot.r || 3;
         drawAdd({ t: 'ellipse', cx: p.x, cy: p.y, rx: r, ry: r, st: drawStyleFor('dot') });
@@ -7237,6 +8194,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!d) return;
       ev.stopPropagation();
       var raw = drawPoint(ev), p = drawSnapped(raw), g = d.drag;
+      if (!g && d.tool === 'stamp' && d.stamp) {
+        d.live = { kind: 'stamp', at: raw };
+        drawRenderLive();
+        return;
+      }
       if (!g) {
         // the rubber band from the last point to the pointer
         if (d.live && (d.live.kind === 'line' || d.live.kind === 'pen')) {
@@ -7296,12 +8258,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       d.drag = null;
       if (!g) return;
       if (g.kind === 'move' || g.kind === 'resize') {
-        if (g.moved && drawState() !== g.before) {
-          d.past.push(g.before);
-          if (d.past.length > 200) d.past.shift();
-          d.future = [];
-          d.dirty = true;
-        }
+        if (g.moved && drawState() !== g.before) drawPushPast(g.before);
         drawRender();
       } else if (g.kind === 'marquee') {
         d.live = null;
@@ -7426,13 +8383,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (ctrl && lower === 'z') drawUndo(ev.shiftKey);
       else if (ctrl && lower === 'y') drawUndo(true);
       else if (ctrl && lower === 'a') { drawFinishLive(); if (d.tool !== 'select') setDrawTool('select'); d.sel = d.shapes.map(function (s, i) { return i; }); drawRender(); }
+      else if (ctrl && lower === 'g') drawAct(ev.shiftKey ? 'ungroup' : 'group');
       else if (ctrl && lower === 'd') drawAct('dup');
       else if (ctrl && lower === 'c') drawAct('copy');
       else if (ctrl && lower === 'v') drawAct('paste');
       else if (k === 'Delete' || k === 'Backspace') drawAct('del');
       else if (k === 'Enter') drawFinishLive(false);
       else if (k === 'Escape') {
-        if (d.live) drawFinishLive(false);
+        if (d.tool === 'stamp') setDrawTool('select');
+        else if (d.live) drawFinishLive(false);
         else if (d.sel.length) { d.sel = []; drawRender(); }
       } else if (/^Arrow/.test(k)) {
         var step = ev.shiftKey ? 10 : 1, dx = k === 'ArrowLeft' ? -step : k === 'ArrowRight' ? step : 0, dy = k === 'ArrowUp' ? -step : k === 'ArrowDown' ? step : 0;
@@ -7483,7 +8442,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           d.shapes = a === 'front' ? rest.concat(picked) : picked.concat(rest);
           d.sel = picked.map(function (s, k) { return a === 'front' ? rest.length + k : k; });
         });
-      } else if (a === 'svg') drawDownloadSvg();
+      } else if (a === 'group') drawGroup();
+      else if (a === 'ungroup') drawUngroup();
+      else if (a === 'lib') drawLibToggle();
+      else if (a === 'svg') drawDownloadSvg();
       else if (a === 'cancel') drawCancel();
       else if (a === 'done') drawDone();
     }
@@ -7659,6 +8621,275 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }, function (e) {
         if (draw) { draw.busy = false; btn.textContent = 'Done'; }
         toast('The drawing could not be turned into a picture: ' + ((e && e.message) || e), true, 12000);
+      });
+    }
+
+    /** Group the selected shapes into one, where the topmost of them was. */
+    function drawGroup() {
+      var d = draw;
+      if (!d || d.sel.length < 2) return;
+      var depth = function (x) { return x.t === 'group' ? 1 + Math.max.apply(null, x.items.map(depth)) : 0; };
+      var sorted = d.sel.slice().sort(function (a, b) { return a - b; });
+      var items = sorted.map(function (i) { return d.shapes[i]; });
+      if (Math.max.apply(null, items.map(depth)) >= 8) { toast('Groups can be nested eight deep - ungroup one first.', true, 6000); return; }
+      drawChange(function () {
+        var rest = d.shapes.filter(function (x, i) { return sorted.indexOf(i) < 0; });
+        var at = sorted[sorted.length - 1] - (sorted.length - 1);
+        rest.splice(at, 0, { t: 'group', name: '', items: items });
+        d.shapes = rest;
+        d.sel = [at];
+      });
+    }
+
+    /** Split each selected group into its shapes, in place. */
+    function drawUngroup() {
+      var d = draw;
+      if (!d || !d.sel.some(function (i) { return d.shapes[i] && d.shapes[i].t === 'group'; })) return;
+      drawChange(function () {
+        var out = [], sel = [];
+        d.shapes.forEach(function (x, i) {
+          var picked = d.sel.indexOf(i) >= 0;
+          if (picked && x.t === 'group') x.items.forEach(function (c) { sel.push(out.length); out.push(c); });
+          else { if (picked) sel.push(out.length); out.push(x); }
+        });
+        d.shapes = out;
+        d.sel = sel;
+      });
+    }
+
+    /* ---- the library (v1.33.0) ----
+       Illustrator files for Maskin panels keep their components - compressors,
+       valves, pumps, symbols - around the artboard. Import .ai… reads those
+       objects into a library down the left, kept in this browser between
+       sessions; a click on one arms it, and each click on the drawing places it
+       there as a group. Nothing leaves the browser. */
+    var DRAW_LIB_KEY = 'iwdie.draw.library.v1';
+    var drawLibCache;                                    // undefined until read; null when there is none
+
+    function drawLibLoad() {
+      if (drawLibCache !== undefined) return drawLibCache;
+      drawLibCache = null;
+      try {
+        var raw = window.localStorage.getItem(DRAW_LIB_KEY);
+        var o = raw ? JSON.parse(raw) : null;
+        var items = o ? iwdieDrawLibItems(o.items) : [];
+        if (items.length) {
+          drawLibCache = { file: typeof o.file === 'string' ? o.file.slice(0, 200) : '', imported: typeof o.imported === 'string' ? o.imported : '',
+            hidden: Math.max(0, parseInt(o.hidden, 10) || 0), noArtboard: !!o.noArtboard, items: items, stored: true };
+        }
+      } catch (e) {}
+      return drawLibCache;
+    }
+
+    function drawLibSave(lib) {
+      try {
+        window.localStorage.setItem(DRAW_LIB_KEY, JSON.stringify({ v: 1, file: lib.file, imported: lib.imported, hidden: lib.hidden,
+          noArtboard: lib.noArtboard, items: lib.items.map(function (it) { return { name: it.name, layer: it.layer, w: it.w, h: it.h, shapes: it.shapes }; }) }));
+        lib.stored = true;
+      } catch (e) {
+        lib.stored = false;
+      }
+    }
+
+    function drawLibToggle(open) {
+      var d = draw;
+      if (!d || !d.lib) return;
+      if (open === undefined) open = d.lib.hidden;
+      d.lib.hidden = !open;
+      if (open) {
+        drawPlaceLib();
+        drawLibRender(d.lib.querySelector('[data-lib="search"]').value);
+        if (!d.libBusy) drawLibInfo();
+      } else if (d.tool === 'stamp') setDrawTool('select');
+      syncDrawBar();
+    }
+
+    /** Down the left, under the bar when the bar is at the top, above it when at the bottom. */
+    function drawPlaceLib() {
+      var d = draw;
+      if (!d || !d.lib || d.lib.hidden) return;
+      var br = d.bar.getBoundingClientRect(), vh = window.innerHeight, top = 8, bottom = 8;
+      if (br.left < 300) {
+        if (br.top + br.height / 2 < vh / 2) top = Math.min(vh - 220, br.bottom + 8);
+        else bottom = Math.min(vh - 220, vh - br.top + 8);
+      }
+      d.lib.style.top = Math.max(8, top) + 'px';
+      d.lib.style.bottom = Math.max(8, bottom) + 'px';
+    }
+
+    function drawLibStatus(html, bad) {
+      var d = draw;
+      if (!d || !d.lib) return;
+      var el = d.lib.querySelector('.iwdie-draw-lib-status');
+      el.innerHTML = html;
+      el.classList.toggle('iwdie-bad', !!bad);
+    }
+
+    /** What the library holds and where it came from. */
+    function drawLibInfo() {
+      var lib = drawLibLoad(), esc2 = iwdieEscHtml;
+      if (!lib) { drawLibStatus(''); return; }
+      var when = '';
+      try { when = lib.imported ? new Date(lib.imported).toLocaleDateString() : ''; } catch (e) {}
+      var bits = ['From <b>' + esc2(lib.file || 'an Illustrator file') + '</b>' + (when ? ', ' + esc2(when) : '')];
+      if (lib.hidden) bits.push(iwdieN(lib.hidden, 'hidden object', 'hidden objects') + ' left out, as in Illustrator');
+      if (lib.noArtboard) bits.push('no artboard found, so every object is here');
+      if (!lib.stored) bits.push('kept until the page reloads - the browser had no room to store it');
+      drawLibStatus(bits.join(' · ') + '.');
+    }
+
+    function drawLibRender(query) {
+      var d = draw, esc2 = iwdieEscHtml;
+      if (!d || !d.lib) return;
+      var lib = drawLibLoad(), list = d.lib.querySelector('.iwdie-draw-lib-list');
+      d.lib.querySelector('.iwdie-draw-lib-count').textContent = lib ? iwdieN(lib.items.length, 'component', 'components') : '';
+      if (!lib) {
+        list.innerHTML = '<div class="iwdie-draw-lib-empty">Import an Illustrator file (.ai) and the objects placed around its artboard become components here. ' +
+          'Click one, then click the drawing to place it.<br><br>The file stays on this computer; the components are kept in this browser.</div>';
+        return;
+      }
+      var q = String(query || '').trim().toLowerCase(), groups = [], byName = {};
+      lib.items.forEach(function (it, k) {
+        if (q && (it.name + ' ' + it.layer).toLowerCase().indexOf(q) < 0) return;
+        var key = it.layer || 'Components';
+        if (!byName[key]) { byName[key] = { name: key, ks: [] }; groups.push(byName[key]); }
+        byName[key].ks.push(k);
+      });
+      if (!groups.length) { list.innerHTML = '<div class="iwdie-draw-lib-empty">Nothing matches “' + esc2(q) + '”.</div>'; return; }
+      list.innerHTML = groups.map(function (g) {
+        return '<details open><summary>' + esc2(g.name) + ' <span>(' + g.ks.length + ')</span></summary><div class="iwdie-draw-lib-grid">' +
+          g.ks.map(function (k) {
+            var it = lib.items[k], size = Math.round(it.w) + ' × ' + Math.round(it.h);
+            return '<button class="iwdie-draw-lib-item" data-k="' + k + '" title="' + esc2((it.name ? it.name + ' - ' : '') + size + ' px' + (it.layer ? ' · layer ' + it.layer : '')) + '">' +
+              '<img alt="" loading="lazy" src="' + drawLibThumb(it) + '"><span>' + esc2(it.name || size) + '</span></button>';
+          }).join('') + '</div></details>';
+      }).join('');
+      drawLibMarkArmed();
+    }
+
+    /** A component's picture for its tile, made once. */
+    function drawLibThumb(it) {
+      if (it.thumb) return it.thumb;
+      var sw = 0, f = iwdieDrawFmt;
+      (function walk(list) { list.forEach(function (x) { if (x.t === 'group') walk(x.items); else if (x.st && x.st.sw > sw) sw = x.st.sw; }); })(it.shapes);
+      var pad = 2 + sw / 2, w = Math.max(it.w, 1) + 2 * pad, h = Math.max(it.h, 1) + 2 * pad;
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + [-pad, -pad, w, h].map(f).join(' ') + '" width="' + f(w) + '" height="' + f(h) + '">' +
+        '<defs>' + iwdieDrawDefsSvg(it.shapes) + '</defs>' + it.shapes.map(function (x) { return iwdieDrawShapeSvg(x); }).join('') + '</svg>';
+      it.thumb = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+      return it.thumb;
+    }
+
+    function drawLibMarkArmed() {
+      var d = draw;
+      if (!d || !d.lib) return;
+      var armed = d.tool === 'stamp' && d.stamp ? d.stamp.k : -1;
+      Array.prototype.forEach.call(d.lib.querySelectorAll('.iwdie-draw-lib-item'), function (b) {
+        b.classList.toggle('iwdie-on', parseInt(b.getAttribute('data-k'), 10) === armed);
+      });
+    }
+
+    /** Arm component k: every click on the drawing now places it. */
+    function drawLibArm(k) {
+      var d = draw, lib = drawLibLoad();
+      if (!d || !lib || !lib.items[k]) return;
+      if (d.textEdit) drawCommitText();
+      var it = lib.items[k];
+      d.stamp = { k: k, item: it, w: it.w, h: it.h, svg: it.shapes.map(function (x) { return iwdieDrawShapeSvg(x); }).join('') };
+      setDrawTool('stamp');
+    }
+
+    /** Where the armed component goes for a pointer at p: centred on it, on the grid when it is on. */
+    function drawStampAt(p) {
+      var d = draw, x = p.x - d.stamp.w / 2, y = p.y - d.stamp.h / 2;
+      return d.snap ? { x: iwdieDrawSnap(x, d.grid), y: iwdieDrawSnap(y, d.grid) } : { x: iwdieDrawNum(x), y: iwdieDrawNum(y) };
+    }
+
+    function drawLibPlace(p) {
+      var d = draw, s = d.stamp;
+      if (!s) return;
+      var at = drawStampAt(p);
+      var shapes = s.item.shapes.map(function (x) { return iwdieDrawMap(x, 1, at.x, 1, at.y); });
+      drawAdd(shapes.length === 1 ? shapes[0] : { t: 'group', name: s.item.name, items: shapes });
+    }
+
+    function drawNextFrame() {
+      return new Promise(function (resolve) { setTimeout(resolve, 30); });   // lets a status line show before a long step
+    }
+
+    /** zlib data inflated by the browser. A PDF stream may carry a byte or two
+     *  past the end of its data, which DecompressionStream reports as an error
+     *  after it has produced everything - so what came out is kept. */
+    function drawInflate(u8) {
+      var DS = typeof DecompressionStream === 'function' ? DecompressionStream : (W && W.DecompressionStream);
+      if (typeof DS !== 'function') return Promise.reject(new Error('this browser cannot unpack it (no DecompressionStream)'));
+      var ds = new DS('deflate'), writer = ds.writable.getWriter(), reader = ds.readable.getReader(), chunks = [], total = 0;
+      writer.write(u8).then(null, function () {});
+      writer.close().then(null, function () {});
+      var pump = function () {
+        return reader.read().then(function (r) {
+          if (r.done) return null;
+          chunks.push(r.value);
+          total += r.value.length;
+          return pump();
+        });
+      };
+      return pump().then(null, function (e) { if (!total) throw e; }).then(function () {
+        var out = new Uint8Array(total), o = 0;
+        chunks.forEach(function (c) { out.set(c, o); o += c.length; });
+        return out;
+      });
+    }
+
+    function drawLibDecode(block) {
+      if (!block.filter) return Promise.resolve(block.data);
+      if (block.filter === 'FlateDecode') return drawInflate(block.data);
+      return Promise.reject(new Error('its data is packed as ' + block.filter + ', which cannot be read here'));
+    }
+
+    function drawLibImport(file) {
+      var d = draw, esc2 = iwdieEscHtml;
+      if (!d || d.libBusy) return;
+      d.libBusy = true;
+      var name = String(file.name || 'the file'), box = null;
+      drawLibStatus('Reading <b>' + esc2(name) + '</b>…');
+      file.arrayBuffer().then(function (ab) {
+        box = iwdieAiContainer(new Uint8Array(ab));
+        return Promise.all(box.blocks.map(drawLibDecode));
+      }).then(function (parts) {
+        var total = 0, o = 0;
+        parts.forEach(function (p) { total += p.length; });
+        var joined = new Uint8Array(total);
+        parts.forEach(function (p) { joined.set(p, o); o += p.length; });
+        drawLibStatus('Unpacking <b>' + esc2(name) + '</b>…');
+        return drawNextFrame().then(function () { return iwdieAiNative(joined); });
+      }).then(function (nat) {
+        return Promise.all([nat.bytes || drawInflate(nat.inflate), box.icc ? drawLibDecode(box.icc).then(null, function () { return null; }) : null]);
+      }).then(function (r) {
+        drawLibStatus('Finding the objects around the artboard…');
+        return drawNextFrame().then(function () {
+          var color = (r[1] && iwdieIccCmykConverter(r[1])) || iwdieCmykNaive;
+          var parsed = iwdieAiParse(iwdieLatin1(r[0]));
+          return { res: iwdieAiLibrary(parsed, color), artboards: parsed.artboards.length };
+        });
+      }).then(function (o) {
+        if (draw !== d) return;
+        d.libBusy = false;
+        var items = iwdieDrawLibItems(o.res.items);
+        if (!items.length) {
+          drawLibStatus('<b>' + esc2(name) + '</b> has no objects outside its artboard' + (o.res.hidden ? ' that are not hidden' : '') + ' - the library is unchanged.', true);
+          return;
+        }
+        var lib = { file: name, imported: new Date().toISOString(), hidden: o.res.hidden, noArtboard: !o.artboards, items: items };
+        drawLibSave(lib);
+        drawLibCache = lib;
+        if (d.stamp) { d.stamp = null; if (d.tool === 'stamp') setDrawTool('select'); }
+        drawLibRender(d.lib.querySelector('[data-lib="search"]').value);
+        drawLibInfo();
+        syncDrawBar();
+      }).then(null, function (e) {
+        if (draw !== d) return;
+        d.libBusy = false;
+        drawLibStatus('<b>' + esc2(name) + '</b> could not be read: ' + esc2((e && e.message) || String(e)) + '.', true);
       });
     }
 
@@ -8252,6 +9483,19 @@ if (typeof module !== 'undefined' && module.exports) {
     drawConstrain: iwdieDrawConstrain,
     drawEmbed: iwdieDrawEmbed,
     drawExtract: iwdieDrawExtract,
+    drawCleanD: iwdieDrawCleanD,
+    drawLibItems: iwdieDrawLibItems,
+    zstdDecompress: iwdieZstdDecompress,
+    iccCmykConverter: iwdieIccCmykConverter,
+    cmykNaive: iwdieCmykNaive,
+    latin1: iwdieLatin1,
+    aiText: iwdieAiText,
+    aiName: iwdieAiName,
+    aiContainer: iwdieAiContainer,
+    aiNative: iwdieAiNative,
+    aiParse: iwdieAiParse,
+    aiPathD: iwdieAiPathD,
+    aiLibrary: iwdieAiLibrary,
     pngChunks: iwdiePngChunks,
     pngCrc32: iwdiePngCrc32,
     sniffMime: iwdieSniffMime,
