@@ -202,6 +202,19 @@ background and the objects; the surface only listens. Labels are typed inside th
 too. The shade's hole follows the canvas every frame, so a panel that moves the canvas no
 longer leaves it misplaced.
 
+1.32.3 comes from the live test of 1.32.2 on plant 2349, which drew, moved, deleted, undid,
+finished, reopened and removed a drawing through the surface without dtk noticing. Two things
+still went wrong:
+- dtk's own toolbar sits across the top of the window at z-index 2147483647 and covered
+  Delete, *.svg*, Cancel and Done on the bar. Draw's shade and bar, the dialogs and the toasts
+  now use that same z-index and win by coming later in the document. About twice a second the
+  bar checks that nothing has covered Done, and moves itself back on top if something has.
+- Esc did not answer the *Leave without applying the drawing?* question. A click on the bar
+  handed the keyboard back to the surface, behind the question. The question now keeps the
+  keyboard until it is answered.
+
+A key pressed straight after Enter on a label no longer vanishes into the hidden label field.
+
 **Not yet:** editing the points of an existing path, rotation, layers, a symbol library,
 snapping to objects, and zoom inside the editor. The bar stays out of the canvas when the
 window has room for it, and its grip moves it when it does not.

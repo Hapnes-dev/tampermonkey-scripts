@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.32.2
+// @version      1.32.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.32.2';
+var IWDIE_VERSION = '1.32.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -4765,7 +4765,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /* ---------- styles ---------- */
     var CSS = [
       '.iwdie-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:rgba(25,25,25,.95);color:#fff;',
-      '  padding:10px 18px;border-radius:6px;font:13px/1.5 Roboto,Arial,sans-serif;z-index:100000;max-width:640px;box-shadow:0 4px 18px rgba(0,0,0,.4);white-space:pre-line}',
+      '  padding:10px 18px;border-radius:6px;font:13px/1.5 Roboto,Arial,sans-serif;z-index:2147483647;max-width:640px;box-shadow:0 4px 18px rgba(0,0,0,.4);white-space:pre-line}',
       '.iwdie-toast.iwdie-err{background:rgba(140,30,30,.96)}',
       '.iwdie-toast.iwdie-good{background:rgba(30,110,50,.96)}',
       '.iwdie-toast.iwdie-caution{background:rgba(150,100,10,.96)}',
@@ -4779,9 +4779,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-t-foot{margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,.25);font-size:12px;opacity:.85}',
       '.iwdie-t-x{position:absolute;top:6px;right:8px;width:24px;height:24px;border:none;background:transparent;color:#fff;opacity:.75;font:18px/24px Arial,sans-serif;cursor:pointer;padding:0;border-radius:4px}',
       '.iwdie-t-x:hover{opacity:1;background:rgba(255,255,255,.15)}',
-      '.iwdie-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99998}',
+      '.iwdie-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2147483647}',
       '.iwdie-panel{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:520px;max-width:92vw;max-height:86vh;overflow:auto;',
-      '  background:#fff;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,.5);z-index:99999;font:13px/1.5 Roboto,Arial,sans-serif;color:#222;padding:18px 20px}',
+      '  background:#fff;border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,.5);z-index:2147483647;font:13px/1.5 Roboto,Arial,sans-serif;color:#222;padding:18px 20px}',
       '.iwdie-panel h3{margin:0 0 10px;font-size:15px}',
       '.iwdie-panel label{display:block;margin:10px 0 4px;font-weight:500}',
       '.iwdie-drop{border:2px dashed #9aa7b3;border-radius:6px;padding:18px;text-align:center;color:#556;margin:8px 0;cursor:pointer}',
@@ -4860,9 +4860,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-arrow{color:#2f6fb2;font-weight:700;margin:0 6px}',
       /* Draw background (v1.32.0): the bar floats above a shade that dims and
          blocks everything but the canvas; the drawing layer itself lives in the
-         page, between the background and the objects. */
-      '.iwdie-draw-shade{position:fixed;inset:0;background:rgba(18,24,30,.38);z-index:99990}',
-      '.iwdie-draw-bar{position:fixed;top:8px;left:50%;transform:translateX(-50%);width:max-content;z-index:99992;background:#fff;border:1px solid #c9d1d9;border-radius:8px;',
+         page, between the background and the objects.
+         v1.32.3: page tools stack at the very top too - the Designer Toolkit's
+         toolbar sits at z-index 2147483647 across the top of the window and hid
+         Done and Cancel. The shade, the bar, the dialogs and the toasts use that
+         same z-index and win by coming later in the document. */
+      '.iwdie-draw-shade{position:fixed;inset:0;background:rgba(18,24,30,.38);z-index:2147483647}',
+      '.iwdie-draw-bar{position:fixed;top:8px;left:50%;transform:translateX(-50%);width:max-content;z-index:2147483647;background:#fff;border:1px solid #c9d1d9;border-radius:8px;',
       '  box-shadow:0 6px 24px rgba(0,0,0,.3);padding:6px 10px;font:12.5px/1.4 Roboto,Arial,sans-serif;color:#222;max-width:96vw;box-sizing:border-box;overflow-x:auto}',
       '.iwdie-draw-row{display:flex;flex-wrap:nowrap;align-items:center;gap:4px;margin:2px 0}',
       '.iwdie-draw-row>*,.iwdie-draw-style>*{flex-shrink:0}',
@@ -4889,7 +4893,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-draw-foot{margin-top:3px;padding-top:3px;border-top:1px solid #edf0f3}',
       '.iwdie-draw-bar .iwdie-draw-hint{flex:1 1 300px;flex-shrink:1;min-width:0;color:#4a545e;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.iwdie-draw-hint b{color:#1f6f43}',
-      '.iwdie-draw-text{position:fixed;z-index:99993;border:1px solid #2f6fb2;outline:none;background:rgba(255,255,255,.96);padding:0 3px;font-family:Arial,Helvetica,sans-serif;min-width:120px;line-height:1.2}',
+      '.iwdie-draw-text{position:fixed;z-index:2147483647;border:1px solid #2f6fb2;outline:none;background:rgba(255,255,255,.96);padding:0 3px;font-family:Arial,Helvetica,sans-serif;min-width:120px;line-height:1.2}',
       '.iwdie-draw-layer{cursor:crosshair}',
       '.iwdie-draw-layer.iwdie-tool-select{cursor:default}',
       '.iwdie-draw-layer.iwdie-tool-select [data-i]{cursor:move}',
@@ -6582,13 +6586,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       drawRender();
       drawShade();
       drawPlaceBar();
+      drawKeepOnTop();
       drawMountSurface(d);
       // The shade's hole follows the canvas through scrolls and through layout
       // changes nothing announces - a side panel opening moves the canvas too.
+      // About twice a second the bar also checks that nothing has covered it.
+      var frames = 0;
       var watch = function () {
         if (draw !== d) return;
         var r = d.svg.getBoundingClientRect(), key = [r.left, r.top, r.width, r.height].join();
         if (key !== d.rectKey) { d.rectKey = key; drawShade(); }
+        if (++frames % 30 === 0) drawKeepOnTop();
         d.watch = requestAnimationFrame(watch);
       };
       d.watch = requestAnimationFrame(watch);
@@ -6666,7 +6674,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function drawSurfaceFocus() {
       var d = draw;
-      if (d && d.surfWin && !d.textEdit) { try { d.surfWin.focus(); } catch (e) {} }
+      if (d && d.surfWin && !d.textEdit && !confirmOverlay) { try { d.surfWin.focus(); } catch (e) {} }
     }
 
     function drawSurfaceCursor() {
@@ -6695,6 +6703,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var d = draw, bar = d.bar, r = d.svg.getBoundingClientRect(), bh = bar.offsetHeight, vh = window.innerHeight;
       if (r.top >= bh + 16) return;
       if (vh - r.bottom >= bh + 16) { bar.style.top = 'auto'; bar.style.bottom = '8px'; }
+    }
+
+    /** Draw's layers share the top z-index with page tools and win by coming
+     *  later in the document. A tool that adds itself afterwards would cover the
+     *  bar again, so when anything covers Done, the layers move to the end. */
+    function drawKeepOnTop() {
+      var d = draw;
+      if (!d || !d.ui || !d.bar || d.ui.parentNode !== document.body) return;
+      var b = d.bar.querySelector('[data-act="done"]'), r = b.getBoundingClientRect();
+      if (!(r.width > 0) || r.right < 0 || r.bottom < 0 || r.left > window.innerWidth || r.top > window.innerHeight) return;
+      var top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (!top || b.contains(top) || (confirmOverlay && confirmOverlay.contains(top))) return;
+      if (document.body.lastElementChild === d.ui || (confirmOverlay && document.body.lastElementChild === confirmOverlay)) return;
+      document.body.appendChild(d.ui);
+      if (confirmOverlay && confirmOverlay.parentNode === document.body) document.body.appendChild(confirmOverlay);
     }
 
     function buildDrawUi() {
@@ -7362,7 +7385,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var d = draw;
       if (!d) return;
       d.textEdit = null;
-      drawTextEl().style.display = 'none';
+      var ti = drawTextEl();
+      ti.style.display = 'none';
+      // A hidden field keeps the focus until the browser's next frame, and a key
+      // pressed straight after Enter would vanish into it instead of switching tool.
+      try { if (ti.ownerDocument.activeElement === ti) ti.blur(); } catch (e) {}
     }
 
     function drawCommitText() {
@@ -7385,7 +7412,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function drawKey(ev) {
       var d = draw;
       if (!d || d.opening) return;
-      if (confirmOverlay) return;                       // the discard question owns the keyboard
+      if (confirmOverlay) {                             // the discard question owns the keyboard
+        if (ev.type === 'keydown' && ev.key === 'Escape') onConfirmKeydown(ev);
+        return;
+      }
       var t = ev.target;
       if (t && t.nodeType === 1 && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName) &&
           ((d.ui && d.ui.contains(t)) || (d.surfDoc && t.ownerDocument === d.surfDoc))) return;   // our own fields; the UI root and the surface keep their keys from the page
@@ -7477,7 +7507,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         yes: { label: 'Discard the drawing', desc: 'The background stays exactly as it was before Draw background opened.' },
         no: { label: 'Keep drawing', desc: 'Back to the drawing — Done puts it on the background.' },
         hint: 'Esc or a click outside keeps you drawing.'
-      }, function (discard) { if (discard) closeDrawMode(); });
+      }, function (discard) { if (discard) closeDrawMode(); else drawSurfaceFocus(); });
     }
 
     /** Leave Draw mode and put everything back as it was. */
