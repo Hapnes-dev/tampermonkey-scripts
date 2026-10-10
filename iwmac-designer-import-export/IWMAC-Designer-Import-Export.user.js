@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.32.1
+// @version      1.32.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.32.1';
+var IWDIE_VERSION = '1.32.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6582,6 +6582,110 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       drawRender();
       drawShade();
       drawPlaceBar();
+      drawMountSurface(d);
+      // The shade's hole follows the canvas through scrolls and through layout
+      // changes nothing announces - a side panel opening moves the canvas too.
+      var watch = function () {
+        if (draw !== d) return;
+        var r = d.svg.getBoundingClientRect(), key = [r.left, r.top, r.width, r.height].join();
+        if (key !== d.rectKey) { d.rectKey = key; drawShade(); }
+        d.watch = requestAnimationFrame(watch);
+      };
+      d.watch = requestAnimationFrame(watch);
+    }
+
+    /* The input surface (v1.32.2). A tool on the page can sit at window level ahead
+       of every listener of ours. The Designer Toolkit extension stops each
+       pointerdown over the canvas there and then acts on it itself: on plant 2349
+       it selected a Designer label under a press meant for Draw, and its selection
+       panel moved the canvas 260 px. An invisible same-origin iframe laid over the
+       canvas takes the pointer and the keyboard instead. Events inside it belong to
+       its own window, so nothing in the page hears them, whatever order the page's
+       listeners were registered in. The drawing still renders in the page, under
+       the objects; the surface only listens, and hands each event on in page
+       coordinates. */
+    function drawMountSurface(d) {
+      var f = document.createElement('iframe');
+      f.className = 'iwdie-draw-surface';
+      f.setAttribute('title', 'Draw background');
+      f.setAttribute('tabindex', '0');
+      f.srcdoc = '<!doctype html><html><head><meta charset="utf-8"><style>' +
+        ':root{color-scheme:normal}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;user-select:none;touch-action:none}' +
+        'body{cursor:crosshair}body.sel{cursor:default}body.txt{cursor:text}' +
+        '.t{position:absolute;margin:0;border:1px solid #2f6fb2;outline:none;background:rgba(255,255,255,.96);padding:0 3px;' +
+        'font-family:Arial,Helvetica,sans-serif;min-width:120px;line-height:1.2;display:none}' +
+        '</style></head><body><input class="t" type="text" spellcheck="false"></body></html>';
+      var s = d.svg.style;
+      f.style.cssText = 'position:absolute;left:' + s.left + ';top:' + s.top + ';width:' + d.w + 'px;height:' + d.h + 'px;' +
+        'border:0;margin:0;padding:0;background:transparent;color-scheme:normal;z-index:2147483000' +
+        (s.transform ? ';transform:' + s.transform + ';transform-origin:' + s.transformOrigin : '');
+      f.addEventListener('load', function () {
+        if (draw !== d) return;
+        var win = f.contentWindow, doc = f.contentDocument;
+        if (!win || !doc || !doc.body) return;
+        d.surfWin = win; d.surfDoc = doc; d.surfInput = doc.querySelector('.t');
+        var toPage = function (ev) {
+          var r = f.getBoundingClientRect(), kx = f.offsetWidth ? r.width / f.offsetWidth : 1, ky = f.offsetHeight ? r.height / f.offsetHeight : 1;
+          return { x: r.left + ev.clientX * kx, y: r.top + ev.clientY * ky };
+        };
+        var proxy = function (ev) {
+          var p = toPage(ev);
+          return { type: ev.type, button: ev.button, buttons: ev.buttons, clientX: p.x, clientY: p.y, pointerId: ev.pointerId,
+            shiftKey: ev.shiftKey, ctrlKey: ev.ctrlKey, metaKey: ev.metaKey, altKey: ev.altKey, target: drawHitAt(p.x, p.y),
+            preventDefault: function () { ev.preventDefault(); }, stopPropagation: function () {} };
+        };
+        doc.addEventListener('pointerdown', function (ev) {
+          if (ev.target === d.surfInput || ev.button !== 0) return;     // the label being typed keeps its clicks
+          try { doc.body.setPointerCapture(ev.pointerId); } catch (e) {}
+          drawPointerDown(proxy(ev));
+        });
+        doc.addEventListener('pointermove', function (ev) { drawPointerMove(proxy(ev)); });
+        doc.addEventListener('pointerup', function (ev) { if (draw && (ev.target !== d.surfInput || draw.pressed)) drawPointerUp(proxy(ev)); });
+        doc.addEventListener('pointercancel', function (ev) { drawPointerUp(proxy(ev)); });
+        doc.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+        doc.addEventListener('wheel', drawForwardWheel, { passive: true });
+        ['keydown', 'keyup', 'keypress'].forEach(function (t) { win.addEventListener(t, drawKey, true); });
+        d.surfInput.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Enter') { ev.preventDefault(); drawCommitText(); drawSurfaceFocus(); }
+          else if (ev.key === 'Escape') { ev.preventDefault(); drawCloseText(); drawSurfaceFocus(); }
+        });
+        d.surfInput.addEventListener('blur', function () { if (draw && draw.textEdit) drawCommitText(); });
+        drawSurfaceCursor();
+        drawSurfaceFocus();
+      });
+      d.cc.parentNode.insertBefore(f, d.cc.nextSibling);
+      d.surface = f;
+    }
+
+    /** The drawing's own element under a page point, looking through the surface. */
+    function drawHitAt(x, y) {
+      var d = draw, list = document.elementsFromPoint(x, y);
+      for (var i = 0; i < list.length; i++) if (d.svg.contains(list[i])) return list[i];
+      return d.svg;
+    }
+
+    function drawSurfaceFocus() {
+      var d = draw;
+      if (d && d.surfWin && !d.textEdit) { try { d.surfWin.focus(); } catch (e) {} }
+    }
+
+    function drawSurfaceCursor() {
+      var d = draw;
+      if (d && d.surfDoc && d.surfDoc.body) d.surfDoc.body.className = d.tool === 'select' ? 'sel' : d.tool === 'text' ? 'txt' : '';
+    }
+
+    /** The wheel over the surface scrolls what it would have scrolled without it. */
+    function drawForwardWheel(ev) {
+      var d = draw;
+      if (!d) return;
+      for (var el = d.svg.parentNode; el && el.nodeType === 1; el = el.parentNode) {
+        var cs = getComputedStyle(el);
+        if (/(auto|scroll)/.test(cs.overflowY + cs.overflowX) && (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth)) {
+          el.scrollBy(ev.deltaX, ev.deltaY);
+          return;
+        }
+      }
+      window.scrollBy(ev.deltaX, ev.deltaY);
     }
 
     /** Park the bar where it covers none of the canvas if the window allows:
@@ -6663,6 +6767,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         else if (b.hasAttribute('data-stroke')) drawApplyStyle({ stroke: b.getAttribute('data-stroke') === 'none' ? null : b.getAttribute('data-stroke') });
         else if (b.hasAttribute('data-fill')) drawApplyStyle({ fill: b.getAttribute('data-fill') === 'none' ? null : b.getAttribute('data-fill') });
         else if (b.getAttribute('data-act')) drawAct(b.getAttribute('data-act'));
+        drawSurfaceFocus();                    // keys go back to the surface, away from the page
       });
       bar.addEventListener('change', function (ev) {
         var c = ev.target.getAttribute('data-ctl');
@@ -6678,6 +6783,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         else if (c === 'arrow') drawApplyStyle({ arrow: !!v });
         else if (c === 'rx') drawApplyStyle({ rx: Math.max(0, parseFloat(v) || 0) });
         else if (c === 'size') drawApplyStyle({ size: Math.max(4, Math.min(200, parseFloat(v) || 13)) });
+        if (ev.target.tagName === 'SELECT' || ev.target.type === 'checkbox' || ev.target.type === 'color') drawSurfaceFocus();
       });
       // The bar moves by its grip, so it never has to sit over the part of the panel you are drawing.
       var grip = bar.querySelector('.iwdie-draw-grip');
@@ -6823,6 +6929,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       d.tool = drawToolById(id).id;
       if (d.tool !== 'select') d.sel = [];
       d.svg.setAttribute('class', 'iwdie-draw-layer iwdie-tool-' + d.tool);
+      drawSurfaceCursor();
       drawRender();
     }
 
@@ -7040,8 +7147,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        that eats presses may eat that too. Without such a tool the real
        pointerdown arrives first and nothing is inferred. */
     function drawLike(src, live) {
-      var t = document.elementFromPoint(src.clientX, src.clientY);
-      if (!t || !draw.svg.contains(t)) t = draw.svg;
+      var t = drawHitAt(src.clientX, src.clientY);
       return { button: 0, buttons: 1, clientX: src.clientX, clientY: src.clientY, pointerId: live.pointerId,
         shiftKey: !!live.shiftKey, ctrlKey: !!live.ctrlKey, metaKey: !!live.metaKey, altKey: !!live.altKey,
         target: t, preventDefault: function () {}, stopPropagation: function () {} };
@@ -7222,35 +7328,47 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* ---- text ---- */
+    /** Where labels are typed: inside the surface when it is up (keys typed there
+     *  never reach the page), else the page's own field. */
+    function drawTextEl() { return draw.surfInput || draw.textInput; }
+
     function drawOpenText(p, idx) {
-      var d = draw, ti = d.textInput, svg = d.svg;
+      var d = draw, ti = drawTextEl(), svg = d.svg;
       var s = idx !== null ? d.shapes[idx] : null;
       var size = s ? s.size : (d.styles.text.size || 13);
-      var m = svg.getScreenCTM(), pt = svg.createSVGPoint();
-      pt.x = p.x; pt.y = p.y - size * 0.85;
-      var c = m ? pt.matrixTransform(m) : pt;
-      var k = m ? Math.sqrt(Math.abs(m.a * m.d)) : 1;
       d.textEdit = { p: p, idx: idx };
       ti.value = s ? s.text : '';
-      ti.style.left = c.x + 'px';
-      ti.style.top = c.y + 'px';
-      ti.style.fontSize = (size * k) + 'px';
+      if (ti === d.surfInput) {
+        // the surface lies over the canvas 1:1, so canvas coordinates are its own
+        ti.style.left = p.x + 'px';
+        ti.style.top = (p.y - size * 0.85) + 'px';
+        ti.style.fontSize = size + 'px';
+      } else {
+        var m = svg.getScreenCTM(), pt = svg.createSVGPoint();
+        pt.x = p.x; pt.y = p.y - size * 0.85;
+        var c = m ? pt.matrixTransform(m) : pt, k = m ? Math.sqrt(Math.abs(m.a * m.d)) : 1;
+        ti.style.left = c.x + 'px';
+        ti.style.top = c.y + 'px';
+        ti.style.fontSize = (size * k) + 'px';
+      }
       ti.style.color = (s ? s.st.fill : d.styles.text.fill) || '#222';
       ti.style.display = 'block';
-      setTimeout(function () { try { ti.focus(); ti.select(); } catch (e) {} }, 0);
+      setTimeout(function () {
+        try { if (ti === d.surfInput && d.surfWin) d.surfWin.focus(); ti.focus(); ti.select(); } catch (e) {}
+      }, 0);
     }
 
     function drawCloseText() {
       var d = draw;
       if (!d) return;
       d.textEdit = null;
-      d.textInput.style.display = 'none';
+      drawTextEl().style.display = 'none';
     }
 
     function drawCommitText() {
       var d = draw;
       if (!d || !d.textEdit) return;
-      var te = d.textEdit, text = d.textInput.value;
+      var te = d.textEdit, text = drawTextEl().value;
       drawCloseText();
       if (te.idx !== null) {
         drawChange(function () {
@@ -7269,7 +7387,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!d || d.opening) return;
       if (confirmOverlay) return;                       // the discard question owns the keyboard
       var t = ev.target;
-      if (t && t.nodeType === 1 && d.ui && d.ui.contains(t) && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;   // our own fields; the UI root keeps their keys from the page
+      if (t && t.nodeType === 1 && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName) &&
+          ((d.ui && d.ui.contains(t)) || (d.surfDoc && t.ownerDocument === d.surfDoc))) return;   // our own fields; the UI root and the surface keep their keys from the page
       ev.stopPropagation();
       if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
       if (ev.type !== 'keydown') return;
@@ -7373,6 +7492,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       window.removeEventListener('pointerup', drawPointerUpOutside, true);
       if (d.onScroll) { window.removeEventListener('scroll', d.onScroll, true); window.removeEventListener('resize', d.onScroll); }
       if (d.raf) cancelAnimationFrame(d.raf);
+      if (d.watch) cancelAnimationFrame(d.watch);
+      if (d.surface && d.surface.parentNode) d.surface.parentNode.removeChild(d.surface);
       if (d.svg && d.svg.parentNode) d.svg.parentNode.removeChild(d.svg);
       if (d.ui && d.ui.parentNode) d.ui.parentNode.removeChild(d.ui);
       if (d.cc) {
