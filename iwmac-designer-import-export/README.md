@@ -1,6 +1,6 @@
 # IWMAC Designer Import/Export
 
-Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with three stacked buttons — **Export JSON**, **Insert JSON…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, and the background artwork can be handed to Adobe Illustrator for editing. The designer itself has no way to do either; this script adds both.
+Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four stacked buttons — **Export JSON**, **Insert JSON…**, **Draw background…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, the background artwork can be drawn on the canvas itself, and it can be handed to Adobe Illustrator for editing. The designer itself has no way to do any of these; this script adds them.
 
 Runs on `http(s)://legacy.iwmac.local/iwmac_designer_v4/?plant_id=<id>` ("IWMAC Designer V5").
 
@@ -132,6 +132,79 @@ rejection now names the box as the way through.
 > onto a panel whose current content you no longer want; adding a full export instead duplicates
 > every object. Maskin drawing rules and validators live in the private `tampermonkey-scripts-documents` repository.
 
+## Draw background (v1.32.0)
+
+**Draw background…** turns the panel's canvas into a drawing surface for Maskin-style
+artwork: pipes, equipment boxes, fans and pumps, junction dots, labels. You draw on the
+panel itself. The drawing layer sits between the background and the objects, so what you
+see while drawing is what the panel will show. The objects stay in view for reference
+(shown, dimmed or hidden) and cannot be clicked while you draw.
+
+| Tool | Key | Does |
+|---|---|---|
+| Select | V | Click to select, Shift-click to add, drag across empty canvas for several. Drag to move, the eight handles to resize (Shift keeps the proportions), arrow keys to nudge (Shift = 10 px). Double-click a label to edit it. |
+| Line | L | Pipes: click points; double-click or Enter finishes, a click on the first point closes the shape. Shift keeps 45°. |
+| Pen | P | Click for a corner, drag for a curve, as in Illustrator. |
+| Box | R | Drag a box (Shift: square), or click for an 80 × 40 one. Rounded corners by default. |
+| Ellipse | E | Drag (Shift: circle), or click for a 40 × 40 circle. |
+| Dot | D | A junction dot where you click. |
+| Text | T | Click, type, Enter. |
+
+Each tool starts in the house style. Line draws a 2 px hot-gas pipe, Pen a suction pipe,
+Box and Ellipse white equipment with the grey outline, Dot the junction grey, and Text
+the label colour. The swatches are the Maskin light palette, sampled from
+`maskin-light-style-reference.png`:
+- pipes: hot gas `#f79f79`, M-T suction `#83c2ce`, L-T suction `#70abc5`, water `#8ec1a3`;
+- equipment outline `#9da4ae`, dots and arrows `#687c87`, labels `#425664`;
+- ground `#e5e7ea`, side panel `#cdd2d7`, white and slate.
+
+Any other colour is one click away. The style row also sets line width, dashes, an
+arrowhead at the end of a line, corner radius and text size. It applies to whatever is
+selected, or to the next shape when nothing is. Undo and redo (Ctrl+Z, Ctrl+Shift+Z)
+cover every change. Delete, Ctrl+D duplicate, Ctrl+C / Ctrl+V, Ctrl+A, and Front/Back
+work on the selection, and a grid snaps points and moves to 5, 10 or 20 px.
+
+**Done** draws the picture that was there and your shapes into one PNG at panel size, and
+puts it on the canvas with the designer's own `iw_set_base_image`, the same call Insert
+uses. Nothing reaches the server until you press the designer's Save. Cancel puts
+everything back as it was, and asks first if you drew anything. Reloading the page with an
+unapplied drawing raises the browser's *Leave site?* question.
+
+**The drawing stays editable.** The PNG carries two extra chunks that every viewer skips:
+the shapes as JSON (`iTXt`, keyword `iwdie-draw`) and the untouched picture they were
+drawn on (`iwBs`). The Designer stores and shows a plain picture. The next **Draw
+background…** reads both chunks back and shows the original picture again, with every
+shape editable on top. Deleting every shape and pressing Done gives back that original
+picture byte for byte.
+
+A background that did not come from Draw mode opens as it is, and what you draw goes on top
+of it. **⤓ .svg** downloads the drawing, with the picture under it, as an SVG Illustrator
+opens. The drawing travels inside the picture, so Export and Insert carry it to other
+panels too. A drawing read from a file is cleaned on the way in — known shapes, numbers,
+`#rrggbb` colours and plain text only — so a hostile PNG cannot put markup into the page.
+
+While Draw mode is open, everything outside the canvas is dimmed and blocked. No key
+reaches the Designer: its own hotkeys (Delete, arrows, Ctrl+A/C/V/G) act on the objects,
+so they must not fire while you draw.
+
+**Not yet:** editing the points of an existing path, rotation, layers, a symbol library,
+snapping to objects, and zoom inside the editor. The bar stays out of the canvas when the
+window has room for it, and its grip moves it when it does not.
+
+Not yet tested against the live Designer. Every flow above ran in a stub host page that
+loads this script with the Designer's loaders and `iw_set_base_image` stubbed, over the
+Maskin style reference:
+- drawing with each tool;
+- moving, deleting and undoing;
+- Done, then reopening with all shapes editable;
+- Cancel, with and without changes;
+- removing every shape;
+- key isolation: no key and no click reached the page's own handlers.
+
+**Still to check once on a scratch panel:** that the server keeps the PNG's extra chunks
+through Save. If it re-encodes the picture, the drawing shows as drawn but reopens as a
+locked picture.
+
 ## What it handles for you
 
 | Concern | Behaviour |
@@ -140,6 +213,7 @@ rejection now names the box as the way through.
 | Cross-plant driver ids | Detected via the `<plant>_` prefix; offered rebind on insert; leftovers reported |
 | A target panel that is not empty | Replace-or-add is asked before anything is touched; Replace clears the canvas and the host's own object/container caches the way a full panel load does, Add keeps everything and merges |
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
+| Drawing background artwork | *Draw background…* draws on the canvas between the background and the objects; Done applies one PNG through `iw_set_base_image`, carrying the editable drawing inside it (v1.32.0) |
 | Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green when every object and container arrived and red when any did not, and says how many (since v1.31.1 the file's own warnings are listed but never colour it) |
 | Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
 | Not-a-panel-file / VV sketch file on **insert** | Blocked with an itemised error panel, canvas untouched |
