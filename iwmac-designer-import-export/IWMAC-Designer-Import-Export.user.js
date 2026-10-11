@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.39.0
+// @version      1.40.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.39.0';
+var IWDIE_VERSION = '1.40.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6141,8 +6141,9 @@ function iwdieVcAppearance(st) {
   return { items: items };
 }
 
-/** A component's shape as a VectorCraft node: a group (with its name) or a path. Components
- *  are paths and groups; anything else is left out. `ids.next` numbers the nodes. */
+/** A component's shape as a VectorCraft node: a group (with its name), a path, or point text
+ *  (v1.40.0, in Source Sans 3, which VectorCraft carries). Anything else is left out.
+ *  `ids.next` numbers the nodes. */
 function iwdieVcNode(s, ids) {
   if (!s) return null;
   if (s.t === 'group') {
@@ -6151,6 +6152,15 @@ function iwdieVcNode(s, ids) {
     var g = { id: ids.next++, kind: { type: 'group', children: kids, clip: false } };
     if (s.name) g.name = s.name;
     return g;
+  }
+  if (s.t === 'text') {
+    if (!s.text || !isFinite(s.x) || !isFinite(s.y)) return null;
+    var ink = iwdieVcPaint(s.st && s.st.fill);
+    return { id: ids.next++, appearance: { items: [] }, kind: { type: 'text', kind: { kind: 'point' }, xf: [1, 0, 0, 1, s.x, s.y],
+      runs: [{ text: String(s.text), style: { font_family: 'Source Sans 3', font_style: 'Regular', size: s.size > 0 ? s.size : 12, tracking: 0,
+        baseline_shift: 0, h_scale: 100, v_scale: 100, rotation: 0, fill: ink.type === 'none' ? iwdieVcPaint('#000000') : ink,
+        stroke: { type: 'none' }, stroke_width: 0, underline: false, strikethrough: false, all_caps: false } }],
+      para: { justify: 'Left', left_indent: 0, right_indent: 0, first_line_indent: 0, space_before: 0, space_after: 0, hyphenate: false } } };
   }
   if (s.t !== 'd') return null;
   var subs = iwdieVcSubpaths(s.d);
@@ -6182,18 +6192,20 @@ function iwdieVcNativeDoc(item) {
 
 /** The component library as a .vclibrary file: a graphic per component (an unnamed one is
  *  called after its layer and number), a group per Illustrator layer, in the file's order.
- *  `thumbs[k]` is component k's PNG thumbnail as base64, or empty. -> JSON text */
-function iwdieVcLibraryFile(lib, thumbs) {
-  var graphics = [], groups = [], byName = {}, count = {};
+ *  `thumbs[k]` is component k's PNG thumbnail as base64, or empty. `opts` names another library
+ *  and the prefix of its graphics' ids (v1.40.0): {name, prefix}. -> JSON text */
+function iwdieVcLibraryFile(lib, thumbs, opts) {
+  opts = opts || {};
+  var graphics = [], groups = [], byName = {}, count = {}, prefix = opts.prefix || 'iwdie-';
   ((lib && lib.items) || []).forEach(function (it, k) {
-    var layer = it.layer || 'Komponenter', id = 'iwdie-' + (k + 1);
+    var layer = it.layer || 'Komponenter', id = prefix + (k + 1);
     count[layer] = (count[layer] || 0) + 1;
     graphics.push({ id: id, name: it.name || (layer + ' ' + count[layer]), width: it.w, height: it.h,
       data: iwdieBytesToBase64(iwdieUtf8Encode(iwdieVcNativeDoc(it))), thumbnail: (thumbs && thumbs[k]) || '' });
     if (!byName[layer]) { byName[layer] = { name: layer, items: [] }; groups.push(byName[layer]); }
     byName[layer].items.push({ kind: 'graphic', item: id });
   });
-  return JSON.stringify({ name: 'Komponenter' + (lib && lib.file ? ' - ' + lib.file : ''), colors: [], charStyles: [], paraStyles: [],
+  return JSON.stringify({ name: opts.name || ('Komponenter' + (lib && lib.file ? ' - ' + lib.file : '')), colors: [], charStyles: [], paraStyles: [],
     graphics: graphics, groups: groups });
 }
 
@@ -6323,6 +6335,173 @@ function iwdieVcChunk(png) {
     if (chunks[i].type === IWDIE_VC_CHUNK && !plain) plain = { type: IWDIE_VC_CHUNK, data: chunks[i].data };
   }
   return plain;
+}
+
+/* ===================== IWMAC objects in VectorCraft (v1.40.0) =====================
+   The Designer's own objects - values, labels, alarms, fans, pumps... - as a VectorCraft library
+   of placeholders, one per id of the object catalogue at its palette size, grouped by role.
+   Placed on the drawing and saved back, each placeholder becomes that object in the panel, where
+   it was placed and at the size it was given, and leaves the background picture. A placeholder
+   is a group named "IWMAC <obj_id>": that name is what makes it one. */
+
+/** The name every placeholder starts with. */
+var IWDIE_VC_OBJ_PREFIX = 'IWMAC ';
+/** The library's name in VectorCraft's Libraries panel. */
+var IWDIE_VC_OBJ_LIBRARY = 'IWMAC-objekter';
+/** What each role of the catalogue is called in the library. */
+var IWDIE_VC_OBJ_ROLES = {
+  header: 'Headers', label: 'Labels', value: 'Values', value_conn: 'Values with connector', value_tag: 'Values with tag',
+  enum: 'Lists', alarm: 'Alarms', led: 'LEDs', fan: 'Fans', pump: 'Pumps', valve: 'Valves', coil: 'Coils', filter: 'Filters',
+  damper: 'Dampers', duct: 'Ducts', zone: 'Zones', sensor: 'Sensors', akpc: 'AK-PC groups', button: 'Buttons'
+};
+/** Roles whose object shows a text of its own: the placeholder carries it, to be written over. */
+var IWDIE_VC_OBJ_TEXT = { header: 'Header', label: 'Label', value_tag: 'Tag' };
+/** Stacking order by role - the bands seen on production panels - for a panel with no object
+ *  of that kind or role yet to copy it from. Dummy arrows are 15. */
+var IWDIE_VC_OBJ_Z = {
+  header: '5', duct: '5', button: '20', fan: '40', coil: '40', filter: '40', damper: '40', zone: '40', akpc: '40',
+  value: '110', value_conn: '110', value_tag: '110', enum: '110', sensor: '110',
+  alarm: '375', led: '375', pump: '375', valve: '375', label: '1100'
+};
+
+var iwdieVcObjCache = null;
+
+/** The object catalogue as a list, in its order: [{id, w, h, role, desc}]. */
+function iwdieVcObjectCatalog() {
+  if (iwdieVcObjCache) return iwdieVcObjCache;
+  var out = [], roles = (IWDIE_OBJECT_CATALOGUE && IWDIE_OBJECT_CATALOGUE.by_role) || {};
+  Object.keys(roles).forEach(function (role) {
+    (roles[role] || []).forEach(function (line) {
+      var m = /^(\S+)\s+(\d+)x(\d+)\b(?:.*?\s-\s+(.*))?$/.exec(String(line));
+      if (!m) return;
+      var desc = String(m[4] || '').split(';')[0].replace(/\s+/g, ' ').replace(/\s*,\s*/g, ', ').trim();
+      out.push({ id: m[1], w: +m[2], h: +m[3], role: role, desc: desc });
+    });
+  });
+  return (iwdieVcObjCache = out);
+}
+
+/** The catalogue by id. */
+function iwdieVcObjectIndex() {
+  var known = {};
+  iwdieVcObjectCatalog().forEach(function (o) { known[o.id] = o; });
+  return known;
+}
+
+/** The size of a placeholder's text, or 0 when the object is too small for one. */
+function iwdieVcObjectTextSize(o) {
+  var size = Math.min(8, o.h - 6);
+  return (o.w >= 30 && size >= 6) ? size : 0;
+}
+
+/** The text a placeholder carries: the default text of an object that shows its own (Label,
+ *  Header, Tag), else what the object is - without the size the box already shows - as far as
+ *  it fits, cut after a whole word where that keeps most of it; '' for an object too small. */
+function iwdieVcObjectCaption(o) {
+  var size = iwdieVcObjectTextSize(o);
+  if (!size) return '';
+  var text = IWDIE_VC_OBJ_TEXT[o.role] || String(o.desc || o.id).replace(/^\d+px\s+/i, '').replace(/\s+-\s*/g, ' ');
+  var room = Math.floor((o.w - 6) / (size * 0.5));
+  if (text.length <= room) return text;
+  if (room < 6) return '';
+  var cut = text.slice(0, room - 1), trim = function (s) { return s.replace(/[\s,]+$/, ''); };
+  var whole = trim(/\s/.test(text.charAt(room - 1)) ? cut : cut.replace(/\s*\S*$/, ''));
+  return (whole.length >= (room - 1) * 0.6 ? whole : trim(cut)) + '…';
+}
+
+/** The placeholders as library items: a light box at the palette size, dashed in the blue the
+ *  hidden layer of panel objects uses, with its text where one fits. */
+function iwdieVcObjectItems() {
+  return iwdieVcObjectCatalog().map(function (o) {
+    var shapes = [{ t: 'd', d: 'M0 0 L' + o.w + ' 0 L' + o.w + ' ' + o.h + ' L0 ' + o.h + ' Z', rule: '',
+      st: { stroke: '#4f80ff', fill: '#eaf1ff', sw: 1, dash: false, arrow: false, da: [3, 2], op: 0.8 } }];
+    var caption = iwdieVcObjectCaption(o), size = iwdieVcObjectTextSize(o);
+    if (caption) {
+      shapes.push({ t: 'text', x: 3, y: Math.round((o.h + size * 0.7) / 2 * 100) / 100, text: caption, size: size,
+        st: { stroke: null, fill: '#2f5fbf', sw: 0, dash: false, arrow: false } });
+    }
+    return { name: IWDIE_VC_OBJ_PREFIX + o.id, layer: IWDIE_VC_OBJ_ROLES[o.role] || o.role, w: o.w, h: o.h, shapes: shapes };
+  });
+}
+
+/** The catalogue id a placeholder's name stands for - "IWMAC number_v3_value_only", or the id
+ *  VectorCraft's SVG gives it: "IWMAC_number_v3_value_only", "-2" added for the second - or
+ *  null for a name that is no placeholder. */
+function iwdieVcObjectId(name) {
+  var m = /^IWMAC[ _]+(\S+)$/.exec(String(name || '').trim());
+  if (!m) return null;
+  var known = iwdieVcObjectIndex();
+  if (known[m[1]]) return m[1];
+  var bare = m[1].replace(/-\d+$/, '');
+  return known[bare] ? bare : null;
+}
+
+/** The placeholders found in a saved drawing ([{id, x, y, w, h, text}], in panel pixels) as
+ *  Designer objects: the 17 fields of an unlinked object, at the stacking order of the panel's
+ *  own objects of that kind or role, else of its band. One that is already on the panel - an
+ *  object of that kind within 2 px of it, as after an earlier save - is counted, not repeated.
+ *  Its text becomes tag_text when the object shows a text of its own, or when it was written
+ *  over (JV401 on a fan). `existing` is the panel's objects. -> {objects, already} */
+function iwdieVcDesignerObjects(found, existing) {
+  var known = iwdieVcObjectIndex();
+  var have = (existing || []).filter(function (e) { return e && typeof e === 'object'; });
+  var near = function (a, b) { var n = parseFloat(a); return isFinite(n) && Math.abs(n - b) <= 2; };
+  var zOf = function (o) {
+    var z = function (e) { return /^\d+$/.test(String(e.zIndex)) ? String(e.zIndex) : null; };
+    var same = have.filter(function (e) { return e.obj_id === o.id && z(e); })[0] ||
+      have.filter(function (e) { var k = known[e.obj_id]; return k && k.role === o.role && z(e); })[0];
+    if (same) return z(same);
+    if (o.role === 'duct' && /arrow/i.test(o.id)) return '15';
+    return IWDIE_VC_OBJ_Z[o.role] || '110';
+  };
+  var objects = [], already = 0;
+  (found || []).forEach(function (f) {
+    var o = f && known[f.id];
+    if (!o || !isFinite(f.x) || !isFinite(f.y) || !(f.w > 0) || !(f.h > 0)) return;
+    var x = Math.round(f.x), y = Math.round(f.y), w = Math.max(1, Math.round(f.w)), h = Math.max(1, Math.round(f.h));
+    var there = have.concat(objects).some(function (e) {
+      return e.obj_id === o.id && near(e.posLeft, x) && near(e.posTop, y) && near(e.posWidth, w) && near(e.posHeight, h);
+    });
+    if (there) { already++; return; }
+    var text = String(f.text || '').replace(/\s+/g, ' ').trim();
+    if (!IWDIE_VC_OBJ_TEXT[o.role] && text === iwdieVcObjectCaption(o)) text = '';
+    objects.push({ obj_id: o.id, name: 'object_0', id: 'driver_id', posWidth: w, posHeight: h, posLeft: x, posTop: y, zIndex: zOf(o),
+      tag_text: text, linked: 'false', link_name: '', link_tag: '', sub_group: '', driver_id: 'driver_id', unit_id: '', unit_ref: '', alias_text: '' });
+  });
+  return { objects: objects, already: already };
+}
+
+/** The placeholders of a saved drawing taken out of it, to become objects: each group whose
+ *  name makes it one goes, with all it holds (one inside another is part of it). `doc` is the
+ *  drawing parsed as XML; `measure(groups)` gives each one's box in panel pixels ({x, y, w, h}),
+ *  {hidden: true} for a hidden one, which stays as it is, or null, in order. One without a box
+ *  goes too, and is counted. -> {found: [{id, x, y, w, h, text}], skipped} */
+function iwdieVcTakePlaceholders(doc, measure) {
+  var groups = doc.getElementsByTagName('g'), picked = [];
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i], id = iwdieVcObjectId(g.getAttribute('data-name') || g.getAttribute('id'));
+    if (!id) continue;
+    var inner = false;
+    for (var p = g.parentNode; p && p.nodeType === 1 && !inner; p = p.parentNode) {
+      for (var j = 0; j < picked.length; j++) if (picked[j].g === p) { inner = true; break; }
+    }
+    if (!inner) picked.push({ g: g, id: id });
+  }
+  if (!picked.length) return { found: [], skipped: 0 };
+  var boxes = measure(picked.map(function (q) { return q.g; })) || [], found = [], skipped = 0;
+  picked.forEach(function (q, k) {
+    var box = boxes[k], texts = q.g.getElementsByTagName('text'), words = [];
+    if (box && box.hidden) return;
+    for (var t = 0; t < texts.length; t++) {
+      var spans = texts[t].getElementsByTagName('tspan');
+      if (!spans.length) words.push(texts[t].textContent);
+      for (var s = 0; s < spans.length; s++) words.push(spans[s].textContent);
+    }
+    if (box && box.w > 0 && box.h > 0) found.push({ id: q.id, x: box.x, y: box.y, w: box.w, h: box.h, text: words.join(' ') });
+    else skipped++;
+    if (q.g.parentNode) q.g.parentNode.removeChild(q.g);
+  });
+  return { found: found, skipped: skipped };
 }
 
 /* ===================== browser body ===================== */
@@ -7334,8 +7513,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* ---------- Edit in VectorCraft (v1.35.0): the editor's side ----------
        Runs on the VectorCraft page opened for a job (#job=…). It drops the panel's SVG on the
-       canvas once the app has started, then the component library into Libraries (v1.37.0),
-       shows how to save, and catches the SVG the app saves - a blob download - to hand it back
+       canvas once the app has started, then the component library into Libraries (v1.37.0) and
+       the Designer's own objects as placeholders (v1.40.0), shows how to save, and catches the SVG the app saves - a blob download - to hand it back
        through Tampermonkey's storage instead. */
     /** The banner on the editor's page: a title, a text, buttons, and a line for news. */
     function vcBanner(titleHtml, bodyHtml, actions) {
@@ -7354,7 +7533,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           '.iwdie-vcb.iwdie-min .iwdie-vcb-t::before{content:"\\25B8"}',
           '.iwdie-vcb.iwdie-min .iwdie-vcb-b,.iwdie-vcb.iwdie-min .iwdie-vcb-a,.iwdie-vcb.iwdie-min .iwdie-vcb-n{display:none}',
           '.iwdie-vcb .iwdie-vcb-s{margin-top:6px;color:#8fd19e}',
-          '.iwdie-vcb .iwdie-vcb-c{margin-top:6px}',
+          '.iwdie-vcb .iwdie-vcb-c,.iwdie-vcb .iwdie-vcb-o{margin-top:6px}',
           '.iwdie-vcb .iwdie-vcb-e{margin-top:6px;color:#ff9f9f}',
           '.iwdie-vcb .iwdie-vcb-x{position:absolute;top:5px;right:6px;width:20px;height:20px;border:0;background:transparent;color:#b0b0b0;font:16px/20px Arial,sans-serif;cursor:default;padding:0}',
           '.iwdie-vcb .iwdie-vcb-x:hover{color:#ffffff}',
@@ -7439,11 +7618,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /** The component library as a .vclibrary file, its thumbnails drawn here. -> Promise<text> */
-    function vcLibraryText(lib) {
+    /** A library as a .vclibrary file, its thumbnails drawn here; `opts` as iwdieVcLibraryFile's.
+     *  -> Promise<text> */
+    function vcLibraryText(lib, opts) {
       var thumbs = [], k = 0;
       var next = function () {
-        if (k >= lib.items.length) return Promise.resolve(iwdieVcLibraryFile(lib, thumbs));
+        if (k >= lib.items.length) return Promise.resolve(iwdieVcLibraryFile(lib, thumbs, opts));
         var t = iwdieVcThumbSvg(lib.items[k], 128), img = new Image();
         return new Promise(function (resolve) {
           img.onload = function () {
@@ -7519,7 +7699,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var esc2 = iwdieEscHtml, lib = libLoad(), busy = false;
       var ui = vcBanner('IWMAC Designer · ' + esc2(job.panel || 'panel') + (job.plant ? ' (plant ' + esc2(job.plant) + ')' : ''),
         'To send it back: <b>Ctrl+S</b> → Format <b>SVG</b> → OK → tick <b>Preserve Editing Capabilities</b> → OK. ' +
-        'The panel’s background updates; keep editing and save again for more.<div class="iwdie-vcb-c"></div>',
+        'The panel’s background updates; keep editing and save again for more.<div class="iwdie-vcb-c"></div><div class="iwdie-vcb-o"></div>',
         [{ act: 'trace', label: 'Ready for Image Trace', title: 'Open a copy whose picture is enlarged and set to its own flat colours, so Image Trace makes clean shapes of it' },
           { act: 'aibg', label: 'Background from .ai…', title: 'Open the panel’s own Illustrator file here as a document of its own, to paste in place as the background' },
           { act: 'import', label: 'Components from .ai…', title: 'Read the components around an Illustrator file’s artboard into Libraries; they replace the ones kept' }]);
@@ -7532,6 +7712,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       comp(lib ? iwdieN(lib.items.length, 'component', 'components') + ' from <b>' + esc2(lib.file || 'an Illustrator file') + '</b> - in Libraries once the editor has started.'
         : 'none yet. <b>Components from .ai…</b> reads the objects placed around an Illustrator file’s artboard - where Maskin files keep them - into VectorCraft’s Libraries.');
+      // the Designer's own objects, as placeholders that become them when saved back (v1.40.0)
+      var objItems = iwdieVcObjectItems();
+      var objLine = function (html, bad) {
+        var o = ui.el.querySelector('.iwdie-vcb-o');
+        o.className = 'iwdie-vcb-o' + (bad ? ' iwdie-vcb-e' : '');
+        o.innerHTML = 'IWMAC objects: ' + html;
+      };
+      objLine(iwdieN(objItems.length, 'kind', 'kinds') + ' - in Libraries as “' + esc2(IWDIE_VC_OBJ_LIBRARY) + '” once the editor has started.');
       var input = document.createElement('input');
       input.type = 'file';
       input.accept = '.ai,.pdf,application/pdf,application/postscript,application/illustrator';
@@ -7613,8 +7801,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (was.timer) clearTimeout(was.timer);
           try { GM_deleteValue(key); } catch (e) {}
           if (val.state === 'applied') {
+            var placed = +val.placed || 0, already = +val.already || 0, skipped = +val.skipped || 0;
             note('✓ The panel’s background was updated at ' + hhmm() + (was.editing ? '.' :
-              ' - as plain SVG (without <b>Preserve Editing Capabilities</b>): the next edit opens its layers and paths.'));
+              ' - as plain SVG (without <b>Preserve Editing Capabilities</b>): the next edit opens its layers and paths.') +
+              (placed ? ' <b>' + iwdieN(placed, 'IWMAC object', 'IWMAC objects') + '</b> placed in the panel' + (already ? ' (' + already + ' there already)' : '') + '.'
+                : already ? ' Its IWMAC objects were in the panel already.' : '') +
+              (skipped ? ' ' + iwdieN(skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.' : '') +
+              (val.objError ? ' The IWMAC objects were not placed: ' + esc2(String(val.objError)) + ' - save again to try again.' : '') +
+              (placed ? ' A placeholder becomes its object once: saved again where it is, it is skipped; moved, it is placed again. ' +
+                'Move the objects in the Designer from now on, or delete the placeholders here.' : ''), !!val.objError, placed > 0);
           } else {
             note('Not applied: ' + esc2(String(val.msg || val.state)), true);
           }
@@ -7659,23 +7854,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (b && /\.svgz$/i.test(a.download)) note('Saved as SVG Compressed, which goes to Downloads - choose <b>SVG</b> to send it to the panel.', true);
         return click.apply(this, arguments);
       };
-      // the panel first, as a fresh app opens it as a document; then the components, through the
-      // menu bar, which sends a library to Libraries even with a document open
+      // the panel first, as a fresh app opens it as a document; then the libraries, a moment apart,
+      // through the menu bar, which sends a library to Libraries even with a document open: the
+      // components, then the IWMAC objects
       var libText = lib ? vcLibraryText(lib) : null;
+      var objText = vcLibraryText({ items: objItems }, { name: IWDIE_VC_OBJ_LIBRARY, prefix: 'iwmac-obj-' });
+      var pause = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
+      var failed = function (say, what) {
+        return function (e) { say(what + ' could not be added: ' + esc2(String((e && e.message) || e)), true); };
+      };
       vcWhenReady(function () {
         try { vcDropFile(job.svg, job.name || 'panel.svg', 'image/svg+xml', 'center'); }
         catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
         ui.later(20000);
-        if (!libText) return;
-        libText.then(function (text) {
-          setTimeout(function () {
-            try {
-              vcDropFile(text, 'Komponenter.vclibrary', 'application/json', 'menu');
-              comp('<b>' + iwdieN(lib.items.length, 'component', 'components') + '</b> in <b>Libraries</b> (right), as “Komponenter' +
-                (lib.file ? ' - ' + esc2(lib.file) : '') + '”: drag one onto the drawing, or double-click it.');
-            } catch (e) { comp('The components could not be added: ' + esc2(String((e && e.message) || e)), true); }
-          }, 1200);
-        }, function (e) { comp('The components could not be added: ' + esc2(String((e && e.message) || e)), true); });
+        (libText ? libText.then(function (text) {
+          return pause(1200).then(function () {
+            vcDropFile(text, 'Komponenter.vclibrary', 'application/json', 'menu');
+            comp('<b>' + iwdieN(lib.items.length, 'component', 'components') + '</b> in <b>Libraries</b> (right), as “Komponenter' +
+              (lib.file ? ' - ' + esc2(lib.file) : '') + '”: drag one onto the drawing, or double-click it.');
+          });
+        }).then(null, failed(comp, 'The components')) : Promise.resolve()).then(function () {
+          return objText.then(function (text) {
+            return pause(1200).then(function () {
+              vcDropFile(text, 'IWMAC-objekter.vclibrary', 'application/json', 'menu');
+              objLine('<b>' + iwdieN(objItems.length, 'kind', 'kinds') + '</b> in <b>Libraries</b>, as “' + esc2(IWDIE_VC_OBJ_LIBRARY) + '”: ' +
+                'drag one where it goes, size it, write its text (JV401) over the one it has. Saved back, each becomes that object in the panel.');
+            });
+          }).then(null, failed(objLine, 'The IWMAC objects'));
+        });
       }, note);
     }
 
@@ -7753,8 +7959,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (!val || !val.svg) return;
           try { GM_deleteValue(key); } catch (e) {}
           // the editor's tab waits for this answer, and saves to Downloads when none comes
-          vcApplyResult(val, info, function (state, msg) {
-            try { GM_setValue('iwdie.vc.ack.' + id, { state: state, msg: msg || '', at: Date.now() }); } catch (e) {}
+          vcApplyResult(val, info, function (state, msg, extra) {
+            var a = { state: state, msg: msg || '', at: Date.now() };
+            if (extra) Object.keys(extra).forEach(function (k) { a[k] = extra[k]; });
+            try { GM_setValue('iwdie.vc.ack.' + id, a); } catch (e) {}
           });
         });
         var url = IWDIE_VC_URL + '#job=' + id;
@@ -7768,7 +7976,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           tone: 'good', title: 'Opening in VectorCraft',
           lines: [what + ' - in a new tab.',
             'Save there with Ctrl+S → Format SVG → OK → tick Preserve Editing Capabilities → OK: the picture comes straight back to this background.',
-            'Your components from Illustrator are in VectorCraft’s Libraries panel there: drag one onto the drawing.'],
+            'Its Libraries panel has the Designer’s own objects as “' + IWDIE_VC_OBJ_LIBRARY + '”: placed and saved back, each becomes that object here. ' +
+              'Your components from Illustrator are there too, once read.'],
           footer: 'Nothing leaves the browser. The first start downloads the editor (about 20 MB); after that it is cached.'
         });
       }).then(null, function (e) {
@@ -7777,8 +7986,98 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /* ---------- IWMAC objects (v1.40.0): placeholders saved back become objects ---------- */
+    /** An element's box in its drawing's viewport: the union of its shapes' boxes, each through
+     *  its own transform - its text left out, which may run past the box - or, with no shape in
+     *  it, its own. Hidden, by itself or by what holds it: {hidden: true}. VectorCraft leaves
+     *  hidden objects out of its SVG; another editor may not. -> {x, y, w, h} | {hidden} | null */
+    function vcBox(g) {
+      for (var a = g; a && a.nodeType === 1; a = a.parentNode) if (a.getAttribute('display') === 'none') return { hidden: true };
+      var box = null;
+      var add = function (el) {
+        var b, m;
+        try { b = el.getBBox(); m = el.getCTM(); } catch (e) { return; }
+        if (!b || !m || !(b.width > 0 || b.height > 0)) return;
+        [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]].forEach(function (p) {
+          var x = m.a * p[0] + m.c * p[1] + m.e, y = m.b * p[0] + m.d * p[1] + m.f;
+          if (!box) box = { x0: x, y0: y, x1: x, y1: y };
+          else { box.x0 = Math.min(box.x0, x); box.y0 = Math.min(box.y0, y); box.x1 = Math.max(box.x1, x); box.y1 = Math.max(box.y1, y); }
+        });
+      };
+      var shapes = g.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon');
+      for (var i = 0; i < shapes.length; i++) add(shapes[i]);
+      if (!box) add(g);
+      return box ? { x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 } : null;
+    }
+
+    /** The boxes of `groups` (placeholders in `doc`), in panel pixels: measured on a copy of the
+     *  drawing laid out at the panel's size, out of sight, as the background is drawn - the copy
+     *  without its pictures, styles, scripts, handlers and links, which a measurement does not
+     *  need and which must not run or load here. */
+    function vcMeasure(doc, groups, size) {
+      groups.forEach(function (g, k) { g.setAttribute('data-iwdie-ph', String(k)); });
+      var root = document.importNode(doc.documentElement, true);
+      groups.forEach(function (g) { g.removeAttribute('data-iwdie-ph'); });
+      Array.prototype.slice.call(root.querySelectorAll('script,style,foreignObject,image,metadata,iframe,audio,video')).forEach(function (el) {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      });
+      Array.prototype.slice.call(root.querySelectorAll('*')).concat([root]).forEach(function (el) {
+        Array.prototype.slice.call(el.attributes).forEach(function (a) {
+          var n = a.name.toLowerCase();
+          if (n.indexOf('on') === 0 || (/(^|:)href$/.test(n) && a.value.charAt(0) !== '#')) el.removeAttribute(a.name);
+        });
+      });
+      root.setAttribute('width', String(Math.round(size.w)));
+      root.setAttribute('height', String(Math.round(size.h)));
+      var host = document.createElement('div');
+      host.style.cssText = 'position:fixed;left:-30000px;top:0;width:' + Math.round(size.w) + 'px;height:' + Math.round(size.h) + 'px;overflow:hidden;visibility:hidden;pointer-events:none';
+      host.appendChild(root);
+      (document.body || document.documentElement).appendChild(host);
+      try {
+        return groups.map(function (g, k) {
+          var el = root.querySelector('[data-iwdie-ph="' + k + '"]');
+          return el ? vcBox(el) : null;
+        });
+      } finally {
+        host.parentNode.removeChild(host);
+      }
+    }
+
+    /** A saved drawing without its placeholders, and what they were: the SVG as it came when it
+     *  has none. With them gone it is kept without VectorCraft's own copy of the document, which
+     *  still has them (and whose check of the drawing no longer matches it), so the next edit
+     *  opens what is left. -> {svg, found, skipped} */
+    function vcPlaceholders(svg, size) {
+      var none = { svg: svg, found: [], skipped: 0 };
+      if (!/IWMAC[ _]/.test(svg)) return none;
+      var doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return none;
+      var took = iwdieVcTakePlaceholders(doc, function (groups) { return vcMeasure(doc, groups, size); });
+      if (!took.found.length && !took.skipped) return none;
+      var out = new XMLSerializer().serializeToString(doc);
+      if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
+      return { svg: iwdieVcStripEditing(out), found: took.found, skipped: took.skipped };
+    }
+
+    /** Placeholders as objects on the panel, through the Designer's own loader, as Insert puts
+     *  them there. -> {placed, already, error} */
+    function vcPlaceObjects(found) {
+      var made = iwdieVcDesignerObjects(found, exportPanelObjects());
+      if (!made.objects.length) return { placed: 0, already: made.already, error: '' };
+      try {
+        new W.DesignPanelHandler().load_new_ver_objects(iwdieNormalizeDoc({ single_objects: made.objects }).single_objects);
+      } catch (e) {
+        return { placed: 0, already: made.already, error: String((e && e.message) || e) };
+      }
+      renumberCanvasNames();
+      try { W.UpdateObjectWorker(); } catch (e) {}
+      try { if (!document.getElementById('mouse_selector') && typeof W.make_mouse_selector === 'function') W.make_mouse_selector(); } catch (e) {}
+      return { placed: made.objects.length, already: made.already, error: '' };
+    }
+
     /** What VectorCraft saved, as the panel's background: drawn at panel size, with the SVG
-     *  (and VectorCraft's own document inside it) kept in the PNG for the next edit. */
+     *  (and VectorCraft's own document inside it) kept in the PNG for the next edit. The IWMAC
+     *  placeholders in it come out of the picture and become their objects (v1.40.0). */
     function vcApplyResult(val, info, ack) {
       ack = ack || function () {};
       var svg = String(val.svg || '');
@@ -7796,7 +8095,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return;
       }
       ack('received');
-      var size = exportPanelSize(), sized = iwdieVcSized(svg, size.w, size.h);
+      var size = exportPanelSize(), ph;
+      try { ph = vcPlaceholders(svg, size); } catch (e) {
+        toast('The IWMAC objects in the VectorCraft save could not be read, so nothing was changed: ' + ((e && e.message) || e), true, 10000);
+        ack('failed', 'The Designer could not read the IWMAC objects in it: ' + ((e && e.message) || e));
+        return;
+      }
+      svg = ph.svg;
+      var sized = iwdieVcSized(svg, size.w, size.h);
       var url = URL.createObjectURL(new Blob([sized], { type: 'image/svg+xml' }));
       loadPicture(url).then(function (img) {
         URL.revokeObjectURL(url);
@@ -7819,16 +8125,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var dataUrl = 'data:image/png;base64,' + iwdieBytesToBase64(withDoc);
         W.iw_set_base_image((mi && mi.style.width) || (size.w + 'px'), (mi && mi.style.height) || (size.h + 'px'), dataUrl);
         try { if (!W.$('#main_image').attr('org_image_name')) W.$('#main_image').attr('org_image_name', 'iwdie-vectorcraft.png'); } catch (e) {}
+        var objs = ph.found.length ? vcPlaceObjects(ph.found) : { placed: 0, already: 0, error: '' };
+        var lines = [Math.round(withDoc.length / 1024) + ' kB, ' + size.w + ' × ' + size.h + ' px' +
+          (pack.lean ? ' - kept as plain SVG, without VectorCraft’s own copy of the document (' + (Math.round(pack.full / 104857.6) / 10) +
+            ' MB compressed), so the picture stays light: the next edit opens the same layers and paths.'
+            : ph.found.length || ph.skipped ? ' - kept as plain SVG without the IWMAC placeholders: the next edit opens what is left, layers and paths.'
+            : val.editing ? ', with the VectorCraft document inside, compressed, for the next edit.'
+            : ' - saved as plain SVG (without Preserve Editing Capabilities): the next edit opens its layers and paths.')];
+        if (objs.error) lines.push('The IWMAC objects could not be placed: ' + objs.error + '. Their placeholders are out of the picture; save again in VectorCraft to try again.');
+        else if (objs.placed) lines.push(iwdieN(objs.placed, 'IWMAC object', 'IWMAC objects') +
+          (objs.placed === 1 ? ' placed where its placeholder was' : ' placed where their placeholders were') + ' - unlinked, to link as any new object' +
+          (objs.already ? '; ' + objs.already + ' there already' : '') + '.');
+        else if (objs.already) lines.push('Its IWMAC objects were on the panel already, where their placeholders are.');
+        if (ph.skipped) lines.push(iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.');
         outcomeToast({
-          tone: 'good', title: '✅ Background updated from VectorCraft',
-          lines: [Math.round(withDoc.length / 1024) + ' kB, ' + size.w + ' × ' + size.h + ' px' +
-            (pack.lean ? ' - kept as plain SVG, without VectorCraft’s own copy of the document (' + (Math.round(pack.full / 104857.6) / 10) +
-              ' MB compressed), so the picture stays light: the next edit opens the same layers and paths.'
-              : val.editing ? ', with the VectorCraft document inside, compressed, for the next edit.'
-              : ' - saved as plain SVG (without Preserve Editing Capabilities): the next edit opens its layers and paths.')],
+          tone: objs.error ? 'caution' : 'good', title: objs.placed ? '✅ Background and IWMAC objects from VectorCraft' : '✅ Background updated from VectorCraft',
+          lines: lines,
           footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.'
         });
-        ack('applied', Math.round(withDoc.length / 1024) + ' kB');
+        ack('applied', Math.round(withDoc.length / 1024) + ' kB', { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error });
       }).then(null, function (e) {
         try { URL.revokeObjectURL(url); } catch (e2) {}
         toast('The VectorCraft picture could not be used: ' + ((e && e.message) || e), true, 10000);
@@ -9442,6 +9757,16 @@ if (typeof module !== 'undefined' && module.exports) {
     vcFindPicture: iwdieVcFindPicture,
     vcStripEditing: iwdieVcStripEditing,
     vcChunk: iwdieVcChunk,
+    VC_OBJ_PREFIX: IWDIE_VC_OBJ_PREFIX,
+    VC_OBJ_LIBRARY: IWDIE_VC_OBJ_LIBRARY,
+    VC_OBJ_Z: IWDIE_VC_OBJ_Z,
+    vcObjectCatalog: iwdieVcObjectCatalog,
+    vcObjectCaption: iwdieVcObjectCaption,
+    vcObjectItems: iwdieVcObjectItems,
+    vcObjectId: iwdieVcObjectId,
+    vcDesignerObjects: iwdieVcDesignerObjects,
+    vcTakePlaceholders: iwdieVcTakePlaceholders,
+    vcNode: iwdieVcNode,
     pngChunks: iwdiePngChunks,
     pngCrc32: iwdiePngCrc32,
     sniffMime: iwdieSniffMime,
