@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.37.0
+// @version      1.38.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.37.0';
+var IWDIE_VERSION = '1.38.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6035,24 +6035,26 @@ function iwdieVcMergeShapes(svg, shapes) {
   return s.slice(0, at) + layer + s.slice(at);
 }
 
-/** The PNG with a VectorCraft document stored in it. The picture is that document's
- *  rendering now, so an older copy and any Draw drawing (and the picture it was drawn on)
- *  go; viewers skip the chunk. */
-function iwdieVcEmbed(png, svg) {
+/** The PNG with a VectorCraft document stored in it: an SVG as plain text in iwVc, or bytes
+ *  given with the chunk to keep them in (iwVz: compressed, v1.38.0). The picture is that
+ *  document's rendering now, so an older copy and any Draw drawing (and the picture it was
+ *  drawn on) go; viewers skip the chunk. */
+function iwdieVcEmbed(png, doc, type) {
   var chunks = iwdiePngChunks(png);
   if (!chunks) throw new Error('the picture to embed in is not a PNG');
   var keep = chunks.filter(function (c) {
-    if (c.type === IWDIE_VC_CHUNK || c.type === IWDIE_DRAW_BASE_CHUNK) return false;
+    if (c.type === IWDIE_VC_CHUNK || c.type === IWDIE_VC_ZCHUNK || c.type === IWDIE_DRAW_BASE_CHUNK) return false;
     if (c.type === 'iTXt') { var t = iwdiePngReadITxt(c.data); if (t && t.keyword === IWDIE_DRAW_KEYWORD) return false; }
     return true;
   });
   var end = keep.pop();
-  keep.push({ type: IWDIE_VC_CHUNK, data: iwdieUtf8Encode(String(svg)) });
+  keep.push({ type: type || IWDIE_VC_CHUNK, data: typeof doc === 'string' ? iwdieUtf8Encode(doc) : doc });
   keep.push(end);
   return iwdiePngBuild(keep);
 }
 
-/** The VectorCraft SVG a PNG carries, or null. */
+/** The VectorCraft SVG a PNG carries as plain text (iwVc), or null; a compressed one (iwVz)
+ *  is read in the browser, which unpacks it. */
 function iwdieVcExtract(png) {
   var chunks = iwdiePngChunks(png);
   if (!chunks) return null;
@@ -6205,6 +6207,122 @@ function iwdieVcThumbSvg(item, max) {
   return { w: W, h: H, svg: '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="' +
     [-pad, -pad, w, h].map(iwdieDrawFmt).join(' ') + '">' + (defs ? '<defs>' + defs + '</defs>' : '') +
     item.shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</svg>' };
+}
+
+/* ===================== Ready for Image Trace, and lighter documents (v1.38.0) =====================
+   VectorCraft's Image Trace follows the pixels it is given. A panel picture has small text and
+   anti-aliased edges: traced as it is, the text breaks up; enlarged smoothly, every in-between
+   shade along an edge becomes shapes of its own (38,535 paths, 32 MB, for a Maskin panel).
+   Enlarged three times and with every pixel set to the picture's own flat colours, it traces
+   clean: the edges where the enlargement puts them, the text whole, only the real colours.
+   And a traced panel is a big document, so the one kept in the background PNG is compressed,
+   and stored without VectorCraft's own copy of it when that would still be too big. */
+
+/** Private PNG chunk with the VectorCraft SVG, zlib-compressed (v1.38.0; iwVc holds it plain). */
+var IWDIE_VC_ZCHUNK = 'iwVz';
+/** Compressed bytes a kept VectorCraft document may take before it is kept without its own
+ *  embedded copy (Preserve Editing Capabilities). Every viewer of the panel loads them. */
+var IWDIE_VC_BUDGET = 1024 * 1024;
+
+/** The flat colours a picture is made of: its exact colours covering at least 0.02 % of it each,
+ *  near-twins merged, and the in-between shades of anti-aliased edges left out - a colour on the
+ *  line between two kept colours, rarer than half the rarer of them. At most 16, the commonest
+ *  first. `flat`: those colours cover nearly all of it, which a photo's do not.
+ *  -> {colors: [[r, g, b]], covered, flat} */
+function iwdieVcFlatPalette(rgba, w, h) {
+  var n = w * h, count = new Map(), i, key;
+  for (i = 0; i + 3 < rgba.length; i += 4) {
+    if (rgba[i + 3] < 128) continue;
+    key = (rgba[i] << 16) | (rgba[i + 1] << 8) | rgba[i + 2];
+    count.set(key, (count.get(key) || 0) + 1);
+  }
+  var min = Math.max(1, n * 0.0002), cand = [], covered = 0;
+  count.forEach(function (c, k) { if (c >= min) { cand.push([k, c]); covered += c; } });
+  cand.sort(function (a, b) { return b[1] - a[1] || a[0] - b[0]; });
+  var d2 = function (a, b) { var x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2]; return x * x + y * y + z * z; };
+  var pal = [];
+  cand.forEach(function (e) {
+    var c = [(e[0] >> 16) & 255, (e[0] >> 8) & 255, e[0] & 255], j, m;
+    for (j = 0; j < pal.length; j++) if (d2(pal[j].c, c) < 225) { pal[j].n += e[1]; return; }
+    for (j = 0; j < pal.length; j++) {
+      for (m = j + 1; m < pal.length; m++) {
+        var a = pal[j].c, b = pal[m].c, ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+        if (!L) continue;
+        var t = ((c[0] - a[0]) * ab[0] + (c[1] - a[1]) * ab[1] + (c[2] - a[2]) * ab[2]) / L;
+        if (t < 0.12 || t > 0.88) continue;
+        if (d2([a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]], c) < 64 && e[1] < 0.5 * Math.min(pal[j].n, pal[m].n)) return;
+      }
+    }
+    if (pal.length < 16) pal.push({ c: c, n: e[1] });
+  });
+  var share = n ? covered / n : 0;
+  return { colors: pal.map(function (p) { return p.c; }), covered: Math.round(share * 1000) / 1000, flat: share >= 0.85 && pal.length > 1 };
+}
+
+/** Every pixel of `rgba` set to its nearest colour of `colors`, and fully opaque or fully clear.
+ *  Changes `rgba` and returns it. */
+function iwdieVcSnap(rgba, colors) {
+  var cache = new Map();
+  for (var i = 0; i + 3 < rgba.length; i += 4) {
+    var key = (rgba[i] << 16) | (rgba[i + 1] << 8) | rgba[i + 2], best = cache.get(key);
+    if (best === undefined) {
+      var bd = Infinity;
+      for (var j = 0; j < colors.length; j++) {
+        var c = colors[j], x = c[0] - rgba[i], y = c[1] - rgba[i + 1], z = c[2] - rgba[i + 2], d = x * x + y * y + z * z;
+        if (d < bd) { bd = d; best = j; }
+      }
+      cache.set(key, best);
+    }
+    var col = colors[best];
+    rgba[i] = col[0]; rgba[i + 1] = col[1]; rgba[i + 2] = col[2];
+    rgba[i + 3] = rgba[i + 3] < 128 ? 0 : 255;
+  }
+  return rgba;
+}
+
+/** How much to enlarge a picture before it is traced: three times, less for a big one, so that
+ *  at most 12 million pixels are traced. */
+function iwdieVcTraceScale(w, h) {
+  return Math.max(1, Math.min(3, Math.sqrt(12e6 / Math.max(1, w * h))));
+}
+
+/** The background picture in an SVG: its first embedded PNG or JPEG covering at least half of
+ *  `w` × `h` (any size when they are not given), else the largest. -> {start, end, href} with
+ *  `start`/`end` the href value's place in `svg`, or null */
+function iwdieVcFindPicture(svg, w, h) {
+  var s = String(svg || ''), re = /<image\b[^>]*>/gi, m, best = null;
+  while ((m = re.exec(s))) {
+    var tag = m[0], href = /\s(?:xlink:)?href\s*=\s*"(data:image\/(?:png|jpeg);base64,[A-Za-z0-9+\/=\s]+)"/i.exec(tag);
+    if (!href) continue;
+    var num = function (a) { var r = new RegExp('\\s' + a + '\\s*=\\s*"\\s*([\\d.]+)').exec(tag); return r ? parseFloat(r[1]) : 0; };
+    var start = m.index + href.index + href[0].indexOf('"') + 1, hit = { start: start, end: start + href[1].length, href: href[1] };
+    if (w > 0 && h > 0 && num('width') * num('height') >= 0.5 * w * h) return hit;
+    if (!best || hit.href.length > best.href.length) best = hit;
+  }
+  return best;
+}
+
+/** A VectorCraft SVG without the copy of its document it carries (Preserve Editing
+ *  Capabilities): what VectorCraft draws stays as it is, so it reopens as the same layers and
+ *  paths, and an emptied <metadata> goes too. */
+function iwdieVcStripEditing(svg) {
+  return String(svg || '')
+    .replace(/[ \t]*<vectorcraft:document\b[\s\S]*?<\/vectorcraft:document>[ \t]*\r?\n?/g, '')
+    .replace(/[ \t]*<metadata>\s*<\/metadata>[ \t]*\r?\n?/g, '');
+}
+
+/** The VectorCraft document a PNG keeps: {type: 'iwVz' (compressed) | 'iwVc' (plain), data}, the
+ *  compressed one first, or null. */
+function iwdieVcChunk(png) {
+  var chunks = iwdiePngChunks(png);
+  if (!chunks) return null;
+  var plain = null;
+  for (var i = 0; i < chunks.length; i++) {
+    if (!chunks[i].data.length) continue;
+    if (chunks[i].type === IWDIE_VC_ZCHUNK) return { type: IWDIE_VC_ZCHUNK, data: chunks[i].data };
+    if (chunks[i].type === IWDIE_VC_CHUNK && !plain) plain = { type: IWDIE_VC_CHUNK, data: chunks[i].data };
+  }
+  return plain;
 }
 
 /* ===================== browser body ===================== */
@@ -7342,6 +7460,45 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return next();
     }
 
+    /** Ready for Image Trace (v1.38.0): a copy of the panel whose picture is enlarged (three
+     *  times, less for a big one) and set to its own flat colours, opened as a new document in
+     *  this tab's VectorCraft. Saves from it go to the Designer like any other. -> Promise */
+    function vcSharpen(job, say) {
+      var esc2 = iwdieEscHtml, svg = iwdieVcStripEditing(job.svg), pic = iwdieVcFindPicture(svg);
+      if (!pic) { say('This panel has no picture to make ready for Image Trace.', true); return Promise.resolve(); }
+      say('Making the picture ready for Image Trace…');
+      return loadPicture(pic.href).then(function (img) {
+        var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+        var c1 = document.createElement('canvas');
+        c1.width = w; c1.height = h;
+        var g1 = c1.getContext('2d');
+        g1.drawImage(img, 0, 0);
+        var pal = iwdieVcFlatPalette(g1.getImageData(0, 0, w, h).data, w, h);
+        if (!pal.flat) return { flat: false };
+        var k = iwdieVcTraceScale(w, h), W2 = Math.round(w * k), H2 = Math.round(h * k);
+        var c3 = document.createElement('canvas');
+        c3.width = W2; c3.height = H2;
+        var g3 = c3.getContext('2d');
+        g3.imageSmoothingEnabled = true;
+        g3.imageSmoothingQuality = 'high';
+        g3.drawImage(img, 0, 0, W2, H2);
+        var id = g3.getImageData(0, 0, W2, H2);
+        iwdieVcSnap(id.data, pal.colors);
+        g3.putImageData(id, 0, 0);
+        return { flat: true, url: c3.toDataURL('image/png'), colors: pal.colors.length, k: Math.round(k * 10) / 10 };
+      }).then(function (r) {
+        if (!r.flat) {
+          say('This picture is not made of flat colours (a photo?): Image Trace would turn it into thousands of specks. Keep it as a picture, or trace a part of it.', true);
+          return;
+        }
+        var name = String(job.name || 'panel.svg').replace(/\.svg$/i, '') + '-trace.svg';
+        vcDropFile(svg.slice(0, pic.start) + r.url + svg.slice(pic.end), name, 'image/svg+xml', 'menu');
+        say('A copy is open in a new tab here, <b>' + esc2(name) + '</b>, its picture ' + r.k + '× sharper in its ' + r.colors + ' own colours. ' +
+          'Select the picture → <b>Image Trace ▾</b> → <b>16 Colors</b> → <b>Expand</b>, then save from that tab as usual. ' +
+          'Do it before you edit: the copy starts from the panel as it opened.');
+      }, function (e) { say('The picture could not be made ready: ' + esc2(String((e && e.message) || e)), true); });
+    }
+
     /** Put the component library into the running app's Libraries panel; `say(html, bad)` hears
      *  how it went. */
     function vcSendLibrary(lib, say) {
@@ -7361,7 +7518,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var ui = vcBanner('IWMAC Designer · ' + esc2(job.panel || 'panel') + (job.plant ? ' (plant ' + esc2(job.plant) + ')' : ''),
         'To send it back: <b>Ctrl+S</b> → Format <b>SVG</b> → OK → tick <b>Preserve Editing Capabilities</b> → OK. ' +
         'The panel’s background updates; keep editing and save again for more.<div class="iwdie-vcb-c"></div>',
-        [{ act: 'import', label: 'Import .ai…', title: 'Read the components around an Illustrator file’s artboard into Libraries; they replace the ones kept' }]);
+        [{ act: 'trace', label: 'Ready for Image Trace', title: 'Open a copy whose picture is enlarged and set to its own flat colours, so Image Trace makes clean shapes of it' },
+          { act: 'import', label: 'Import .ai…', title: 'Read the components around an Illustrator file’s artboard into Libraries; they replace the ones kept' }]);
       var note = ui.note;
       // what the components line says: where they are, or how to get them
       var comp = function (html, bad) {
@@ -7377,6 +7535,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       input.style.display = 'none';
       ui.el.appendChild(input);
       ui.on('import', function () { if (!busy) input.click(); });
+      var sharpening = false;
+      ui.on('trace', function () {
+        if (sharpening) return;
+        sharpening = true;
+        vcWhenReady(function () {
+          vcSharpen(job, note).then(function () { sharpening = false; }, function () { sharpening = false; });
+        }, note);
+      });
       input.addEventListener('change', function () {
         var f = input.files && input.files[0];
         input.value = '';
@@ -7424,7 +7590,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           try { GM_deleteValue(key); } catch (e) {}
           if (val.state === 'applied') {
             note('✓ The panel’s background was updated at ' + hhmm() + (was.editing ? '.' :
-              ' - saved without <b>Preserve Editing Capabilities</b>, so the next edit starts from the picture, not this document.'));
+              ' - as plain SVG (without <b>Preserve Editing Capabilities</b>): the next edit opens its layers and paths.'));
           } else {
             note('Not applied: ' + esc2(String(val.msg || val.state)), true);
           }
@@ -7515,22 +7681,45 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** The VectorCraft SVG a picture keeps, unpacked when it is kept compressed (v1.38.0).
+     *  -> Promise<svg text | null> */
+    function vcDocumentOf(bytes) {
+      var ch = (bytes && iwdieSniffMime(bytes) === 'image/png') ? iwdieVcChunk(bytes) : null;
+      if (!ch) return Promise.resolve(null);
+      var text = function (u8) { var t = iwdieUtf8Decode(u8); return /<svg\b/i.test(t) ? t : null; };
+      if (ch.type !== IWDIE_VC_ZCHUNK) return Promise.resolve(text(ch.data));
+      return libInflate(ch.data).then(text, function () { return null; });
+    }
+
+    /** The SVG as the background PNG keeps it (v1.38.0): compressed, and without VectorCraft's
+     *  own copy of the document when that would weigh more than IWDIE_VC_BUDGET. Without
+     *  CompressionStream, as plain text. -> Promise<{type, data, lean, full}> */
+    function vcPack(svg) {
+      return deflateBytes(iwdieUtf8Encode(svg)).then(function (z) {
+        var full = { type: IWDIE_VC_ZCHUNK, data: z, lean: false, full: z.length };
+        if (z.length <= IWDIE_VC_BUDGET) return full;
+        var lean = iwdieVcStripEditing(svg);
+        if (lean.length === svg.length) return full;
+        return deflateBytes(iwdieUtf8Encode(lean)).then(function (z2) { return { type: IWDIE_VC_ZCHUNK, data: z2, lean: true, full: z.length }; });
+      }).then(null, function () { return { type: IWDIE_VC_CHUNK, data: iwdieUtf8Encode(svg), lean: false, full: 0 }; });
+    }
+
     /** Open the panel in the tab given: the VectorCraft document the background came from
      *  when it has one, else an SVG of the picture, any drawing in it and the panel's objects. */
     function vcStartEdit(info, tab) {
-      var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea';
-      var png = info.bg && iwdieSniffMime(info.bg.bytes) === 'image/png' ? info.bg.bytes : null;
-      var vc = png ? iwdieVcExtract(png) : null;
-      if (!vc && info.found && info.found.base && iwdieSniffMime(info.found.base.bytes) === 'image/png') vc = iwdieVcExtract(info.found.base.bytes);
+      var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea', vc = false;
       var shapes = info.found ? info.found.drawing.shapes : [];
       var base = info.found ? info.found.base : (info.bg ? { mime: info.bg.mime, bytes: info.bg.bytes } : null);
-      var build = vc
-        ? Promise.resolve(shapes.length ? iwdieVcMergeShapes(vc, shapes) : vc)
-        : exportPaint(base && base.bytes, base && base.mime, size, null).then(function (c) {
+      var build = vcDocumentOf(info.bg && info.bg.bytes).then(function (doc) {
+        return doc || (info.found && info.found.base ? vcDocumentOf(info.found.base.bytes) : null);
+      }).then(function (doc) {
+        if (doc) { vc = true; return shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc; }
+        return exportPaint(base && base.bytes, base && base.mime, size, null).then(function (c) {
           var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
           return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: base ? c.toDataURL('image/png') : null, shapes: shapes, objects: info.objects,
             title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
         });
+      });
       build.then(function (svg) {
         var id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
         var safe = String(info.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
@@ -7600,14 +7789,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }, 'image/png');
         });
       }).then(function (pngBytes) {
-        var withDoc = iwdieVcEmbed(pngBytes, svg), mi = document.getElementById('main_image');
+        return vcPack(svg).then(function (pack) { return { png: pngBytes, pack: pack }; });
+      }).then(function (r) {
+        var pack = r.pack, withDoc = iwdieVcEmbed(r.png, pack.data, pack.type), mi = document.getElementById('main_image');
         var dataUrl = 'data:image/png;base64,' + iwdieBytesToBase64(withDoc);
         W.iw_set_base_image((mi && mi.style.width) || (size.w + 'px'), (mi && mi.style.height) || (size.h + 'px'), dataUrl);
         try { if (!W.$('#main_image').attr('org_image_name')) W.$('#main_image').attr('org_image_name', 'iwdie-vectorcraft.png'); } catch (e) {}
         outcomeToast({
           tone: 'good', title: '✅ Background updated from VectorCraft',
-          lines: [Math.round(withDoc.length / 1024) + ' kB, ' + size.w + ' × ' + size.h + ' px' + (val.editing ? ', with the VectorCraft document inside for the next edit.' :
-            ' - saved without Preserve Editing Capabilities, so the next edit starts from this picture.')],
+          lines: [Math.round(withDoc.length / 1024) + ' kB, ' + size.w + ' × ' + size.h + ' px' +
+            (pack.lean ? ' - kept as plain SVG, without VectorCraft’s own copy of the document (' + (Math.round(pack.full / 104857.6) / 10) +
+              ' MB compressed), so the picture stays light: the next edit opens the same layers and paths.'
+              : val.editing ? ', with the VectorCraft document inside, compressed, for the next edit.'
+              : ' - saved as plain SVG (without Preserve Editing Capabilities): the next edit opens its layers and paths.')],
           footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.'
         });
         ack('applied', Math.round(withDoc.length / 1024) + ' kB');
@@ -9216,6 +9410,14 @@ if (typeof module !== 'undefined' && module.exports) {
     vcNativeDoc: iwdieVcNativeDoc,
     vcLibraryFile: iwdieVcLibraryFile,
     vcThumbSvg: iwdieVcThumbSvg,
+    VC_ZCHUNK: IWDIE_VC_ZCHUNK,
+    VC_BUDGET: IWDIE_VC_BUDGET,
+    vcFlatPalette: iwdieVcFlatPalette,
+    vcSnap: iwdieVcSnap,
+    vcTraceScale: iwdieVcTraceScale,
+    vcFindPicture: iwdieVcFindPicture,
+    vcStripEditing: iwdieVcStripEditing,
+    vcChunk: iwdieVcChunk,
     pngChunks: iwdiePngChunks,
     pngCrc32: iwdiePngCrc32,
     sniffMime: iwdieSniffMime,

@@ -918,11 +918,59 @@ Keep editing and save as often as you like. Nothing is stored on the server unti
 the Designer's own Save.
 
 **The next edit.** The PNG keeps the saved SVG, with VectorCraft's own document inside it,
-in a private chunk (`iwVc`) that viewers skip. *Edit in VectorCraft* on that background
-reopens exactly that document, with its layers and editable shapes, not a flattened picture.
-A background drawn in Draw over a VectorCraft document (v1.35.0) brings that drawing along
-as a layer of its own, *Tegning (Designer)*. Without *Preserve Editing Capabilities*
-the next edit starts from the picture instead, and both tabs say so.
+in a private chunk that viewers skip: `iwVz`, zlib-compressed, since v1.38.0 (`iwVc`, plain,
+before). *Edit in VectorCraft* on that background reopens exactly that document, with its
+layers and editable shapes, not a flattened picture. A background drawn in Draw over a
+VectorCraft document (v1.35.0) brings that drawing along as a layer of its own, *Tegning
+(Designer)*. Saved without *Preserve Editing Capabilities*, the SVG is kept all the same: the
+next edit opens its layers and paths, without VectorCraft's own extras.
+
+**Keeping the picture light (v1.38.0).** Every viewer of a panel loads its background PNG,
+so the document in it is compressed. A panel with its picture and a few shapes went from
+572 kB to 440 kB. When even the compressed document would pass 1 MB, which a traced panel
+does, it is kept without VectorCraft's own copy (the `<vectorcraft:document>` inside
+`<metadata>`). What VectorCraft draws stays as it was, so the next edit opens the same layers
+and paths, and the toast says so.
+
+**Making the picture into vectors (v1.38.0).** VectorCraft's own **Image Trace** turns a
+picture into shapes, but a panel picture traced as it is loses its small text, and its
+anti-aliased edges become slivers. Measured on a Maskin panel (1400 × 750):
+
+| Traced as | Result |
+|---|---|
+| the picture as it is, 16 Colors | the labels break up, the edges are jagged |
+| enlarged 3× smoothly, 16 Colors | every in-between shade of an edge a shape of its own: 38,535 paths, 32 MB |
+| enlarged 3×, 6 Colors | 5,657 paths, but the pipe colours run together |
+| enlarged 3×, VectorCraft's Automatic palette | 99,298 paths: it no longer sees flat art |
+| **enlarged 3× and set to the picture's own 12 flat colours, 16 Colors** | **the right colours, the labels whole, 6,155 paths** |
+
+**Ready for Image Trace**, in the banner of the editor's tab, makes that last kind:
+- It enlarges the picture three times (less for a big one: at most 12 million pixels).
+- It sets every pixel to the picture's own flat colours. Those are its exact colours that
+  cover at least 0.02 % of it, with near-twins merged. The in-between shades of anti-aliased
+  edges are left out: a colour on the line between two others, rarer than half the rarer of
+  them.
+- It opens the result as a new document in the same VectorCraft, `<panel>-trace.svg`, with the
+  panel's layers and objects as they opened.
+
+Then:
+1. Select the picture.
+2. **Image Trace ▾** (Quick Actions, on the right) → **16 Colors**.
+3. **Expand**.
+4. Save from that tab as usual; the Designer takes it like any other save.
+
+For the panel above it took two seconds to prepare and under a minute to trace. The save was
+9.4 MB, 2.4 MB compressed, and kept as plain SVG at 513 kB: the PNG came to 726 kB. Do it
+before editing, as the copy starts from the panel as it opened.
+
+A picture that is not made of flat colours (a photo) is refused with a note. Traced, it
+would be thousands of specks.
+
+A fully traced panel is thousands of paths. Often it is better to keep the picture, and trace
+or draw only what is to change.
+
+When a VectorCraft tab was closed with unsaved changes, the next one asks to *Recover
+Documents*: choose *Discard* unless you want them back.
 
 **What it refuses, and why:**
 
