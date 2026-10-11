@@ -921,6 +921,15 @@ While it looks, the new tab shows how far it has come, with a **Skip - open the 
 is** button. Closing the tab stops it too. The search runs in workers, so the Designer does
 not freeze. The message in the Designer then says what was found, and of which kind.
 
+Since v1.47.0 the new tab lists every step - your components drawn to compare, the search,
+what each one shows, the pills, the pipes, the drawing for VectorCraft, the editor starting -
+each with what it found and how long it took, the time so far, and while the search runs how
+many workers it has and about how long is left. It shows between the steps too, not only
+during the search: before, the bar stood still at 92 % from the search to the editor. The
+Skip button goes once the picture has been read. On the Maskin panel in the stub host: 331
+looks, 52 places in 1.9 s, 7 components, 53 pills (5 under the panel's objects), 37 pipes,
+and the editor starting after 3.0 s in all.
+
 **Pills and pipes too (v1.45.0).** Much of a Maskin picture is drawn on the panel directly,
 not placed from the library, so the library cannot find it. Two kinds of it now become vectors
 as well:
@@ -970,6 +979,47 @@ profile may find nothing. Without kept components, the panel opens as before.
   objects cover (half or more of it) now stays in the picture as it was: the Designer shows
   the object over it, and in VectorCraft its placeholder lies on top. The message says how
   many stayed.
+
+**Deleting left black, and an object's frame stayed behind (v1.47.0).** After that first
+sync, the dark rims were part of the picture. Read again, a frame with a dark rim 2 px or more
+wide looked like a dark pill with the white inside as its text (v1.46.1 no longer reads it so).
+A click on it chose the white inside, Delete took that, and a black pill was left. And since
+v1.46.1 kept what the objects cover in the picture, an object deleted or moved in VectorCraft
+left its frame behind, which could not be deleted, being part of the picture.
+
+So what an object stands on - a value's frame, a dark *Ref* pill, a status pill, a component -
+now goes **into its placeholder**, cut out of the picture exactly as it is (so nothing is
+redrawn a little off), with the ground filled in under it:
+- Move the placeholder and the frame moves with it; at the sync the object moves, and the frame
+  is in the new picture where it was taken.
+- Delete the placeholder and the frame goes too, leaving the ground. At the sync the object is
+  taken **off the panel**, as the Designer's own Delete does it (`delete_xml_obj`: out of its
+  list of objects, off the canvas). The panel is not saved: reload it without saving to have
+  it back. The toast names each one.
+- Leave it as it is, and the picture comes back the same, pixel for pixel.
+- The next edit of a background that came from VectorCraft puts each kept frame back into the
+  placeholder of the object over it. A frame left with no object over it stays as art of its
+  own, on the layer **IWMAC-rammer**.
+- Not taken off: objects whose placeholders are all missing because the layer
+  **IWMAC-objekter** was not in the save (VectorCraft leaves hidden layers out), or more than
+  half of them at once when that is more than ten. The toast then names them, to delete in
+  the Designer.
+
+A sync knows each object by its element on the canvas, not by its name, so it stays right
+when names change between syncs: the Designer renames the objects when one is placed or taken
+off. An object placed by a sync is known again at the next one too: moved, resized or deleted
+in VectorCraft, the same happens to it in the Designer, instead of a second one being placed.
+
+Measured in the stub host, on the Maskin picture with six objects on its frames: the L-T Sd
+placeholder deleted, the Po placeholder moved 200 px, a value placed from the IWMAC menu, and
+the Alarm pill (under no object) deleted. At the sync (0.3 s) the L-T Sd object came off the
+panel and its frame out of the picture (the ground there, 229, 231, 234), Po moved with its
+frame (gone from the old place, white in the new), the new value was placed, and the Alarm
+pill's place shows the column's grey (205, 210, 215), not black. A second sync, after the new
+value was moved 100 px and the Ref placeholder deleted: the new value moved (not placed again)
+and Ref came off with its dark pill. Compared with the original picture, only those five
+places differ much; elsewhere the redrawn vectors differ by 1.2 on average (out of 765). A
+second edit put the three frames left back into their placeholders.
 
 Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Components
 from .ai…** in the banner reads another file's. The Designer's own objects arrive there too, as
@@ -1128,12 +1178,10 @@ objects arrive unlinked. Their stacking order is that of the panel's own objects
 kind or role, or else the band for the role: 5 headers and ducts, 40 equipment, 110 values, 375
 alarms, LEDs, pumps and valves, 1100 labels. The toast and the banner count them.
 
-A placeholder becomes its object once:
-- Saved again where it is, it is skipped, because an object of that kind is already there.
-- Moved and saved again, it is placed again.
-
-So after the first save, move the objects in the Designer, or delete the placeholders in
-VectorCraft.
+A placeholder becomes its object once. Since v1.47.0 the syncs after it, in the same editor
+tab, know it as that object: moved, resized or deleted there, the object is moved, resized or
+taken off. (Before, a moved one was placed again.) In a later edit it is one of the panel's
+objects, with a placeholder of its own.
 
 **The panel's own objects (v1.46.0).** The placeholders on the layer **IWMAC-objekter** stand
 for objects that are already on the panel. Each says which object it is: its name on the
@@ -1143,8 +1191,8 @@ VectorCraft keeps through a save. A sync then changes that object instead of pla
   link, its driver and everything else about it.
 - Its text written over (JV401 → JV402, a label's text), its tag text changes.
 - Left as it was (a pixel either way), it is left alone.
-- Deleted in VectorCraft, the object stays on the panel. The toast names it, to delete in the
-  Designer if it should go.
+- Deleted in VectorCraft, the object is taken off the panel at the sync (v1.47.0; before, it
+  stayed). See *Deleting left black* above for when it is not.
 - Copied in VectorCraft (Alt+drag), the copy becomes a new object of its kind, even one outside
   the catalogue.
 - If the panel's objects were renamed meanwhile, as deleting one in the Designer renames
@@ -1192,6 +1240,23 @@ hosted build stays unmodified. So the objects have a menu of their own in the sa
   finds them by name. They are placed the same way, as a group named after the component.
   VectorCraft's own **Libraries** panel does not scroll (0.9.0), so a big library cannot be seen
   whole there; the menu's lists scroll.
+
+**Libraries in pages that fit (v1.47.0).** VectorCraft 0.9.0 draws its Libraries panel without
+a scroll area (its Properties panel has one; Libraries has none, in the dock or floating), so
+what does not fit the panel's height cannot be reached at all. The script cannot change the
+hosted app, so it sends each library in pages small enough to show whole, each a library of
+its own in the list at the top of Libraries:
+- How many fit is worked out from the window's height, at four graphics a row (the dock's own
+  width): 36 at a window 900 px high.
+- A layer of the `.ai` goes whole onto a page while it fits; small ones share a page, each a
+  group of it; a bigger one is spread over pages of its own, named *Komponenter v1 1/4 -
+  2349_Maskin.ai* and on.
+- Twins (the same size and picture) in one layer show once.
+- The IWMAC objects the same way, by role: *IWMAC-objekter: Headers, Labels, …*. Two kinds that
+  look alike both stay.
+- All pages go in with one drop. The first page of the components is the one Libraries shows.
+
+With `2349_Maskin.ai`'s 386 components: 12 pages; the 72 IWMAC object kinds: 4.
 
 Measured in the hosted build: a fan found by the search, two values placed with Shift held, and
 a label from its submenu. The save named them `IWMAC_V3_58px_fan_left_nrm`,

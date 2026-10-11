@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.46.1
+// @version      1.47.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.46.1';
+var IWDIE_VERSION = '1.47.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6028,7 +6028,7 @@ function iwdieVcSvg(o) {
   out.push('  <g id="Tegning" data-name="Tegning">');
   shapes.forEach(function (sh) { out.push('    ' + iwdieDrawShapeSvg(sh)); });
   out.push('  </g>');
-  var layer = iwdieVcPanelObjectsLayer(objects, o.looks, used);
+  var layer = iwdieVcPanelObjectsLayer(objects, o.looks, used, o.unders);
   if (layer) out.push(layer.replace(/\n$/, ''));
   out.push('</svg>');
   return out.join('\n') + '\n';
@@ -6225,15 +6225,56 @@ function iwdieVcNativeDoc(item) {
 function iwdieVcLibraryFile(lib, thumbs, opts) {
   opts = opts || {};
   var graphics = [], groups = [], byName = {}, prefix = opts.prefix || 'iwdie-', names = iwdieVcComponentNames((lib && lib.items) || []);
+  // one page of it (v1.47.0, iwdieVcLibraryPages): its graphics, in groups when it holds more than one layer
+  var page = opts.page, only = null;
+  if (page) {
+    only = {};
+    page.groups.forEach(function (g) { g.ks.forEach(function (k) { only[k] = g.name; }); });
+  }
   ((lib && lib.items) || []).forEach(function (it, k) {
+    if (only && !Object.prototype.hasOwnProperty.call(only, k)) return;
     var layer = it.layer || 'Komponenter', id = prefix + (k + 1);
     graphics.push({ id: id, name: names[k], width: it.w, height: it.h,
       data: iwdieBytesToBase64(iwdieUtf8Encode(iwdieVcNativeDoc(it))), thumbnail: (thumbs && thumbs[k]) || '' });
     if (!byName[layer]) { byName[layer] = { name: layer, items: [] }; groups.push(byName[layer]); }
     byName[layer].items.push({ kind: 'graphic', item: id });
   });
-  return JSON.stringify({ name: opts.name || ('Komponenter' + (lib && lib.file ? ' - ' + lib.file : '')), colors: [], charStyles: [], paraStyles: [],
+  if (page && page.groups.length < 2) groups = [];
+  return JSON.stringify({ name: page ? page.name : opts.name || ('Komponenter' + (lib && lib.file ? ' - ' + lib.file : '')), colors: [], charStyles: [], paraStyles: [],
     graphics: graphics, groups: groups });
+}
+
+/** VectorCraft's Libraries panel shows a library whole and cannot scroll (0.9.0), so a big library
+ *  goes to it in pages (v1.47.0), each small enough to show whole: at most `cap` graphics, a group's
+ *  heading costing `head` of them (4 unless given). The layers in order, each whole on a page while it
+ *  fits there (a group of it when the page holds more than one), a bigger one over pages of its own.
+ *  Each page is named after its layers, `opts.prefix` before and `opts.suffix` after.
+ *  -> [{name, groups: [{name, ks: [item index...]}]}] */
+function iwdieVcLibraryPages(items, cap, opts) {
+  opts = opts || {};
+  cap = Math.max(8, Math.floor(cap) || 0);
+  var head = opts.head === undefined ? 4 : opts.head, layers = [], by = {}, pages = [], page = null;
+  (items || []).forEach(function (it, k) {
+    var l = (it && it.layer) || 'Komponenter';
+    if (!by[l]) { by[l] = { name: l, ks: [] }; layers.push(by[l]); }
+    by[l].ks.push(k);
+  });
+  var cost = function (gs) { var n = 0; gs.forEach(function (g) { n += g.ks.length; }); return n + (gs.length > 1 ? head * gs.length : 0); };
+  layers.forEach(function (L) {
+    if (L.ks.length > cap) {
+      var n = Math.ceil(L.ks.length / cap), per = Math.ceil(L.ks.length / n);
+      for (var i = 0; i < n; i++) pages.push({ groups: [{ name: L.name, ks: L.ks.slice(i * per, (i + 1) * per) }], part: (i + 1) + '/' + n });
+      page = null;
+      return;
+    }
+    if (!page || cost(page.groups.concat([L])) > cap) { page = { groups: [] }; pages.push(page); }
+    page.groups.push({ name: L.name, ks: L.ks });
+  });
+  return pages.map(function (p) {
+    var names = p.groups.map(function (g) { return g.name; }).join(', ');
+    if (names.length > 48) names = names.slice(0, 47) + '…';
+    return { name: (opts.prefix || '') + names + (p.part ? ' ' + p.part : '') + (opts.suffix || ''), groups: p.groups };
+  });
 }
 
 /** A component's thumbnail as SVG, at most `max` px a side (VectorCraft takes up to 256),
@@ -6661,11 +6702,14 @@ function iwdieVcDesignerObjects(found, existing) {
  *  own (v1.46.0) also by its data-iwdie-obj, and with which object it is (`ref`, `at`). `doc` is the
  *  drawing parsed as XML; `measure(groups)` gives each one's box in panel pixels ({x, y, w, h}),
  *  {hidden: true} for a hidden one, which stays as it is, or null, in order. One without a box
- *  goes too, and is counted. -> {found: [{id, x, y, w, h, text}], skipped} */
+ *  goes too, and is counted. The art its object stands on stays (v1.47.0, iwdieVcKeepUnder).
+ *  -> {found: [{id, x, y, w, h, text}], skipped, layer: whether the layer IWMAC-objekter is in it,
+ *  frames: placeholders whose art stayed} */
 function iwdieVcTakePlaceholders(doc, measure) {
-  var groups = doc.getElementsByTagName('g'), picked = [];
+  var groups = doc.getElementsByTagName('g'), picked = [], layer = false;
   for (var i = 0; i < groups.length; i++) {
     var g = groups[i], obj = g.getAttribute('data-iwdie-obj');
+    if (g.getAttribute('id') === 'IWMAC-objekter' || g.getAttribute('data-name') === 'IWMAC-objekter') layer = true;
     // one of the panel's own (v1.46.0) is one by what it says it is, its obj_id known here or not
     var id = iwdieVcObjectId(g.getAttribute('data-name') || g.getAttribute('id')) || (obj && /^[\w.-]+$/.test(obj) && g.getAttribute('data-iwdie-ref') ? obj : null);
     if (!id) continue;
@@ -6675,28 +6719,63 @@ function iwdieVcTakePlaceholders(doc, measure) {
     }
     if (!inner) picked.push({ g: g, id: id });
   }
-  if (!picked.length) return { found: [], skipped: 0 };
-  var boxes = measure(picked.map(function (q) { return q.g; })) || [], found = [], skipped = 0;
+  if (!picked.length) return { found: [], skipped: 0, layer: layer, frames: 0 };
+  var boxes = measure(picked.map(function (q) { return q.g; })) || [], found = [], skipped = 0, frames = 0;
   picked.forEach(function (q, k) {
-    var box = boxes[k], texts = q.g.getElementsByTagName('text'), words = [];
+    var box = boxes[k], texts = q.g.getElementsByTagName('text'), words = [], was = null;
     if (box && box.hidden) return;
     for (var t = 0; t < texts.length; t++) {
       var spans = texts[t].getElementsByTagName('tspan');
       if (!spans.length) words.push(texts[t].textContent);
       for (var s = 0; s < spans.length; s++) words.push(spans[s].textContent);
     }
+    var at = String(q.g.getAttribute('data-iwdie-at') || '').split(' ').map(parseFloat);
+    if (at.length === 4 && at.every(isFinite)) was = { x: at[0], y: at[1], w: at[2], h: at[3] };
     if (box && box.w > 0 && box.h > 0) {
       var one = { id: q.id, x: box.x, y: box.y, w: box.w, h: box.h, text: words.join(' ') }, ref = q.g.getAttribute('data-iwdie-ref');
-      var at = String(q.g.getAttribute('data-iwdie-at') || '').split(' ').map(parseFloat);
       if (ref) {
         one.ref = ref;
-        if (at.length === 4 && at.every(isFinite)) one.at = { x: at[0], y: at[1], w: at[2], h: at[3] };
+        if (was) one.at = was;
       }
       found.push(one);
     } else skipped++;
+    // the art its object stands on stays in the picture, where the placeholder left it (v1.47.0)
+    if (iwdieVcKeepUnder(q.g, box && box.w > 0 && box.h > 0 ? box : null, was, k)) { frames++; return; }
     if (q.g.parentNode) q.g.parentNode.removeChild(q.g);
   });
-  return { found: found, skipped: skipped };
+  return { found: found, skipped: skipped, layer: layer, frames: frames };
+}
+
+/** A placeholder's art (v1.47.0) - what its object stands on in the picture, marked data-iwdie-under -
+ *  kept, the rest of the placeholder taken out: the group then holds only that art, as a group named
+ *  Ramme, each piece with its box in panel pixels (data-iwdie-box) for the next edit. `box` is where
+ *  the placeholder is now and `was` where it was (each {x, y, w, h}): a piece's box (data-iwdie-fat,
+ *  where it was) moves and grows with it. -> whether it held any */
+function iwdieVcKeepUnder(g, box, was, k) {
+  var marks = [];
+  var walk = function (el) {
+    var holds = false;
+    Array.prototype.slice.call(el.childNodes || []).forEach(function (c) {
+      if (c.nodeType === 1 && c.getAttribute('data-iwdie-under')) { marks.push(c); holds = true; return; }
+      if (c.nodeType === 1 && walk(c)) { holds = true; return; }
+      el.removeChild(c);
+    });
+    return holds;
+  };
+  if (!walk(g)) return false;
+  var r = function (v) { return Math.round(v * 100) / 100; };
+  marks.forEach(function (m) {
+    var fat = String(m.getAttribute('data-iwdie-fat') || '').split(' ').map(parseFloat);
+    if (box && was && was.w > 0 && was.h > 0 && fat.length === 4 && fat.every(isFinite)) {
+      var sx = box.w / was.w, sy = box.h / was.h;
+      m.setAttribute('data-iwdie-box', [box.x + (fat[0] - was.x) * sx, box.y + (fat[1] - was.y) * sy, fat[2] * sx, fat[3] * sy].map(r).join(' '));
+    }
+    m.removeAttribute('data-iwdie-fat');
+  });
+  ['data-iwdie-obj', 'data-iwdie-ref', 'data-iwdie-at'].forEach(function (a) { g.removeAttribute(a); });
+  g.setAttribute('id', 'iwdie-ramme-' + k);
+  g.setAttribute('data-name', 'Ramme');
+  return true;
 }
 
 /* ===================== The panel's own objects in VectorCraft (v1.46.0) =====================
@@ -6727,8 +6806,10 @@ function iwdieVcItemParts(it) {
  *  with `look` ({src, iw, ih, bar}: the Designer's picture of its kind) when there is one: drawn as
  *  the IWMAC menu draws one, at the object's own size and with its own tag text, where it is, and
  *  with which object it is (data-iwdie-ref, -obj, -at). '' for one without a place, a size or an
- *  obj_id. */
-function iwdieVcPanelPlaceholderSvg(ob, look, used) {
+ *  obj_id. Under the rest, the art the object stands on (v1.47.0, `under`: [{x, y, w, h, href}], a
+ *  piece of the picture where it is, in panel pixels; or [{markup, box}], the art a VectorCraft
+ *  background kept of it), each marked data-iwdie-under with its box (data-iwdie-fat). */
+function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
   var x = parseFloat(ob && ob.posLeft), y = parseFloat(ob && ob.posTop), w = parseFloat(ob && ob.posWidth), h = parseFloat(ob && ob.posHeight);
   var id = String((ob && ob.obj_id) || '');
   if (!isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0) || !/^[\w.-]+$/.test(id)) return '';
@@ -6740,14 +6821,25 @@ function iwdieVcPanelPlaceholderSvg(ob, look, used) {
   // a label's or the header's text is its own; without one it says nothing rather than "Label"
   if ((o.kind === 'label' || o.kind === 'bar') && !tag) o.tag = ' ';
   var it = iwdieVcObjectItem(o), name = IWDIE_VC_OBJ_PREFIX + id, gid = iwdieVcSvgId(name, used);
+  var art = (under || []).map(function (u) {
+    if (u && typeof u.markup === 'string' && u.box && [u.box.x, u.box.y, u.box.w, u.box.h].every(isFinite)) {
+      return '<g data-name="Ramme" data-iwdie-under="1" data-iwdie-fat="' + [u.box.x, u.box.y, u.box.w, u.box.h].map(f).join(' ') +
+        '" transform="translate(' + f(-x) + ' ' + f(-y) + ')">' + u.markup.replace(/\sdata-iwdie-(?:under|fat|box)="[^"]*"/g, '') + '</g>';
+    }
+    if (!u || !/^data:image\/png;base64,[A-Za-z0-9+\/=]+$/.test(String(u.href || '')) || ![u.x, u.y].every(isFinite) || !(u.w > 0) || !(u.h > 0)) return '';
+    return '<image data-name="Ramme" data-iwdie-under="1" data-iwdie-fat="' + [u.x, u.y, u.w, u.h].map(f).join(' ') + '" x="' + f(u.x - x) + '" y="' + f(u.y - y) +
+      '" width="' + f(u.w) + '" height="' + f(u.h) + '" preserveAspectRatio="none" xlink:href="' + u.href + '"/>';
+  }).join('');
   return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-ref="' + esc(String(ob.name || '')) + '" data-iwdie-obj="' + esc(id) +
-    '" data-iwdie-at="' + [x, y, w, h].map(f).join(' ') + '" transform="translate(' + f(x) + ' ' + f(y) + ')">' + iwdieVcItemParts(it).join('') + '</g>';
+    '" data-iwdie-at="' + [x, y, w, h].map(f).join(' ') + '" transform="translate(' + f(x) + ' ' + f(y) + ')">' + art + iwdieVcItemParts(it).join('') + '</g>';
 }
 
-/** The panel's objects as a layer of placeholders, IWMAC-objekter, with `looks` by obj_id.
- *  -> SVG markup, '' when none has a place. */
-function iwdieVcPanelObjectsLayer(objects, looks, used) {
-  var parts = (objects || []).map(function (ob) { return iwdieVcPanelPlaceholderSvg(ob, looks && ob && looks[ob.obj_id], used); }).filter(Boolean);
+/** The panel's objects as a layer of placeholders, IWMAC-objekter, with `looks` by obj_id and the
+ *  art each stands on, `unders` by name (v1.47.0). -> SVG markup, '' when none has a place. */
+function iwdieVcPanelObjectsLayer(objects, looks, used, unders) {
+  var parts = (objects || []).map(function (ob) {
+    return iwdieVcPanelPlaceholderSvg(ob, looks && ob && looks[ob.obj_id], used, unders && ob && Object.prototype.hasOwnProperty.call(unders, ob.name) ? unders[ob.name] : null);
+  }).filter(Boolean);
   return parts.length ? '  <g id="IWMAC-objekter" data-name="IWMAC-objekter">\n' + parts.map(function (p) { return '    ' + p; }).join('\n') + '\n  </g>\n' : '';
 }
 
@@ -6761,31 +6853,76 @@ function iwdieVcPanelSent(objects) {
 }
 
 /** A VectorCraft SVG - a background that came from VectorCraft - with the panel's objects added
- *  as their layer, on top. VectorCraft then reads the art (its own copy no longer matches). */
+ *  as their layer, on top. VectorCraft then reads the art (its own copy no longer matches). The art
+ *  an earlier sync kept of the objects (v1.47.0: each piece with its box, data-iwdie-box) goes back
+ *  into the placeholder of the object over it; the layer the last placeholders were on goes, or,
+ *  holding more, is called IWMAC-rammer. */
 function iwdieVcAddPanelObjects(svg, objects, looks) {
-  var s = String(svg || ''), at = s.lastIndexOf('</svg>'), used = {};
+  var s = String(svg || ''), at = s.lastIndexOf('</svg>'), used = {}, unders = {};
   if (at < 0) return s;
-  (s.match(/\sid="[^"]*"/g) || []).forEach(function (m) { used[m.slice(5, -1)] = 1; });
+  var pieces = [], re = /<(\w+)\b[^>]*\sdata-iwdie-box="([^"]*)"[^>]*>/g, m;
+  while ((m = re.exec(s))) {
+    var end = iwdieVcElementEnd(s, m.index, m[1]), b = m[2].split(' ').map(parseFloat);
+    if (end < 0 || b.length !== 4 || !b.every(isFinite)) continue;
+    var box = { x: b[0], y: b[1], w: b[2], h: b[3] }, name = iwdieVcUnderOf(box, objects);
+    if (name && iwdieVcPanelPlaceholderSvg((objects || []).filter(function (ob) { return ob && String(ob.name) === name; })[0], null, {})) {
+      pieces.push({ from: m.index, to: end, name: name, box: box });
+    }
+    re.lastIndex = end;
+  }
+  for (var i = pieces.length - 1; i >= 0; i--) {
+    var p = pieces[i];
+    (unders[p.name] = unders[p.name] || []).unshift({ markup: s.slice(p.from, p.to), box: p.box });
+    s = s.slice(0, p.from) + s.slice(p.to);
+  }
+  if (pieces.length) {
+    // the groups the pieces were kept in, and the layer of the last placeholders, when that left them empty
+    for (var k = 0; k < 3; k++) s = s.replace(/<g\b[^>]*\sdata-name="Ramme"[^>]*>\s*<\/g>|<g\b[^>]*\sid="(?:Ramme|iwdie-ramme)[\w-]*"[^>]*>\s*<\/g>/g, '');
+  }
+  s = s.replace(/<g\b(?=[^>]*\s(?:id|data-name)="IWMAC-objekter")[^>]*?(?:\/>|>\s*<\/g>)\s*/g, '');
+  s = s.replace(/(<g\b[^>]*\s)(id|data-name)="IWMAC-objekter"/g, '$1$2="IWMAC-rammer"').replace(/(<g\b[^>]*\s)(id|data-name)="IWMAC-objekter"/g, '$1$2="IWMAC-rammer"');
+  at = s.lastIndexOf('</svg>');
+  (s.match(/\sid="[^"]*"/g) || []).forEach(function (q) { used[q.slice(5, -1)] = 1; });
   used['IWMAC-objekter'] = 1;
-  var layer = iwdieVcPanelObjectsLayer(objects, looks, used);
+  var layer = iwdieVcPanelObjectsLayer(objects, looks, used, unders);
   return layer ? s.slice(0, at) + layer + s.slice(at) : s;
+}
+
+/** Where the element whose tag (`tag`) opens at `from` in SVG text `s` ends: after its "/>" when it
+ *  closes itself, else after its own closing tag, those of its kind inside it counted. -1 when it
+ *  does not end. */
+function iwdieVcElementEnd(s, from, tag) {
+  var open = s.indexOf('>', from);
+  if (open < 0) return -1;
+  if (s.charAt(open - 1) === '/') return open + 1;
+  var re = new RegExp('<(/?)' + tag + '\\b[^>]*?(/?)>', 'g'), depth = 1, m;
+  re.lastIndex = open + 1;
+  while ((m = re.exec(s))) {
+    if (m[1]) { if (--depth === 0) return m.index + m[0].length; }
+    else if (!m[2]) depth++;
+  }
+  return -1;
 }
 
 /** What a sync's placeholders ask of the panel. A placeholder that stands for one of its objects
  *  (`ref`: that object's name; else, should the names have changed, the object of its obj_id where
  *  it was, `at`) changes that object when it was moved, resized or given another text (by more than
  *  a pixel); every other placeholder becomes a new object (iwdieVcDesignerObjects). The objects
- *  sent as placeholders (`sent`: their names) whose placeholder came back as none are left on the
- *  panel, and named. A placeholder of an object no longer on the panel (v1.46.1) places nothing.
- *  `existing`: the panel's objects now.
- *  -> {moves: [{name, obj_id, x, y, w, h, text, was: {x, y, w, h, text}}], fresh: [found...], same, missing: [name...], orphans: [found...]} */
-function iwdieVcObjectChanges(found, existing, sent) {
+ *  sent as placeholders (`sent`: their names) whose placeholder came back as none are named
+ *  (`missing`), for the sync to take off the panel. A placeholder of an object no longer on the panel
+ *  (v1.46.1) places nothing. The objects an earlier sync of this edit placed (v1.47.0, `placed`:
+ *  [{name, obj_id}]) each take the nearest placeholder of their kind that stands for no object: that
+ *  one moves it, and one left without is `dropped`. `existing`: the panel's objects now.
+ *  -> {moves: [{name, obj_id, x, y, w, h, text, was: {x, y, w, h, text}}], fresh: [found...], same, missing: [name...], orphans: [found...],
+ *  dropped: [name...]} */
+function iwdieVcObjectChanges(found, existing, sent, placed) {
   var have = (existing || []).filter(function (e) { return e && typeof e === 'object' && e.name; });
-  var taken = {}, claimed = {}, moves = [], fresh = [], same = 0, unmatched = [], orphans = [];
+  var taken = {}, claimed = {}, moves = [], fresh = [], same = 0, unmatched = [], orphans = [], news = [];
   var near = function (a, b) { var n = parseFloat(a); return isFinite(n) && Math.abs(n - b) <= 1; };
   var known = iwdieVcObjectIndex();
   (found || []).forEach(function (f) {
-    if (!f || !f.ref) { fresh.push(f); return; }
+    if (!f) return;
+    if (!f.ref) { news.push(f); return; }
     var e = have.filter(function (c) { return !taken[c.name] && c.name === f.ref && c.obj_id === f.id; })[0];
     if (!e && f.at) {
       e = have.filter(function (c) {
@@ -6793,8 +6930,36 @@ function iwdieVcObjectChanges(found, existing, sent) {
       })[0];
     }
     if (!e) { unmatched.push(f); return; }
-    taken[e.name] = 1;
     claimed[f.ref] = 1;
+    change(f, e);
+  });
+  // what this edit placed before: each object the nearest new placeholder of its kind
+  var mine = (placed || []).map(function (p) { return p && have.filter(function (c) { return c.name === p.name && c.obj_id === p.obj_id; })[0]; })
+    .filter(function (e) { return e && !taken[e.name]; });
+  var mid = function (o) { return [parseFloat(o.posLeft !== undefined ? o.posLeft : o.x) + parseFloat(o.posWidth !== undefined ? o.posWidth : o.w) / 2,
+    parseFloat(o.posTop !== undefined ? o.posTop : o.y) + parseFloat(o.posHeight !== undefined ? o.posHeight : o.h) / 2]; };
+  // the closest pairs first, so one that stayed keeps its object whatever came before it
+  var pairs = [], paired = {};
+  news.forEach(function (f, i) {
+    var fm = mid(f);
+    mine.forEach(function (e) {
+      if (e.obj_id !== f.id) return;
+      var em = mid(e);
+      pairs.push({ i: i, e: e, d: Math.sqrt((em[0] - fm[0]) * (em[0] - fm[0]) + (em[1] - fm[1]) * (em[1] - fm[1])) });
+    });
+  });
+  pairs.sort(function (a, b) { return a.d - b.d; });
+  pairs.forEach(function (p) { if (paired[p.i] || taken[p.e.name]) return; paired[p.i] = 1; change(news[p.i], p.e); });
+  news.forEach(function (f, i) { if (!paired[i]) fresh.push(f); });
+  // one whose object another placeholder took is a copy, a new object; one whose object is gone
+  // from the panel (v1.46.1) places nothing - it would bring back what was deleted there
+  unmatched.forEach(function (f) { if (claimed[f.ref]) fresh.push(f); else orphans.push(f); });
+  var missing = (sent || []).filter(function (n) { return !taken[n] && have.some(function (c) { return c.name === n; }); });
+  var dropped = mine.filter(function (e) { return !taken[e.name]; }).map(function (e) { return e.name; });
+  return { moves: moves, fresh: fresh, same: same, missing: missing, orphans: orphans, dropped: dropped };
+
+  function change(f, e) {
+    taken[e.name] = 1;
     var x = Math.round(f.x), y = Math.round(f.y), w = Math.max(1, Math.round(f.w)), h = Math.max(1, Math.round(f.h));
     var o = known[f.id], was = iwdieVcTagOf(e), text = String(f.text || '').replace(/\s+/g, ' ').trim();
     // a text it cannot have, or the one a placeholder without the object's picture says, is no change
@@ -6804,12 +6969,7 @@ function iwdieVcObjectChanges(found, existing, sent) {
     if (!moved && text === was) { same++; return; }
     moves.push({ name: e.name, obj_id: e.obj_id, x: x, y: y, w: w, h: h, text: text,
       was: { x: parseFloat(e.posLeft), y: parseFloat(e.posTop), w: parseFloat(e.posWidth), h: parseFloat(e.posHeight), text: was } });
-  });
-  // one whose object another placeholder took is a copy, a new object; one whose object is gone
-  // from the panel (v1.46.1) places nothing - it would bring back what was deleted there
-  unmatched.forEach(function (f) { if (claimed[f.ref]) fresh.push(f); else orphans.push(f); });
-  var missing = (sent || []).filter(function (n) { return !taken[n] && have.some(function (c) { return c.name === n; }); });
-  return { moves: moves, fresh: fresh, same: same, missing: missing, orphans: orphans };
+  }
 }
 
 /* ===================== Sync to IWMAC Designer (v1.42.0) =====================
@@ -7167,7 +7327,14 @@ function iwdieVcKeepShapes(R, W, H, at, layers, under) {
  *  the smoothed edge), is filled from the nearest pixels left (iwdieVcEraseMask). Changes `pic` and
  *  returns it. */
 function iwdieVcErase(pic, W, H, holes, ring) {
-  var M = new Uint8Array(W * H), rg = ring === undefined ? 1 : ring;
+  return iwdieVcEraseMask(pic, W, H, iwdieVcHoleMask(W, H, holes, ring));
+}
+
+/** The pixels iwdieVcErase takes out for `holes` - each one's own and `ring` more round it (1
+ *  unless given) - set to 1 in `M` (W x H, a new one unless given). -> M */
+function iwdieVcHoleMask(W, H, holes, ring, M) {
+  var rg = ring === undefined ? 1 : ring;
+  M = M || new Uint8Array(W * H);
   (holes || []).forEach(function (o) {
     for (var ty = 0; ty < o.h; ty++) for (var tx = 0; tx < o.w; tx++) {
       if (o.rgba[(ty * o.w + tx) * 4 + 3] < 8) continue;
@@ -7177,7 +7344,31 @@ function iwdieVcErase(pic, W, H, holes, ring) {
       }
     }
   });
-  return iwdieVcEraseMask(pic, W, H, M);
+  return M;
+}
+
+/** The pixels of `pic` that `M` (W x H) holds within x0..x1, y0..y1, as a picture of their own
+ *  (v1.47.0): as they are where M holds them, clear elsewhere - exactly what an erase of M takes
+ *  out, so laid back where it was it gives the picture as it was. -> {x, y, w, h, rgba} | null */
+function iwdieVcCrop(pic, W, H, M, x0, y0, x1, y1) {
+  x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0));
+  x1 = Math.min(W - 1, Math.ceil(x1)); y1 = Math.min(H - 1, Math.ceil(y1));
+  var bx0 = W, by0 = H, bx1 = -1, by1 = -1, x, y;
+  for (y = y0; y <= y1; y++) for (x = x0; x <= x1; x++) {
+    if (!M[y * W + x]) continue;
+    if (x < bx0) bx0 = x;
+    if (x > bx1) bx1 = x;
+    if (y < by0) by0 = y;
+    if (y > by1) by1 = y;
+  }
+  if (bx1 < 0) return null;
+  var w = bx1 - bx0 + 1, h = by1 - by0 + 1, rgba = new Uint8ClampedArray(w * h * 4);
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+    var j = (by0 + y) * W + bx0 + x, o = (y * w + x) * 4;
+    if (!M[j]) continue;
+    rgba[o] = pic[j * 4]; rgba[o + 1] = pic[j * 4 + 1]; rgba[o + 2] = pic[j * 4 + 2]; rgba[o + 3] = pic[j * 4 + 3];
+  }
+  return { x: bx0, y: by0, w: w, h: h, rgba: rgba };
 }
 
 /** The picture with the pixels of `mask` (1) filled from the nearest pixels left: on their row when
@@ -7503,16 +7694,25 @@ function iwdieVcIsPill(t, bg) {
  *  becomes what lies round the pill - a pill sits on a plain ground. Changes `pic` and returns it. */
 function iwdieVcErasePills(pic, W, H, pills) {
   pills.forEach(function (p) {
-    var o = p.outer, r = o.h / 2, cy = o.y + r, x0 = o.x + r, x1 = o.x + o.w - r, G = p.beyond;
-    for (var y = Math.floor(o.y) - 1; y <= Math.ceil(o.y + o.h); y++) for (var x = Math.floor(o.x) - 1; x <= Math.ceil(o.x + o.w); x++) {
-      if (x < 0 || y < 0 || x >= W || y >= H) continue;
-      var qx = x + 0.5, qy = y + 0.5, dx = qx < x0 ? x0 - qx : qx > x1 ? qx - x1 : 0, dy = qy - cy;
-      if (Math.sqrt(dx * dx + dy * dy) - r > 0.75) continue;
+    var G = p.beyond;
+    iwdieVcPillCells(p, W, H, function (x, y) {
       var j = (y * W + x) * 4;
       pic[j] = G[0]; pic[j + 1] = G[1]; pic[j + 2] = G[2]; pic[j + 3] = 255;
-    }
+    });
   });
   return pic;
+}
+
+/** Each pixel a pill's shape reaches, its smoothed edge with it - what iwdieVcErasePills fills -
+ *  given to `fn(x, y)`. */
+function iwdieVcPillCells(p, W, H, fn) {
+  var o = p.outer, r = o.h / 2, cy = o.y + r, x0 = o.x + r, x1 = o.x + o.w - r;
+  for (var y = Math.floor(o.y) - 1; y <= Math.ceil(o.y + o.h); y++) for (var x = Math.floor(o.x) - 1; x <= Math.ceil(o.x + o.w); x++) {
+    if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    var qx = x + 0.5, qy = y + 0.5, dx = qx < x0 ? x0 - qx : qx > x1 ? qx - x1 : 0, dy = qy - cy;
+    if (Math.sqrt(dx * dx + dy * dy) - r > 0.75) continue;
+    fn(x, y);
+  }
 }
 
 /** A pill's name: the one most of the library's components of its colour and size (within 3 px)
@@ -7541,6 +7741,21 @@ function iwdieVcCovered(box, objects) {
     sum += ix * iy;
   });
   return Math.min(1, sum / area);
+}
+
+/** The panel's object that covers a box ({x, y, w, h}) most, when it covers half of it or more
+ *  (v1.47.0): the art it stands on - its frame, a status pill - goes with its placeholder, so moved
+ *  or deleted in VectorCraft the frame goes with it. -> the object's name | null */
+function iwdieVcUnderOf(box, objects) {
+  var area = box.w * box.h, best = null, most = 0;
+  if (!(area > 0)) return null;
+  (objects || []).forEach(function (ob) {
+    var x = parseFloat(ob && ob.posLeft), y = parseFloat(ob && ob.posTop), w = parseFloat(ob && ob.posWidth), h = parseFloat(ob && ob.posHeight);
+    if (!ob || !ob.name || !isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0)) return;
+    var a = Math.max(0, Math.min(box.x + box.w, x + w) - Math.max(box.x, x)) * Math.max(0, Math.min(box.y + box.h, y + h) - Math.max(box.y, y));
+    if (a > most) { most = a; best = String(ob.name); }
+  });
+  return most >= area * 0.5 ? best : null;
 }
 
 /** "#rrggbb" for [r, g, b]. */
@@ -8877,12 +9092,58 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /** A library as a .vclibrary file, its thumbnails drawn here; `opts` as iwdieVcLibraryFile's.
-     *  -> Promise<text> */
-    function vcLibraryText(lib, opts) {
+    /** A library as .vclibrary files (v1.47.0), its thumbnails drawn here: in pages that fit the
+     *  Libraries panel, which cannot scroll (iwdieVcLibraryPages, `cap` graphics a page, `page` its
+     *  naming), each look once a layer (twins - the same size and picture - are one, unless
+     *  `opts.twins`: the IWMAC objects, each its own kind). `opts` as iwdieVcLibraryFile's.
+     *  -> Promise<[{name, text}]> */
+    function vcLibraryPagesText(lib, cap, page, opts) {
+      return vcLibraryThumbs(lib).then(function (thumbs) {
+        var seen = {}, only = [], items = [];
+        lib.items.forEach(function (it, k) {
+          var sig = (it.layer || '') + '|' + Math.round(it.w) + 'x' + Math.round(it.h) + '|' + (thumbs[k] || ('#' + k));
+          if (seen[sig] && !(opts && opts.twins)) return;
+          seen[sig] = 1;
+          only.push(k);
+          items.push(it);
+        });
+        return iwdieVcLibraryPages(items, cap, page).map(function (pg) {
+          var real = { name: pg.name, groups: pg.groups.map(function (g) { return { name: g.name, ks: g.ks.map(function (i) { return only[i]; }) }; }) };
+          return { name: pg.name, text: iwdieVcLibraryFile(lib, thumbs, { prefix: opts && opts.prefix, page: real }) };
+        });
+      });
+    }
+
+    /** How many graphics the Libraries panel shows whole (v1.47.0): four a row at the dock's own
+     *  width, as many rows as this window has room for under its library list and search. */
+    function vcLibraryCap() {
+      return Math.max(16, 4 * Math.floor(((window.innerHeight || 900) - 320) / 62));
+    }
+
+    /** Files dropped on the app at once, as several dragged from the desktop (v1.47.0): on the menu
+     *  bar ('menu'), library files go to Libraries. */
+    function vcDropFiles(files, at) {
+      var canvas = document.getElementById('vectorcraft_canvas');
+      if (!canvas) throw new Error('the editor is not there');
+      var r = canvas.getBoundingClientRect(), dt = new W.DataTransfer();
+      files.forEach(function (f) { dt.items.add(new W.File([f.data], f.name, { type: f.type })); });
+      var x = r.left + r.width / 2, y = at === 'menu' ? r.top + 12 : r.top + r.height / 2;
+      ['dragenter', 'dragover', 'drop'].forEach(function (t) {
+        canvas.dispatchEvent(new W.DragEvent(t, { clientX: x, clientY: y, bubbles: true, cancelable: true, dataTransfer: dt }));
+      });
+    }
+
+    /** Library pages as files to drop (v1.47.0). */
+    function vcPageFiles(pages) {
+      return pages.map(function (p) { return { data: p.text, name: p.name.replace(/[\\/:*?"<>|]+/g, '-') + '.vclibrary', type: 'application/json' }; });
+    }
+
+    /** A library's thumbnails, drawn here: base64 PNG each, '' for one that would not draw.
+     *  -> Promise<[base64]> */
+    function vcLibraryThumbs(lib) {
       var thumbs = [], k = 0;
       var next = function () {
-        if (k >= lib.items.length) return Promise.resolve(iwdieVcLibraryFile(lib, thumbs, opts));
+        if (k >= lib.items.length) return Promise.resolve(thumbs);
         var t = iwdieVcThumbSvg(lib.items[k], 128), img = new Image();
         return new Promise(function (resolve) {
           img.onload = function () {
@@ -8943,10 +9204,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /** Put the component library into the running app's Libraries panel; `say(html, bad)` hears
      *  how it went. */
     function vcSendLibrary(lib, say) {
-      return vcLibraryText(lib).then(function (text) {
-        vcDropFile(text, 'Komponenter.vclibrary', 'application/json', 'menu');
-        say('<b>' + iwdieN(lib.items.length, 'component', 'components') + '</b> in <b>Libraries</b> (right), as “Komponenter' +
-          (lib.file ? ' - ' + iwdieEscHtml(lib.file) : '') + '”: drag one onto the drawing, or double-click it.');
+      return vcLibraryPagesText(lib, vcLibraryCap(), { suffix: lib.file ? ' - ' + lib.file : '' }).then(function (pages) {
+        // the first page last, so it is the one Libraries shows (v1.47.0: in pages, as Libraries does not scroll)
+        vcDropFiles(vcPageFiles(pages.slice().reverse()), 'menu');
+        say('<b>' + iwdieN(lib.items.length, 'component', 'components') + '</b> in <b>Libraries</b> (right), in ' + iwdieN(pages.length, 'page', 'pages') +
+          ' that each fit it: choose a page in the list at its top, “' + iwdieEscHtml(pages[0].name) + '” and on. Drag one onto the drawing, or double-click it.');
       }).then(null, function (e) { say('The components could not be added: ' + iwdieEscHtml(String((e && e.message) || e)), true); });
     }
 
@@ -9572,19 +9834,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           try { GM_deleteValue(key); } catch (e) {}
           if (val.state === 'applied') {
             var placed = +val.placed || 0, already = +val.already || 0, skipped = +val.skipped || 0;
-            var mov = +val.moved || 0, gone = +val.missing || 0;
+            var mov = +val.moved || 0, rem = +val.removed || 0, held = +val.held || 0;
             note('✓ The panel’s background was updated at ' + hhmm() + (was.editing ? '.' :
               ' - as plain SVG (without <b>Preserve Editing Capabilities</b>): the next edit opens its layers and paths.') +
               (placed ? ' <b>' + iwdieN(placed, 'IWMAC object', 'IWMAC objects') + '</b> placed in the panel' + (already ? ' (' + already + ' there already)' : '') + '.'
                 : already ? ' Its IWMAC objects were in the panel already.' : '') +
               (mov ? ' <b>' + iwdieN(mov, 'object', 'objects') + '</b> of the panel moved, resized or relabelled.' : '') +
-              (gone ? ' ' + iwdieN(gone, 'object', 'objects') + ' of the panel had no placeholder any more and stayed in the panel.' : '') +
+              (rem ? ' <b>' + iwdieN(rem, 'object', 'objects') + '</b> taken off the panel, as their placeholders were deleted here.' : '') +
+              (held ? ' ' + iwdieN(held, 'object', 'objects') + ' had no placeholder any more but stayed in the panel: ' + esc2(String(val.holdWhy || '')) + '.' : '') +
               (skipped ? ' ' + iwdieN(skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.' : '') +
               (val.objError ? ' The IWMAC objects were not placed: ' + esc2(String(val.objError)) + ' - save again to try again.' : '') +
               (val.uploaded ? ' Its PNG is in the plant’s pictures as <b>' + esc2(String(val.uploaded)) + '</b>.' : '') +
               (val.uploadError ? ' Its PNG was not uploaded to the plant’s pictures: ' + esc2(String(val.uploadError)) + '.' : '') +
-              (placed ? ' A placeholder becomes its object once: saved again where it is, it is skipped; moved, it is placed again. ' +
-                'Move the objects in the Designer from now on, or delete the placeholders here.' : ''), !!val.objError || !!val.uploadError, placed > 0);
+              (placed ? ' A placeholder placed by a sync is that object from then on: moved, resized or deleted here, the next sync does the same there.' : ''),
+              !!val.objError || !!val.uploadError || held > 0, placed > 0);
           } else {
             note('Not applied: ' + esc2(String(val.msg || val.state)), true);
           }
@@ -9649,10 +9912,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return click.apply(this, arguments);
       };
       // the panel first, as a fresh app opens it as a document; then the libraries, a moment apart,
-      // through the menu bar, which sends a library to Libraries even with a document open: the
-      // components, then the IWMAC objects
-      var libText = lib ? vcLibraryText(lib) : null;
-      var objText = vcLibraryText({ items: objItems }, { name: IWDIE_VC_OBJ_LIBRARY, prefix: 'iwmac-obj-' });
+      // through the menu bar, which sends a library to Libraries even with a document open: the IWMAC
+      // objects, then the components - each in pages that fit Libraries, which does not scroll (v1.47.0)
+      var cap = vcLibraryCap();
+      var libText = lib ? vcLibraryPagesText(lib, cap, { suffix: lib.file ? ' - ' + lib.file : '' }) : null;
+      var objText = vcLibraryPagesText({ items: objItems }, cap, { prefix: IWDIE_VC_OBJ_LIBRARY + ': ' }, { prefix: 'iwmac-obj-', twins: true });
+      var asFiles = vcPageFiles;
       var pause = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
       var failed = function (say, what) {
         return function (e) { say(what + ' could not be added: ' + esc2(String((e && e.message) || e)), true); };
@@ -9664,21 +9929,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         try { vcObjectMenu(note, looks, lib); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
         var syncer = null;
         try { syncer = vcSaveSync(job, note, saves); } catch (e) { note('Ctrl+S could not be set to sync: ' + esc2(String((e && e.message) || e)), true); }
-        (libText ? libText.then(function (text) {
+        objText.then(function (pages) {
           return pause(1200).then(function () {
-            vcDropFile(text, 'Komponenter.vclibrary', 'application/json', 'menu');
-            comp('<b>' + iwdieN(lib.items.length, 'component', 'components') + '</b> in <b>Libraries</b> (right), as “Komponenter' +
-              (lib.file ? ' - ' + esc2(lib.file) : '') + '”: drag one onto the drawing, or double-click it. All of them, by layer, are in the <b>IWMAC</b> menu too - ' +
-              'VectorCraft’s Libraries panel does not scroll.');
+            vcDropFiles(asFiles(pages), 'menu');
+            objLine('<b>' + iwdieN(objItems.length, 'kind', 'kinds') + '</b>: the <b>IWMAC</b> menu up top - choose one, click where it goes - or ' +
+              '<b>Libraries</b>, “' + esc2(IWDIE_VC_OBJ_LIBRARY) + ': …”' + (pages.length > 1 ? ' (' + pages.length + ' pages)' : '') +
+              '. Size it, write its text (JV401) over the one it has. Saved back, each becomes that object in the panel.');
           });
-        }).then(null, failed(comp, 'The components')) : Promise.resolve()).then(function () {
-          return objText.then(function (text) {
+        }).then(null, failed(objLine, 'The IWMAC objects')).then(function () {
+          return libText ? libText.then(function (pages) {
             return pause(1200).then(function () {
-              vcDropFile(text, 'IWMAC-objekter.vclibrary', 'application/json', 'menu');
-              objLine('<b>' + iwdieN(objItems.length, 'kind', 'kinds') + '</b>: the <b>IWMAC</b> menu up top - choose one, click where it goes - or ' +
-                '<b>Libraries</b>, “' + esc2(IWDIE_VC_OBJ_LIBRARY) + '”. Size it, write its text (JV401) over the one it has. Saved back, each becomes that object in the panel.');
+              // the first page last, so it is the one Libraries shows
+              vcDropFiles(asFiles(pages.slice().reverse()), 'menu');
+              comp('<b>' + iwdieN(lib.items.length, 'component', 'components') + '</b> in <b>Libraries</b> (right), in ' + iwdieN(pages.length, 'page', 'pages') +
+                ' that each fit it - VectorCraft’s Libraries panel does not scroll: choose a page in the list at its top, “' + esc2(pages[0].name) + '” and on. ' +
+                'Drag one onto the drawing, or double-click it. All of them, by layer, are in the <b>IWMAC</b> menu too.');
             });
-          }).then(null, failed(objLine, 'The IWMAC objects'));
+          }).then(null, failed(comp, 'The components')) : null;
         }).then(function () {
           // Ctrl+S made ready (v1.46.0), once the tab is in front: the first save's Save As answered now, not at the sync
           if (!syncer) return;
@@ -9714,7 +9981,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try { tab.opener = null; } catch (e) {}             // the editor's page gets no handle on this one
       libMigrate();
       var url = grabBackgroundUrl();
-      var info = { url: url, bg: null, found: null, objects: exportPanelObjects(), size: exportPanelSize(), plant: currentPlantId(), panel: currentPanelName() };
+      var info = { url: url, bg: null, found: null, objects: exportPanelObjects(), size: exportPanelSize(), plant: currentPlantId(), panel: currentPanelName(), els: {}, placed: [] };
+      // each object's element (v1.47.0): a sync knows it by that, whatever the panel calls it by then
+      var cc0 = document.getElementById('control_container');
+      if (cc0) for (var ci = 0; ci < cc0.children.length; ci++) {
+        var nm0 = cc0.children[ci].getAttribute('name');
+        if (nm0 && /^object_\d+$/.test(nm0)) info.els[nm0] = cc0.children[ci];
+      }
       // the objects' looks for the editor's page (v1.43.0), the panel's own kinds too (v1.46.0); without them it shows boxes
       var kinds = [];
       info.objects.forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (/^[\w.-]+$/.test(k) && kinds.indexOf(k) < 0) kinds.push(k); });
@@ -9759,25 +10032,42 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /** Open the panel in the tab given: the VectorCraft document the background came from
      *  when it has one, else an SVG of the picture, any drawing in it and the panel's objects. */
     function vcStartEdit(info, tab) {
-      var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea', vc = false;
+      var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea', vc = false, paper = null;
       var shapes = info.found ? info.found.drawing.shapes : [];
       var base = info.found ? info.found.base : (info.bg ? { mime: info.bg.mime, bytes: info.bg.bytes } : null);
+      var nObj = (info.sent || []).length;
       var build = vcDocumentOf(info.bg && info.bg.bytes).then(function (doc) {
         return doc || (info.found && info.found.base ? vcDocumentOf(info.found.base.bytes) : null);
       }).then(function (doc) {
         // the panel's objects on top, as placeholders that know which object they are (v1.46.0)
-        if (doc) { vc = true; return iwdieVcAddPanelObjects(shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc, info.objects, info.looks); }
+        if (doc) {
+          vc = true;
+          paper = vcPaper(tab, [['build', 'The VectorCraft document behind the background'], ['open', 'Opening VectorCraft']]);
+          paper.step('build', nObj ? 'with ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : '', 0.3);
+          return iwdieVcAddPanelObjects(shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc, info.objects, info.looks);
+        }
+        var lib = base ? libLoad() : null;
+        paper = lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
+          ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
+          : vcPaper(tab, [['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']]);
+        if (!lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3);
         return exportPaint(base && base.bytes, base && base.mime, size, null).then(function (c) {
           var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
-          var picture = base ? c.toDataURL('image/png') : null, lib = base ? libLoad() : null;
+          var picture = base ? c.toDataURL('image/png') : null;
           // the kept components looked for in the picture (v1.44.0): those found become vectors of their own
-          return (lib ? vcRecognize(c, lib, tab, info.objects) : Promise.resolve(null)).then(function (got) {
-            // nothing to make vectors of but what the objects cover: the picture as it is
-            if (got && !got.cleaned) got = null;
+          return (lib ? vcRecognize(c, lib, paper, tab, info.objects) : Promise.resolve(null)).then(function (got) {
             info.recognized = got;
+            if (lib) {
+              paper.noSkip();
+              if (!got) {
+                paper.done(paper.skipped() ? 'skipped' : 'nothing to draw');
+                ['check', 'pills', 'pipes'].forEach(function (k) { paper.none(k); });
+              }
+              paper.step('build', 'the picture' + (got ? ' without what was found' : '') + (nObj ? ', ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : ''), 0.96);
+            }
             return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: got ? got.cleaned : picture, original: got ? picture : null,
               components: got ? got.components : null, pipes: got ? got.pipes : null, shapes: shapes, objects: info.objects, looks: info.looks,
-              title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
+              unders: got ? got.unders : null, title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
           });
         });
       });
@@ -9786,6 +10076,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var safe = String(info.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
         var job = { id: id, svg: svg, name: 'iwmac-' + (info.plant || 'plant') + '-' + safe + '.svg', panel: info.panel || '', plant: info.plant || '', at: Date.now(), version: IWDIE_VERSION };
         GM_setValue('iwdie.vc.job', job);
+        if (paper) {
+          paper.done((Math.round(svg.length / 104857.6) / 10) + ' MB', 0.98);
+          paper.step('open', 'the first start downloads about 20 MB; after that it is cached', 1);
+        }
         GM_addValueChangeListener('iwdie.vc.result.' + id, function (key, old, val) {
           if (!val || !val.svg) return;
           try { GM_deleteValue(key); } catch (e) {}
@@ -9803,7 +10097,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           ? 'The VectorCraft document behind this background' + (shapes.length ? ', with the drawing from Draw on a layer of its own,' : '')
           : (base ? 'The picture' : 'An empty ' + size.w + ' × ' + size.h + ' canvas') +
             (shapes.length ? ', the drawing from Draw (' + iwdieN(shapes.length, 'shape', 'shapes') + ')' : '');
-        var nObj = (info.sent || []).length;
         if (nObj) what += (vc ? ', with ' : ' and ') + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter';
         var got = info.recognized;
         outcomeToast({
@@ -9811,11 +10104,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           lines: (got ? ['Found in the picture in ' + got.seconds + ' s: ' + [got.count ? iwdieN(got.count, 'component', 'components') + ' of your library (' + got.summary + ')' : '',
             got.pills ? iwdieN(got.pills, 'pill', 'pills') : '', got.pipes.length ? iwdieN(got.pipes.length, 'pipe', 'pipes') : ''].filter(Boolean).join(', ') +
             '. Each is a vector of its own - components and pills on the layer Komponenter, pipes on Rør - to move, resize, recolour or replace. ' +
-            (got.under ? got.under + ' more, under the panel’s own objects, stayed in the picture as they were: the Designer shows the objects over them. ' : '') +
+            (got.carried ? 'What ' + iwdieN(Object.keys(got.unders || {}).length, 'object', 'objects') + ' of the panel stand on (' + got.carried +
+              ' pieces: frames, pills) went into their placeholders, as the picture has it: moved or deleted there, it goes with them. ' : '') +
             'The picture as it was is on the hidden layer Bakgrunn (original).'] : [])
             .concat([what + ' - in a new tab.',
             'Press Ctrl+S there and choose Sync to IWMAC Designer: the picture comes straight back to this background, and its PNG goes to the plant’s pictures. ' +
-              'An object moved, resized or relabelled there is changed here; one added there is placed here.',
+              'An object moved, resized or relabelled there is changed here; one added there is placed here; one deleted there is taken off here.',
             'The Designer’s own objects are in its IWMAC menu, after Help, and in its Libraries panel: placed and saved back, each becomes that object here. ' +
               'Your components from Illustrator are in Libraries too, once read.']),
           footer: 'Nothing leaves the browser. The first start downloads the editor (about 20 MB); after that it is cached.'
@@ -9888,15 +10182,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  still has them (and whose check of the drawing no longer matches it), so the next edit
      *  opens what is left. -> {svg, found, skipped} */
     function vcPlaceholders(svg, size) {
-      var none = { svg: svg, found: [], skipped: 0 };
+      var none = { svg: svg, found: [], skipped: 0, layer: false, frames: 0 };
       if (!/IWMAC[ _]/.test(svg)) return none;
       var doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
       if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return none;
       var took = iwdieVcTakePlaceholders(doc, function (groups) { return vcMeasure(doc, groups, size); });
-      if (!took.found.length && !took.skipped) return none;
+      if (!took.found.length && !took.skipped && !took.frames) return { svg: svg, found: [], skipped: 0, layer: took.layer, frames: 0 };
       var out = new XMLSerializer().serializeToString(doc);
       if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
-      return { svg: iwdieVcStripEditing(out), found: took.found, skipped: took.skipped };
+      return { svg: iwdieVcStripEditing(out), found: took.found, skipped: took.skipped, layer: took.layer, frames: took.frames };
     }
 
     /** The panel's objects moved, resized and relabelled as their placeholders were (v1.46.0): on
@@ -9940,16 +10234,48 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  them there. -> {placed, already, error} */
     function vcPlaceObjects(found) {
       var made = iwdieVcDesignerObjects(found, exportPanelObjects());
-      if (!made.objects.length) return { placed: 0, already: made.already, error: '' };
+      if (!made.objects.length) return { placed: 0, already: made.already, error: '', els: [] };
+      var cc = document.getElementById('control_container'), before = cc ? Array.prototype.slice.call(cc.children) : [];
       try {
         new W.DesignPanelHandler().load_new_ver_objects(iwdieNormalizeDoc({ single_objects: made.objects }).single_objects);
       } catch (e) {
-        return { placed: 0, already: made.already, error: String((e && e.message) || e) };
+        return { placed: 0, already: made.already, error: String((e && e.message) || e), els: [] };
       }
       renumberCanvasNames();
       try { W.UpdateObjectWorker(); } catch (e) {}
       try { if (!document.getElementById('mouse_selector') && typeof W.make_mouse_selector === 'function') W.make_mouse_selector(); } catch (e) {}
-      return { placed: made.objects.length, already: made.already, error: '' };
+      // the elements it made (v1.47.0): a later sync of this edit knows them again, moved or deleted in VectorCraft
+      var kind = {}, els = [];
+      exportPanelObjects().forEach(function (o) { if (o && o.name) kind[o.name] = o.obj_id; });
+      if (cc) Array.prototype.forEach.call(cc.children, function (el) {
+        var nm = el.getAttribute('name');
+        if (before.indexOf(el) < 0 && nm && kind[nm]) els.push({ el: el, obj_id: kind[nm] });
+      });
+      return { placed: made.objects.length, already: made.already, error: '', els: els };
+    }
+
+    /** The panel's objects whose placeholders were deleted in VectorCraft taken off the canvas
+     *  (v1.47.0), as the Designer's own Delete does it (delete_xml_obj): out of its list of objects,
+     *  and off the canvas. Not saved: the panel stays the user's to save. -> {removed: [name...], error} */
+    function vcRemoveObjects(names) {
+      var cc = document.getElementById('control_container'), removed = [], lost = [];
+      if (!cc) return { removed: [], error: 'the panel is not on the canvas' };
+      names.forEach(function (n) {
+        var el = null;
+        for (var i = 0; i < cc.children.length && !el; i++) if (cc.children[i].getAttribute('name') === n) el = cc.children[i];
+        if (!el) { lost.push(n); return; }
+        try {
+          // the list's find gives -1 for a name it lacks, and its remove then takes the last one: only a name it holds once
+          var ol = W.objectList;
+          if (ol && typeof ol.remove === 'function' && Array.isArray(ol.objectList) &&
+            ol.objectList.filter(function (o) { return o && o.name === n; }).length === 1) ol.remove(n);
+        } catch (e) {}
+        el.parentNode.removeChild(el);
+        try { if (W.active_object === el) W.active_object = null; } catch (e) {}
+        removed.push(n);
+      });
+      try { W.UpdateObjectWorker(); } catch (e) {}
+      return { removed: removed, error: lost.length ? iwdieN(lost.length, 'object', 'objects') + ' (' + lost.join(', ') + ') not on the panel any more' : '' };
     }
 
     /* ---------- Sync to IWMAC Designer (v1.42.0): the picture uploaded ---------- */
@@ -10068,38 +10394,96 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* ---------- components, pills and pipes found in the picture (v1.44.0, v1.45.0) ---------- */
-    /** What the editor's tab shows while the panel is made ready: what is being done, how far, and a
-     *  way to go on without it. The tab is still about:blank, so it is this page's to write. */
-    function vcPaper(tab) {
-      var doc = null, skipped = false, onSkip = null, line = null, fill = null;
+    /** What the editor's tab shows while the panel is made ready (v1.47.0): each step of `steps`
+     *  ([[key, title]...]) with what it found and how long it took, the time so far and, while the
+     *  search runs, the time left; a bar; and, while the picture is read (`skip`), a way to go on
+     *  without it. The tab is still about:blank, so it is this page's to write. */
+    function vcPaper(tab, steps, skip) {
+      var doc = null, skipped = false, onSkip = null, cur = null, t0 = Date.now(), began = 0, at = 0;
       try { doc = tab && !tab.closed ? tab.document : null; } catch (e) { doc = null; }
       if (doc) {
         try {
+          var font = '\'Segoe UI\',Roboto,Arial,sans-serif';
           doc.open();
           doc.write('<!doctype html><meta charset="utf-8"><title>IWMAC Designer → VectorCraft</title>' +
-            '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#535353;color:#d1d1d1;font:13px/1.45 \'Segoe UI\',Roboto,Arial,sans-serif">' +
-            '<div style="width:440px;padding:22px;box-sizing:border-box;background:#424242;border:1px solid #383838;border-radius:6px;box-shadow:0 8px 14px rgba(0,0,0,.55)">' +
-            '<div style="font-size:16px;font-weight:600;color:#ffffff;margin-bottom:10px">Preparing the panel for VectorCraft</div>' +
-            '<div id="line">Looking for the components in the picture…</div>' +
-            '<div style="height:6px;margin:12px 0;background:#383838;border-radius:3px"><div id="fill" style="height:6px;width:2%;background:#378ef0;border-radius:3px"></div></div>' +
-            '<button id="skip" style="height:28px;padding:0 16px;border:0;border-radius:14px;background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0;font:600 12.5px \'Segoe UI\',Arial,sans-serif">' +
-            'Skip - open the picture as it is</button></div></body>');
+            '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#535353;color:#d1d1d1;font:13px/1.45 ' + font + '">' +
+            '<div style="width:520px;padding:22px;box-sizing:border-box;background:#424242;border:1px solid #383838;border-radius:6px;box-shadow:0 8px 14px rgba(0,0,0,.55)">' +
+            '<div style="display:flex;align-items:baseline;margin-bottom:12px"><div style="flex:1;font-size:16px;font-weight:600;color:#ffffff">Preparing the panel for VectorCraft</div>' +
+            '<div id="clock" style="color:#9a9a9a;font-size:12px;font-variant-numeric:tabular-nums">0.0 s</div></div>' +
+            steps.map(function (s) {
+              return '<div id="r-' + s[0] + '" style="display:flex;align-items:baseline;gap:8px;padding:2px 0;color:#7c7c7c">' +
+                '<span id="i-' + s[0] + '" style="width:14px;flex:none;text-align:center">○</span>' +
+                '<span style="flex:none">' + iwdieEscHtml(s[1]) + '</span>' +
+                '<span id="d-' + s[0] + '" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9a9a9a;font-size:12px"></span>' +
+                '<span id="t-' + s[0] + '" style="flex:none;color:#9a9a9a;font-size:12px;font-variant-numeric:tabular-nums"></span></div>';
+            }).join('') +
+            '<div style="height:6px;margin:14px 0 12px;background:#383838;border-radius:3px"><div id="fill" style="height:6px;width:2%;background:#378ef0;border-radius:3px;transition:width .25s"></div></div>' +
+            (skip ? '<button id="skip" style="height:28px;padding:0 16px;border:0;border-radius:14px;background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0;font:600 12.5px ' + font + '">' +
+              'Skip - open the picture as it is</button>' : '') + '</div></body>');
           doc.close();
-          line = doc.getElementById('line');
-          fill = doc.getElementById('fill');
-          doc.getElementById('skip').addEventListener('click', function () { skipped = true; if (onSkip) onSkip(); });
-        } catch (e) { line = fill = null; }
+          var sk = doc.getElementById('skip');
+          if (sk) sk.addEventListener('click', function () { skipped = true; sk.disabled = true; sk.textContent = 'Skipping…'; if (onSkip) onSkip(); });
+        } catch (e) { doc = null; }
       }
-      return {
-        set: function (part, text) {
-          try {
-            if (fill) fill.style.width = Math.max(2, Math.min(100, Math.round(part * 100))) + '%';
-            if (line && text) line.textContent = text;
-          } catch (e) {}
+      var $ = function (id) { try { return doc ? doc.getElementById(id) : null; } catch (e) { return null; } };
+      var secs = function (ms) { return ms < 10000 ? (Math.round(ms / 100) / 10).toFixed(1) + ' s' : Math.round(ms / 1000) + ' s'; };
+      var put = function (id, text, css) { var el = $(id); if (!el) return; if (text !== null) el.textContent = text; if (css) el.style.cssText += css; };
+      var bar = function (part) {
+        if (typeof part !== 'number' || !isFinite(part)) return;
+        at = Math.max(at, Math.min(1, part));
+        put('fill', null, 'width:' + Math.max(2, Math.round(at * 100)) + '%');
+      };
+      var seen = {};
+      var show = function (key, state, detail, time) {
+        seen[key] = state;
+        var icon = { now: '◐', done: '✓', none: '–' }[state] || '○', colour = { now: '#ffffff', done: '#d1d1d1', none: '#7c7c7c' }[state] || '#7c7c7c';
+        put('r-' + key, null, 'color:' + colour);
+        put('i-' + key, icon, 'color:' + (state === 'now' ? '#378ef0' : state === 'done' ? '#6cc5a2' : '#7c7c7c'));
+        if (detail !== undefined && detail !== null) put('d-' + key, detail);
+        if (time) put('t-' + key, time);
+      };
+      var tick = function () { put('clock', secs(Date.now() - t0)); };
+      var paper = {
+        step: function (key, detail, part) {
+          if (cur) paper.done(null);
+          cur = key; began = Date.now();
+          show(key, 'now', detail || '');
+          bar(part);
+          tick();
         },
+        say: function (detail, part) { if (cur) show(cur, 'now', detail); bar(part); tick(); },
+        done: function (detail, part) {
+          if (!cur) return;
+          show(cur, 'done', detail, secs(Date.now() - began));
+          cur = null;
+          bar(part);
+          tick();
+        },
+        // a step not reached
+        none: function (key, detail) { if (!seen[key]) show(key, 'none', detail || ''); },
+        // once the picture is read, there is nothing left to skip
+        noSkip: function () { put('skip', null, 'display:none'); },
         onSkip: function (fn) { onSkip = fn; },
         skipped: function () { var gone = true; try { gone = !tab || tab.closed; } catch (e) {} return skipped || gone; }
       };
+      return paper;
+    }
+
+    /** A moment for the editor's tab to show what it was told (v1.47.0): its next frame, then a task
+     *  of this page's - not a timer, which a page behind another waits a second for. -> Promise */
+    function vcBreath(tab) {
+      return new Promise(function (resolve) {
+        var done = false, go = function () {
+          if (done) return;
+          done = true;
+          var ch = new MessageChannel();
+          ch.port1.onmessage = function () { ch.port1.close(); resolve(); };
+          ch.port2.postMessage(0);
+        };
+        try { if (tab && !tab.closed && typeof tab.requestAnimationFrame === 'function') tab.requestAnimationFrame(go); } catch (e) {}
+        // a tab that draws no frames (behind another) is not waited for
+        setTimeout(go, 60);
+      });
     }
 
     /** Cells ({w, h, markup}: SVG at 0,0 in a cell of that size) drawn on one sheet and read back.
@@ -10184,7 +10568,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (stopped) { resolve(null); return; }
             var until = Date.now() + 40;
             while (i < looks.length && Date.now() < until) { found = found.concat(iwdieVcSearch(ix, [looks[i]], null, seen)); i++; }
-            step(i, looks.length);
+            step(i, looks.length, 0);
             if (i < looks.length) setTimeout(some, 0); else resolve(iwdieVcPick(found));
           })();
         });
@@ -10224,7 +10608,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 return;
               }
               done[pi] = d.done;
-              step(done.reduce(function (s, v) { return s + v; }, 0), looks.length);
+              step(done.reduce(function (s, v) { return s + v; }, 0), looks.length, parts.length);
             };
             // a worker that cannot run this (a page's rules) leaves it to this page
             wk.onerror = fallback;
@@ -10259,35 +10643,54 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** What of the panel's picture (`canvas`, at panel size) can be vectors (v1.44.0, v1.45.0): the
      *  kept library's components found in it, each with only the shapes the picture shows; then its
-     *  pills, and its pipes in the library's colours. Each is taken out of the picture - but what the
-     *  panel's `objects` cover stays in it (v1.46.1). The editor's tab shows how far it is, and may
-     *  skip it.
+     *  pills, and its pipes in the library's colours. Each is taken out of the picture. What one of the
+     *  panel's `objects` stands on (v1.47.0) is cut out as it is, to go with that object's placeholder:
+     *  moved or deleted with it, it leaves the ground behind. `paper` shows each step in the editor's
+     *  tab, which may skip it.
      *  -> Promise<null | {cleaned: data URL, components: [...] (pills among them, kind 'pill'),
-     *  pipes: [...], count, pills, summary, seconds}> */
-    function vcRecognize(canvas, lib, tab, objects) {
-      var paper = vcPaper(tab), W2 = canvas.width, H2 = canvas.height, t0 = Date.now();
+     *  pipes: [...], count, pills, carried, unders: {name: [{x, y, w, h, href}]}, summary, seconds}> */
+    function vcRecognize(canvas, lib, paper, tab, objects) {
+      var W2 = canvas.width, H2 = canvas.height, t0 = Date.now();
       var items = lib.items, names = iwdieVcComponentNames(items), job = null;
       paper.onSkip(function () { if (job) job.stop(); });
-      return vcComponentTemplates(items).then(function (templates) {
+      paper.step('lib', iwdieN(items.length, 'component', 'components') + ' of “' + (lib.file || 'the library') + '”, drawn at 1:1', 0.02);
+      return vcBreath(tab).then(function () { return vcComponentTemplates(items); }).then(function (templates) {
         if (!templates.length || paper.skipped()) return null;
-        var pic = canvas.getContext('2d').getImageData(0, 0, W2, H2).data;
-        job = vcFindAll(pic, W2, H2, templates, function (done, of) {
+        paper.done(iwdieN(templates.length, 'look', 'looks') + ' to look for', 0.08);
+        var pic = canvas.getContext('2d').getImageData(0, 0, W2, H2).data, tFind = Date.now();
+        paper.step('find', 'starting…', 0.08);
+        job = vcFindAll(pic, W2, H2, templates, function (done, of, workers) {
           // the editor's tab closed: nobody is waiting for the rest
           if (job && paper.skipped()) { job.stop(); return; }
-          paper.set(done / of * 0.9, 'Looking for the ' + of + ' components of “' + (lib.file || 'the library') + '” in the picture… ' + done + ' of ' + of);
+          var gone = (Date.now() - tFind) / 1000, left = done ? gone / done * (of - done) : 0;
+          paper.say(done + ' of ' + of + (workers ? ' · ' + iwdieN(workers, 'worker', 'workers') : ' · in this page') +
+            (done && done < of && gone > 1.5 ? ' · about ' + Math.max(1, Math.round(left)) + ' s left' : ''), 0.08 + 0.7 * done / of);
         });
         return job.promise.then(function (found) {
           if (!found || paper.skipped()) return null;
-          paper.set(0.92, 'Checking the ' + found.length + ' components found, then the pills and pipes…');
+          paper.done(iwdieN(found.length, 'place', 'places') + ' found', 0.78);
+          paper.step('check', 'drawing their shapes one by one…', 0.79);
           var byK = {}, ks = [];
           templates.forEach(function (t) { byK[t.k] = t; });
           found.forEach(function (m) { if (ks.indexOf(m.k) < 0) ks.push(m.k); });
+          var bg = null, cleaned = null, holes = [], comps = [], count = {}, pill = {}, unders = {}, carried = 0, M = null, lines = null, pills = [], cp = 0;
+          // the art an object stands on, cut out of the picture as it is; the rest of the picture is erased under it all the same
+          var carry = function (name, box, mark) {
+            mark(M);
+            var x0 = Math.max(0, Math.floor(box.x) - 3), y0 = Math.max(0, Math.floor(box.y) - 3), x1 = Math.min(W2 - 1, Math.ceil(box.x + box.w) + 3), y1 = Math.min(H2 - 1, Math.ceil(box.y + box.h) + 3);
+            var piece = iwdieVcCrop(pic, W2, H2, M, x0, y0, x1, y1);
+            for (var yy = y0; yy <= y1; yy++) for (var xx = x0; xx <= x1; xx++) M[yy * W2 + xx] = 0;
+            if (!piece) return;
+            (unders[name] = unders[name] || []).push(piece);
+            carried++;
+          };
           return vcShapeLayers(items, ks).then(function (layers) {
-            var bg = iwdieVcComponentIndex(pic, W2, H2).bg, cleaned = new Uint8ClampedArray(pic), holes = [], comps = [], count = {}, pill = {}, under = 0;
+            bg = iwdieVcComponentIndex(pic, W2, H2).bg;
+            cleaned = new Uint8ClampedArray(pic);
+            M = new Uint8Array(W2 * H2);
+            var under = 0;
             found.forEach(function (m) {
               var t = byK[m.k], it = items[m.k];
-              // under one of the panel's objects: as it is in the picture, under the object's placeholder
-              if (iwdieVcCovered(m, objects) >= 0.5) { under++; return; }
               // a pill of the library is measured as a pill (below) instead: so it looks exactly as it did, without a stub it does not have
               if (pill[m.k] === undefined) pill[m.k] = iwdieVcIsPill(t, bg.map(Math.round));
               if (pill[m.k]) return;
@@ -10303,38 +10706,61 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                   for (var j = 0; j < m.w * m.h; j++) if (L[j * 4 + 3] >= 8) mask[j * 4 + 3] = 255;
                 });
               } else mask = iwdieVcTurn(t, m.turn).rgba;
-              holes.push({ x: m.x, y: m.y, w: m.w, h: m.h, rgba: mask });
+              var hole = { x: m.x, y: m.y, w: m.w, h: m.h, rgba: mask }, on = iwdieVcUnderOf(m, objects);
+              holes.push(hole);
+              // under one of the panel's objects: its own pixels go with the object's placeholder
+              if (on) { under++; carry(on, m, function (MM) { iwdieVcHoleMask(W2, H2, [hole], 1, MM); }); return; }
               count[names[m.k]] = (count[names[m.k]] || 0) + 1;
               comps.push({ name: names[m.k], shapes: shapes, x: m.x, y: m.y, turn: m.turn, tw: t.w, th: t.h });
             });
             iwdieVcErase(cleaned, W2, H2, holes);
-            // the pills, then the pipes, on what is left
-            var palette = iwdieVcPalette(items);
-            var pills = iwdieVcFindPills(cleaned, W2, H2, palette).filter(function (p) {
-              var out = iwdieVcCovered(p.outer, objects) < 0.5;
-              if (!out) under++;
-              return out;
+            paper.done(iwdieN(comps.length, 'component', 'components') + ' to draw' + (under ? ', ' + under + ' under objects' : ''), 0.84);
+            if (paper.skipped()) return null;
+            paper.step('pills', 'reading their rings…', 0.85);
+            return vcBreath(tab).then(function () {
+              if (paper.skipped()) return null;
+              var palette = iwdieVcPalette(items);
+              iwdieVcFindPills(cleaned, W2, H2, palette).forEach(function (p) {
+                var on = iwdieVcUnderOf(p.outer, objects);
+                if (!on) { pills.push(p); return; }
+                cp++;
+                carry(on, p.outer, function (MM) { iwdieVcPillCells(p, W2, H2, function (x, y) { MM[y * W2 + x] = 1; }); });
+                iwdieVcErasePills(cleaned, W2, H2, [p]);
+              });
+              iwdieVcErasePills(cleaned, W2, H2, pills);
+              paper.done(iwdieN(pills.length, 'pill', 'pills') + (cp ? ', ' + cp + ' under objects' : ''), 0.9);
+              paper.step('pipes', 'following them in the library’s colours…', 0.9);
+              return vcBreath(tab).then(function () {
+                if (paper.skipped()) return null;
+                lines = iwdieVcFindLines(cleaned, W2, H2, bg.map(Math.round), iwdieVcPipeColours(palette));
+                iwdieVcEraseMask(cleaned, W2, H2, lines.mask);
+                paper.done(iwdieN(lines.lines.length, 'pipe', 'pipes'), 0.94);
+                if (!comps.length && !pills.length && !lines.lines.length && !carried) return null;
+                paper.noSkip();
+                paper.step('build', 'the picture without them, as PNG…', 0.95);
+                return vcBreath(tab).then(function () {
+                  var looks = templates.map(function (t) { return { name: names[t.k], w: t.w, h: t.h, main: vcMainColour(t) }; });
+                  pills.forEach(function (p) {
+                    p.kind = 'pill';
+                    p.name = iwdieVcPillName(p, looks);
+                    if (p.text) p.textHref = vcPng(p.text.rgba, p.text.w, p.text.h);
+                  });
+                  var hrefs = {};
+                  Object.keys(unders).forEach(function (nm) {
+                    hrefs[nm] = unders[nm].map(function (u) { return { x: u.x, y: u.y, w: u.w, h: u.h, href: vcPng(u.rgba, u.w, u.h) }; });
+                  });
+                  var c = document.createElement('canvas');
+                  c.width = W2; c.height = H2;
+                  var g = c.getContext('2d'), img = g.createImageData(W2, H2);
+                  img.data.set(cleaned);
+                  g.putImageData(img, 0, 0);
+                  var summary = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5)
+                    .map(function (nm) { return nm + (count[nm] > 1 ? ' ×' + count[nm] : ''); }).join(', ');
+                  return { cleaned: c.toDataURL('image/png'), components: comps.concat(pills), pipes: lines.lines, count: comps.length, pills: pills.length,
+                    carried: carried, unders: hrefs, summary: summary, seconds: Math.round((Date.now() - t0) / 100) / 10 };
+                });
+              });
             });
-            iwdieVcErasePills(cleaned, W2, H2, pills);
-            var lines = iwdieVcFindLines(cleaned, W2, H2, bg.map(Math.round), iwdieVcPipeColours(palette));
-            iwdieVcEraseMask(cleaned, W2, H2, lines.mask);
-            var looks = templates.map(function (t) { return { name: names[t.k], w: t.w, h: t.h, main: vcMainColour(t) }; });
-            pills.forEach(function (p) {
-              p.kind = 'pill';
-              p.name = iwdieVcPillName(p, looks);
-              if (p.text) p.textHref = vcPng(p.text.rgba, p.text.w, p.text.h);
-            });
-            if (!comps.length && !pills.length && !lines.lines.length) return under ? { cleaned: null, components: [], pipes: [], count: 0, pills: 0, under: under, summary: '',
-              seconds: Math.round((Date.now() - t0) / 100) / 10 } : null;
-            var c = document.createElement('canvas');
-            c.width = W2; c.height = H2;
-            var g = c.getContext('2d'), img = g.createImageData(W2, H2);
-            img.data.set(cleaned);
-            g.putImageData(img, 0, 0);
-            var summary = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5)
-              .map(function (nm) { return nm + (count[nm] > 1 ? ' ×' + count[nm] : ''); }).join(', ');
-            return { cleaned: c.toDataURL('image/png'), components: comps.concat(pills), pipes: lines.lines, count: comps.length, pills: pills.length, under: under,
-              summary: summary, seconds: Math.round((Date.now() - t0) / 100) / 10 };
           });
         });
       }).then(null, function () { return null; });
@@ -10367,6 +10793,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return;
       }
       svg = ph.svg;
+      // the objects as this edit knows them (v1.47.0): by their elements, whatever the panel calls them now
+      var nameOf = function (n) { var el = info.els && info.els[n]; return !el ? n : el.parentNode ? el.getAttribute('name') : null; };
+      ph.found.forEach(function (f) { if (f.ref) f.ref = nameOf(f.ref) || '-' + f.ref; });
+      var sent = (info.sent || []).map(nameOf).filter(Boolean);
+      var placed = (info.placed || []).filter(function (p) { return p.el && p.el.parentNode; }).map(function (p) { return { name: p.el.getAttribute('name'), obj_id: p.obj_id }; });
       var sized = iwdieVcSized(svg, size.w, size.h);
       var url = URL.createObjectURL(new Blob([sized], { type: 'image/svg+xml' }));
       loadPicture(url).then(function (img) {
@@ -10391,9 +10822,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         W.iw_set_base_image((mi && mi.style.width) || (size.w + 'px'), (mi && mi.style.height) || (size.h + 'px'), dataUrl);
         try { if (!W.$('#main_image').attr('org_image_name')) W.$('#main_image').attr('org_image_name', 'iwdie-vectorcraft.png'); } catch (e) {}
         // the panel's own objects changed where their placeholders went (v1.46.0), the other placeholders placed as new ones
-        var ch = iwdieVcObjectChanges(ph.found, exportPanelObjects(), info.sent || []);
+        var ch = iwdieVcObjectChanges(ph.found, exportPanelObjects(), sent, placed);
         var mv = ch.moves.length ? vcMoveObjects(ch.moves) : { moved: 0, error: '' };
-        var objs = ch.fresh.length ? vcPlaceObjects(ch.fresh) : { placed: 0, already: 0, error: '' };
+        // one whose placeholder was deleted there goes here too (v1.47.0) - but not when the layer of them
+        // was not in the save (hidden: VectorCraft leaves hidden things out), nor most of them at once
+        var gone = ch.missing.concat(ch.dropped), hold = '';
+        if (gone.length && !ph.layer) hold = 'the layer IWMAC-objekter was not in the save - hidden?';
+        else if (gone.length > 10 && gone.length > (sent.length + placed.length) / 2) hold = 'more than half of them at once';
+        var rm = gone.length && !hold ? vcRemoveObjects(gone) : { removed: [], error: '' };
+        var objs = ch.fresh.length ? vcPlaceObjects(ch.fresh) : { placed: 0, already: 0, error: '', els: [] };
+        (objs.els || []).forEach(function (x) { (info.placed = info.placed || []).push(x); });
         var lines = [Math.round(withDoc.length / 1024) + ' kB, ' + size.w + ' × ' + size.h + ' px' +
           (pack.lean ? ' - kept as plain SVG, without VectorCraft’s own copy of the document (' + (Math.round(pack.full / 104857.6) / 10) +
             ' MB compressed), so the picture stays light: the next edit opens the same layers and paths.'
@@ -10410,8 +10848,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (mv.error) lines.push('Not changed: ' + mv.error + '.');
         if (ch.orphans.length) lines.push(iwdieN(ch.orphans.length, 'placeholder', 'placeholders') + ' stood for objects no longer on the panel, so nothing was placed for ' +
           (ch.orphans.length === 1 ? 'it' : 'them') + '.');
-        if (ch.missing.length) lines.push(iwdieN(ch.missing.length, 'object', 'objects') + ' of the panel had no placeholder in the save any more (' +
-          ch.missing.slice(0, 6).join(', ') + (ch.missing.length > 6 ? ', …' : '') + '): left on the panel - delete them here if they should go.');
+        if (rm.removed.length) lines.push(iwdieN(rm.removed.length, 'object', 'objects') + ' taken off the panel, as their placeholders were deleted in VectorCraft (' +
+          rm.removed.slice(0, 6).join(', ') + (rm.removed.length > 6 ? ', …' : '') + ') - reload the panel without saving to have ' + (rm.removed.length === 1 ? 'it' : 'them') + ' back.');
+        if (rm.error) lines.push('Not taken off: ' + rm.error + '.');
+        if (hold) lines.push(iwdieN(gone.length, 'object', 'objects') + ' of the panel had no placeholder in the save, but stayed on it: ' + hold + ' (' +
+          gone.slice(0, 6).join(', ') + (gone.length > 6 ? ', …' : '') + '). Delete them here if they should go.');
+        if (ph.frames) lines.push('The art under ' + iwdieN(ph.frames, 'object', 'objects') + ' - its frame, its pill - is in the picture where its placeholder left it.');
         if (ph.skipped) lines.push(iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.');
         // and its PNG to the plant's pictures, as Upload to server does, named on the panel as Set background names it (v1.42.0)
         return vcUploadPng(withDoc, info).then(function (up) {
@@ -10425,12 +10867,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             lines.push('Its PNG was not uploaded to the plant’s pictures: ' + up.message + '. The background is set all the same.');
           }
           outcomeToast({
-            tone: objs.error || mv.error || !up.ok ? 'caution' : 'good', title: objs.placed || mv.moved ? '✅ Background and IWMAC objects from VectorCraft' : '✅ Background updated from VectorCraft',
+            tone: objs.error || mv.error || rm.error || hold || !up.ok ? 'caution' : 'good',
+            title: objs.placed || mv.moved || rm.removed.length ? '✅ Background and IWMAC objects from VectorCraft' : '✅ Background updated from VectorCraft',
             lines: lines,
             footer: 'The panel is not saved yet — use the designer’s own Save when you are happy.'
           });
-          ack('applied', Math.round(withDoc.length / 1024) + ' kB', { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error || mv.error,
-            moved: mv.moved, missing: ch.missing.length,
+          ack('applied', Math.round(withDoc.length / 1024) + ' kB', { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error || mv.error || rm.error,
+            moved: mv.moved, removed: rm.removed.length, held: hold ? gone.length : 0, holdWhy: hold,
             uploaded: up.ok ? up.name : '', uploadError: up.ok ? '' : up.message });
         });
       }).then(null, function (e) {
@@ -12077,6 +12520,13 @@ if (typeof module !== 'undefined' && module.exports) {
     vcPillSvg: iwdieVcPillSvg,
     vcHex: iwdieVcHex,
     vcCovered: iwdieVcCovered,
+    vcUnderOf: iwdieVcUnderOf,
+    vcHoleMask: iwdieVcHoleMask,
+    vcCrop: iwdieVcCrop,
+    vcPillCells: iwdieVcPillCells,
+    vcKeepUnder: iwdieVcKeepUnder,
+    vcElementEnd: iwdieVcElementEnd,
+    vcLibraryPages: iwdieVcLibraryPages,
     vcPalette: iwdieVcPalette,
     vcPipeColours: iwdieVcPipeColours,
     vcFindLines: iwdieVcFindLines,
