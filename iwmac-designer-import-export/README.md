@@ -1,6 +1,6 @@
 # IWMAC Designer Import/Export
 
-Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with five stacked buttons — **Export JSON**, **Insert JSON…**, **Edit in VectorCraft…**, **Open plant folder**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, the background artwork can be edited as vectors in a browser editor, the plant's folder opened in Explorer, and it can be handed to Adobe Illustrator for editing. The designer itself has no way to do any of these; this script adds them.
+Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four stacked buttons — **Export JSON**, **Insert JSON…**, **Edit in VectorCraft…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, the background artwork can be edited as vectors in a browser editor, and it can be handed to Adobe Illustrator for editing. The designer itself has no way to do any of these; this script adds them.
 
 Runs on `http(s)://legacy.iwmac.local/iwmac_designer_v4/?plant_id=<id>` ("IWMAC Designer V5"). Since v1.35.0 it also runs on the hosted vector editor, `https://hapnes-dev.github.io/iwmac-vector/app/`, for [Edit in VectorCraft](#edit-in-vectorcraft-v1350); Tampermonkey asks once to allow that, and Tampermonkey's storage, when it updates.
 
@@ -1137,8 +1137,9 @@ the PNG uploaded on hover), and anything that went wrong, a line each, in red.
 **Explorer** comes from Anleggsmappe, the team's plant-folder tool, which registers links of
 the form `anlegg://<plant number>`: such a link opens that plant's folder, found from the number
 alone. The folder's name in the banner is one (*Open in Explorer* before the plants' folder is
-connected), and so is **Open plant folder** on the Designer's sidebar. The script passes the
-plant's number on and knows nothing else of the share. Followed by the page itself, such a link
+connected). Versions 1.50.0 and 1.51.0 also had **Open plant folder** on the Designer's
+sidebar; 1.51.1 took it off again. The script passes the plant's number on and knows nothing
+else of the share. Followed by the page itself, such a link
 fires the page's `beforeunload`, so the Designer's or VectorCraft's *Leave site?* could ask,
 though the page stays; it is followed in a hidden frame instead. Measured in Chromium:
 `beforeunload` fired at every click from the page, and at none from the frame, while the link

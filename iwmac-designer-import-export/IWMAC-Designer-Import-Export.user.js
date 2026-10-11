@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.51.0
+// @version      1.51.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.51.0';
+var IWDIE_VERSION = '1.51.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8467,7 +8467,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (existing.length > 0) return;
       var w7 = document.getElementById('manager_widget7');
       if (!w7) return;
-      /* Five stacked buttons at the host's standard btn_full size; the
+      /* Four stacked buttons at the host's standard btn_full size; the
          sidebar-height relaxation in the injected CSS keeps the manager
          sidebar scrollbar-free (see the #manager_div rule above). */
       var html = [
@@ -8477,7 +8477,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         "    <button id='iwdie_export_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExport()\">Export JSON</button>",
         "    <button id='iwdie_import_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.openImportPanel()\">Insert JSON…</button>",
         "    <button id='iwdie_vc_btn' class='btn_full ui-button ui-corner-all' title='Edit the background in VectorCraft, a vector editor, in a new tab - saving there updates this panel' onclick=\"window.__IWDIE.editInVectorCraft()\">Edit in VectorCraft…</button>",
-        "    <button id='iwdie_folder_btn' class='btn_full ui-button ui-corner-all' title='This plant’s folder in Explorer - with Anleggsmappe and its anlegg:// links on this PC' onclick=\"window.__IWDIE.openPlantFolder()\">Open plant folder</button>",
         "    <button id='iwdie_ai_btn' class='btn_full ui-button ui-corner-all' title='Background → Adobe Illustrator (.ai / .svg)' onclick=\"window.__IWDIE.doExportBackgroundAi()\">Background → Illustrator</button>",
         '  </fieldset>',
         '</div>'].join('\n');
@@ -10455,14 +10454,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (given) useAi(new File([iwdieBase64ToBytes(given.b64)], given.name, { type: given.type || 'application/pdf' }), 'chosen in the Designer');
         });
       }, note);
-    }
-
-    /** Open plant folder on the sidebar (v1.50.0): the plant's folder in Explorer, through Anleggsmappe's
-     *  anlegg:// link - the same as Explorer in the editor's banner. */
-    function doOpenPlantFolder() {
-      var url = iwdieVcPlantUrl(currentPlantId());
-      if (!url) { toast('This plant’s number is not known here.', true); return; }
-      openOutside(url);
     }
 
     /* ---------- Edit in VectorCraft (v1.35.0): the Designer's side ---------- */
@@ -13245,7 +13236,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       applyImport: applyImport,
       doExportBackgroundAi: doExportBackgroundAi,
       editInVectorCraft: doEditInVectorCraft,
-      openPlantFolder: doOpenPlantFolder,
       stageImportText: stageImportText,
       doExportParams: doExportParams,
       doExportAllParams: doExportAllParams,
