@@ -1005,6 +1005,39 @@ redrawn a little off), with the ground filled in under it:
   half of them at once when that is more than ten. The toast then names them, to delete in
   the Designer.
 
+**Nothing of the Designer's drawn again (v1.48.0).** After a sync, some bubbles still had dark
+rings. The panel itself, read in the Designer without changing it (plant 2349, *Maskin*), shows
+why: 45 of its 58 objects are values drawn as bare text (39 `number_v3_value_only`, 6
+`number_v3_white_value_only`). Their CSS class gives them no background, no border and no picture.
+The white bubbles and the dark *Ref* pills under them are the picture's own. Versions 1.45.0 to
+1.47.0 drew such pills again as vectors, measuring their ring and guessing its colour; under a value
+the bubble then had a ring of another shade, a little off. And a background that came from
+VectorCraft opened that drawing again, its vector pills with it.
+
+So now:
+- **A pill is never drawn again.** Under a value that is bare text, the bubble goes into the
+  value's placeholder as the picture has it (since v1.47.0). The placeholder is then drawn
+  see-through, its outline and text, so the bubble shows as the Designer shows it. Under no
+  object a pill is a piece of the picture as it is: to move, copy or delete, not a vector.
+- **What the Designer draws itself is left to it.** Under an object the Designer draws with a
+  picture or colour of its own (a status, a value in its own bubble, an LED, a pump), what the
+  picture has there is taken out and nothing is drawn in its place: only the Designer's object.
+  Which kinds do is read from the Designer's own render definition: a picture of its own, or a
+  picture, a colour or a border from its CSS class.
+- **Starting again from the picture.** Editing a background that came from VectorCraft, the new
+  tab first asks: go on with its drawing, or start again from the picture it was first read from
+  (kept, hidden, in the drawing). For a drawing made before v1.48.0 starting again is what Enter
+  does, since those versions drew the pills again. Starting again leaves out what was changed in
+  VectorCraft before.
+- A piece cut out of the picture is clear round its edge in the picture's own colour, not black,
+  so it does not darken where it is drawn scaled.
+
+Measured in the stub host, on the Maskin picture with objects of those kinds: after a sync the
+bubbles under four bare-text values and the dark Ref pill are the picture's pixel for pixel (not
+one differs). Under two statuses and a value with its own bubble there is the ground. 51 pills
+became pieces of the picture, and none was drawn again. Both questions were answered, Start
+again for an older drawing by Enter, and each read the original picture again.
+
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
 off. An object placed by a sync is known again at the next one too: moved, resized or deleted
