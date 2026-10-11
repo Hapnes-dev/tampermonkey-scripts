@@ -184,8 +184,9 @@ components of `2349_Maskin.ai` the file is about 3.5 MB and takes about a second
 Libraries in VectorCraft's web version last for that tab only, so every *Edit in VectorCraft…*
 brings them again. Nothing is uploaded.
 
-**Components from .ai…** (*Import .ai…* until v1.39.0), in the banner of the editor's tab,
-reads a `.ai` file. Every visible object
+**Plant .ai…** (since v1.49.0; *Components from .ai…* before, *Import .ai…* until v1.39.0), in
+the banner of the editor's tab, reads a `.ai` file - see *One button for the panel's .ai* below.
+Every visible object
 lying wholly outside its artboard becomes a component. The new set replaces the one kept, and
 goes into Libraries at once.
 
@@ -1083,6 +1084,40 @@ is transparent: read and synced by v1.46.0, its picture was black (0, 0, 0) wher
 been; mended by Enter in v1.48.2, and read afresh by v1.48.2, it has the panel's colour there, and
 moving the background in VectorCraft shows no black.
 
+**One button for the panel's .ai, and the plant's folder (v1.49.0).** The editor's banner had
+three buttons: *Ready for Image Trace*, *Background from .ai…* and *Components from .ai…*. Both
+.ai buttons asked for the same file, the panel's own Illustrator file (`2349_Maskin.ai`). Now
+there is one, **Plant .ai…**. One file does both: its components go to Libraries, replacing
+those kept, and its artboard opens in a new tab as vectors, to paste in place as the
+background. The sharpened copy for Image Trace is a link under the rest.
+
+And the file need not be looked for. Every plant has a folder of its own on the plants' share,
+its name beginning with the plant's number (*2349 …*). Chrome lets an https page read a folder
+the user picks (the File System Access API), so in the editor's tab:
+- **Connect the plants' folder…**, once: pick the folder that holds every plant's own folder.
+  It is kept in the editor site's storage; the browser asks again once a session (**Allow
+  reading …**).
+- The plant's own folder is found in it by the plant's number, and shown in the banner with its
+  `.ai` files (three folders deep). The names of the plants' folders are kept for half a day, so
+  that is quick after the first time; **Read again** reads them now.
+- **Plant .ai…** then takes the panel's file by itself: the one named after the panel - the
+  words of its name, so *2313_Ventilasjon.ai* for *360.002 Ventilasjon* - that is not in an old
+  or archived folder or named as a copy. When that is not clear, it lists the plant's `.ai`
+  files, newest first, with **Another file…** under them. Without a connected folder, it asks
+  for the file as before.
+- **Give the path of the plants' folder…** (once) lets **Copy its path** copy the plant
+  folder's full path for Explorer's address bar. A browser cannot see a picked folder's path,
+  so it is given by hand.
+
+Nothing about the share is in the script: its name and folders come from what is picked, and
+the path only as given. The Designer's own page cannot do this (it is http, and Chrome lets only
+an https page read folders), so it lives in the editor's tab. Measured in the stub host with a
+plants' folder made in the editor site's own file system (`2313 Test anlegg` with
+`Tegninger/2313_Ventilasjon.ai` and an archived copy, beside two other plants'): the banner showed
+*2313 Test anlegg · 2 .ai files*, and **Plant .ai…** took `2313_Ventilasjon.ai` by itself. Its
+386 components went to Libraries in 12 pages, and its artboard opened as a document. Not yet
+tried on the real share.
+
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
 off. An object placed by a sync is known again at the next one too: moved, resized or deleted
@@ -1182,7 +1217,8 @@ anti-aliased edges become slivers. Measured on a Maskin panel (1400 × 750):
 | enlarged 3×, VectorCraft's Automatic palette | 99,298 paths: it no longer sees flat art |
 | **enlarged 3× and set to the picture's own 12 flat colours, 16 Colors** | **the right colours, the labels whole, 6,155 paths** |
 
-**Ready for Image Trace**, in the banner of the editor's tab, makes that last kind:
+*A copy with the picture sharpened* (a link in the banner of the editor's tab since v1.49.0;
+the button **Ready for Image Trace** before) makes that last kind:
 - It enlarges the picture three times (less for a big one: at most 12 million pixels).
 - It sets every pixel to the picture's own flat colours. Those are its exact colours that
   cover at least 0.02 % of it, with near-twins merged. The in-between shades of anti-aliased
@@ -1209,8 +1245,8 @@ or draw only what is to change.
 
 **The panel's own .ai as its background (v1.39.0).** Maskin artwork is drawn in Illustrator.
 When the panel's `.ai` is at hand, it is the exact vector version of the picture, and lighter
-than any trace. **Background from .ai…**, in the banner, opens it in the same VectorCraft as a
-document of its own. VectorCraft reads its artboard as vectors, with the text as outlines.
+than any trace. **Plant .ai…** (**Background from .ai…** before v1.49.0), in the banner, opens it
+in the same VectorCraft as a document of its own. VectorCraft reads its artboard as vectors, with the text as outlines.
 Then:
 1. In that tab, **Ctrl+A** and **Ctrl+C**.
 2. In the panel's tab, click the **Bakgrunn** layer in Layers.
