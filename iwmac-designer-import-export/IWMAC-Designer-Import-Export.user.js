@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.53.0
+// @version      1.54.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.53.0';
+var IWDIE_VERSION = '1.54.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6496,6 +6496,143 @@ function iwdieVcStripEditing(svg) {
     .replace(/[ \t]*<metadata>\s*<\/metadata>[ \t]*\r?\n?/g, '');
 }
 
+/** An XML fragment's top-level elements, in order (v1.54.0): [{start, end, tag}], `tag` the element's
+ *  opening tag. Text, comments and processing instructions between them are left out. */
+function iwdieXmlTop(s) {
+  var out = [], depth = 0, at = -1, open = '', m;
+  var re = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<![A-Za-z][^>]*>|<\/?[A-Za-z][^>]*>/g;
+  while ((m = re.exec(s))) {
+    var t = m[0], c = t.charAt(1);
+    if (c === '!' || c === '?') continue;
+    if (c === '/') {
+      if (--depth === 0 && at >= 0) { out.push({ start: at, end: m.index + t.length, tag: open }); at = -1; }
+      continue;
+    }
+    var shut = /\/\s*>$/.test(t);
+    if (depth === 0) {
+      if (shut) { out.push({ start: m.index, end: m.index + t.length, tag: t }); continue; }
+      at = m.index; open = t;
+    }
+    if (!shut) depth++;
+  }
+  return out;
+}
+
+/** Where the element whose tag begins at `at` in `s` ends, past its closing tag (v1.54.0); -1 if it does not. */
+function iwdieXmlEnd(s, at) {
+  var re = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<![A-Za-z][^>]*>|<\/?[A-Za-z][^>]*>/g, m, depth = 0;
+  re.lastIndex = at;
+  while ((m = re.exec(s))) {
+    var t = m[0], c = t.charAt(1);
+    if (c === '!' || c === '?') continue;
+    if (c === '/') { if (--depth === 0) return m.index + t.length; continue; }
+    if (/\/\s*>$/.test(t)) { if (depth === 0) return m.index + t.length; continue; }
+    depth++;
+  }
+  return -1;
+}
+
+/** The panel's drawing with an Illustrator file's artboard as its background (v1.54.0), from the SVG
+ *  VectorCraft saves of that file: the file's own layers just above Bakgrunn, named as there and scaled
+ *  from its artboard to the panel where they differ (evenly, centred); the picture moved under them to
+ *  the hidden layer Bakgrunn (original) - where a trace of it keeps it already, it goes - and the
+ *  panel's other layers, the IWMAC objects last, over it all. A trace's Komponenter and Rør, which would
+ *  draw the same components a second time over the file's, go under Bakgrunn with the picture: hidden,
+ *  and covered by Bakgrunn's plate of the panel's colour as well, as VectorCraft's web build brings a
+ *  hidden layer back shown and saves it without its display. The file's ids and CSS classes are prefixed
+ *  ai-, with what refers to them, so none meets one of the panel's: both may be VectorCraft's own saves,
+ *  each naming its classes cls-1, cls-2…. The pieces of the picture a trace carried in the placeholders
+ *  (data-iwdie-under, v1.47.0) go: the file draws what they showed.
+ *  -> {svg, layers: [names], hid: [the trace's layers hidden], cut: pieces gone} | null when either drawing is not usable */
+function iwdieVcMergeAi(panel, ai) {
+  // without VectorCraft's own copies of either document: it would reopen that copy and not the layers added
+  var p = iwdieVcStripEditing(panel), a = iwdieVcStripEditing(ai);
+  var proot = /<svg\b[^>]*>/i.exec(p), aroot = /<svg\b[^>]*>/i.exec(a), pend = p.lastIndexOf('</svg>'), aend = a.lastIndexOf('</svg>');
+  if (!proot || !aroot || pend < proot.index || aend < aroot.index) return null;
+  var box = function (tag) {
+    var vb = /\sviewBox\s*=\s*"\s*(-?[\d.]+)[\s,]+(-?[\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)\s*"/.exec(tag);
+    if (vb) return { x: +vb[1], y: +vb[2], w: +vb[3], h: +vb[4] };
+    var w = /\swidth\s*=\s*"\s*([\d.]+)/.exec(tag), h = /\sheight\s*=\s*"\s*([\d.]+)/.exec(tag);
+    return w && h ? { x: 0, y: 0, w: +w[1], h: +h[1] } : null;
+  };
+  var pb = box(proot[0]), ab = box(aroot[0]);
+  if (!pb || !ab || !(ab.w > 0) || !(ab.h > 0) || !(pb.w > 0) || !(pb.h > 0)) return null;
+  // the file's top-level parts: its defs, its layers, and anything drawn outside a layer
+  var inner = a.slice(aroot.index + aroot[0].length, aend);
+  var parts = iwdieXmlTop(inner).map(function (e) { return inner.slice(e.start, e.end); })
+    .filter(function (e) { return !/^<(title|desc|metadata)\b/i.test(e); });
+  var s = Math.min(pb.w / ab.w, pb.h / ab.h), tx = pb.x + (pb.w - ab.w * s) / 2 - ab.x * s, ty = pb.y + (pb.h - ab.h * s) / 2 - ab.y * s;
+  var moved = Math.abs(s - 1) > 1e-6 || Math.abs(tx) > 1e-6 || Math.abs(ty) > 1e-6;
+  var matrix = 'matrix(' + [s, 0, 0, s, tx, ty].map(function (v) { return String(Math.round(v * 10000) / 10000); }).join(' ') + ')';
+  var place = function (open) {
+    if (!moved) return open;
+    return /\stransform\s*=\s*"/.test(open) ? open.replace(/\stransform\s*=\s*"/, ' transform="' + matrix + ' ') : open.replace(/^<g\b/i, '<g transform="' + matrix + '"');
+  };
+  var defs = [], layers = [], loose = [];
+  parts.forEach(function (e) {
+    if (/^<(defs|style)\b/i.test(e)) { defs.push(e); return; }
+    if (!/^<g\b/i.test(e)) { loose.push(e); return; }
+    var open = /^<g\b[^>]*>/i.exec(e)[0], id = /\sid\s*=\s*"([^"]*)"/.exec(open), dn = /\sdata-name\s*=\s*"([^"]*)"/.exec(open);
+    var name = dn ? dn[1] : id ? id[1] : '';
+    var tag = !dn && name ? open.replace(/^<g\b/i, '<g data-name="' + name + '"') : open;
+    layers.push({ name: name, svg: place(tag) + e.slice(open.length) });
+  });
+  if (loose.length) layers.push({ name: 'Illustrator', svg: place('<g id="Illustrator" data-name="Illustrator">') + loose.join('') + '</g>' });
+  if (!layers.length) return null;
+  var pre = function (x) {
+    return x.replace(/(\sid\s*=\s*")([^"]*")/g, '$1ai-$2').replace(/url\(\s*#/g, 'url(#ai-').replace(/(\s(?:xlink:)?href\s*=\s*")#/g, '$1#ai-')
+      // its classes too, where they are given and in its style sheet: two of VectorCraft's own saves both call theirs cls-1, cls-2…
+      .replace(/(\sclass\s*=\s*")([^"]*)"/g, function (all, at, v) {
+        return at + v.split(/\s+/).filter(Boolean).map(function (c) { return 'ai-' + c; }).join(' ') + '"';
+      })
+      .replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/g, function (all, open, css, close) { return open + css.replace(/\.(-?[A-Za-z_][\w-]*)/g, '.ai-$1') + close; });
+  };
+  var add = defs.concat(layers.map(function (l) { return l.svg; })).map(pre).join('\n') + '\n';
+  // the panel: its Bakgrunn layer, and its hidden original if a trace made one
+  var off = proot.index + proot[0].length, body = p.slice(off, pend), bg = null, orig = null, traced = [], cut = 0;
+  // the pieces of the picture carried in the placeholders, from the last back
+  var spans = [], um, ure = /<[A-Za-z][\w:-]*\b[^>]*\sdata-iwdie-under\s*=\s*"1"[^>]*>/g;
+  while ((um = ure.exec(body))) {
+    var uEnd = iwdieXmlEnd(body, um.index);
+    if (uEnd < 0) break;
+    spans.push([um.index, uEnd]);
+    ure.lastIndex = uEnd;
+  }
+  spans.reverse().forEach(function (sp) { body = body.slice(0, sp[0]) + body.slice(sp[1]); cut++; });
+  var named = function (tag) {
+    var id = /\sid\s*=\s*"([^"]*)"/.exec(tag), dn = /\sdata-name\s*=\s*"([^"]*)"/.exec(tag);
+    return { id: id ? id[1] : '', n: dn ? dn[1] : id ? id[1] : '' };
+  };
+  // the trace's own layers taken out first, from the last back, so each place found stays right; they go under Bakgrunn
+  var under = [];
+  iwdieXmlTop(body).filter(function (e) { return /^<g\b/i.test(e.tag); }).reverse().forEach(function (e) {
+    var n = named(e.tag).n;
+    if (!/^(Komponenter|Rør|Ror)$/.test(n)) return;
+    traced.unshift(n === 'Ror' ? 'Rør' : n);
+    var el = body.slice(e.start, e.end);
+    under.unshift(/\sdisplay\s*=\s*"none"/.test(e.tag) ? el : el.replace(/^<g\b/i, '<g display="none"'));
+    body = body.slice(0, e.start).replace(/[ \t]*$/, '') + body.slice(e.end).replace(/^[ \t]*\r?\n/, '');
+  });
+  iwdieXmlTop(body).forEach(function (e) {
+    if (!/^<g\b/i.test(e.tag)) return;
+    var k = named(e.tag);
+    if (!bg && (k.id === 'Bakgrunn' || k.n === 'Bakgrunn')) bg = e;
+    if (!orig && (k.id === 'Bakgrunn_original' || k.n === 'Bakgrunn (original)')) orig = e;
+  });
+  if (!bg) return null;
+  var g = body.slice(bg.start, bg.end), gOpen = /^<g\b[^>]*>/i.exec(g)[0], gIn = g.slice(gOpen.length, g.lastIndexOf('</g>'));
+  var pics = [], keep = gIn;
+  iwdieXmlTop(gIn).slice().reverse().forEach(function (e) {
+    if (!/^<(image|use)\b/i.test(e.tag)) return;
+    pics.unshift(gIn.slice(e.start, e.end));
+    keep = keep.slice(0, e.start) + keep.slice(e.end);
+  });
+  var hidden = (orig || !pics.length ? '' : '<g id="Bakgrunn_original" data-name="Bakgrunn (original)" display="none">\n    ' + pics.join('\n    ') + '\n  </g>\n  ') +
+    under.map(function (u) { return u + '\n  '; }).join('');
+  var out = p.slice(0, off) + body.slice(0, bg.start) + hidden + gOpen + keep.replace(/\s+$/, '\n  ') + '</g>\n' + add + body.slice(bg.end) + p.slice(pend);
+  return { svg: out, layers: layers.map(function (l) { return l.name; }).filter(Boolean), hid: traced, cut: cut };
+}
+
 /** The VectorCraft document a PNG keeps: {type: 'iwVz' (compressed) | 'iwVc' (plain), data}, the
  *  compressed one first, or null. */
 function iwdieVcChunk(png) {
@@ -9838,13 +9975,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           })
           .then(done, function () { return done(false); });
       };
-      // Ctrl+S made ready (v1.46.0): VectorCraft's first save of a document is its Save As, so that is
-      // answered once, right after the panel opens, and the save kept here, sent nowhere. Every sync
-      // after it is VectorCraft's own Save, straight away, without a dialog. -> Promise<ready>
-      var prime = function () {
-        if (busy || state.primed) return Promise.resolve(!!state.primed);
+      // the document in front saved as SVG and kept here, sent nowhere (v1.46.0): VectorCraft's first save of a document
+      // is its Save As, answered as by hand. `want(text, name)` hears what was saved (v1.54.0). -> Promise<saved>
+      var saveHere = function (want) {
         busy = true;
         state.priming = true;
+        state.want = want || null;
         state.other = 0;
         var before = state.caught, opened = false;
         var saved = function () { return state.caught > before; };
@@ -9861,8 +9997,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return (!ok && opened ? esc().then(function () { return typing() ? esc() : null; }) : Promise.resolve()).then(function () {
             busy = false;
             state.priming = false;
-            state.primed = ok;
+            state.want = null;
             return ok;
+          });
+        });
+      };
+      // Ctrl+S made ready (v1.46.0): the first save answered once, right after the panel and the libraries are in, while
+      // the tab is in front, so every sync after it is VectorCraft's own Save, straight away. -> Promise<ready>
+      var prime = function () {
+        if (busy || state.primed) return Promise.resolve(!!state.primed);
+        return saveHere(null).then(function (ok) { state.primed = ok; return ok; });
+      };
+      // the document in front as VectorCraft saves it, handed back here (v1.54.0): an .ai's artboard, or the panel as it
+      // stands. -> Promise<{svg, name} | null>
+      var capture = function () {
+        if (busy) return Promise.resolve(null);
+        var got = null, heard = false;
+        return saveHere(function (text, name) { got = text ? { svg: text, name: name } : null; heard = true; }).then(function (ok) {
+          if (!ok) return null;
+          // the saved file's text comes a moment after the save
+          return new Promise(function (resolve) {
+            var t0 = Date.now();
+            (function wait() { if (heard || Date.now() - t0 > 10000) resolve(got); else setTimeout(wait, 50); })();
           });
         });
       };
@@ -9924,7 +10080,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         e.stopImmediatePropagation();
         if (!busy) open();
       }, true);
-      return { prime: prime };
+      return {
+        prime: prime,
+        capture: capture,
+        // the document in front closed: File › Close (Ctrl+W, VectorCraft's own; the browser does not hear it)
+        closeDoc: function () { key('w', 'KeyW', { ctrl: true }); },
+        // a new document in front: its first save is a Save As again
+        unprime: function () { state.primed = false; }
+      };
     }
 
     /* ---------- the plant's folder (v1.49.0) ----------
@@ -10208,6 +10371,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var given = null;
       try { given = GM_getValue(IWDIE_VC_AI_KEY, null); } catch (e) { given = null; }
       if (given && given.job === job.id && typeof given.b64 === 'string') { try { GM_deleteValue(IWDIE_VC_AI_KEY); } catch (e) {} } else given = null;
+      // which document VectorCraft has in front (v1.54.0): its web build reports each window title in the console
+      var title = '';
+      try {
+        var warn0 = W.console.warn;
+        W.console.warn = function () {
+          try {
+            var tm = /Title\("((?:[^"\\]|\\.)*)"\)/.exec(String(arguments[0]));
+            if (tm) title = tm[1].replace(/\s+—\s+VectorCraft$/, '');
+          } catch (e) {}
+          return warn0.apply(this, arguments);
+        };
+      } catch (e) {}
+      var titled = function (name, ms) {
+        return new Promise(function (resolve) {
+          var t0 = Date.now();
+          (function wait() { if (title === name) resolve(true); else if (Date.now() - t0 > ms) resolve(false); else setTimeout(wait, 100); })();
+        });
+      };
+      var syncer = null;
       var ui = vcBanner('IWMAC · ' + esc2(job.panel || 'panel') + (job.plant ? ' · plant ' + esc2(job.plant) : ''),
         // what to do, then a row for each thing there is (v1.50.0); the how and why of each on hover
         '<div class="iwdie-vcb-h" title="Ctrl+S offers Sync to IWMAC Designer: the panel’s background is updated, its PNG goes to the plant’s pictures, ' +
@@ -10253,13 +10435,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       input.accept = '.ai,.pdf,.eps,application/pdf,application/postscript,application/illustrator';
       input.style.display = 'none';
       ui.el.appendChild(input);
-      var useAi = function (f, where) {
-        if (!f || busy) return;
-        busy = true;
+      // the file's components into Libraries, in place of those kept (v1.33.0, v1.37.0)
+      var libraryOf = function (f) {
         var name = String(f.name || 'The file');
-        var named = '<b' + (where ? ' title="' + esc2(where) + '"' : '') + '>' + esc2(name) + '</b>';
-        note('Reading ' + named + '…', false, true);
-        libRead(f, function (html) { comp(html); }).then(function (got) {
+        return libRead(f, function (html) { comp(html); }).then(function (got) {
           if (!got.items.length) {
             comp('<b>' + esc2(got.file) + '</b> has none' + (got.hidden ? ' that are not hidden' : '') + (lib ? '; the ' + lib.items.length + ' kept stay' : ''), true);
             return null;
@@ -10269,18 +10448,72 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return new Promise(function (resolve) { vcWhenReady(resolve, note); }).then(function () { return vcSendLibrary(got, comp); });
         }).then(null, function (e) {
           comp('<b>' + esc2(name) + '</b> could not be read: ' + esc2(String((e && e.message) || e)), true);
-        }).then(function () {
+        });
+      };
+      // the .ai as the panel's background (v1.54.0): VectorCraft reads its artboard and saves it as SVG for this script,
+      // and the panel opens anew with it under the IWMAC objects - one drawing, nothing pasted by hand. `base`: the
+      // panel's SVG, or a function that saves the panel in front for it. -> Promise<{svg, layers}: done | false: the file
+      // is open in a tab of its own, as before | null: nothing opened>
+      var backdrop = function (bytes, name, type, base) {
+        if (!syncer) return Promise.resolve(null);
+        var panelName = job.name || 'panel.svg', opened = false;
+        // a document closed only when it is the one in front
+        var shut = function (doc) { if (!doc || title !== doc) return Promise.resolve(); syncer.closeDoc(); return pause(800); };
+        return Promise.resolve(typeof base === 'function' ? base() : base).then(function (panelSvg) {
+          if (!panelSvg) return null;
+          var had = title && title !== 'VectorCraft' ? title : '';
+          // on the menu bar a file opens as a document; on the drawing it would be placed as art
+          vcDropFile(bytes, name, type || 'application/pdf', had ? 'menu' : 'center');
+          opened = true;
+          return titled(name, 120000).then(function (ok) { return ok ? syncer.capture() : null; }).then(function (got) {
+            var merged = got && got.svg ? iwdieVcMergeAi(panelSvg, got.svg) : null;
+            if (!merged) return false;
+            // the file's own document, saved just now, closes without asking; so does the panel it replaces
+            return shut(got.name).then(function () { return shut(had); }).then(function () {
+              vcDropFile(merged.svg, panelName, 'image/svg+xml', title && title !== 'VectorCraft' ? 'menu' : 'center');
+              return titled(panelName, 60000);
+            }).then(function () { return merged; });
+          });
+        }).then(null, function () { return opened ? false : null; });
+      };
+      var pasteNote = function (named) {
+        note('✓ ' + named + ' is open in its own tab here, as vectors.<br><span class="iwdie-vcb-q">As the background: <b>Ctrl+A</b>, <b>Ctrl+C</b> in its tab; ' +
+          'in the panel’s tab, click the layer <b>Bakgrunn</b>, then <b>Ctrl+Shift+V</b>.</span>', false, true);
+      };
+      var backgroundNote = function (named, merged) {
+        note('✓ ' + named + ' is the panel’s background now, as vectors' + (merged.layers.length ? ' - its layers ' + merged.layers.map(esc2).join(', ') : '') +
+          ' - under the IWMAC objects.<br><span class="iwdie-vcb-q">The picture as it was is on the hidden layer Bakgrunn (original)' +
+          (merged.hid && merged.hid.length ? '; the trace’s ' + merged.hid.map(esc2).join(' and ') + ' lie hidden under Bakgrunn too' : '') +
+          (merged.cut ? (merged.hid && merged.hid.length ? ', and ' : '; ') + iwdieN(merged.cut, 'piece', 'pieces') + ' of the picture under the objects went' : '') +
+          (merged.hid && merged.hid.length || merged.cut ? ', as the file draws the same' : '') + '.</span>', false, true);
+      };
+      var useAi = function (f, where) {
+        if (!f || busy) return;
+        busy = true;
+        var name = String(f.name || 'The file');
+        var named = '<b' + (where ? ' title="' + esc2(where) + '"' : '') + '>' + esc2(name) + '</b>';
+        note('Reading ' + named + '…', false, true);
+        libraryOf(f).then(function () {
           return f.arrayBuffer();
         }).then(function (ab) {
-          return new Promise(function (resolve) {
-            vcWhenReady(function () {
-              // on the menu bar a file opens as a document; on the drawing it would be placed as art
-              try { vcDropFile(new Uint8Array(ab), name, f.type || 'application/pdf', 'menu'); }
-              catch (e) { note(named + ' could not be opened here: ' + esc2(String((e && e.message) || e)), true); resolve(); return; }
-              note('✓ ' + named + ' is open in its own tab here, as vectors.<br><span class="iwdie-vcb-q">As the background: <b>Ctrl+A</b>, <b>Ctrl+C</b> in its tab; ' +
-                'in the panel’s tab, click the layer <b>Bakgrunn</b>, then <b>Ctrl+Shift+V</b>.</span>', false, true);
-              resolve();
-            }, note);
+          return new Promise(function (resolve) { vcWhenReady(resolve, note); }).then(function () {
+            note('Making ' + named + ' the panel’s background…', false, true);
+            // the panel as it stands, saved for it - when it is the document in front
+            return backdrop(new Uint8Array(ab), name, f.type, function () {
+              return syncer && title === (job.name || 'panel.svg') ? syncer.capture().then(function (g) { return g && g.svg; }) : null;
+            });
+          }).then(function (merged) {
+            if (merged) {
+              // a new document in front: Ctrl+S made ready for it, then said so
+              syncer.unprime();
+              note('Getting Ctrl+S ready…', false, true);
+              return pause(1200).then(function () { return syncer.prime(); }).then(function () { backgroundNote(named, merged); });
+            }
+            if (merged === false) { pasteNote(named); return; }
+            // as before: in a tab of its own, to paste in place by hand
+            try { vcDropFile(new Uint8Array(ab), name, f.type || 'application/pdf', 'menu'); }
+            catch (e) { note(named + ' could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
+            pasteNote(named);
           });
         }).then(function () { busy = false; }, function (e) {
           busy = false;
@@ -10319,7 +10552,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var pending = null, canAck = typeof GM_addValueChangeListener === 'function' && typeof GM_deleteValue === 'function';
       // the SVG saves caught, whether one kept VectorCraft's document, until when a save is for Downloads,
       // and while a sync runs, when a save in another format was held back (v1.42.0)
-      var saves = { caught: 0, editing: false, download: 0, syncing: false, other: 0, priming: false, primed: false };
+      var saves = { caught: 0, editing: false, download: 0, syncing: false, other: 0, priming: false, primed: false, want: null };
       if (canAck) {
         GM_addValueChangeListener('iwdie.vc.ack.' + job.id, function (key, old, val) {
           if (!val || !val.state || !pending) return;
@@ -10375,9 +10608,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return undefined;
         }
         if (b && /\.svg$/i.test(a.download) && saves.priming) {
-          // the save that makes Ctrl+S ready (v1.46.0): kept here, sent nowhere
+          // the save that makes Ctrl+S ready (v1.46.0): kept here, sent nowhere - and handed back when asked for (v1.54.0)
           saves.caught++;
-          b.text().then(function (text) { if (/vectorcraft:document/.test(text)) saves.editing = true; }, function () {});
+          var want = saves.want, saveName = String(a.download);
+          b.text().then(function (text) {
+            if (/vectorcraft:document/.test(text)) saves.editing = true;
+            if (want) want(text, saveName);
+          }, function () { if (want) want(null, saveName); });
           return undefined;
         }
         if (b && /\.svg$/i.test(a.download)) {
@@ -10423,42 +10660,57 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return function (e) { say(what + ' could not be added: ' + esc2(String((e && e.message) || e)), true); };
       };
       vcWhenReady(function () {
-        try { vcDropFile(job.svg, job.name || 'panel.svg', 'image/svg+xml', 'center'); }
-        catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
         ui.later(20000);
-        try { vcObjectMenu(note, looks, lib); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
-        var syncer = null;
         try { syncer = vcSaveSync(job, note, saves); } catch (e) { note('Ctrl+S could not be set to sync: ' + esc2(String((e && e.message) || e)), true); }
-        objText.then(function (pages) {
-          return pause(1200).then(function () {
-            vcDropFiles(asFiles(pages), 'menu');
-          });
-        }).then(null, failed(objLine, 'The IWMAC objects')).then(function () {
-          return libText ? libText.then(function (pages) {
+        // the .ai from the Designer's tab (v1.51.0) made the panel's background first (v1.54.0); else the panel as the job brings it
+        var file = given ? new File([iwdieBase64ToBytes(given.b64)], given.name, { type: given.type || 'application/pdf' }) : null;
+        var named = given ? '<b title="chosen in the Designer">' + esc2(given.name) + '</b>' : '';
+        if (file) note('Making ' + named + ' the panel’s background…', false, true);
+        (file ? file.arrayBuffer().then(function (ab) { return backdrop(new Uint8Array(ab), given.name, given.type, job.svg); }) : Promise.resolve(null)).then(function (merged) {
+          if (!merged) {
+            try { vcDropFile(job.svg, job.name || 'panel.svg', 'image/svg+xml', merged === false ? 'menu' : 'center'); }
+            catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
+          }
+          try { vcObjectMenu(note, looks, lib); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
+          return objText.then(function (pages) {
             return pause(1200).then(function () {
-              // the first page last, so it is the one Libraries shows
-              vcDropFiles(asFiles(pages.slice().reverse()), 'menu');
-              comp(vcInLibraries(lib.items.length, pages.length));
+              vcDropFiles(asFiles(pages), 'menu');
             });
-          }).then(null, failed(comp, 'The components')) : null;
-        }).then(function () {
-          // Ctrl+S made ready (v1.46.0), once the tab is in front: the first save's Save As answered now, not at the sync
-          if (!syncer) return;
-          var front = function () {
-            return document.visibilityState === 'visible' ? Promise.resolve() : new Promise(function (resolve) {
-              var on = function () { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', on); resolve(); } };
-              document.addEventListener('visibilitychange', on);
+          }).then(null, failed(objLine, 'The IWMAC objects')).then(function () {
+            return libText ? libText.then(function (pages) {
+              return pause(1200).then(function () {
+                // the first page last, so it is the one Libraries shows
+                vcDropFiles(asFiles(pages.slice().reverse()), 'menu');
+                comp(vcInLibraries(lib.items.length, pages.length));
+              });
+            }).then(null, failed(comp, 'The components')) : null;
+          }).then(function () {
+            // Ctrl+S made ready (v1.46.0), once the tab is in front: the first save's Save As answered now, not at the sync
+            if (!syncer) return;
+            var front = function () {
+              return document.visibilityState === 'visible' ? Promise.resolve() : new Promise(function (resolve) {
+                var on = function () { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', on); resolve(); } };
+                document.addEventListener('visibilitychange', on);
+              });
+            };
+            return pause(1500).then(front).then(function () {
+              note('Getting Ctrl+S ready…');
+              return syncer.prime();
+            }).then(function (ok) {
+              note(ok ? '✓ Ready to sync' : 'The first sync answers VectorCraft’s Save As for you.');
             });
-          };
-          return pause(1500).then(front).then(function () {
-            note('Getting Ctrl+S ready…');
-            return syncer.prime();
-          }).then(function (ok) {
-            note(ok ? '✓ Ready to sync' : 'The first sync answers VectorCraft’s Save As for you.');
+          }).then(function () {
+            if (!file) return;
+            // its components to Libraries; its artboard is the background now, or open in a tab of its own (v1.51.0)
+            if (merged || merged === false) {
+              busy = true;
+              return libraryOf(file).then(function () {
+                busy = false;
+                if (merged) backgroundNote(named, merged); else pasteNote(named);
+              });
+            }
+            useAi(file, 'chosen in the Designer');
           });
-        }).then(function () {
-          // the .ai from the Designer's tab (v1.51.0), once Ctrl+S is ready: it opens in a tab of its own
-          if (given) useAi(new File([iwdieBase64ToBytes(given.b64)], given.name, { type: given.type || 'application/pdf' }), 'chosen in the Designer');
         });
       }, note);
     }
@@ -10649,7 +10901,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           : info.again ? 'The picture this background was first read from, read again'
           : (base ? 'The picture' : 'An empty ' + size.w + ' × ' + size.h + ' canvas') +
             (shapes.length ? ', the drawing from Draw (' + iwdieN(shapes.length, 'shape', 'shapes') + ')' : '');
-        if (info.ai) what += ' as it is, with ' + info.ai.name + ' (its components to Libraries, its artboard as vectors in a tab of its own)';
+        if (info.ai) what = 'The panel with ' + info.ai.name + ' as its background, as vectors, the picture hidden under it, its components in Libraries';
         if (nObj) what += (vc ? ', with ' : ' and ') + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter';
         var got = info.recognized;
         outcomeToast({
@@ -11265,8 +11517,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         doc.addEventListener('dragleave', function () { lit(false); });
         doc.addEventListener('drop', function (e) { e.preventDefault(); lit(false); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
         show();
-        say('Open the plant folder and drag the panel’s .ai here. VectorCraft then opens the panel with its components in Libraries, and its artboard, ' +
-          'as vectors, in a tab of its own.');
+        say('Open the plant folder and drag the panel’s .ai here. VectorCraft then opens the panel with the file’s artboard as its background, as vectors, ' +
+          'under the IWMAC objects, and its components in Libraries.');
         // where PANG says the plant's folder is
         vcPangFolder(info.plant).then(function (p) { pang = p || false; show(); var a = $('open'); if (a && p) a.focus(); });
         // the plants' folder kept in this site: read at once when the browser still lets it; it asks once a session
@@ -13463,6 +13715,9 @@ if (typeof module !== 'undefined' && module.exports) {
     vcSvg: iwdieVcSvg,
     vcSized: iwdieVcSized,
     vcMergeShapes: iwdieVcMergeShapes,
+    xmlTop: iwdieXmlTop,
+    xmlEnd: iwdieXmlEnd,
+    vcMergeAi: iwdieVcMergeAi,
     vcEmbed: iwdieVcEmbed,
     vcExtract: iwdieVcExtract,
     vcSubpaths: iwdieVcSubpaths,

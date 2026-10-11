@@ -1253,6 +1253,50 @@ Tampermonkey's request answered as PANG answers:
 `pang://` is registered on the test PC, so the links were checked rather than clicked: there, a
 click opens Chrome's prompt, which a headless browser cannot show.
 
+**The .ai becomes the background by itself (v1.54.0).** Until now the `.ai` opened in a tab of its
+own, and making it the panel's background meant Ctrl+A and Ctrl+C there, then the layer *Bakgrunn*
+and Ctrl+Shift+V in the panel's tab, and its IWMAC objects were not in that tab. Now the script
+does it, both for the `.ai` chosen on the card and for **Open plant .ai…** in VectorCraft:
+
+1. VectorCraft opens the file and reads its artboard as vectors. The script knows which document
+   is in front from the window titles VectorCraft's web build reports in the console.
+2. VectorCraft saves it as SVG, as Ctrl+S is made ready, and the script keeps that save.
+3. The script builds the panel anew from it:
+   - the file's own layers (for 2349: *Backround*, *Rør*, *Maskinrom*), named as in the file,
+     sit just above *Bakgrunn*, scaled from the artboard to the panel if the sizes differ;
+   - the picture moves under them, to *Bakgrunn (original)*;
+   - the IWMAC objects stay on top as placeholders, as before.
+4. The file's own tab closes (VectorCraft's File › Close), and so does the panel's old tab with
+   **Open plant .ai…**; the new panel opens, and Ctrl+S is made ready for it.
+
+**Open plant .ai…** starts from the panel as it stands in VectorCraft, so changes made there are
+kept. On a panel that was traced:
+
+- the trace's *Rør* and *Komponenter* go under *Bakgrunn* with the picture, as the file draws the
+  same;
+- the pieces of the picture a trace carried with the objects go.
+
+VectorCraft's web build shows a layer marked hidden and saves it without that mark. So those
+layers lie under *Bakgrunn*, whose plate of the panel's colour covers them, both in VectorCraft
+and in the panel's PNG; they stay in the Layers panel.
+
+The file's ids and CSS classes are prefixed, as both drawings may be VectorCraft's own saves, each
+calling its classes `cls-1`, `cls-2`…. Without that, the panel's styles recoloured the file's
+labels.
+
+If a step fails, it is as before: the file in a tab of its own, with the steps to paste it in
+place.
+
+Measured in the stub host with `2349_Maskin.ai`:
+
+- **From the card.** The file opened in 2.6 s, was saved for the script by 5.4 s, closed, and the
+  panel opened with its layers at 6.4 s; all done, Libraries included, in 15 s.
+- **The sync after it.** It carried the file's three layers, the six placeholders, and no picture
+  in *Bakgrunn*.
+- **Open plant .ai… on a traced panel.** Done in 13 s; the trace's layers lay under *Bakgrunn*, and
+  5 carried pieces went.
+- **Its labels.** They matched the file's own, as checked against the first run.
+
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
 off. An object placed by a sync is known again at the next one too: moved, resized or deleted
