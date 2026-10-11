@@ -895,7 +895,7 @@ the panel as a document with three layers:
 - **Panelobjekter**, hidden: every object on the panel as a dashed box with its label.
   Turn it on to see where the live values will sit.
 - **Komponenter** and, hidden, **Bakgrunn (original)**, when components were found in the
-  picture (v1.44.0, below).
+  picture (v1.44.0, below), and **Rør** under them when pipes were (v1.45.0).
 
 A panel without a background opens as an empty canvas of its size. A background that cannot
 be read stops the edit with a message, so it is never replaced by an empty one. The first
@@ -916,16 +916,45 @@ of being drawn again:
 - The picture as it was goes along on a hidden layer under the rest, **Bakgrunn (original)**.
 
 While it looks, the new tab shows how far it has come, with a **Skip - open the picture as it
-is** button. Closing the tab stops it too. The search runs in a worker, so the Designer does
-not freeze. The message in the Designer then says how many were found, and of which kind.
+is** button. Closing the tab stops it too. The search runs in workers, so the Designer does
+not freeze. The message in the Designer then says what was found, and of which kind.
 
-Measured on the Maskin panel of plant 2349, with the 386 components of `2349_Maskin.ai` kept
-(the 331 between 8 and 600 px a side are looked for): 45 found in about 14 seconds, none of
-them false. Only a component drawn in the picture as it is in the library is found. One that
-was scaled, mirrored or changed in the artwork stays part of the picture: there, the gas
-cooler, the receiver and some valves. The colours must match too: a library read from a file
-without its colour profile may find nothing. Without kept components, the panel opens as
-before.
+**Pills and pipes too (v1.45.0).** Much of a Maskin picture is drawn on the panel directly,
+not placed from the library, so the library cannot find it. Two kinds of it now become vectors
+as well:
+- **Pills**: the value boxes, the dark pills (*Ref*, *Hr Req %*), the status pills (*Manuel*,
+  *Alarm*, *Running*, *OK*) and buttons, in any size and colour. Each is found by its shape: a
+  plain area with round ends, ringed or not by a line of another colour. It is measured to a
+  tenth of a pixel, from how much of its colour each edge pixel holds, and becomes a vector
+  pill: its fill, its ring as a stroke in the ring's own colour (the library's, when the ring is
+  too thin to cover a pixel whole), and, on top, its text as the picture's own pixels. A pill of
+  the library found in the picture is measured too, so it looks exactly as it did; it is named
+  after the library's pill of its colour and size, else *Pille*.
+- **Pipes**: straight lines across and down, in the library's own colours (orange, blue,
+  green, yellow - not greys), about 2 px wide. Each is read along its length, its middle and
+  width to a tenth of a pixel. Lines that meet at a corner become one line round the corner; a
+  line that stops at another is taken to its middle. A short piece counts only next to a pipe,
+  so the strokes of letters stay in the picture. Pipes go on a layer of their own, **Rør**, under
+  the components.
+- A component found keeps only the shapes the picture shows where it was found. A library
+  component may carry a part the picture does not have there, such as the stub to a value
+  below it. That part is left out, and the picture keeps what really is there.
+- The search is about six times faster: it runs in up to four workers, and a place must first
+  show the component's own difference of light, so plain areas are passed over at once.
+  Components of one colour, such as a dark pill with its stub, are found too, by their outline.
+
+Measured on the Maskin panel of plant 2349, with the 386 components of `2349_Maskin.ai` kept:
+in about 2.5 seconds, 7 components of the library (the five compressors, the heat exchanger and
+the pump), 58 pills (11 of them with a text) and 37 pipes, none false. Drawn back, the panel
+differs from its picture by 0.4 on average (out of 765, the sum over red, green and blue); most
+pills by 1 to 4 where they are. Without workers (a page that forbids them), the same takes about
+7 seconds.
+
+Only a component drawn in the picture as it is in the library is found. One that was scaled,
+mirrored or changed in the artwork stays part of the picture: there, the gas cooler, the receiver,
+the oil separator and some valves. So do the texts beside things, the dotted lines to the values
+and the arrows. The colours must match too: a library read from a file without its colour
+profile may find nothing. Without kept components, the panel opens as before.
 
 Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Components
 from .ai…** in the banner reads another file's. The Designer's own objects arrive there too, as
@@ -1112,6 +1141,11 @@ hosted build stays unmodified. So the objects have a menu of their own in the sa
   off the drawing, which places nothing.
 - What is typed in the search stays out of VectorCraft's shortcuts, and the keyboard is
   VectorCraft's again once something is placed.
+- Your kept components are in it too (v1.45.0), under **Komponenter**: a submenu for each of
+  their Illustrator layers, with a picture of each component, its name and size. The search
+  finds them by name. They are placed the same way, as a group named after the component.
+  VectorCraft's own **Libraries** panel does not scroll (0.9.0), so a big library cannot be seen
+  whole there; the menu's lists scroll.
 
 Measured in the hosted build: a fan found by the search, two values placed with Shift held, and
 a label from its submenu. The save named them `IWMAC_V3_58px_fan_left_nrm`,
@@ -1160,7 +1194,10 @@ sidebar. It also holds the IWMAC objects: the library, the names, the placeholde
 and made into objects, the menu's placeholder files and search, the sync's upload (the name,
 the server's list and its answer), and the objects' looks. And the components found in the
 picture: the search on a made-up picture, run as the worker runs it, the picture with them
-taken out, and their groups turned as they were found.
+taken out, and their groups turned as they were found. And (v1.45.0) a made-up pill measured to
+a tenth of a pixel, its name, its SVG and its erasing; a box that is no pill; a library pill known
+as one; a pipe round a corner, its width, and a letter's stroke left alone; a component's absent
+stub left out; and the job's layers with Rør.
 
 ## AI-generated panels (Copilot)
 

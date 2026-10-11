@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.44.0
+// @version      1.45.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.44.0';
+var IWDIE_VERSION = '1.45.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -5987,7 +5987,9 @@ var IWDIE_LIB_OLD_KEY = 'iwdie.draw.library.v1';
 /** The panel as an SVG VectorCraft opens with layers: Bakgrunn (the canvas colour and the
  *  picture), Tegning (Draw's shapes) and, hidden, Panelobjekter (each object's box and label).
  *  With components found in the picture (v1.44.0, `components`), those go on a layer of their own,
- *  Komponenter, and the picture as it was (`original`) on a hidden one under the rest. */
+ *  Komponenter, and the picture as it was (`original`) on a hidden one under the rest. Pills found
+ *  (v1.45.0, `kind` 'pill') go with the components; pipes (`pipes`) on a layer of their own, Rør,
+ *  under them. */
 function iwdieVcSvg(o) {
   var W = Math.max(1, Math.round(o.width)), H = Math.max(1, Math.round(o.height)), esc = iwdieDrawEsc, f = iwdieDrawFmt;
   var shapes = Array.isArray(o.shapes) ? o.shapes : [], objects = Array.isArray(o.objects) ? o.objects : [];
@@ -6009,11 +6011,16 @@ function iwdieVcSvg(o) {
     out.push('    <image width="' + W + '" height="' + H + '" preserveAspectRatio="none" xlink:href="' + o.picture + '"/>');
   }
   out.push('  </g>');
-  var found = Array.isArray(o.components) ? o.components : [];
+  var found = Array.isArray(o.components) ? o.components : [], pipes = Array.isArray(o.pipes) ? o.pipes : [];
+  var used = { Bakgrunn: 1, Bakgrunn_original: 1, Ror: 1, Komponenter: 1, Tegning: 1, Panelobjekter: 1 };
+  if (pipes.length) {
+    out.push('  <g id="Ror" data-name="Rør">');
+    pipes.forEach(function (L) { out.push('    ' + iwdieVcLineSvg(L, used)); });
+    out.push('  </g>');
+  }
   if (found.length) {
-    var used = { Bakgrunn: 1, Bakgrunn_original: 1, Komponenter: 1, Tegning: 1, Panelobjekter: 1 };
     out.push('  <g id="Komponenter" data-name="Komponenter">');
-    found.forEach(function (c) { out.push('    ' + iwdieVcComponentSvg(c, used)); });
+    found.forEach(function (c) { out.push('    ' + (c.kind === 'pill' ? iwdieVcPillSvg(c, used) : iwdieVcComponentSvg(c, used))); });
     out.push('  </g>');
   }
   out.push('  <g id="Tegning" data-name="Tegning">');
@@ -6752,7 +6759,10 @@ function iwdieVcUploadReply(text) {
    smooth edges a little differently. A component found is taken out of the picture - its pixels
    filled from round it - and goes to VectorCraft as vectors, a group of its own named as in the
    library, where it can be moved, resized or replaced. The picture as it was goes along on a
-   hidden layer. These functions are pure, so a worker can run them. */
+   hidden layer. These functions are pure, so a worker can run them.
+   v1.45.0: components of one colour (a dark pill, a dot) are looked for too, by their outline; the
+   search is faster (a place must first hold the component's difference of light); and a component
+   found keeps only the shapes the picture shows there. */
 
 /** RGBA blurred by a 3 × 3 binomial kernel; the edges repeat. -> Uint8ClampedArray */
 function iwdieVcBlur(src, w, h) {
@@ -6781,7 +6791,8 @@ function iwdieVcTurn(t, q) {
 }
 
 /** A picture made ready to look for components in: blurred a little, its pixels filed by colour
- *  (eight levels a channel), and its background - the mean of its commonest colour. */
+ *  (eight levels a channel), its background - the mean of its commonest colour - and the picture
+ *  itself (`R`), as some checks need it unblurred. */
 function iwdieVcComponentIndex(pic, W, H) {
   var P = iwdieVcBlur(pic, W, H), n = W * H, count = new Int32Array(512), start = new Int32Array(513), i;
   var bucket = function (j) { return (P[j] >> 5) << 6 | (P[j + 1] >> 5) << 3 | (P[j + 2] >> 5); };
@@ -6792,91 +6803,202 @@ function iwdieVcComponentIndex(pic, W, H) {
   for (i = 1; i < 512; i++) if (count[i] > count[top]) top = i;
   var bg = [0, 0, 0];
   for (i = start[top]; i < start[top + 1]; i++) { bg[0] += P[where[i] * 4]; bg[1] += P[where[i] * 4 + 1]; bg[2] += P[where[i] * 4 + 2]; }
-  return { P: P, W: W, H: H, count: count, start: start, where: where, bg: bg.map(function (v) { return v / Math.max(1, count[top]); }) };
+  return { P: P, R: pic, W: W, H: H, count: count, start: start, where: where, bg: bg.map(function (v) { return v / Math.max(1, count[top]); }) };
 }
 
-/** Where one template - a component drawn at 1:1, {k, w, h, rgba} - turned a quarter `q` times
- *  clockwise is in the picture of `ix`: each place pushed to `found` ({k, turn, x, y, w, h, score,
- *  ink}). A turn that looks like one looked for already (a round thing turned, a twin) is not
- *  looked for again: `seen` keeps them.
- *  - Only a component of more than one colour is looked for: one of one colour fits everywhere.
- *  - A place must match it closely: on average within 22 (the sum over red, green and blue) on
- *    all its solid pixels, and within 36 on those of its other colours, its lines and spots.
- *  - And it must not be a piece of something bigger in its own colours: of the clear pixels round
- *    it, at most a quarter may be of its colours, unless those are the picture's background. */
-function iwdieVcFindOne(ix, t0, q, found, seen) {
-  var t = iwdieVcTurn(t0, q), tw = t.w, th = t.h, W = ix.W, H = ix.H, P = ix.P;
-  if (tw > W || th > H) return;
-  var sig = tw + 'x' + th + ':' + iwdieVcPixelHash(t.rgba);
-  if (seen[sig]) return;
-  seen[sig] = 1;
-  var T = iwdieVcBlur(t.rgba, tw, th), raw = t.rgba, bucket = function (r, g, b) { return (r >> 5) << 6 | (g >> 5) << 3 | (b >> 5); };
-  var px = [], hist = {}, tx, ty, q2;
-  for (ty = 0; ty < th; ty++) for (tx = 0; tx < tw; tx++) {
-    var s = (ty * tw + tx) * 4;
-    if (raw[s + 3] < 250 || T[s + 3] < 250) continue;
-    px.push(tx, ty, T[s], T[s + 1], T[s + 2]);
-    var key = bucket(T[s], T[s + 1], T[s + 2]);
+/** A template ({k, w, h, rgba}) turned `q` quarters clockwise, made ready to look for (v1.45.0);
+ *  null when there is too little of it to know it by.
+ *  - Of two colours or more when enough of it is of another than its main one; else of one colour
+ *    (a dark pill, a dot): then it is known by its outline, and its few other pixels are left out.
+ *  - `px`: its solid pixels (x, y, r, g, b, 1 when of another colour), blurred; `ink`: those of
+ *    another colour; `anchors`: 16 of them, spread, to look at first.
+ *  - `clearAll`: its clear pixels; `clear`: those two away from anything of it, and `ring`: the
+ *    pixels two outside it, with `probe`, eight of those, for one of one colour;
+ *  - `edge`: its half-covered pixels, to tell twins apart (a stub on top or below). */
+function iwdieVcPrepare(t0, q) {
+  var t = iwdieVcTurn(t0, q), w = t.w, h = t.h, raw = t.rgba, T = iwdieVcBlur(raw, w, h), n = w * h, i, x, y;
+  var bucket = function (r, g, b) { return (r >> 5) << 6 | (g >> 5) << 3 | (b >> 5); };
+  var solid = new Uint8Array(n), hist = {}, np = 0;
+  for (i = 0; i < n; i++) {
+    if (raw[i * 4 + 3] < 250 || T[i * 4 + 3] < 250) continue;
+    solid[i] = 1; np++;
+    var key = bucket(T[i * 4], T[i * 4 + 1], T[i * 4 + 2]);
     hist[key] = (hist[key] || 0) + 1;
   }
-  var np = px.length / 5;
-  if (np < 40) return;
+  if (np < 40) return null;
   var mk = -1, mc = 0;
   Object.keys(hist).forEach(function (key) { if (hist[key] > mc) { mc = hist[key]; mk = +key; } });
-  var mr = 0, mg = 0, mb = 0, mn = 0;
-  for (q2 = 0; q2 < px.length; q2 += 5) if (bucket(px[q2 + 2], px[q2 + 3], px[q2 + 4]) === mk) { mr += px[q2 + 2]; mg += px[q2 + 3]; mb += px[q2 + 4]; mn++; }
-  mr /= mn; mg /= mn; mb /= mn;
-  var ink = [], main = [], ir = 0, ig = 0, ib = 0;
-  for (q2 = 0; q2 < px.length; q2 += 5) {
-    if (Math.abs(px[q2 + 2] - mr) + Math.abs(px[q2 + 3] - mg) + Math.abs(px[q2 + 4] - mb) > 60) { ink.push(q2); ir += px[q2 + 2]; ig += px[q2 + 3]; ib += px[q2 + 4]; }
-    else main.push(q2);
+  var M = [0, 0, 0], mn = 0;
+  for (i = 0; i < n; i++) if (solid[i] && bucket(T[i * 4], T[i * 4 + 1], T[i * 4 + 2]) === mk) { M[0] += T[i * 4]; M[1] += T[i * 4 + 1]; M[2] += T[i * 4 + 2]; mn++; }
+  M = [M[0] / mn, M[1] / mn, M[2] / mn];
+  var main = new Uint8Array(n), nInk = 0;
+  for (i = 0; i < n; i++) {
+    if (!solid[i]) continue;
+    if (Math.abs(T[i * 4] - M[0]) + Math.abs(T[i * 4 + 1] - M[1]) + Math.abs(T[i * 4 + 2] - M[2]) <= 60) main[i] = 1; else nInk++;
   }
-  if (ink.length < Math.max(16, np * 0.04) || main.length < 16) return;
-  ir /= ink.length; ig /= ink.length; ib /= ink.length;
-  var clear = [];
-  for (ty = 0; ty < th; ty++) for (tx = 0; tx < tw; tx++) if (raw[(ty * tw + tx) * 4 + 3] < 8) clear.push(tx, ty);
-  // anchors over its other colours and its main one; the first tried is the one whose colour is rarest in the picture
-  var spread = function (arr, m) { var out = []; for (var a = 0; a < m; a++) out.push(arr[Math.floor((a + 0.5) * arr.length / m)]); return out; };
-  var anchors = spread(ink, 10).concat(spread(main, 6)), pivot = anchors[0], rare = Infinity;
-  anchors.forEach(function (q3) { var c = ix.count[bucket(px[q3 + 2], px[q3 + 3], px[q3 + 4])]; if (c < rare) { rare = c; pivot = q3; } });
+  var other = nInk >= Math.max(16, np * 0.04) && np - nInk >= 16;
+  if (!other && np - nInk < 40) return null;
+  var px = [], ink = [], edge = [], clear = [], all = [], ring = [];
+  for (i = 0; i < n; i++) {
+    x = i % w; y = (i / w) | 0;
+    if (solid[i]) {
+      if (!main[i] && !other) continue;
+      px.push(x, y, T[i * 4], T[i * 4 + 1], T[i * 4 + 2], main[i] ? 0 : 1);
+      if (!main[i]) ink.push(px.length - 6);
+    } else if (raw[i * 4 + 3] >= 8) {
+      edge.push(x, y, raw[i * 4 + 3], raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2]);
+    } else {
+      all.push(x, y);
+      var near = false;
+      for (var dy = -2; dy <= 2 && !near; dy++) for (var dx = -2; dx <= 2 && !near; dx++) {
+        var X = x + dx, Y = y + dy;
+        if (X >= 0 && Y >= 0 && X < w && Y < h && raw[(Y * w + X) * 4 + 3] >= 8) near = true;
+      }
+      if (!near) clear.push(x, y);
+    }
+  }
+  for (x = -2; x <= w + 1; x++) ring.push(x, -2, x, h + 1);
+  for (y = -1; y <= h; y++) ring.push(-2, y, w + 1, y);
+  var probe = [Math.floor(w / 3), -2, Math.floor(2 * w / 3), -2, Math.floor(w / 3), h + 1, Math.floor(2 * w / 3), h + 1,
+    -2, Math.floor(h / 3), -2, Math.floor(2 * h / 3), w + 1, Math.floor(h / 3), w + 1, Math.floor(2 * h / 3)];
+  var spread = function (arr, m) { var o = []; for (var a = 0; a < m && arr.length; a++) o.push(arr[Math.floor((a + 0.5) * arr.length / Math.min(m, arr.length))]); return o; };
+  var rim = [];
+  for (var p = 0; p < px.length; p += 6) if (!px[p + 5]) rim.push(p);
+  if (rim.length < 16) return null;
+  var I = null;
+  if (other) {
+    I = [0, 0, 0];
+    ink.forEach(function (q4) { I[0] += px[q4 + 2] / ink.length; I[1] += px[q4 + 3] / ink.length; I[2] += px[q4 + 4] / ink.length; });
+  }
+  return { k: t.k, turn: q, w: w, h: h, px: px, np: px.length / 6, ink: ink, M: M, I: I, one: !other,
+    anchors: other ? spread(ink, 10).concat(spread(rim, 6)) : spread(rim, 16),
+    clear: clear, clearAll: all, ring: ring, probe: probe, edge: edge, sig: w + 'x' + h + ':' + iwdieVcPixelHash(raw) };
+}
+
+/** Where a prepared template (iwdieVcPrepare) is in the picture of `ix`: each place pushed to
+ *  `found` ({k, turn, x, y, w, h, score, ink, edge, one}).
+ *  - It is tried where the rarest colour of its anchors is in the picture. A place must first hold
+ *    the difference of light between its lightest and darkest anchors (half of it, at least: a plain
+ *    area does not) and come within 70 of every anchor.
+ *  - Then it must match closely: on average within 22 (the sum over red, green and blue) on all its
+ *    solid pixels, and within 36 on those of its other colours.
+ *  - And it must not be a piece of something bigger in its colours: of its clear pixels at most a
+ *    quarter may be of its colours (not the background). One of one colour: neither its clear
+ *    pixels nor the ring two outside it, nor any one side of that ring for 40 %. */
+function iwdieVcFindPrepared(ix, t, found) {
+  var W = ix.W, H = ix.H, P = ix.P, R = ix.R, px = t.px, M = t.M, I = t.I, tw = t.w, th = t.h, a, q5;
+  if (tw > W || th > H) return;
+  var bucket = function (r, g, b) { return (r >> 5) << 6 | (g >> 5) << 3 | (b >> 5); };
   var diff = function (pi, q3) { return Math.abs(P[pi] - px[q3 + 2]) + Math.abs(P[pi + 1] - px[q3 + 3]) + Math.abs(P[pi + 2] - px[q3 + 4]); };
-  var pr = px[pivot + 2] >> 5, pg = px[pivot + 3] >> 5, pb = px[pivot + 4] >> 5, dr, dg, db, bgr = ix.bg[0], bgg = ix.bg[1], bgb = ix.bg[2];
-  // every picture pixel of the pivot's colour, or of one next to it, is a place it may start
+  var bgr = ix.bg[0], bgg = ix.bg[1], bgb = ix.bg[2];
+  var anchors = t.anchors.slice().sort(function (a3, b3) {
+    return ix.count[bucket(px[a3 + 2], px[a3 + 3], px[a3 + 4])] - ix.count[bucket(px[b3 + 2], px[b3 + 3], px[b3 + 4])];
+  });
+  var sum = function (q3) { return px[q3 + 2] + px[q3 + 3] + px[q3 + 4]; }, pivot = anchors[0], light = pivot, dark = pivot;
+  anchors.forEach(function (q3) { if (sum(q3) > sum(light)) light = q3; if (sum(q3) < sum(dark)) dark = q3; });
+  var contrast = sum(light) - sum(dark), inkN = t.ink.length, limAll = 22 * t.np, limInk = 36 * inkN;
+  var pr = px[pivot + 2] >> 5, pg = px[pivot + 3] >> 5, pb = px[pivot + 4] >> 5, dr, dg, db;
   for (dr = -1; dr <= 1; dr++) for (dg = -1; dg <= 1; dg++) for (db = -1; db <= 1; db++) {
     var br = pr + dr, bgx = pg + dg, bb = pb + db;
     if (br < 0 || bgx < 0 || bb < 0 || br > 7 || bgx > 7 || bb > 7) continue;
     var bk = br << 6 | bgx << 3 | bb;
     for (var w2 = ix.start[bk]; w2 < ix.start[bk + 1]; w2++) {
       var at = ix.where[w2], x0 = at % W - px[pivot], y0 = (at / W | 0) - px[pivot + 1];
-      if (x0 < 0 || y0 < 0 || x0 + tw > W || y0 + th > H || diff(at * 4, pivot) > 70) continue;
-      var ok = true;
-      for (var a = 0; a < anchors.length && ok; a++) if (diff(((y0 + px[anchors[a] + 1]) * W + x0 + px[anchors[a]]) * 4, anchors[a]) > 70) ok = false;
-      if (!ok) continue;
-      var sAll = 0, sInk = 0, limit = 22 * np, q5;
-      for (q5 = 0; q5 < px.length && sAll <= limit; q5 += 5) sAll += diff(((y0 + px[q5 + 1]) * W + x0 + px[q5]) * 4, q5);
-      if (sAll > limit) continue;
-      for (q5 = 0; q5 < ink.length; q5++) sInk += diff(((y0 + px[ink[q5] + 1]) * W + x0 + px[ink[q5]]) * 4, ink[q5]);
-      if (sInk / ink.length > 36) continue;
-      var inky = 0;
-      for (q5 = 0; q5 < clear.length; q5 += 2) {
-        var ci = ((y0 + clear[q5 + 1]) * W + x0 + clear[q5]) * 4, cr = P[ci], cg = P[ci + 1], cb = P[ci + 2];
-        if (Math.abs(cr - bgr) + Math.abs(cg - bgg) + Math.abs(cb - bgb) <= 60) continue;
-        if (Math.abs(cr - ir) + Math.abs(cg - ig) + Math.abs(cb - ib) < 60 || Math.abs(cr - mr) + Math.abs(cg - mg) + Math.abs(cb - mb) < 60) inky++;
+      if (x0 < 0 || y0 < 0 || x0 + tw > W || y0 + th > H) continue;
+      if (contrast >= 60) {
+        var li = ((y0 + px[light + 1]) * W + x0 + px[light]) * 4, di = ((y0 + px[dark + 1]) * W + x0 + px[dark]) * 4;
+        if (P[li] + P[li + 1] + P[li + 2] - P[di] - P[di + 1] - P[di + 2] < contrast * 0.5) continue;
       }
-      if (clear.length && inky / (clear.length / 2) > 0.25) continue;
-      found.push({ k: t.k, turn: q, x: x0, y: y0, w: tw, h: th, score: Math.round(sAll / np * 10) / 10, ink: Math.round(sInk / ink.length * 10) / 10 });
+      var ok = true;
+      for (a = 0; a < anchors.length && ok; a++) if (diff(((y0 + px[anchors[a] + 1]) * W + x0 + px[anchors[a]]) * 4, anchors[a]) > 70) ok = false;
+      if (!ok) continue;
+      if (t.one) {
+        // in a plain area of its colour, its ring says so at once
+        var runs = 0;
+        for (a = 0; a < t.probe.length && runs < 3; a += 2) {
+          var X5 = x0 + t.probe[a], Y5 = y0 + t.probe[a + 1];
+          if (X5 < 0 || Y5 < 0 || X5 >= W || Y5 >= H) continue;
+          var c5 = (Y5 * W + X5) * 4;
+          if (Math.abs(R[c5] - M[0]) + Math.abs(R[c5 + 1] - M[1]) + Math.abs(R[c5 + 2] - M[2]) < 60) runs++;
+        }
+        if (runs >= 3) continue;
+      }
+      var sInk = 0, sAll = 0;
+      for (q5 = 0; q5 < inkN && sInk <= limInk; q5++) sInk += diff(((y0 + px[t.ink[q5] + 1]) * W + x0 + px[t.ink[q5]]) * 4, t.ink[q5]);
+      if (sInk > limInk) continue;
+      for (q5 = 0; q5 < px.length && sAll <= limAll; q5 += 6) sAll += diff(((y0 + px[q5 + 1]) * W + x0 + px[q5]) * 4, q5);
+      if (sAll > limAll) continue;
+      var lr = 0, lg = 0, lb = 0, ln = 0;
+      if (!t.one) {
+        var inky = 0;
+        for (q5 = 0; q5 < t.clearAll.length; q5 += 2) {
+          var c2 = ((y0 + t.clearAll[q5 + 1]) * W + x0 + t.clearAll[q5]) * 4, r2 = P[c2], g2 = P[c2 + 1], b2 = P[c2 + 2];
+          if (Math.abs(r2 - bgr) + Math.abs(g2 - bgg) + Math.abs(b2 - bgb) <= 60) continue;
+          if (Math.abs(r2 - I[0]) + Math.abs(g2 - I[1]) + Math.abs(b2 - I[2]) < 60 || Math.abs(r2 - M[0]) + Math.abs(g2 - M[1]) + Math.abs(b2 - M[2]) < 60) inky++;
+        }
+        if (t.clearAll.length && inky / (t.clearAll.length / 2) > 0.25) continue;
+      } else {
+        var mine = 0, seen = 0, side = [0, 0, 0, 0], sideN = [0, 0, 0, 0];
+        var look = function (X, Y, s4) {
+          if (X < 0 || Y < 0 || X >= W || Y >= H) return;
+          var ci = (Y * W + X) * 4, cr = R[ci], cg = R[ci + 1], cb = R[ci + 2];
+          seen++;
+          if (s4 >= 0) sideN[s4]++;
+          if (Math.abs(cr - M[0]) + Math.abs(cg - M[1]) + Math.abs(cb - M[2]) < 60) {
+            if (Math.abs(cr - bgr) + Math.abs(cg - bgg) + Math.abs(cb - bgb) > 60) { mine++; if (s4 >= 0) side[s4]++; }
+          } else { lr += cr; lg += cg; lb += cb; ln++; }
+        };
+        for (q5 = 0; q5 < t.clear.length; q5 += 2) look(x0 + t.clear[q5], y0 + t.clear[q5 + 1], -1);
+        for (q5 = 0; q5 < t.ring.length; q5 += 2) {
+          var rx = t.ring[q5], ry = t.ring[q5 + 1];
+          look(x0 + rx, y0 + ry, ry < -1 ? 0 : ry > th ? 1 : rx < 0 ? 2 : 3);
+        }
+        if (seen && mine / seen > 0.25) continue;
+        if (side[0] > sideN[0] * 0.4 || side[1] > sideN[1] * 0.4 || side[2] > sideN[2] * 0.4 || side[3] > sideN[3] * 0.4) continue;
+      }
+      // its half-covered pixels against what they would show over what is round it: tells twins apart
+      var sEdge = 0, ne = t.edge.length / 6;
+      if (ne) {
+        var gr = ln ? lr / ln : bgr, gg = ln ? lg / ln : bgg, gb = ln ? lb / ln : bgb;
+        for (q5 = 0; q5 < t.edge.length; q5 += 6) {
+          var ej = ((y0 + t.edge[q5 + 1]) * W + x0 + t.edge[q5]) * 4, al = t.edge[q5 + 2] / 255;
+          sEdge += Math.abs(R[ej] - (t.edge[q5 + 3] * al + gr * (1 - al))) + Math.abs(R[ej + 1] - (t.edge[q5 + 4] * al + gg * (1 - al))) +
+            Math.abs(R[ej + 2] - (t.edge[q5 + 5] * al + gb * (1 - al)));
+        }
+      }
+      found.push({ k: t.k, turn: t.turn, x: x0, y: y0, w: tw, h: th, score: Math.round(sAll / t.np * 10) / 10,
+        ink: inkN ? Math.round(sInk / inkN * 10) / 10 : 0, edge: ne ? Math.round(sEdge / ne * 10) / 10 : 0, one: t.one ? 1 : 0 });
     }
   }
 }
 
-/** One component per place: the biggest first, then the closest; one that overlaps a kept one by
- *  more than a third of the smaller goes. -> the kept ones */
-function iwdieVcPickComponents(found) {
-  var sorted = found.slice().sort(function (a, b) { return b.w * b.h - a.w * a.h || a.score - b.score; }), keep = [];
+/** Templates looked for in all four turns, each look once (`seen` keeps them: twins, round things
+ *  turned); `progress(done, of)` hears how far it is. -> every place found */
+function iwdieVcSearch(ix, templates, progress, seen) {
+  var found = [];
+  seen = seen || {};
+  templates.forEach(function (t0, i) {
+    for (var q = 0; q < 4; q++) {
+      var t = iwdieVcPrepare(t0, q);
+      if (!t || seen[t.sig]) continue;
+      seen[t.sig] = 1;
+      iwdieVcFindPrepared(ix, t, found);
+    }
+    if (progress) progress(i + 1, templates.length);
+  });
+  return found;
+}
+
+/** One component per place: the biggest first, then the closest (its half-covered pixels counting a
+ *  little, so of twins the one whose stub is there wins); one that overlaps a kept one by more than
+ *  a third of the smaller goes. -> the kept ones */
+function iwdieVcPick(found) {
+  var cost = function (f) { return f.score + (f.edge || 0) * 0.25; };
+  var sorted = found.slice().sort(function (a, b) { return b.w * b.h - a.w * a.h || cost(a) - cost(b); }), keep = [];
   sorted.forEach(function (f) {
     var clash = keep.some(function (o) {
-      var ix = Math.max(0, Math.min(o.x + o.w, f.x + f.w) - Math.max(o.x, f.x)), iy = Math.max(0, Math.min(o.y + o.h, f.y + f.h) - Math.max(o.y, f.y));
-      return ix * iy > Math.min(o.w * o.h, f.w * f.h) / 3;
+      var ox = Math.max(0, Math.min(o.x + o.w, f.x + f.w) - Math.max(o.x, f.x)), oy = Math.max(0, Math.min(o.y + o.h, f.y + f.h) - Math.max(o.y, f.y));
+      return ox * oy > Math.min(o.w * o.h, f.w * f.h) / 3;
     });
     if (!clash) keep.push(f);
   });
@@ -6884,35 +7006,76 @@ function iwdieVcPickComponents(found) {
 }
 
 /** The components of `templates` in a picture, in all four quarter turns, at once; `progress(done,
- *  of)` hears how far it is. -> [{k, turn, x, y, w, h, score, ink}] */
+ *  of)` hears how far it is. -> [{k, turn, x, y, w, h, score, ink, edge, one}] */
 function iwdieVcFindComponents(pic, W, H, templates, progress) {
-  var ix = iwdieVcComponentIndex(pic, W, H), found = [], seen = {};
-  templates.forEach(function (t, i) {
-    for (var q = 0; q < 4; q++) iwdieVcFindOne(ix, t, q, found, seen);
-    if (progress) progress(i + 1, templates.length);
+  return iwdieVcPick(iwdieVcSearch(iwdieVcComponentIndex(pic, W, H), templates, progress));
+}
+
+/** Which of a component's shapes are in the picture where it was found (v1.45.0). A library's
+ *  component may carry a part the picture does not show there - a pill's stub to a value below -
+ *  and is found all the same. `layers`: each top-level shape drawn alone, as RGBA the size of the
+ *  turned template, in order; `at`: {x, y, w, h}, where it was found and that size; `under`: the
+ *  colour beneath it.
+ *  A shape goes when, where it shows, the picture is clearly nearer the component without it.
+ *  -> [true | false], one a shape */
+function iwdieVcKeepShapes(R, W, H, at, layers, under) {
+  var w = at.w, n = layers.length ? at.w * at.h : 0;
+  if (!n) return [];
+  var paint = function (skip) {
+    var c = new Float32Array(n * 3), i, j;
+    for (i = 0; i < n; i++) { c[i * 3] = under[0]; c[i * 3 + 1] = under[1]; c[i * 3 + 2] = under[2]; }
+    layers.forEach(function (L, li) {
+      if (li === skip) return;
+      for (j = 0; j < n; j++) {
+        var al = L[j * 4 + 3] / 255;
+        if (!al) continue;
+        c[j * 3] = c[j * 3] * (1 - al) + L[j * 4] * al; c[j * 3 + 1] = c[j * 3 + 1] * (1 - al) + L[j * 4 + 1] * al; c[j * 3 + 2] = c[j * 3 + 2] * (1 - al) + L[j * 4 + 2] * al;
+      }
+    });
+    return c;
+  };
+  var all = paint(-1);
+  return layers.map(function (L, li) {
+    var less = paint(li), withIt = 0, without = 0, shown = 0;
+    for (var j = 0; j < n; j++) {
+      var d = Math.abs(all[j * 3] - less[j * 3]) + Math.abs(all[j * 3 + 1] - less[j * 3 + 1]) + Math.abs(all[j * 3 + 2] - less[j * 3 + 2]);
+      if (d < 24) continue;
+      var X = at.x + j % w, Y = at.y + ((j / w) | 0);
+      if (X < 0 || Y < 0 || X >= W || Y >= H) continue;
+      var pi = (Y * W + X) * 4;
+      shown++;
+      withIt += Math.abs(R[pi] - all[j * 3]) + Math.abs(R[pi + 1] - all[j * 3 + 1]) + Math.abs(R[pi + 2] - all[j * 3 + 2]);
+      without += Math.abs(R[pi] - less[j * 3]) + Math.abs(R[pi + 1] - less[j * 3 + 1]) + Math.abs(R[pi + 2] - less[j * 3 + 2]);
+    }
+    return shown < 3 || without >= withIt * 0.7;
   });
-  return iwdieVcPickComponents(found);
 }
 
 /** The picture with the components found taken out (`holes`: [{x, y, w, h, rgba}], each its turned
- *  template where it was found). Each of their pixels, and one more round them for the smoothed
- *  edge, is filled from the nearest pixels left: on its row when those on either side agree (a
- *  pipe running through), else on its column when those agree, else the nearest of the four.
- *  Changes `pic` and returns it. */
-function iwdieVcErase(pic, W, H, holes) {
-  var M = new Uint8Array(W * H), x, y, c;
+ *  template where it was found). Each of their pixels, and `ring` more round them (1 unless given:
+ *  the smoothed edge), is filled from the nearest pixels left (iwdieVcEraseMask). Changes `pic` and
+ *  returns it. */
+function iwdieVcErase(pic, W, H, holes, ring) {
+  var M = new Uint8Array(W * H), rg = ring === undefined ? 1 : ring;
   (holes || []).forEach(function (o) {
     for (var ty = 0; ty < o.h; ty++) for (var tx = 0; tx < o.w; tx++) {
       if (o.rgba[(ty * o.w + tx) * 4 + 3] < 8) continue;
-      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+      for (var dy = -rg; dy <= rg; dy++) for (var dx = -rg; dx <= rg; dx++) {
         var X = o.x + tx + dx, Y = o.y + ty + dy;
         if (X >= 0 && Y >= 0 && X < W && Y < H) M[Y * W + X] = 1;
       }
     }
   });
-  var src = new Uint8ClampedArray(pic);
+  return iwdieVcEraseMask(pic, W, H, M);
+}
+
+/** The picture with the pixels of `mask` (1) filled from the nearest pixels left: on their row when
+ *  those on either side agree (a pipe running through), else on their column when those agree, else
+ *  the nearest of the four. Changes `pic` and returns it. */
+function iwdieVcEraseMask(pic, W, H, M) {
+  var src = new Uint8ClampedArray(pic), x, y, c;
   var near = function (x0, y0, dx, dy) {
-    for (var s = 1; s <= 120; s++) {
+    for (var s = 1; s <= 240; s++) {
       var X = x0 + dx * s, Y = y0 + dy * s;
       if (X < 0 || Y < 0 || X >= W || Y >= H) return null;
       if (!M[Y * W + X]) return { s: s, i: (Y * W + X) * 4 };
@@ -6970,6 +7133,506 @@ function iwdieVcComponentSvg(c, used) {
   var defs = iwdieDrawDefsSvg(c.shapes);
   return '<g id="' + iwdieDrawEsc(id) + '"' + (name && name !== id ? ' data-name="' + iwdieDrawEsc(name) + '"' : '') + ' transform="' + xf + '">' +
     (defs ? '<defs>' + defs + '</defs>' : '') + c.shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</g>';
+}
+
+/* ===================== Pills and pipes found in the picture (v1.45.0) =====================
+   Beside the library's components, a panel's picture holds two kinds of thing drawn on it directly:
+   - pills: the value boxes, status pills and buttons - a plain area with round ends, often ringed by
+     a line of another colour and with a text inside ("Manuel", "Alarm", "2,7 °C"), in any size and
+     colour;
+   - pipes: straight lines across and down, in the library's own colours, two or so pixels wide.
+   Both are found by their shape and measured to the part of a pixel, from how much of their colour
+   each edge pixel holds; each becomes a vector of its own (a pill keeps its text as the picture's
+   own pixels, on top), and is taken out of the picture. */
+
+/** The plain areas of a picture (RGBA, `W` × `H`): every pixel within 18 of the area's first,
+ *  4-connected, from a pixel whose neighbours are all of its colour.
+ *  -> {label: Int32Array (area + 1; 0 none), areas: [{x0, y0, x1, y1, n, r, g, b}]} */
+function iwdieVcAreas(pic, W, H) {
+  var label = new Int32Array(W * H), areas = [], stack = new Int32Array(W * H), i, j;
+  var near = function (a, b, tol) { return Math.abs(pic[a] - pic[b]) + Math.abs(pic[a + 1] - pic[b + 1]) + Math.abs(pic[a + 2] - pic[b + 2]) <= tol; };
+  for (i = 0; i < W * H; i++) {
+    if (label[i]) continue;
+    var x = i % W, y = (i / W) | 0;
+    if (x === 0 || y === 0 || x === W - 1 || y === H - 1) continue;
+    if (!near(i * 4, (i - 1) * 4, 12) || !near(i * 4, (i + 1) * 4, 12) || !near(i * 4, (i - W) * 4, 12) || !near(i * 4, (i + W) * 4, 12)) continue;
+    var id = areas.length + 1, a = { x0: x, y0: y, x1: x, y1: y, n: 0, r: 0, g: 0, b: 0 }, sp = 0;
+    areas.push(a);
+    label[i] = id;
+    stack[sp++] = i;
+    while (sp) {
+      j = stack[--sp];
+      var jx = j % W, jy = (j / W) | 0;
+      a.n++; a.r += pic[j * 4]; a.g += pic[j * 4 + 1]; a.b += pic[j * 4 + 2];
+      if (jx < a.x0) a.x0 = jx;
+      if (jx > a.x1) a.x1 = jx;
+      if (jy < a.y0) a.y0 = jy;
+      if (jy > a.y1) a.y1 = jy;
+      var nb = [jx > 0 ? j - 1 : -1, jx < W - 1 ? j + 1 : -1, jy > 0 ? j - W : -1, jy < H - 1 ? j + W : -1];
+      for (var k = 0; k < 4; k++) {
+        var m = nb[k];
+        if (m < 0 || label[m] || !near(m * 4, i * 4, 18)) continue;
+        label[m] = id;
+        stack[sp++] = m;
+      }
+    }
+    a.r /= a.n; a.g /= a.n; a.b /= a.n;
+  }
+  return { label: label, areas: areas };
+}
+
+/** How much of a pixel `p` the colour `c` covers over `o` beneath it (0 to 1), and how far `p` is
+ *  from any such mix of the two. -> {t, off} */
+function iwdieVcMix(p, c, o) {
+  var d0 = c[0] - o[0], d1 = c[1] - o[1], d2 = c[2] - o[2], dd = d0 * d0 + d1 * d1 + d2 * d2;
+  var t = dd < 1 ? 0 : ((p[0] - o[0]) * d0 + (p[1] - o[1]) * d1 + (p[2] - o[2]) * d2) / dd;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return { t: t, off: Math.abs(p[0] - o[0] - t * d0) + Math.abs(p[1] - o[1] - t * d1) + Math.abs(p[2] - o[2] - t * d2) };
+}
+
+/** The pills of a picture: each plain area that, with what it holds (a text), fills a pill - round
+ *  ends, at most 4 % off - 6 to 42 px high and longer than high. Each is read along lines out of its
+ *  edge (four across the top and bottom, three out of each round end), pixel by pixel as a mix of
+ *  its fill, a ring and what lies beyond: the ring's colour is the `palette` one ([r, g, b]) that
+ *  mixed gives the pixels seen (a thin ring covers no pixel whole), and each side's edges are the
+ *  middle of its lines' readings.
+ *  -> [{x, y, w, h, fill, stroke, sw, outer, beyond, text: null | {x, y, w, h, rgba}}]: x, y, w, h
+ *  the pill as SVG draws it, along the middle of its ring; `outer` the ring's outer edge; `beyond`
+ *  the colour round it; `text` its text in its own colour, its pixels' cover as their alpha. */
+function iwdieVcFindPills(pic, W, H, palette) {
+  var A = iwdieVcAreas(pic, W, H), out = [];
+  var at = function (x, y) { var j = (y * W + x) * 4; return [pic[j], pic[j + 1], pic[j + 2]]; };
+  var dist = function (a, b) { return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]); };
+  A.areas.forEach(function (a0, ai) {
+    var id = ai + 1, x, y, k;
+    if (a0.y1 - a0.y0 + 1 < 6 || a0.x1 - a0.x0 + 1 < 8 || a0.y1 - a0.y0 > 60 || a0.x1 - a0.x0 > 640) return;
+    // its body: the rows and then columns where it is 3 px or more across (a stub of its colour is not)
+    var a = { x0: a0.x0, x1: a0.x1, y0: a0.y0, y1: a0.y1, r: a0.r, g: a0.g, b: a0.b }, body = function (n0, n1, count) {
+      var best = null, run = null;
+      for (var v = n0; v <= n1 + 1; v++) {
+        if (v <= n1 && count(v) >= 3) { if (!run) run = { a: v, b: v }; else run.b = v; continue; }
+        if (run && (!best || run.b - run.a > best.b - best.a)) best = run;
+        run = null;
+      }
+      return best;
+    };
+    var rows = body(a.y0, a.y1, function (yy) { var c = 0; for (var xx = a.x0; xx <= a.x1; xx++) if (A.label[yy * W + xx] === id) c++; return c; });
+    if (!rows) return;
+    a.y0 = rows.a; a.y1 = rows.b;
+    var cols = body(a.x0, a.x1, function (xx) { var c = 0; for (var yy = a.y0; yy <= a.y1; yy++) if (A.label[yy * W + xx] === id) c++; return c; });
+    if (!cols) return;
+    a.x0 = cols.a; a.x1 = cols.b;
+    var bw = a.x1 - a.x0 + 1, bh = a.y1 - a.y0 + 1, n = 0;
+    for (y = a.y0; y <= a.y1; y++) for (x = a.x0; x <= a.x1; x++) if (A.label[y * W + x] === id) n++;
+    if (bh < 6 || bh > 42 || bw < bh * 1.15 || bw > 600 || n < bw * bh * 0.45) return;
+    // the area and what it holds: whatever in its box cannot reach the box's edge without crossing it
+    var inside = new Uint8Array(bw * bh), outside = new Uint8Array(bw * bh), stack = [];
+    for (y = 0; y < bh; y++) for (x = 0; x < bw; x++) if (A.label[(a.y0 + y) * W + a.x0 + x] === id) inside[y * bw + x] = 1;
+    for (x = 0; x < bw; x++) stack.push(x, 0, x, bh - 1);
+    for (y = 0; y < bh; y++) stack.push(0, y, bw - 1, y);
+    while (stack.length) {
+      y = stack.pop(); x = stack.pop();
+      if (x < 0 || y < 0 || x >= bw || y >= bh) continue;
+      k = y * bw + x;
+      if (inside[k] || outside[k]) continue;
+      outside[k] = 1;
+      stack.push(x - 1, y, x + 1, y, x, y - 1, x, y + 1);
+    }
+    // a pill of this box, its edge half a pixel out (the area's own edge pixels are mixed)
+    var r = (bh + 1) / 2, cy = a.y0 + bh / 2, sx0 = a.x0 - 0.5 + r, sx1 = a.x1 + 1.5 - r, off = 0, total = 0;
+    for (y = 0; y < bh; y++) for (x = 0; x < bw; x++) {
+      var qx = a.x0 + x + 0.5, qy = a.y0 + y + 0.5, ex = qx < sx0 ? sx0 - qx : qx > sx1 ? qx - sx1 : 0, ey = qy - cy;
+      var d = Math.sqrt(ex * ex + ey * ey), filled = !outside[y * bw + x];
+      if (d < r - 1.2) { total++; if (!filled) off++; } else if (d > r + 0.2 && filled) off++;
+    }
+    if (!total || off > total * 0.04) return;
+    var F = [a.r, a.g, a.b], my = a.y0 + (bh >> 1), rr = bh / 2;
+    var line = function (x0, y0, dx, dy) {
+      if (A.label[y0 * W + x0] !== id) return null;
+      var p = [];
+      for (var s = 0; s <= 6; s++) {
+        var X = x0 + dx * s, Y = y0 + dy * s;
+        if (X < 0 || Y < 0 || X >= W || Y >= H) return null;
+        p.push(at(X, Y));
+      }
+      return p;
+    };
+    var lines = [[], [], [], []];
+    [0.3, 0.43, 0.57, 0.7].forEach(function (f) {
+      var cx = Math.round(a.x0 + rr + (bw - 2 * rr) * f);
+      lines[2].push(line(cx, a.y0, 0, -1));
+      lines[3].push(line(cx, a.y1, 0, 1));
+    });
+    [-1, 0, 1].forEach(function (dyy) {
+      var yy = my + dyy, xl = a.x0, xr = a.x1;
+      while (xl < a.x1 && A.label[yy * W + xl] !== id) xl++;
+      while (xr > a.x0 && A.label[yy * W + xr] !== id) xr--;
+      lines[0].push(line(xl, yy, -1, 0));
+      lines[1].push(line(xr, yy, 1, 0));
+    });
+    lines = lines.map(function (ls) { return ls.filter(Boolean); });
+    if (lines.some(function (ls) { return !ls.length; })) return;
+    // what lies beyond: the commonest colour four to six pixels out (a pipe or a neighbour close by is outvoted)
+    var votes = {}, topKey = null;
+    lines.forEach(function (ls) {
+      ls.forEach(function (p) {
+        for (var s1 = 4; s1 <= 6; s1++) {
+          var q0 = p[s1], key = (q0[0] >> 4) + ',' + (q0[1] >> 4) + ',' + (q0[2] >> 4), v = votes[key] || (votes[key] = { n: 0, c: [0, 0, 0] });
+          v.n++; v.c[0] += q0[0]; v.c[1] += q0[1]; v.c[2] += q0[2];
+          if (!topKey || v.n > votes[topKey].n) topKey = key;
+        }
+      });
+    });
+    var O = votes[topKey].c.map(function (v) { return v / votes[topKey].n; });
+    // a ring: next to the fill, on most lines, pixels that are no mix of fill and beyond; its colour
+    // the one of them furthest from such a mix
+    var ringC = null, ringD = 0, cores = [], nLines = 0;
+    lines.forEach(function (ls) {
+      ls.forEach(function (p) {
+        nLines++;
+        var best = null, bd = 0;
+        for (var s2 = 1; s2 <= 3; s2++) { var m = iwdieVcMix(p[s2], F, O); if (m.off > 40 && m.off > bd) { bd = m.off; best = p[s2]; } }
+        if (best) { cores.push(best); if (bd > ringD) { ringD = bd; ringC = best; } }
+      });
+    });
+    if (cores.length < nLines * 0.6) ringC = null;
+    // the same on every line, it is the ring's own colour; changing from line to line, it is a thin
+    // ring that covers no pixel whole: its colour is then the palette's that, mixed with the fill or
+    // what lies beyond, gives the one seen
+    var mid = [0, 1, 2].map(function (ch) { var v = cores.map(function (q1) { return q1[ch]; }).sort(function (u, w) { return u - w; }); return v[v.length >> 1]; });
+    var away = cores.map(function (q1) { return dist(q1, mid); }).sort(function (u, w) { return u - w; });
+    var spread = away.length ? away[Math.floor(away.length * 0.8)] : 0;
+    if (ringC && spread <= 24) ringC = mid;
+    if (ringC && spread > 24 && palette && palette.length) {
+      var bestP = null, bestOff = 14;
+      palette.forEach(function (pc) {
+        [F, O].forEach(function (under) {
+          var m3 = iwdieVcMix(ringC, pc, under);
+          if (m3.t >= 0.3 && m3.off < bestOff) { bestOff = m3.off; bestP = pc; }
+        });
+      });
+      if (bestP) ringC = bestP.slice();
+    }
+    // each line: how far past its first pixel the fill reaches (inner) and the ring (outer). Pixel s
+    // (1 to 4) spans s - 1 to s past it; the edges that, box-filtered, give the pixels seen best are
+    // found by trying them (a pixel of something else beyond counts no more than 60)
+    var read = function (p) {
+      var best = null, e1, e2, s3, j;
+      var err = function (a1, a2) {
+        var sum = 0;
+        for (s3 = 1; s3 <= 4; s3++) {
+          var fF = Math.max(0, Math.min(1, a1 - (s3 - 1))), fS = ringC ? Math.max(0, Math.min(s3, a2) - Math.max(s3 - 1, a1)) : 0, fO = 1 - fF - fS, e = 0;
+          for (j = 0; j < 3; j++) e += Math.abs(F[j] * fF + (ringC ? ringC[j] * fS : 0) + O[j] * fO - p[s3][j]);
+          sum += Math.min(60, e);
+        }
+        return sum;
+      };
+      for (e1 = 0; e1 <= 3; e1 += 0.05) {
+        if (!ringC) { var v0 = err(e1, e1); if (!best || v0 < best.v) best = { v: v0, inner: e1, outer: e1 }; continue; }
+        for (e2 = e1 + 0.3; e2 <= e1 + 4; e2 += 0.05) { var v = err(e1, e2); if (!best || v < best.v) best = { v: v, inner: e1, outer: e2 }; }
+      }
+      return best;
+    };
+    var meas = lines.map(function (ls) {
+      var rs = ls.map(read), mid = function (key) {
+        var v = rs.map(function (e) { return e[key]; }).sort(function (u, w) { return u - w; });
+        return v.length % 2 ? v[v.length >> 1] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+      };
+      return { inner: mid('inner'), outer: mid('outer') };
+    });
+    // the ring's width from the top and bottom (a pill's ends may touch a neighbour's ring)
+    var sw = ringC ? Math.max(0.5, Math.min(4, (meas[2].outer - meas[2].inner + meas[3].outer - meas[3].inner) / 2)) : 0;
+    var Li = a.x0 - meas[0].inner, Ri = a.x1 + 1 + meas[1].inner, Ti = a.y0 - meas[2].inner, Bi = a.y1 + 1 + meas[3].inner;
+    // its text: what it holds that is not fill, in its own colour over the fill
+    var text = null, tx0 = 1e9, ty0 = 1e9, tx1 = -1, ty1 = -1, ink = null, inkD = 0, nText = 0;
+    for (y = 1; y < bh - 1; y++) for (x = 1; x < bw - 1; x++) {
+      k = y * bw + x;
+      if (inside[k] || outside[k]) continue;
+      var c4 = at(a.x0 + x, a.y0 + y), d4 = dist(c4, F);
+      if (d4 < 30) continue;
+      nText++;
+      if (d4 > inkD) { inkD = d4; ink = c4; }
+      if (x < tx0) tx0 = x;
+      if (y < ty0) ty0 = y;
+      if (x > tx1) tx1 = x;
+      if (y > ty1) ty1 = y;
+    }
+    if (nText >= 6 && ink) {
+      tx0 = Math.max(0, tx0 - 1); ty0 = Math.max(0, ty0 - 1); tx1 = Math.min(bw - 1, tx1 + 1); ty1 = Math.min(bh - 1, ty1 + 1);
+      var tw = tx1 - tx0 + 1, th = ty1 - ty0 + 1, rgba = new Uint8ClampedArray(tw * th * 4);
+      for (y = 0; y < th; y++) for (x = 0; x < tw; x++) {
+        if (outside[(ty0 + y) * bw + tx0 + x]) continue;
+        var al = iwdieVcMix(at(a.x0 + tx0 + x, a.y0 + ty0 + y), ink, F).t, o5 = (y * tw + x) * 4;
+        rgba[o5] = ink[0]; rgba[o5 + 1] = ink[1]; rgba[o5 + 2] = ink[2]; rgba[o5 + 3] = Math.round(al * 255);
+      }
+      text = { x: a.x0 + tx0, y: a.y0 + ty0, w: tw, h: th, rgba: rgba };
+    }
+    var r2 = function (v) { return Math.round(v * 100) / 100; };
+    out.push({ x: r2(Li - sw / 2), y: r2(Ti - sw / 2), w: r2(Ri - Li + sw), h: r2(Bi - Ti + sw), fill: F.map(Math.round),
+      stroke: ringC ? ringC.map(Math.round) : null, sw: r2(sw), outer: { x: Li - sw, y: Ti - sw, w: Ri - Li + 2 * sw, h: Bi - Ti + 2 * sw },
+      beyond: O.map(Math.round), text: text });
+  });
+  return out;
+}
+
+/** Whether a template ({w, h, rgba}) is a pill, a stub at most besides: drawn over `bg` it is
+ *  found as one, filling most of it. */
+function iwdieVcIsPill(t, bg) {
+  var pad = 8, W = t.w + 2 * pad, H = t.h + 2 * pad, pic = new Uint8ClampedArray(W * H * 4), i, x, y;
+  for (i = 0; i < W * H; i++) { pic[i * 4] = bg[0]; pic[i * 4 + 1] = bg[1]; pic[i * 4 + 2] = bg[2]; pic[i * 4 + 3] = 255; }
+  for (y = 0; y < t.h; y++) for (x = 0; x < t.w; x++) {
+    var s = (y * t.w + x) * 4, o = ((y + pad) * W + x + pad) * 4, al = t.rgba[s + 3] / 255;
+    for (var c = 0; c < 3; c++) pic[o + c] = t.rgba[s + c] * al + bg[c] * (1 - al);
+  }
+  return iwdieVcFindPills(pic, W, H, null).some(function (p) { return p.outer.w * p.outer.h >= t.w * t.h * 0.6; });
+}
+
+/** The pills taken out of the picture: each pixel their shape reaches (and its smoothed edge)
+ *  becomes what lies round the pill - a pill sits on a plain ground. Changes `pic` and returns it. */
+function iwdieVcErasePills(pic, W, H, pills) {
+  pills.forEach(function (p) {
+    var o = p.outer, r = o.h / 2, cy = o.y + r, x0 = o.x + r, x1 = o.x + o.w - r, G = p.beyond;
+    for (var y = Math.floor(o.y) - 1; y <= Math.ceil(o.y + o.h); y++) for (var x = Math.floor(o.x) - 1; x <= Math.ceil(o.x + o.w); x++) {
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      var qx = x + 0.5, qy = y + 0.5, dx = qx < x0 ? x0 - qx : qx > x1 ? qx - x1 : 0, dy = qy - cy;
+      if (Math.sqrt(dx * dx + dy * dy) - r > 0.75) continue;
+      var j = (y * W + x) * 4;
+      pic[j] = G[0]; pic[j + 1] = G[1]; pic[j + 2] = G[2]; pic[j + 3] = 255;
+    }
+  });
+  return pic;
+}
+
+/** A pill's name: the one most of the library's components of its colour and size (within 3 px)
+ *  have, else "Pille". `looks`: [{name, w, h, main: [r, g, b]}], the library's components. */
+function iwdieVcPillName(p, looks) {
+  var o = p.outer, votes = {}, top = null;
+  (looks || []).forEach(function (l) {
+    if (!l.main || Math.abs(l.w - o.w) > 3 || Math.abs(l.h - o.h) > 3) return;
+    if (Math.abs(l.main[0] - p.fill[0]) + Math.abs(l.main[1] - p.fill[1]) + Math.abs(l.main[2] - p.fill[2]) > 36) return;
+    votes[l.name] = (votes[l.name] || 0) + 1;
+    if (!top || votes[l.name] > votes[top]) top = l.name;
+  });
+  return top || 'Pille';
+}
+
+/** "#rrggbb" for [r, g, b]. */
+function iwdieVcHex(c) {
+  return '#' + c.map(function (v) { v = Math.max(0, Math.min(255, Math.round(v))); return (v < 16 ? '0' : '') + v.toString(16); }).join('');
+}
+
+/** A pill found, as a group of the job's SVG: its shape (round ends, its ring a stroke) and, on top,
+ *  its text as the picture's own pixels (`p.textHref`: a PNG data URL of `p.text`). */
+function iwdieVcPillSvg(p, used) {
+  var f = iwdieDrawFmt, name = String(p.name || 'Pille'), id = iwdieVcSvgId(name, used);
+  var shape = '<rect x="' + f(p.x) + '" y="' + f(p.y) + '" width="' + f(p.w) + '" height="' + f(p.h) + '" rx="' + f(p.h / 2) + '" ry="' + f(p.h / 2) +
+    '" fill="' + iwdieVcHex(p.fill) + '"' + (p.stroke ? ' stroke="' + iwdieVcHex(p.stroke) + '" stroke-width="' + f(p.sw) + '"' : '') + '/>';
+  var text = p.text && p.textHref && /^data:image\/png;base64,[A-Za-z0-9+\/=]+$/.test(p.textHref) ?
+    '<image id="' + iwdieDrawEsc(iwdieVcSvgId('Tekst', used)) + '" data-name="Tekst" x="' + p.text.x + '" y="' + p.text.y + '" width="' + p.text.w + '" height="' + p.text.h + '" xlink:href="' + p.textHref + '"/>' : '';
+  return '<g id="' + iwdieDrawEsc(id) + '"' + (name !== id ? ' data-name="' + iwdieDrawEsc(name) + '"' : '') + '>' + shape + text + '</g>';
+}
+
+/** The colours a library's components are drawn in, [r, g, b] each. */
+function iwdieVcPalette(items) {
+  var seen = {}, out = [];
+  var walk = function (list) {
+    (list || []).forEach(function (s) {
+      if (!s) return;
+      if (s.t === 'group') { walk(s.items); return; }
+      [s.st && s.st.fill, s.st && s.st.stroke].forEach(function (c) {
+        if (typeof c !== 'string' || !/^#[0-9a-f]{6}$/i.test(c) || seen[c.toLowerCase()]) return;
+        seen[c.toLowerCase()] = 1;
+        out.push([parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)]);
+      });
+    });
+  };
+  (items || []).forEach(function (it) { walk(it && it.shapes); });
+  return out;
+}
+
+/** The pipe colours of a palette: those that are a colour rather than a grey. */
+function iwdieVcPipeColours(palette) {
+  return (palette || []).filter(function (c) { return Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]) >= 45; });
+}
+
+/** The pipes of a picture (RGBA, W × H) on its ground `bg`, in `colours` ([r, g, b] each).
+ *  - A pixel is of a pipe colour when it is that colour mixed with the ground.
+ *  - Along each row and column, a run of one colour no more than 5 px across, followed while it
+ *    stays so, is a piece of a line: its middle and width, from how much of the colour each pixel
+ *    across holds, the median along it; a piece whose middle wanders more than a pixel is no line.
+ *  - Pieces of one line broken by a pixel or two are one. A line of 12 px or more is a pipe; a
+ *    shorter piece only in line with one across a dot (8 px), or ending at one (a corner, a branch).
+ *  - Two lines whose ends meet at the same point turn a corner there, as one; an end at another
+ *    line's length is taken to its middle.
+ *  -> {lines: [{pts: [[x, y], ...], colour, width}], mask: Uint8Array of the pixels they cover} */
+function iwdieVcFindLines(pic, W, H, bg, colours) {
+  var n = W * H, idx = new Int8Array(n), cov = new Float32Array(n), i, c;
+  for (i = 0; i < n; i++) idx[i] = -1;
+  if (!colours || !colours.length) return { lines: [], mask: new Uint8Array(n) };
+  for (i = 0; i < n; i++) {
+    var r = pic[i * 4], g = pic[i * 4 + 1], b = pic[i * 4 + 2];
+    if (Math.abs(r - bg[0]) + Math.abs(g - bg[1]) + Math.abs(b - bg[2]) < 18) continue;
+    var best = -1, bt = 0, bo = 26;
+    for (c = 0; c < colours.length; c++) {
+      var C = colours[c], d0 = C[0] - bg[0], d1 = C[1] - bg[1], d2 = C[2] - bg[2], dd = d0 * d0 + d1 * d1 + d2 * d2;
+      if (dd < 400) continue;
+      var t = ((r - bg[0]) * d0 + (g - bg[1]) * d1 + (b - bg[2]) * d2) / dd;
+      if (t < 0.12 || t > 1.15) continue;
+      var off = Math.abs(r - bg[0] - t * d0) + Math.abs(g - bg[1] - t * d1) + Math.abs(b - bg[2] - t * d2);
+      if (off < bo) { bo = off; best = c; bt = Math.min(1, t); }
+    }
+    if (best >= 0) { idx[i] = best; cov[i] = bt; }
+  }
+  var at = function (X, Y) { return X >= 0 && Y >= 0 && X < W && Y < H ? Y * W + X : -1; };
+  var bands = [];
+  var scan = function (dir) {
+    // dir 0: lines across, followed along a row; dir 1: lines down, along a column
+    var L = dir ? W : H, M = dir ? H : W, seen = new Uint8Array(n);
+    for (var u = 0; u < L; u++) for (var v = 0; v < M; v++) {
+      var p = dir ? at(u, v) : at(v, u);
+      if (idx[p] < 0 || seen[p] || cov[p] < 0.5) continue;
+      var col = idx[p];
+      var across = function (vv, uu) {
+        var lo = 0, hi = 0, kk, q;
+        for (kk = 1; kk <= 6; kk++) { q = dir ? at(uu - kk, vv) : at(vv, uu - kk); if (q < 0 || idx[q] !== col) break; lo = kk; }
+        for (kk = 1; kk <= 6; kk++) { q = dir ? at(uu + kk, vv) : at(vv, uu + kk); if (q < 0 || idx[q] !== col) break; hi = kk; }
+        return { lo: lo, hi: hi };
+      };
+      var a0 = across(v, u);
+      if (a0.lo + a0.hi + 1 > 5) continue;
+      var s = [], vv = v, centre = u;
+      while (vv < M) {
+        var b2 = -1, bc = 0;
+        for (var du = -1; du <= 1; du++) {
+          var q2 = dir ? at(centre + du, vv) : at(vv, centre + du);
+          if (q2 >= 0 && idx[q2] === col && cov[q2] > bc) { bc = cov[q2]; b2 = centre + du; }
+        }
+        if (b2 < 0 || bc < 0.3) break;
+        var a1 = across(vv, b2);
+        if (a1.lo + a1.hi + 1 > 5) break;
+        var sum = 0, mid = 0;
+        for (var k2 = -a1.lo - 1; k2 <= a1.hi + 1; k2++) {
+          var q3 = dir ? at(b2 + k2, vv) : at(vv, b2 + k2);
+          if (q3 < 0 || idx[q3] !== col) continue;
+          sum += cov[q3]; mid += cov[q3] * (b2 + k2 + 0.5);
+          seen[q3] = 1;
+        }
+        s.push({ mid: mid / sum, w: sum });
+        centre = b2;
+        vv++;
+      }
+      if (s.length < 5) continue;
+      var mids = s.map(function (e) { return e.mid; }).sort(function (p1, p2) { return p1 - p2; });
+      var ws = s.map(function (e) { return e.w; }).sort(function (p1, p2) { return p1 - p2; });
+      var m = mids[mids.length >> 1];
+      if (mids[Math.floor(mids.length * 0.1)] < m - 1 || mids[Math.floor(mids.length * 0.9)] > m + 1) continue;
+      bands.push({ dir: dir, col: col, at: m, w: ws[ws.length >> 1], a: v, b: v + s.length });
+    }
+  };
+  scan(0);
+  scan(1);
+  bands.sort(function (p, q) { return p.a - q.a; });
+  var merged = [];
+  bands.forEach(function (bd) {
+    var into = null;
+    for (var j2 = 0; j2 < merged.length && !into; j2++) {
+      var m2 = merged[j2];
+      if (m2.dir === bd.dir && m2.col === bd.col && Math.abs(m2.at - bd.at) < 0.25 && bd.a - m2.b <= 2 && bd.b > m2.a) into = m2;
+    }
+    if (into) {
+      var l1 = into.b - into.a, l2 = bd.b - bd.a;
+      into.w = (into.w * l1 + bd.w * l2) / (l1 + l2);
+      into.at = (into.at * l1 + bd.at * l2) / (l1 + l2);
+      into.a = Math.min(into.a, bd.a); into.b = Math.max(into.b, bd.b);
+    } else merged.push({ dir: bd.dir, col: bd.col, at: bd.at, w: bd.w, a: bd.a, b: bd.b });
+  });
+  var strong = merged.filter(function (bd) { return bd.b - bd.a >= 12; });
+  merged = merged.filter(function (bd) {
+    if (bd.b - bd.a >= 12) return true;
+    return strong.some(function (st) {
+      if (st.col !== bd.col) return false;
+      if (st.dir === bd.dir) return Math.abs(st.at - bd.at) < 0.8 && (Math.abs(bd.a - st.b) <= 8 || Math.abs(st.a - bd.b) <= 8);
+      var reach = st.w / 2 + bd.w / 2 + 3;
+      return bd.at >= st.a - reach && bd.at <= st.b + reach && (Math.abs(bd.a - st.at) <= reach || Math.abs(bd.b - st.at) <= reach);
+    });
+  });
+  var lines = merged.map(function (bd) { return { bd: bd, a: bd.a, b: bd.b, link: [null, null] }; });
+  var endOf = function (Ln, e) { return e ? Ln.bd.b : Ln.bd.a; };
+  lines.forEach(function (L1, i1) {
+    [0, 1].forEach(function (e) {
+      if (L1.link[e]) return;
+      var best2 = null;
+      lines.forEach(function (L2, i2) {
+        if (L1 === L2 || L1.bd.dir === L2.bd.dir || L1.bd.col !== L2.bd.col) return;
+        var reach = L1.bd.w / 2 + L2.bd.w / 2 + 3;
+        if (Math.abs(endOf(L1, e) - L2.bd.at) > reach) return;
+        [0, 1].forEach(function (e2) {
+          if (L2.link[e2] || Math.abs(endOf(L2, e2) - L1.bd.at) > reach) return;
+          var d = Math.abs(endOf(L1, e) - L2.bd.at) + Math.abs(endOf(L2, e2) - L1.bd.at);
+          if (!best2 || d < best2.d) best2 = { i: i2, e: e2, d: d };
+        });
+      });
+      if (!best2) return;
+      var Lb = lines[best2.i];
+      L1.link[e] = { to: best2.i, end: best2.e };
+      Lb.link[best2.e] = { to: i1, end: e };
+      if (e) L1.b = Lb.bd.at; else L1.a = Lb.bd.at;
+      if (best2.e) Lb.b = L1.bd.at; else Lb.a = L1.bd.at;
+    });
+  });
+  lines.forEach(function (L1) {
+    [0, 1].forEach(function (e) {
+      if (L1.link[e]) return;
+      var best3 = null;
+      lines.forEach(function (L2) {
+        if (L1 === L2 || L1.bd.dir === L2.bd.dir || L1.bd.col !== L2.bd.col) return;
+        var reach = L1.bd.w / 2 + L2.bd.w / 2 + 3;
+        if (L1.bd.at < L2.bd.a - reach || L1.bd.at > L2.bd.b + reach || Math.abs(endOf(L1, e) - L2.bd.at) > reach) return;
+        var d = Math.abs(endOf(L1, e) - L2.bd.at);
+        if (!best3 || d < best3.d) best3 = { at: L2.bd.at, d: d };
+      });
+      if (best3) { if (e) L1.b = best3.at; else L1.a = best3.at; }
+    });
+  });
+  // the pixels they cover, only where they were read: an end's last pixels, mixed with whatever it
+  // runs under, stay in the picture
+  var mask = new Uint8Array(n);
+  lines.forEach(function (Ln) {
+    var bd = Ln.bd, half = bd.w / 2 + 1;
+    for (var v2 = bd.a; v2 < bd.b; v2++) for (var u2 = Math.floor(bd.at - half); u2 <= Math.ceil(bd.at + half); u2++) {
+      var q4 = bd.dir ? at(u2, v2) : at(v2, u2);
+      if (q4 >= 0 && idx[q4] === bd.col) mask[q4] = 1;
+    }
+  });
+  var pt = function (Ln, e) { var v4 = e ? Ln.b : Ln.a; return Ln.bd.dir ? [Ln.bd.at, v4] : [v4, Ln.bd.at]; };
+  var used = lines.map(function () { return false; }), out = [];
+  var r2 = function (v3) { return Math.round(v3 * 100) / 100; };
+  var walk = function (i0, e0) {
+    var pts = [pt(lines[i0], e0)], ws = [], i2 = i0, e2 = e0;
+    while (i2 !== null && !used[i2]) {
+      used[i2] = true;
+      var Ln = lines[i2], far = 1 - e2;
+      pts.push(pt(Ln, far));
+      ws.push(Ln.bd.w);
+      var nx = Ln.link[far];
+      if (!nx) break;
+      i2 = nx.to; e2 = nx.end;
+    }
+    out.push({ pts: pts.map(function (p) { return [r2(p[0]), r2(p[1])]; }), colour: colours[lines[i0].bd.col].slice(),
+      width: r2(ws.reduce(function (s4, w4) { return s4 + w4; }, 0) / ws.length) });
+  };
+  lines.forEach(function (Ln, i3) { if (!used[i3] && !Ln.link[0]) walk(i3, 0); });
+  lines.forEach(function (Ln, i3) { if (!used[i3] && !Ln.link[1]) walk(i3, 1); });
+  lines.forEach(function (Ln, i3) { if (!used[i3]) walk(i3, 0); });
+  return { lines: out, mask: mask };
+}
+
+/** A pipe found, as a path of the job's SVG: its line, in its colour and width, square at its
+ *  corners and flat at its ends. */
+function iwdieVcLineSvg(L, used) {
+  var f = iwdieDrawFmt, id = iwdieVcSvgId('Ror', used);
+  return '<path id="' + iwdieDrawEsc(id) + '" data-name="Rør" d="' + L.pts.map(function (p, i) { return (i ? 'L' : 'M') + f(p[0]) + ' ' + f(p[1]); }).join(' ') +
+    '" fill="none" stroke="' + iwdieVcHex(L.colour) + '" stroke-width="' + f(L.width) + '" stroke-linejoin="miter" stroke-linecap="butt"/>';
 }
 
 /* ===================== browser body ===================== */
@@ -8167,14 +8830,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        on the drawing lands, as a file dropped there: VectorCraft places a dropped SVG centred on the
        drop point, as one group named after the file - "IWMAC <obj_id>", which makes it a
        placeholder, as one dragged from Libraries. */
-    /** The IWMAC menu on the editor's page; `say(html, bad)` hears what went wrong. */
-    function vcObjectMenu(say, looks) {
+    /** The IWMAC menu on the editor's page; `say(html, bad)` hears what went wrong. With the kept
+     *  components (`lib`, v1.45.0), those are in it too, by Illustrator layer: VectorCraft's own
+     *  Libraries panel does not scroll, so a big library cannot be seen whole there. */
+    function vcObjectMenu(say, looks, lib) {
       if (document.getElementById('iwdie-vcm')) return;
       var esc2 = iwdieEscHtml, all = iwdieVcObjects(looks), byId = {}, roles = [], byRole = {};
       all.forEach(function (o) {
         byId[o.id] = o;
         if (!byRole[o.role]) { byRole[o.role] = []; roles.push(o.role); }
         byRole[o.role].push(o);
+      });
+      var comps = (lib && lib.items) || [], compNames = iwdieVcComponentNames(comps), layers = [], byLayer = {};
+      comps.forEach(function (it, k) {
+        var layer = it.layer || 'Komponenter';
+        if (!byLayer[layer]) { byLayer[layer] = []; layers.push(layer); }
+        byLayer[layer].push(k);
       });
       var font = '"Source Sans 3","Segoe UI",Roboto,Arial,sans-serif';
       var css = [
@@ -8193,6 +8864,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '.iwdie-vcm-i:hover .iwdie-vcm-k,.iwdie-vcm-i.iwdie-on .iwdie-vcm-k{color:#e4e4e4}',
         '.iwdie-vcm-p{flex:none;width:44px;height:22px;display:flex;align-items:center;justify-content:center}',
         '.iwdie-vcm-p img{max-width:44px;max-height:22px}',
+        // a component's row: a bigger picture of it
+        '.iwdie-vcm-i.iwdie-vcm-ic{height:34px}',
+        '.iwdie-vcm-ic .iwdie-vcm-p{width:52px;height:30px}',
+        '.iwdie-vcm-ic .iwdie-vcm-p img{max-width:52px;max-height:30px}',
         '.iwdie-vcm-h{padding:2px 6px 4px;color:#b0b0b0;font-size:11px;line-height:1.4}',
         '.iwdie-vcm-x{height:1px;background:#4b4b4b;margin:5px 0}',
         '.iwdie-vcm-s{display:block;width:100%;height:26px;box-sizing:border-box;margin:0 0 6px;padding:0 7px;background:#454545;border:1px solid #5f5f5f;',
@@ -8213,7 +8888,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       title.id = 'iwdie-vcm';
       title.className = 'iwdie-vcm';
       title.textContent = 'IWMAC';
-      title.title = 'The IWMAC Designer’s objects, to place on the drawing';
+      title.title = 'The IWMAC Designer’s objects' + (comps.length ? ' and your components' : '') + ', to place on the drawing';
       document.body.appendChild(title);
 
       var menu = null, sub = null, pending = null, placing = null, tag = null, downAt = null, swallow = false, pointer = { x: 0, y: 0 };
@@ -8231,6 +8906,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var roleRow = function (r) {
         return '<div class="iwdie-vcm-i" data-role="' + esc2(r) + '"><span class="iwdie-vcm-l">' + esc2(IWDIE_VC_OBJ_ROLES[r] || r) + '</span>' +
           '<span class="iwdie-vcm-k">' + byRole[r].length + '</span><span class="iwdie-vcm-k">▸</span></div>';
+      };
+      var compRow = function (k) {
+        var it = comps[k], t = iwdieVcThumbSvg(it, 60);
+        return '<div class="iwdie-vcm-i iwdie-vcm-ic" data-comp="' + k + '" title="' + esc2(compNames[k]) + '"><span class="iwdie-vcm-p"><img alt="" src="' +
+          esc2('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(t.svg)) + '"></span><span class="iwdie-vcm-l">' + esc2(compNames[k]) + '</span>' +
+          '<span class="iwdie-vcm-k">' + Math.round(it.w) + ' × ' + Math.round(it.h) + '</span></div>';
+      };
+      var layerRow = function (l) {
+        return '<div class="iwdie-vcm-i" data-layer="' + esc2(l) + '"><span class="iwdie-vcm-l">' + esc2(l) + '</span>' +
+          '<span class="iwdie-vcm-k">' + byLayer[l].length + '</span><span class="iwdie-vcm-k">▸</span></div>';
+      };
+      // a component as a file to drop: its shapes at 0,0, the size of it, named as it is
+      var compThing = function (k) {
+        var it = comps[k], w = Math.max(1, Math.ceil(it.w)), h = Math.max(1, Math.ceil(it.h)), defs = iwdieDrawDefsSvg(it.shapes);
+        return { label: compNames[k], w: Math.round(it.w), h: Math.round(it.h), name: compNames[k], svg: function () {
+          return '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' + (defs ? '<defs>' + defs + '</defs>' : '') +
+            it.shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</svg>';
+        } };
+      };
+      var objThing = function (o) {
+        return { label: o.desc || o.id, w: o.w, h: o.h, name: IWDIE_VC_OBJ_PREFIX + o.id, svg: function () { return iwdieVcObjectSvg(o); } };
+      };
+      var thingOf = function (row) {
+        if (!row) return null;
+        if (row.getAttribute('data-comp') !== null && comps[+row.getAttribute('data-comp')]) return compThing(+row.getAttribute('data-comp'));
+        return byId[row.getAttribute('data-id')] ? objThing(byId[row.getAttribute('data-id')]) : null;
       };
       var mine = function (t) { return !!(t && t.closest && t.closest('.iwdie-vcm,.iwdie-vcm-m,.iwdie-vcb')); };
       // the drawing, as far as the page can tell: clear of the tool bar, the dock, the bars above and below
@@ -8262,44 +8963,47 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var follow = function () {
         if (tag) { tag.style.left = (pointer.x + 16) + 'px'; tag.style.top = (pointer.y + 18) + 'px'; }
       };
-      var choose = function (o) {
+      var choose = function (th) {
+        if (!th) return;
         close();
         stop();
-        placing = o;
+        placing = th;
         tag = document.createElement('div');
         tag.className = 'iwdie-vcm-t';
-        tag.innerHTML = '<b>' + esc2(o.desc || o.id) + '</b> ' + o.w + ' × ' + o.h + ' - click where it goes · Shift+click for more · Esc stops';
+        tag.innerHTML = '<b>' + esc2(th.label) + '</b> ' + th.w + ' × ' + th.h + ' - click where it goes · Shift+click for more · Esc stops';
         document.body.appendChild(tag);
         follow();
       };
-      var place = function (o, at) {
-        try { vcDropFile(iwdieVcObjectSvg(o), IWDIE_VC_OBJ_PREFIX + o.id, 'image/svg+xml', at); }
-        catch (e) { say('<b>' + esc2(o.desc || o.id) + '</b> could not be placed: ' + esc2(String((e && e.message) || e)), true); }
+      var place = function (th, at) {
+        try { vcDropFile(th.svg(), th.name, 'image/svg+xml', at); }
+        catch (e) { say('<b>' + esc2(th.label) + '</b> could not be placed: ' + esc2(String((e && e.message) || e)), true); }
         refocus();
       };
       var rowOf = function (e) { return e.target && e.target.closest ? e.target.closest('.iwdie-vcm-i') : null; };
-      var openSub = function (role, row) {
-        if (sub && sub.getAttribute('data-role') === role) return;
+      var openSub = function (row) {
+        var role = row.getAttribute('data-role'), layer = row.getAttribute('data-layer'), key = role ? 'r:' + role : 'l:' + layer;
+        if (sub && sub.getAttribute('data-key') === key) return;
         closeSub();
         sub = document.createElement('div');
         sub.className = 'iwdie-vcm-m';
-        sub.setAttribute('data-role', role);
-        sub.innerHTML = '<div class="iwdie-vcm-h">' + esc2(IWDIE_VC_OBJ_ROLES[role] || role) + '</div>' + byRole[role].map(objectRow).join('');
+        sub.setAttribute('data-key', key);
+        sub.innerHTML = role ? '<div class="iwdie-vcm-h">' + esc2(IWDIE_VC_OBJ_ROLES[role] || role) + '</div>' + byRole[role].map(objectRow).join('')
+          : '<div class="iwdie-vcm-h">' + esc2(layer) + ' · ' + esc2((lib && lib.file) || 'Komponenter') + '</div>' + byLayer[layer].map(compRow).join('');
         document.body.appendChild(sub);
         var mr = menu.getBoundingClientRect(), rr = row.getBoundingClientRect();
         sub.style.left = (mr.right - 2) + 'px';
         sub.style.top = Math.max(4, Math.min(rr.top - 7, window.innerHeight - sub.offsetHeight - 4)) + 'px';
         row.classList.add('iwdie-on');
         sub.addEventListener('mouseover', function () { clearTimeout(pending); });
-        sub.addEventListener('click', function (e) { var r = rowOf(e); if (r && byId[r.getAttribute('data-id')]) choose(byId[r.getAttribute('data-id')]); });
+        sub.addEventListener('click', function (e) { choose(thingOf(rowOf(e))); });
       };
       var open = function () {
         stop();
         menu = document.createElement('div');
         menu.className = 'iwdie-vcm-m';
-        menu.innerHTML = '<input class="iwdie-vcm-s" type="text" placeholder="Search: fan, value, alarm…" spellcheck="false" autocomplete="off">' +
+        menu.innerHTML = '<input class="iwdie-vcm-s" type="text" placeholder="Search: fan, value, alarm' + (comps.length ? ', a component' : '') + '…" spellcheck="false" autocomplete="off">' +
           '<div class="iwdie-vcm-list"></div><div class="iwdie-vcm-x"></div>' +
-          '<div class="iwdie-vcm-h">Choose one, then click where it goes on the drawing.<br>Saved back, each becomes that object in the panel.</div>';
+          '<div class="iwdie-vcm-h">Choose one, then click where it goes on the drawing.<br>Saved back, each IWMAC object becomes that object in the panel.</div>';
         var r = title.getBoundingClientRect();
         menu.style.left = r.left + 'px';
         menu.style.top = (r.bottom + 3) + 'px';
@@ -8307,9 +9011,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         title.classList.add('iwdie-on');
         var input = menu.querySelector('.iwdie-vcm-s'), list = menu.querySelector('.iwdie-vcm-list');
         var fill = function () {
-          var q = input.value.trim(), hits = q ? iwdieVcObjectSearch(q).map(function (o) { return byId[o.id]; }) : null;
+          var q = input.value.trim(), hits = q ? iwdieVcObjectSearch(q).map(function (o) { return byId[o.id]; }) : null, ql = q.toLowerCase(), compHits = [];
+          if (q) comps.forEach(function (it, k) { if (compHits.length < 80 && (compNames[k] + ' ' + (it.layer || '')).toLowerCase().indexOf(ql) >= 0) compHits.push(k); });
           closeSub();
-          list.innerHTML = !hits ? roles.map(roleRow).join('') : hits.length ? hits.map(objectRow).join('') : '<div class="iwdie-vcm-n">No IWMAC object matches.</div>';
+          var compHead = '<div class="iwdie-vcm-x"></div><div class="iwdie-vcm-h">Komponenter' + (lib && lib.file ? ' · ' + esc2(lib.file) : '') + '</div>';
+          list.innerHTML = !q ? roles.map(roleRow).join('') + (layers.length ? compHead + layers.map(layerRow).join('') : '')
+            : hits.length || compHits.length ? hits.map(objectRow).join('') + (compHits.length ? compHead + compHits.map(compRow).join('') : '')
+            : '<div class="iwdie-vcm-n">Nothing matches.</div>';
         };
         fill();
         // what is typed here is the search's, not VectorCraft's shortcuts'
@@ -8319,8 +9027,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         input.addEventListener('input', fill);
         input.addEventListener('keydown', function (e) {
           if (e.key !== 'Enter') return;
-          var first = list.querySelector('[data-id]');
-          if (first) choose(byId[first.getAttribute('data-id')]);
+          choose(thingOf(list.querySelector('[data-id],[data-comp]')));
         });
         menu.addEventListener('mouseover', function (e) {
           var row = rowOf(e);
@@ -8329,14 +9036,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // with a submenu open, a moment's grace: the pointer may only be crossing this row on its way there
           pending = setTimeout(function () {
             if (!menu) return;
-            if (row.getAttribute('data-role')) openSub(row.getAttribute('data-role'), row); else closeSub();
+            if (row.getAttribute('data-role') || row.getAttribute('data-layer')) openSub(row); else closeSub();
           }, sub ? 150 : 0);
         });
         menu.addEventListener('click', function (e) {
           var row = rowOf(e);
           if (!row) return;
-          if (row.getAttribute('data-role')) openSub(row.getAttribute('data-role'), row);
-          else if (byId[row.getAttribute('data-id')]) choose(byId[row.getAttribute('data-id')]);
+          if (row.getAttribute('data-role') || row.getAttribute('data-layer')) openSub(row);
+          else choose(thingOf(row));
         });
         setTimeout(function () { try { input.focus(); } catch (e) {} }, 0);
       };
@@ -8785,13 +9492,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         try { vcDropFile(job.svg, job.name || 'panel.svg', 'image/svg+xml', 'center'); }
         catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
         ui.later(20000);
-        try { vcObjectMenu(note, looks); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
+        try { vcObjectMenu(note, looks, lib); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
         try { vcSaveSync(job, note, saves); } catch (e) { note('Ctrl+S could not be set to sync: ' + esc2(String((e && e.message) || e)), true); }
         (libText ? libText.then(function (text) {
           return pause(1200).then(function () {
             vcDropFile(text, 'Komponenter.vclibrary', 'application/json', 'menu');
             comp('<b>' + iwdieN(lib.items.length, 'component', 'components') + '</b> in <b>Libraries</b> (right), as “Komponenter' +
-              (lib.file ? ' - ' + esc2(lib.file) : '') + '”: drag one onto the drawing, or double-click it.');
+              (lib.file ? ' - ' + esc2(lib.file) : '') + '”: drag one onto the drawing, or double-click it. All of them, by layer, are in the <b>IWMAC</b> menu too - ' +
+              'VectorCraft’s Libraries panel does not scroll.');
           });
         }).then(null, failed(comp, 'The components')) : Promise.resolve()).then(function () {
           return objText.then(function (text) {
@@ -8875,7 +9583,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return (lib ? vcRecognize(c, lib, tab) : Promise.resolve(null)).then(function (got) {
             info.recognized = got;
             return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: got ? got.cleaned : picture, original: got ? picture : null,
-              components: got ? got.components : null, shapes: shapes, objects: info.objects,
+              components: got ? got.components : null, pipes: got ? got.pipes : null, shapes: shapes, objects: info.objects,
               title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
           });
         });
@@ -8905,8 +9613,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var got = info.recognized;
         outcomeToast({
           tone: 'good', title: 'Opening in VectorCraft',
-          lines: (got ? [iwdieN(got.count, 'component', 'components') + ' of your library found in the picture (' + got.summary + ') in ' + got.seconds +
-            ' s: each is a group of its own on the layer Komponenter, to move, resize or replace. The picture as it was is on the hidden layer Bakgrunn (original).'] : [])
+          lines: (got ? ['Found in the picture in ' + got.seconds + ' s: ' + [got.count ? iwdieN(got.count, 'component', 'components') + ' of your library (' + got.summary + ')' : '',
+            got.pills ? iwdieN(got.pills, 'pill', 'pills') : '', got.pipes.length ? iwdieN(got.pipes.length, 'pipe', 'pipes') : ''].filter(Boolean).join(', ') +
+            '. Each is a vector of its own - components and pills on the layer Komponenter, pipes on Rør - to move, resize, recolour or replace. ' +
+            'The picture as it was is on the hidden layer Bakgrunn (original).'] : [])
             .concat([what + ' - in a new tab.',
             'Press Ctrl+S there and choose Sync to IWMAC Designer: the picture comes straight back to this background, and its PNG goes to the plant’s pictures.',
             'The Designer’s own objects are in its IWMAC menu, after Help, and in its Libraries panel: placed and saved back, each becomes that object here. ' +
@@ -9119,7 +9829,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /* ---------- components found in the picture (v1.44.0) ---------- */
+    /* ---------- components, pills and pipes found in the picture (v1.44.0, v1.45.0) ---------- */
     /** What the editor's tab shows while the panel is made ready: what is being done, how far, and a
      *  way to go on without it. The tab is still about:blank, so it is this page's to write. */
     function vcPaper(tab) {
@@ -9154,20 +9864,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
     }
 
-    /** The library's components drawn at 1:1 on one sheet and read back, each a template
-     *  {k, w, h, rgba}: those of 8 to 600 px a side (lines and outlines are not looked for). */
-    function vcComponentTemplates(items) {
-      var cells = [], parts = [], x = 0, y = 0, row = 0, SW = 2048;
-      items.forEach(function (it, k) {
-        var w = Math.ceil(it.w), h = Math.ceil(it.h);
-        if (!(w >= 8 && h >= 8 && w <= 600 && h <= 600)) return;
-        if (x + w > SW) { x = 0; y += row + 2; row = 0; }
-        cells.push({ k: k, x: x, y: y, w: w, h: h });
-        var defs = iwdieDrawDefsSvg(it.shapes);
-        parts.push('<g transform="translate(' + x + ' ' + y + ')">' + (defs ? '<defs>' + defs + '</defs>' : '') +
-          it.shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</g>');
-        x += w + 2;
-        row = Math.max(row, h);
+    /** Cells ({w, h, markup}: SVG at 0,0 in a cell of that size) drawn on one sheet and read back.
+     *  -> Promise<[RGBA]> */
+    function vcDrawCells(cells) {
+      var x = 0, y = 0, row = 0, SW = 2048, parts = [], at = [];
+      cells.forEach(function (cl) {
+        if (x + cl.w > SW) { x = 0; y += row + 2; row = 0; }
+        at.push({ x: x, y: y });
+        parts.push('<g transform="translate(' + x + ' ' + y + ')">' + cl.markup + '</g>');
+        x += cl.w + 2;
+        row = Math.max(row, cl.h);
       });
       if (!cells.length) return Promise.resolve([]);
       var SH = y + row + 2, url = URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="' + SW + '" height="' + SH + '">' +
@@ -9178,95 +9884,212 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         c.width = SW; c.height = SH;
         var g = c.getContext('2d');
         g.drawImage(img, 0, 0);
-        return cells.map(function (cl) { return { k: cl.k, w: cl.w, h: cl.h, rgba: g.getImageData(cl.x, cl.y, cl.w, cl.h).data }; });
+        return cells.map(function (cl, i) { return g.getImageData(at[i].x, at[i].y, cl.w, cl.h).data; });
       }, function (e) { URL.revokeObjectURL(url); throw e; });
     }
 
-    /** The search, in a worker, so the page does not stand still for it; without one (a page that
-     *  forbids it), here, a few templates at a time. `step(done, of)` hears how far it is; `stop()`
-     *  ends it. -> {promise, stop} */
-    function vcFindAll(pic, W, H, templates, step) {
-      // stopped, the search ends with null at once: a worker ended answers nothing more
-      var stopped = false, worker = null, finish = null, handle = { stop: function () {
+    /** A component's shapes as SVG markup, with the arrowheads they need. */
+    function vcShapesMarkup(it, shapes) {
+      var defs = iwdieDrawDefsSvg(it.shapes);
+      return (defs ? '<defs>' + defs + '</defs>' : '') + shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('');
+    }
+
+    /** The library's components drawn at 1:1 and read back, each a template {k, w, h, rgba}: those
+     *  of 8 to 600 px a side (lines and outlines are not looked for). */
+    function vcComponentTemplates(items) {
+      var cells = [];
+      items.forEach(function (it, k) {
+        var w = Math.ceil(it.w), h = Math.ceil(it.h);
+        if (w >= 8 && h >= 8 && w <= 600 && h <= 600) cells.push({ k: k, w: w, h: h, markup: vcShapesMarkup(it, it.shapes) });
+      });
+      return vcDrawCells(cells).then(function (data) {
+        return cells.map(function (cl, i) { return { k: cl.k, w: cl.w, h: cl.h, rgba: data[i] }; });
+      });
+    }
+
+    /** Each top-level shape of components `ks` drawn alone at 1:1, as their templates are.
+     *  -> Promise<{k: [RGBA, one a shape]}> */
+    function vcShapeLayers(items, ks) {
+      var cells = [];
+      ks.forEach(function (k) {
+        var it = items[k], w = Math.ceil(it.w), h = Math.ceil(it.h);
+        it.shapes.forEach(function (s, i) { cells.push({ k: k, i: i, w: w, h: h, markup: vcShapesMarkup(it, [s]) }); });
+      });
+      return vcDrawCells(cells).then(function (data) {
+        var out = {};
+        cells.forEach(function (cl, j) { (out[cl.k] = out[cl.k] || [])[cl.i] = data[j]; });
+        return out;
+      });
+    }
+
+    /** The search, in workers - up to four, the templates shared out among them, each look once - so
+     *  the page does not stand still for it; without them (a page that forbids them), here, a few
+     *  templates at a time. `step(done, of)` hears how far it is; `stop()` ends it.
+     *  -> {promise: Promise<null | places found>, stop} */
+    function vcFindAll(pic, PW, PH, templates, step) {
+      var stopped = false, workers = [], finish = null, handle = { stop: function () {
         stopped = true;
-        if (worker) { try { worker.terminate(); } catch (e) {} worker = null; }
+        workers.forEach(function (wk) { try { wk.terminate(); } catch (e) {} });
+        workers = [];
         if (finish) finish(null);
       } };
+      // one template a look: twins (the same size and pixels) are looked for once
+      var seenLook = {}, looks = [];
+      templates.forEach(function (t) {
+        var sig = t.w + 'x' + t.h + ':' + iwdieVcPixelHash(t.rgba);
+        if (!seenLook[sig]) { seenLook[sig] = 1; looks.push(t); }
+      });
       var here = function () {
         return new Promise(function (resolve) {
-          var ix = iwdieVcComponentIndex(pic, W, H), found = [], seen = {}, i = 0;
+          var ix = iwdieVcComponentIndex(pic, PW, PH), found = [], seen = {}, i = 0;
           (function some() {
             if (stopped) { resolve(null); return; }
             var until = Date.now() + 40;
-            while (i < templates.length && Date.now() < until) {
-              for (var q = 0; q < 4; q++) iwdieVcFindOne(ix, templates[i], q, found, seen);
-              i++;
-            }
-            step(i, templates.length);
-            if (i < templates.length) setTimeout(some, 0); else resolve(iwdieVcPickComponents(found));
+            while (i < looks.length && Date.now() < until) { found = found.concat(iwdieVcSearch(ix, [looks[i]], null, seen)); i++; }
+            step(i, looks.length);
+            if (i < looks.length) setTimeout(some, 0); else resolve(iwdieVcPick(found));
           })();
         });
       };
       handle.promise = new Promise(function (resolve, reject) {
         finish = resolve;
-        var code = [iwdieVcBlur, iwdieVcTurn, iwdieVcPixelHash, iwdieVcComponentIndex, iwdieVcFindOne, iwdieVcPickComponents].map(String).join('\n') +
-          '\nonmessage = function (ev) {\n  var d = ev.data, ix = iwdieVcComponentIndex(d.pic, d.W, d.H), found = [], seen = {}, n = d.templates.length;\n' +
-          '  for (var i = 0; i < n; i++) {\n    for (var q = 0; q < 4; q++) iwdieVcFindOne(ix, d.templates[i], q, found, seen);\n' +
-          '    if (i % 4 === 3 || i === n - 1) postMessage({ done: i + 1, of: n });\n  }\n  postMessage({ found: iwdieVcPickComponents(found) });\n};\n';
+        var n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+        var code = [iwdieVcBlur, iwdieVcTurn, iwdieVcPixelHash, iwdieVcComponentIndex, iwdieVcPrepare, iwdieVcFindPrepared, iwdieVcSearch].map(String).join('\n') +
+          '\nonmessage = function (ev) {\n  var d = ev.data, ix = iwdieVcComponentIndex(d.pic, d.W, d.H);\n' +
+          '  var found = iwdieVcSearch(ix, d.templates, function (done) { if (done % 4 === 0 || done === d.templates.length) postMessage({ done: done }); });\n' +
+          '  postMessage({ found: found });\n};\n';
         var url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
-        try { worker = new Worker(url); } catch (e) { worker = null; }
-        if (!worker) { URL.revokeObjectURL(url); here().then(resolve, reject); return; }
-        worker.onmessage = function (ev) {
-          var d = ev.data || {};
-          if (d.found) { URL.revokeObjectURL(url); try { worker.terminate(); } catch (e) {} resolve(d.found); return; }
-          step(d.done, d.of);
-        };
-        worker.onerror = function () {
-          // a worker that cannot run this (a page's rules) leaves it to this page
+        // the biggest first, dealt round, so each worker has as much to do
+        var parts = [];
+        for (var p = 0; p < n; p++) parts.push([]);
+        looks.slice().sort(function (a, b) { return b.w * b.h - a.w * a.h; }).forEach(function (t, i) { parts[i % n].push(t); });
+        parts = parts.filter(function (pt) { return pt.length; });
+        var done = parts.map(function () { return 0; }), results = [], left = parts.length, failed = false;
+        var fallback = function () {
+          if (failed) return;
+          failed = true;
           URL.revokeObjectURL(url);
-          try { worker.terminate(); } catch (e) {}
-          worker = null;
+          workers.forEach(function (wk) { try { wk.terminate(); } catch (e) {} });
+          workers = [];
           here().then(resolve, reject);
         };
-        worker.postMessage({ pic: pic, W: W, H: H, templates: templates });
+        try {
+          parts.forEach(function (part, pi) {
+            var wk = new Worker(url);
+            workers.push(wk);
+            wk.onmessage = function (ev) {
+              var d = ev.data || {};
+              if (d.found) {
+                results = results.concat(d.found);
+                try { wk.terminate(); } catch (e) {}
+                if (--left === 0 && !stopped) { URL.revokeObjectURL(url); workers = []; resolve(iwdieVcPick(results)); }
+                return;
+              }
+              done[pi] = d.done;
+              step(done.reduce(function (s, v) { return s + v; }, 0), looks.length);
+            };
+            // a worker that cannot run this (a page's rules) leaves it to this page
+            wk.onerror = fallback;
+            wk.postMessage({ pic: pic, W: PW, H: PH, templates: part });
+          });
+        } catch (e) { fallback(); }
       });
       return handle;
     }
 
-    /** The components of the kept library found in the panel's picture (`canvas`, at panel size), taken
-     *  out of it and as groups for the job's SVG; the editor's tab shows how far it is, and may skip
-     *  it. -> Promise<null | {cleaned: data URL, components: [...], count, summary}> */
+    /** A template's main colour: the mean of its commonest solid colour (eight levels a channel). */
+    function vcMainColour(t) {
+      var hist = {}, top = null;
+      for (var i = 0; i < t.w * t.h; i++) {
+        if (t.rgba[i * 4 + 3] < 250) continue;
+        var key = (t.rgba[i * 4] >> 5) << 6 | (t.rgba[i * 4 + 1] >> 5) << 3 | (t.rgba[i * 4 + 2] >> 5), h = hist[key] || (hist[key] = { n: 0, c: [0, 0, 0] });
+        h.n++; h.c[0] += t.rgba[i * 4]; h.c[1] += t.rgba[i * 4 + 1]; h.c[2] += t.rgba[i * 4 + 2];
+        if (!top || h.n > top.n) top = h;
+      }
+      return top ? [top.c[0] / top.n, top.c[1] / top.n, top.c[2] / top.n] : null;
+    }
+
+    /** RGBA as a PNG data URL. */
+    function vcPng(rgba, w, h) {
+      var c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      var g = c.getContext('2d'), img = g.createImageData(w, h);
+      img.data.set(rgba);
+      g.putImageData(img, 0, 0);
+      return c.toDataURL('image/png');
+    }
+
+    /** What of the panel's picture (`canvas`, at panel size) can be vectors (v1.44.0, v1.45.0): the
+     *  kept library's components found in it, each with only the shapes the picture shows; then its
+     *  pills, and its pipes in the library's colours. Each is taken out of the picture. The editor's
+     *  tab shows how far it is, and may skip it.
+     *  -> Promise<null | {cleaned: data URL, components: [...] (pills among them, kind 'pill'),
+     *  pipes: [...], count, pills, summary, seconds}> */
     function vcRecognize(canvas, lib, tab) {
-      var paper = vcPaper(tab), W = canvas.width, H = canvas.height, t0 = Date.now();
+      var paper = vcPaper(tab), W2 = canvas.width, H2 = canvas.height, t0 = Date.now();
       var items = lib.items, names = iwdieVcComponentNames(items), job = null;
       paper.onSkip(function () { if (job) job.stop(); });
       return vcComponentTemplates(items).then(function (templates) {
         if (!templates.length || paper.skipped()) return null;
-        var pic = canvas.getContext('2d').getImageData(0, 0, W, H).data;
-        job = vcFindAll(pic, W, H, templates, function (done, of) {
+        var pic = canvas.getContext('2d').getImageData(0, 0, W2, H2).data;
+        job = vcFindAll(pic, W2, H2, templates, function (done, of) {
           // the editor's tab closed: nobody is waiting for the rest
           if (job && paper.skipped()) { job.stop(); return; }
-          paper.set(done / of, 'Looking for the ' + of + ' components of “' + (lib.file || 'the library') + '” in the picture… ' + done + ' of ' + of);
+          paper.set(done / of * 0.9, 'Looking for the ' + of + ' components of “' + (lib.file || 'the library') + '” in the picture… ' + done + ' of ' + of);
         });
         return job.promise.then(function (found) {
-          if (!found || !found.length || paper.skipped()) return null;
-          paper.set(1, 'Taking the ' + found.length + ' components found out of the picture…');
-          var byK = {};
+          if (!found || paper.skipped()) return null;
+          paper.set(0.92, 'Checking the ' + found.length + ' components found, then the pills and pipes…');
+          var byK = {}, ks = [];
           templates.forEach(function (t) { byK[t.k] = t; });
-          var holes = found.map(function (m) { var t = iwdieVcTurn(byK[m.k], m.turn); return { x: m.x, y: m.y, w: t.w, h: t.h, rgba: t.rgba }; });
-          var c = document.createElement('canvas');
-          c.width = W; c.height = H;
-          var g = c.getContext('2d'), img = g.createImageData(W, H);
-          img.data.set(iwdieVcErase(new Uint8ClampedArray(pic), W, H, holes));
-          g.putImageData(img, 0, 0);
-          var count = {}, components = found.map(function (m) {
-            var it = items[m.k];
-            count[names[m.k]] = (count[names[m.k]] || 0) + 1;
-            return { name: names[m.k], shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, tw: byK[m.k].w, th: byK[m.k].h };
+          found.forEach(function (m) { if (ks.indexOf(m.k) < 0) ks.push(m.k); });
+          return vcShapeLayers(items, ks).then(function (layers) {
+            var bg = iwdieVcComponentIndex(pic, W2, H2).bg, cleaned = new Uint8ClampedArray(pic), holes = [], comps = [], count = {}, pill = {};
+            found.forEach(function (m) {
+              var t = byK[m.k], it = items[m.k];
+              // a pill of the library is measured as a pill (below) instead: so it looks exactly as it did, without a stub it does not have
+              if (pill[m.k] === undefined) pill[m.k] = iwdieVcIsPill(t, bg.map(Math.round));
+              if (pill[m.k]) return;
+              var turned = (layers[m.k] || []).map(function (rgba) { return iwdieVcTurn({ k: m.k, w: t.w, h: t.h, rgba: rgba }, m.turn).rgba; });
+              // only the shapes the picture shows there: a stub to a value that is not below it goes
+              var keep = turned.length === it.shapes.length ? iwdieVcKeepShapes(pic, W2, H2, { x: m.x, y: m.y, w: m.w, h: m.h }, turned, bg) : [];
+              var shapes = it.shapes.filter(function (s, i) { return keep[i] !== false; });
+              if (!shapes.length) return;
+              var mask = new Uint8ClampedArray(m.w * m.h * 4);
+              if (keep.length) {
+                turned.forEach(function (L, i) {
+                  if (keep[i] === false) return;
+                  for (var j = 0; j < m.w * m.h; j++) if (L[j * 4 + 3] >= 8) mask[j * 4 + 3] = 255;
+                });
+              } else mask = iwdieVcTurn(t, m.turn).rgba;
+              holes.push({ x: m.x, y: m.y, w: m.w, h: m.h, rgba: mask });
+              count[names[m.k]] = (count[names[m.k]] || 0) + 1;
+              comps.push({ name: names[m.k], shapes: shapes, x: m.x, y: m.y, turn: m.turn, tw: t.w, th: t.h });
+            });
+            iwdieVcErase(cleaned, W2, H2, holes);
+            // the pills, then the pipes, on what is left
+            var palette = iwdieVcPalette(items);
+            var pills = iwdieVcFindPills(cleaned, W2, H2, palette);
+            iwdieVcErasePills(cleaned, W2, H2, pills);
+            var lines = iwdieVcFindLines(cleaned, W2, H2, bg.map(Math.round), iwdieVcPipeColours(palette));
+            iwdieVcEraseMask(cleaned, W2, H2, lines.mask);
+            var looks = templates.map(function (t) { return { name: names[t.k], w: t.w, h: t.h, main: vcMainColour(t) }; });
+            pills.forEach(function (p) {
+              p.kind = 'pill';
+              p.name = iwdieVcPillName(p, looks);
+              if (p.text) p.textHref = vcPng(p.text.rgba, p.text.w, p.text.h);
+            });
+            if (!comps.length && !pills.length && !lines.lines.length) return null;
+            var c = document.createElement('canvas');
+            c.width = W2; c.height = H2;
+            var g = c.getContext('2d'), img = g.createImageData(W2, H2);
+            img.data.set(cleaned);
+            g.putImageData(img, 0, 0);
+            var summary = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5)
+              .map(function (nm) { return nm + (count[nm] > 1 ? ' ×' + count[nm] : ''); }).join(', ');
+            return { cleaned: c.toDataURL('image/png'), components: comps.concat(pills), pipes: lines.lines, count: comps.length, pills: pills.length,
+              summary: summary, seconds: Math.round((Date.now() - t0) / 100) / 10 };
           });
-          var summary = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5)
-            .map(function (n) { return n + (count[n] > 1 ? ' ×' + count[n] : ''); }).join(', ');
-          return { cleaned: c.toDataURL('image/png'), components: components, count: found.length, summary: summary, seconds: Math.round((Date.now() - t0) / 100) / 10 };
         });
       }).then(null, function () { return null; });
     }
@@ -10980,10 +11803,26 @@ if (typeof module !== 'undefined' && module.exports) {
     vcBlur: iwdieVcBlur,
     vcTurn: iwdieVcTurn,
     vcComponentIndex: iwdieVcComponentIndex,
-    vcFindOne: iwdieVcFindOne,
-    vcPickComponents: iwdieVcPickComponents,
+    vcPrepare: iwdieVcPrepare,
+    vcFindPrepared: iwdieVcFindPrepared,
+    vcSearch: iwdieVcSearch,
+    vcPick: iwdieVcPick,
     vcFindComponents: iwdieVcFindComponents,
+    vcKeepShapes: iwdieVcKeepShapes,
     vcErase: iwdieVcErase,
+    vcEraseMask: iwdieVcEraseMask,
+    vcAreas: iwdieVcAreas,
+    vcMix: iwdieVcMix,
+    vcFindPills: iwdieVcFindPills,
+    vcErasePills: iwdieVcErasePills,
+    vcPillName: iwdieVcPillName,
+    vcIsPill: iwdieVcIsPill,
+    vcPillSvg: iwdieVcPillSvg,
+    vcHex: iwdieVcHex,
+    vcPalette: iwdieVcPalette,
+    vcPipeColours: iwdieVcPipeColours,
+    vcFindLines: iwdieVcFindLines,
+    vcLineSvg: iwdieVcLineSvg,
     vcComponentNames: iwdieVcComponentNames,
     vcSvgId: iwdieVcSvgId,
     vcComponentSvg: iwdieVcComponentSvg,
