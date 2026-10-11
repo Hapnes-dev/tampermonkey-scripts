@@ -1018,17 +1018,31 @@ artboard has another size lands where it was on its own artboard: scale it to fi
 is only read in the browser; nothing is uploaded.
 
 **The Designer's own objects (v1.40.0).** VectorCraft's **Libraries** panel also gets
-**IWMAC-objekter**: a placeholder for each of the 72 object ids in the script's catalogue, at
-its palette size, grouped by role (Headers, Labels, Values, Values with connector, … Buttons).
-The search field finds them by id: `fan`, `value_only`, `alarm`. A placeholder is a light,
-dashed box named `IWMAC <obj_id>`, with a short text where one fits.
+**IWMAC-objekter**: a placeholder for each of the 72 object ids in the script's catalogue,
+grouped by role (Headers, Labels, Values, Values with connector, … Buttons). The search field
+finds them by id: `fan`, `value_only`, `alarm`. A placeholder is a group named
+`IWMAC <obj_id>` in a dashed box.
 
 1. Drag one onto the drawing, where the object goes, or place it from the **IWMAC** menu
    (below). Resize it if the object should be bigger.
-2. A label, header or tag shows a text of its own. Write it over *Label*, *Header* or *Tag*
-   with the Type tool. On any other object, a text written over the default one becomes its
-   tag text: JV401 on a fan.
+2. A label or the header shows a text of its own, and an object with a tag shows its tag. Write
+   over it with the Type tool, and it becomes the object's tag text: JV401 on a fan.
 3. Save as usual.
+
+**As the Designer draws them (v1.43.0).** A placeholder shows the Designer's own picture of the
+object, at the size the Designer draws it.
+- The size is the object's render definition, as production panels place it: a "40px Box"
+  42 × 22, the header 250 × 20, an AK-PC group 81 × 21. Before, the palette's sizes were used
+  (50 × 20, 60 × 25, 80 × 80). Labels size to their text in the Designer, and are placed 50 × 20.
+- The picture is the one the Designer shows for the object, from its own `/iw_icons/`: the fan,
+  the pump, the value box, the "Alarm" pill.
+  - A label shows its text at its own size and weight.
+  - The header shows its bar with its text.
+  - An object with a tag shows the default tag under it (JV50, RT-XX).
+- The Designer's tab takes both from the Designer itself when *Edit in VectorCraft* opens: its
+  live render definitions (`controls`) and the pictures as PNG. It keeps them in Tampermonkey's
+  storage for a week. Without them, a placeholder is the light box of v1.40.0.
+- The IWMAC menu shows the same pictures.
 
 The Designer takes each placeholder out of the picture and places that object on the panel,
 at the placeholder's position and size. It uses the Designer's own loader, as Insert does. The
@@ -1115,8 +1129,8 @@ VectorCraft's colours but carries none of those marks. VectorCraft calls itself 
 The kit's `tests/test-vectorcraft-bridge.js` holds the SVG the Designer sends, the sizing,
 the merge, the PNG chunk, the component library as a `.vclibrary`, the script header and the
 sidebar. It also holds the IWMAC objects: the library, the names, the placeholders taken out
-and made into objects, the menu's placeholder files and search, and the sync's upload: the
-name, the server's list and its answer.
+and made into objects, the menu's placeholder files and search, the sync's upload (the name,
+the server's list and its answer), and the objects' looks.
 
 ## AI-generated panels (Copilot)
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.42.0
+// @version      1.43.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.42.0';
+var IWDIE_VERSION = '1.43.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -4517,6 +4517,11 @@ function iwdieDrawShapeSvg(s, extra) {
     // the name rides along as data-name, which VectorCraft (and Illustrator) show as the group's name
     return '<g' + (s.name ? ' data-name="' + iwdieDrawEsc(s.name) + '"' : '') + extra + '>' + s.items.map(function (c) { return iwdieDrawShapeSvg(c); }).join('') + '</g>';
   }
+  if (s.t === 'image') {
+    // a picture of an IWMAC object (v1.43.0), as large as fits its box
+    return '<image x="' + f(s.x || 0) + '" y="' + f(s.y || 0) + '" width="' + f(s.w) + '" height="' + f(s.h) + '" preserveAspectRatio="xMidYMid meet" href="' +
+      iwdieDrawEsc(s.src) + '"' + extra + '/>';
+  }
   if (s.t === 'd') {
     var mk = (st.arrow && st.stroke && st.sw > 0) ? ' marker-end="url(#' + iwdieDrawArrowId(st.stroke) + ')"' : '';
     return '<path d="' + s.d + '"' + (s.rule ? ' fill-rule="evenodd"' : '') + iwdieDrawStyleAttrs(st) + mk + extra + '/>';
@@ -4539,7 +4544,7 @@ function iwdieDrawShapeSvg(s, extra) {
   }
   if (s.t === 'text') {
     return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Arial, Helvetica, sans-serif" font-size="' + f(s.size) + '"' +
-      iwdieDrawStyleAttrs(st, true) + extra + '>' + iwdieDrawEsc(s.text) + '</text>';
+      (s.bold ? ' font-weight="600"' : '') + iwdieDrawStyleAttrs(st, true) + extra + '>' + iwdieDrawEsc(s.text) + '</text>';
   }
   return '';
 }
@@ -6141,9 +6146,9 @@ function iwdieVcAppearance(st) {
   return { items: items };
 }
 
-/** A component's shape as a VectorCraft node: a group (with its name), a path, or point text
- *  (v1.40.0, in Source Sans 3, which VectorCraft carries). Anything else is left out.
- *  `ids.next` numbers the nodes. */
+/** A component's shape as a VectorCraft node: a group (with its name), a path, point text
+ *  (v1.40.0, in Source Sans 3, which VectorCraft carries) or a picture (v1.43.0, its PNG kept in
+ *  `ids.images`). Anything else is left out. `ids.next` numbers the nodes. */
 function iwdieVcNode(s, ids) {
   if (!s) return null;
   if (s.t === 'group') {
@@ -6157,10 +6162,19 @@ function iwdieVcNode(s, ids) {
     if (!s.text || !isFinite(s.x) || !isFinite(s.y)) return null;
     var ink = iwdieVcPaint(s.st && s.st.fill);
     return { id: ids.next++, appearance: { items: [] }, kind: { type: 'text', kind: { kind: 'point' }, xf: [1, 0, 0, 1, s.x, s.y],
-      runs: [{ text: String(s.text), style: { font_family: 'Source Sans 3', font_style: 'Regular', size: s.size > 0 ? s.size : 12, tracking: 0,
+      runs: [{ text: String(s.text), style: { font_family: 'Source Sans 3', font_style: s.bold ? 'Semibold' : 'Regular', size: s.size > 0 ? s.size : 12, tracking: 0,
         baseline_shift: 0, h_scale: 100, v_scale: 100, rotation: 0, fill: ink.type === 'none' ? iwdieVcPaint('#000000') : ink,
         stroke: { type: 'none' }, stroke_width: 0, underline: false, strikethrough: false, all_caps: false } }],
       para: { justify: 'Left', left_indent: 0, right_indent: 0, first_line_indent: 0, space_before: 0, space_after: 0, hyphenate: false } } };
+  }
+  if (s.t === 'image') {
+    // a picture (v1.43.0): its PNG among the document's images, drawn into its box as large as fits
+    var png = /^data:image\/png;base64,([A-Za-z0-9+\/=]+)$/.exec(String(s.src || ''));
+    if (!png || !(s.iw > 0) || !(s.ih > 0) || !(s.w > 0) || !(s.h > 0) || !ids.images) return null;
+    var key = 'iwdie-' + iwdieVcPixelHash(iwdieUtf8Encode(png[1]));
+    ids.images[key] = { mime: 'image/png', data: png[1] };
+    var k = Math.min(s.w / s.iw, s.h / s.ih), dx = (s.w - s.iw * k) / 2, dy = (s.h - s.ih * k) / 2;
+    return { id: ids.next++, kind: { type: 'image', key: key, width: s.iw, height: s.ih, xf: [k, 0, 0, k, (s.x || 0) + dx, (s.y || 0) + dy] } };
   }
   if (s.t !== 'd') return null;
   var subs = iwdieVcSubpaths(s.d);
@@ -6173,7 +6187,7 @@ function iwdieVcNode(s, ids) {
 /** One component as a native VectorCraft document (.vectorcraft, format version 1): an artboard
  *  round it, one layer, the component a group named as it is. -> JSON text */
 function iwdieVcNativeDoc(item) {
-  var ids = { next: 3 }, name = (item && item.name) || 'Komponent';
+  var ids = { next: 3, images: {} }, name = (item && item.name) || 'Komponent';
   var kids = ((item && item.shapes) || []).map(function (s) { return iwdieVcNode(s, ids); }).filter(Boolean);
   var top = { id: ids.next++, name: name, kind: { type: 'group', children: kids, clip: false } };
   var w = Math.max(0, +item.w || 0), h = Math.max(0, +item.h || 0);
@@ -6186,7 +6200,7 @@ function iwdieVcNativeDoc(item) {
       next_id: ids.next, grid: { spacing: 72, subdivisions: 8 }, guides: [], images: {}, graphic_styles: [], swatch_groups: [], swatches: [],
       symbols: [], raster_effects_ppi: 72
     },
-    images: {}
+    images: ids.images
   });
 }
 
@@ -6337,6 +6351,13 @@ function iwdieVcChunk(png) {
   return plain;
 }
 
+/** A short hash of bytes (FNV-1a), to name a picture by what it is (v1.43.0). */
+function iwdieVcPixelHash(d) {
+  var h = 2166136261;
+  for (var i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}
+
 /* ===================== IWMAC objects in VectorCraft (v1.40.0) =====================
    The Designer's own objects - values, labels, alarms, fans, pumps... - as a VectorCraft library
    of placeholders, one per id of the object catalogue at its palette size, grouped by role.
@@ -6364,9 +6385,95 @@ var IWDIE_VC_OBJ_Z = {
   alarm: '375', led: '375', pump: '375', valve: '375', label: '1100'
 };
 
+/** How each object looks and how big it is on the Designer's canvas (v1.43.0), from its own two
+ *  registries (reference_data, 2026-10-10): the render definition's size, which is what production
+ *  panels place (a "40px Box" 42 × 22, the header 250 × 20) - labels size to their text and are
+ *  placed 50 wide - its picture under /iw_icons/ (the render definition's file, else the palette's),
+ *  its default tag text, whether it has a tag, and what the placeholder shows: the picture, the
+ *  label's text, or the header's bar. The Designer's live `controls` and pictures refine it.
+ *  id -> [w, h, picture, tag, has a tag, kind] */
+var IWDIE_VC_OBJ_LOOK = {
+  'number_v3_header_grey75': [250, 20, 'V3/assets/grey75_header.png', 'INFO', 1, 'bar'],
+  'number_v3_label_11px_norm': [50, 20, 'V3/assets/11pxn.png', 'Label', 1, 'label'],
+  'number_v3_label_10px_bold': [50, 20, 'V3/assets/10pxb.png', 'Label', 1, 'label'],
+  'number_v3_label_12px_bold': [50, 20, 'V3/assets/12pxb.png', 'Label', 1, 'label'],
+  'number_v3_label_8px_norm': [50, 20, 'V3/assets/8pxn.png', 'Label', 1, 'label'],
+  'number_v3_label_11px_bold': [50, 20, 'V3/assets/11pxb.png', 'Label', 1, 'label'],
+  'number_v3_label_10px_norm': [50, 20, 'V3/assets/10pxn.png', 'Label', 1, 'label'],
+  'number_v3_value_only': [50, 20, 'V3/textboxes/black_val_only.png', '', 0, 'picture'],
+  'number_v3_40px_no_conn_no_tag': [42, 22, 'V3/textboxes/62x22_plain_textbox.png', '', 1, 'picture'],
+  'number_v3_white_value_only': [50, 20, 'V3/textboxes/white_val_only.png', '', 0, 'picture'],
+  'number_v3_60px_dark_no_conn_no_tag': [62, 22, 'V3/textboxes/60px_dark_no_conn.png', '', 1, 'picture'],
+  'number_v3_60px_no_conn_no_tag': [62, 22, 'V3/textboxes/62x22_plain_textbox.png', '', 1, 'picture'],
+  'number_v3_60px_dark_no_conn': [62, 22, 'V3/textboxes/60px_dark_no_conn.png', 'RT-XX', 1, 'picture'],
+  'number_v3_60px_no_conn': [62, 22, 'V3/textboxes/62x22_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_45px_con_down': [46, 38, 'V3/textboxes/45px_connector_down.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_45px_con_left': [62, 22, 'V3/textboxes/45px_connector_left.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_45px_con_top': [46, 38, 'V3/textboxes/45px_connector_up.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_45px_con_right': [62, 22, 'V3/textboxes/45px_connector_right.png', 'RT-XX', 1, 'picture'],
+  'number_v3_40px_dark_con_down': [41, 26, 'V3/textboxes/41x26_RefTemp_LineDown.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_45px_no_conn_tag_up_center': [46, 22, 'V3/textboxes/46x21_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_40px_no_conn_tag_up_center': [42, 22, 'V3/textboxes/41x21_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_45px_no_conn_bott_center': [46, 22, 'V3/textboxes/46x21_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_60px_no_conn_tag_up_center': [62, 22, 'V3/textboxes/62x22_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_40px_no_conn_tag_up_left': [42, 22, 'V3/textboxes/41x21_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_45px_no_conn_tag_up_left': [46, 22, 'V3/textboxes/46x21_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_custom_json_obj': [60, 20, 'V3/textboxes/110px_no_conn.png', 'RT-XX', 1, 'picture'],
+  'number_v3_60px_json_obj': [60, 20, 'V3/textboxes/60px_dark_no_conn.png', 'RT-XX', 1, 'picture'],
+  'V3_R_34px_circular_alarm_nrm': [34, 34, 'V3/refrigeration/status_symbols/BellPumping_34.gif', '', 0, 'picture'],
+  'V3_R_28px_circular_cooling_nrm': [28, 28, 'V3/refrigeration/status_symbols/FreezeIcon_28.png', '', 0, 'picture'],
+  'V3_R_28px_circular_defrost_nrm': [28, 28, 'V3/refrigeration/status_symbols/DefrostIcon_28.png', '', 0, 'picture'],
+  'V3_R_24px_anim_rg_alarm_nrm': [24, 24, 'V3/refrigeration/status_symbols/anim_alarm_24.gif', '', 0, 'picture'],
+  'V3_ok_alarm_nrm': [61, 21, 'V3/refrigeration/status_symbols/alarm.png', '', 0, 'picture'],
+  'V3_led_13px_circ_grey_green': [13, 13, 'V3/indicators/13x13_cir_led_green.png', '', 0, 'picture'],
+  'V3_led_21px_square_grey_red': [21, 21, 'V3/indicators/21x21_sq_led_red.png', '', 0, 'picture'],
+  'V3_led_16px_circ_grey_red': [16, 16, 'V3/indicators/16x16_cir_led_red.png', '', 0, 'picture'],
+  'V3_led_16px_circ_grey_yellow': [16, 16, 'V3/indicators/16x16_cir_led_yellow.png', '', 0, 'picture'],
+  'V3_led_18px_circ_grey_red': [18, 18, 'V3/indicators/18x18_cir_led_red.png', '', 0, 'picture'],
+  'V3_58px_fan_left_nrm': [59, 59, 'V3/hvac/fans/58x58_fan_left_on.png', 'JV50', 1, 'picture'],
+  'V3_58px_fan_right_nrm': [59, 59, 'V3/hvac/fans/58x58_fan_right_on.png', 'JV40', 1, 'picture'],
+  'V3_21px_single_pump_grey_green_down': [21, 21, 'V3/pumps/21x21_single_pump_down_on.png', 'JP40', 1, 'picture'],
+  'V3_21px_single_pump_grey_green_left': [21, 21, 'V3/pumps/21x21_single_pump_left_on.png', 'JP40', 1, 'picture'],
+  'V3_21px_single_pump_grey_green_up': [21, 21, 'V3/pumps/21x21_single_pump_up_on.png', 'JP40', 1, 'picture'],
+  'number_v3_dummy_3way_motor_right': [30, 19, 'V3/valves/30x19_3way_motor_right.png', '', 1, 'picture'],
+  'v3_3w_valve_right_down_nrm': [22, 18, 'V3/valves/3valve_Right_Down_ON.png', '', 0, 'picture'],
+  'number_v3_cooler_2-way': [38, 132, 'V3/hvac/heatexchangers/38x132cooler_2way_colored.png', 'LK401', 1, 'picture'],
+  'number_v3_el_heater': [40, 85, 'V3/hvac/heatexchangers/38x65_electric_heater.png', 'LV402', 1, 'picture'],
+  'number_v3_heater_3_way': [40, 210, 'V3/hvac/heatexchangers/38x189_heater_colored.png', 'LV401', 1, 'picture'],
+  'number_v3_filter_only': [27, 70, 'V3/hvac/filters/27x53_filter_only.png', 'MF401', 1, 'picture'],
+  'numberV3_filter_with_diff_press': [90, 83, 'V3/textboxes/filter_with_diffpressure.png', 'QD401', 1, 'picture'],
+  'V3_horis_damper_flow-left_nrm': [36, 26, 'V3/hvac/dampers/36x26_hor_plain_damper_open.png', 'KA401', 1, 'picture'],
+  'V3_vert_damper_flow-up_inv': [26, 36, 'V3/hvac/dampers/26x36_ver_flow_up_damper_closed.png', 'KA402', 1, 'picture'],
+  'number_v3_dummy_resirc_damp_hor': [42, 42, 'V3/hvac/dampers/dampers_dummy_portrait.png', 'KA-XX', 1, 'picture'],
+  'number_v3_dummy_resirc_damp_vert': [70, 40, 'V3/hvac/dampers/dampers_dummy_landscape.png', 'KA-XX', 1, 'picture'],
+  'number_v3_exhaust_pipe_horisontal': [50, 18, 'V3/hvac/ducts/exhaust_pipe_horisontal.png', '', 1, 'picture'],
+  'number_v3_exhaust_pipe_vertical': [18, 50, 'V3/hvac/ducts/exhaust_pipe_vertical.png', '', 1, 'picture'],
+  'number_v3_dummy_21x17_Arrow_Left': [21, 17, 'V3/connectors/21x17_Arrow_Left.png', '', 1, 'picture'],
+  'number_v3_dummy_21x17_Arrow_Right': [21, 17, 'V3/connectors/21x17_Arrow_Right.png', '', 1, 'picture'],
+  'number_v3_dummy_6x15_Line_Small_Down': [6, 15, 'V3/connectors/6x15_Line_Small_Down.png', '', 1, 'picture'],
+  'number_v3_exhaust_connector_up': [18, 50, 'V3/hvac/ducts/exhaust_connector_up.png', '', 1, 'picture'],
+  'number_v3_fresh_pipe_horisontal': [50, 18, 'V3/hvac/ducts/fresh_pipe_horisontal.png', '', 1, 'picture'],
+  'number_v3_supply_connector_down': [18, 50, 'V3/hvac/ducts/supply_connector_down.png', '', 1, 'picture'],
+  'number_v3_supply_pipe_horisontal': [50, 18, 'V3/hvac/ducts/supply_pipe_horisontal.png', '', 1, 'picture'],
+  'number_v3_supply_pipe_vertical': [18, 50, 'V3/hvac/ducts/supply_pipe_vertical.png', '', 1, 'picture'],
+  'number_360_room': [100, 339, 'V3/dummy/360_room.png', '', 1, 'picture'],
+  'number_360_vb': [37, 70, 'V3/dummy/360_vb.png', '', 1, 'picture'],
+  'number_360_vg_rot': [60, 343, 'V3/dummy/360_vg_rot.png', '', 1, 'picture'],
+  'number_v3_rc_temp_48': [49, 21, 'V3/roomcontrol/temp_val_48.png', '', 1, 'picture'],
+  'numberV3_outside_temp': [79, 50, 'V3/textboxes/utetemp.png', 'RT-90', 1, 'picture'],
+  'V3_akpc_772_781_781A_783_contr': [81, 21, 'V3/refrigeration/status_symbols/danfoss/state_ready_grey.png', '', 0, 'picture'],
+  'V3_akpc_782A_suct': [81, 21, 'V3/refrigeration/status_symbols/danfoss/normal_control.png', '', 0, 'picture'],
+  'V3_akpc_783_781A_782A_cond': [81, 21, 'V3/refrigeration/status_symbols/danfoss/stopped.png', '', 0, 'picture'],
+  'V3_81x21_enebled_disabled_nrm': [81, 21, 'V3/buttons/81x21_State_Enabled.png', '', 0, 'picture']
+};
+/** Where the Designer leaves the objects' looks for the editor's page: sizes and pictures. */
+var IWDIE_VC_LOOKS_KEY = 'iwdie.vc.looks';
+
 var iwdieVcObjCache = null;
 
-/** The object catalogue as a list, in its order: [{id, w, h, role, desc}]. */
+/** The object catalogue as a list, in its order: [{id, w, h, role, desc, pic, tag, hasTag, kind}], at
+ *  the size the Designer draws each object (IWDIE_VC_OBJ_LOOK; the catalogue's own sizes are the
+ *  palette's). */
 function iwdieVcObjectCatalog() {
   if (iwdieVcObjCache) return iwdieVcObjCache;
   var out = [], roles = (IWDIE_OBJECT_CATALOGUE && IWDIE_OBJECT_CATALOGUE.by_role) || {};
@@ -6375,7 +6482,8 @@ function iwdieVcObjectCatalog() {
       var m = /^(\S+)\s+(\d+)x(\d+)\b(?:.*?\s-\s+(.*))?$/.exec(String(line));
       if (!m) return;
       var desc = String(m[4] || '').split(';')[0].replace(/\s+/g, ' ').replace(/\s*,\s*/g, ', ').trim();
-      out.push({ id: m[1], w: +m[2], h: +m[3], role: role, desc: desc });
+      var look = IWDIE_VC_OBJ_LOOK[m[1]] || [+m[2], +m[3], '', '', 0, 'picture'];
+      out.push({ id: m[1], w: look[0], h: look[1], role: role, desc: desc, pic: look[2], tag: look[3], hasTag: !!look[4], kind: look[5] });
     });
   });
   return (iwdieVcObjCache = out);
@@ -6388,15 +6496,31 @@ function iwdieVcObjectIndex() {
   return known;
 }
 
+/** The catalogue with what the Designer gave of each object's look (`looks`, by id: {w, h, src,
+ *  iw, ih, bar}): its live size, and its picture as a PNG data URL with that picture's own size
+ *  and, for the header, the colour of its bar. Without looks, the catalogue as it is. */
+function iwdieVcObjects(looks) {
+  return iwdieVcObjectCatalog().map(function (o) {
+    var l = looks && looks[o.id], c = {};
+    Object.keys(o).forEach(function (k) { c[k] = o[k]; });
+    if (!l) return c;
+    if (l.w >= 1 && l.h >= 1) { c.w = Math.round(l.w); c.h = Math.round(l.h); }
+    if (typeof l.src === 'string' && /^data:image\/png;base64,/.test(l.src) && l.iw > 0 && l.ih > 0) { c.src = l.src; c.iw = l.iw; c.ih = l.ih; }
+    if (/^#[0-9a-f]{6}$/i.test(l.bar || '')) c.bar = l.bar;
+    return c;
+  });
+}
+
 /** The size of a placeholder's text, or 0 when the object is too small for one. */
 function iwdieVcObjectTextSize(o) {
   var size = Math.min(8, o.h - 6);
   return (o.w >= 30 && size >= 6) ? size : 0;
 }
 
-/** The text a placeholder carries: the default text of an object that shows its own (Label,
- *  Header, Tag), else what the object is - without the size the box already shows - as far as
- *  it fits, cut after a whole word where that keeps most of it; '' for an object too small. */
+/** What a placeholder without the object's picture says inside its box: the default text of an
+ *  object that shows its own (Label, Header, Tag), else what the object is - without the size the
+ *  box already shows - as far as it fits, cut after a whole word where that keeps most of it; ''
+ *  for an object too small. */
 function iwdieVcObjectCaption(o) {
   var size = iwdieVcObjectTextSize(o);
   if (!size) return '';
@@ -6409,22 +6533,41 @@ function iwdieVcObjectCaption(o) {
   return (whole.length >= (room - 1) * 0.6 ? whole : trim(cut)) + '…';
 }
 
-/** One catalogue object's placeholder as a library item: a light box at the palette size, dashed
- *  in the blue the hidden layer of panel objects uses, with its text where one fits. */
+/** One object's placeholder as a library item, at the size the Designer draws it, inside a dashed
+ *  box in the blue of the hidden layer of panel objects (v1.43.0):
+ *  - a label: its text, at the label's own size and weight;
+ *  - the header: its bar, with its text in white;
+ *  - anything else, with the Designer's picture of it: that picture, and its tag text under it
+ *    when it has a tag (JV50 on a fan), to be written over;
+ *  - without the picture: the light box of v1.40.0, with what the object is in it. */
 function iwdieVcObjectItem(o) {
-  var shapes = [{ t: 'd', d: 'M0 0 L' + o.w + ' 0 L' + o.w + ' ' + o.h + ' L0 ' + o.h + ' Z', rule: '',
-    st: { stroke: '#4f80ff', fill: '#eaf1ff', sw: 1, dash: false, arrow: false, da: [3, 2], op: 0.8 } }];
-  var caption = iwdieVcObjectCaption(o), size = iwdieVcObjectTextSize(o);
-  if (caption) {
-    shapes.push({ t: 'text', x: 3, y: Math.round((o.h + size * 0.7) / 2 * 100) / 100, text: caption, size: size,
-      st: { stroke: null, fill: '#2f5fbf', sw: 0, dash: false, arrow: false } });
+  var w = o.w, h = o.h, box = 'M0 0 L' + w + ' 0 L' + w + ' ' + h + ' L0 ' + h + ' Z', shapes = [];
+  var line = function (fill, op) { return { t: 'd', d: box, rule: '', st: { stroke: '#4f80ff', fill: fill, sw: 1, dash: false, arrow: false, da: [3, 2], op: op } }; };
+  var text = function (x, y, s, size, fill, bold) {
+    return { t: 'text', x: x, y: Math.round(y * 100) / 100, text: s, size: size, bold: !!bold, st: { stroke: null, fill: fill, sw: 0, dash: false, arrow: false } };
+  };
+  if (o.kind === 'label') {
+    var px = +(/(\d+)px/.exec(o.id) || [0, 11])[1];
+    shapes.push(line(null, 0.6), text(2, (h + px * 0.7) / 2, o.tag || 'Label', px, '#3c4650', /bold/.test(o.id)));
+  } else if (o.kind === 'bar') {
+    shapes.push({ t: 'd', d: box, rule: '', st: { stroke: null, fill: o.bar || '#6b7782', sw: 0, dash: false, arrow: false } });
+    shapes.push(line(null, 0.6), text(6, (h + 11 * 0.7) / 2, o.tag || 'Header', 11, '#ffffff', true));
+  } else if (o.src) {
+    shapes.push({ t: 'image', x: 0, y: 0, w: w, h: h, src: o.src, iw: o.iw, ih: o.ih });
+    shapes.push(line(null, 0.6));
+    if (o.hasTag && o.tag) shapes.push(text(0, h + 9, o.tag, 8, '#3c4650'));
+  } else {
+    shapes.push(line('#eaf1ff', 0.8));
+    var caption = iwdieVcObjectCaption(o), size = iwdieVcObjectTextSize(o);
+    if (caption) shapes.push(text(3, (h + size * 0.7) / 2, caption, size, '#2f5fbf'));
   }
-  return { name: IWDIE_VC_OBJ_PREFIX + o.id, layer: IWDIE_VC_OBJ_ROLES[o.role] || o.role, w: o.w, h: o.h, shapes: shapes };
+  return { name: IWDIE_VC_OBJ_PREFIX + o.id, layer: IWDIE_VC_OBJ_ROLES[o.role] || o.role, w: w, h: h, shapes: shapes };
 }
 
-/** The placeholders of the whole catalogue as library items, in its order. */
-function iwdieVcObjectItems() {
-  return iwdieVcObjectCatalog().map(iwdieVcObjectItem);
+/** The placeholders of the whole catalogue as library items, in its order, with the Designer's
+ *  looks when there are any. */
+function iwdieVcObjectItems(looks) {
+  return iwdieVcObjects(looks).map(iwdieVcObjectItem);
 }
 
 /** One placeholder as an SVG file (v1.41.0), to be dropped on the drawing: VectorCraft places a
@@ -6434,10 +6577,12 @@ function iwdieVcObjectSvg(o) {
   var it = iwdieVcObjectItem(o), f = iwdieDrawFmt;
   var parts = it.shapes.map(function (s) {
     if (s.t !== 'text') return iwdieDrawShapeSvg(s);
-    return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Source Sans 3" font-size="' + f(s.size) + '" fill="' + s.st.fill + '">' +
-      iwdieDrawEsc(s.text) + '</text>';
+    return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Source Sans 3" font-size="' + f(s.size) + '"' +
+      (s.bold ? ' font-weight="600"' : '') + ' fill="' + s.st.fill + '">' + iwdieDrawEsc(s.text) + '</text>';
   });
-  return '<svg xmlns="http://www.w3.org/2000/svg" width="' + it.w + '" height="' + it.h + '" viewBox="0 0 ' + it.w + ' ' + it.h + '">' +
+  // the tag text under the box is the file's too, so the SVG reaches to it; the box stays at 0, 0
+  var vh = Math.max(it.h, it.shapes.reduce(function (m, s) { return s.t === 'text' ? Math.max(m, Math.ceil(s.y + 2)) : m; }, 0));
+  return '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="' + it.w + '" height="' + vh + '" viewBox="0 0 ' + it.w + ' ' + vh + '">' +
     parts.join('') + '</svg>';
 }
 
@@ -6468,8 +6613,8 @@ function iwdieVcObjectId(name) {
  *  Designer objects: the 17 fields of an unlinked object, at the stacking order of the panel's
  *  own objects of that kind or role, else of its band. One that is already on the panel - an
  *  object of that kind within 2 px of it, as after an earlier save - is counted, not repeated.
- *  Its text becomes tag_text when the object shows a text of its own, or when it was written
- *  over (JV401 on a fan). `existing` is the panel's objects. -> {objects, already} */
+ *  Its text becomes tag_text on a label, the header and an object with a tag (JV401 on a fan).
+ *  `existing` is the panel's objects. -> {objects, already} */
 function iwdieVcDesignerObjects(found, existing) {
   var known = iwdieVcObjectIndex();
   var have = (existing || []).filter(function (e) { return e && typeof e === 'object'; });
@@ -6491,8 +6636,11 @@ function iwdieVcDesignerObjects(found, existing) {
       return e.obj_id === o.id && near(e.posLeft, x) && near(e.posTop, y) && near(e.posWidth, w) && near(e.posHeight, h);
     });
     if (there) { already++; return; }
+    // its text is the object's tag text: a label's or the header's as written; on an object with a
+    // tag, as written, its default included (v1.43.0); not what a placeholder without the object's
+    // picture says the object is, and nothing for an object without a tag
     var text = String(f.text || '').replace(/\s+/g, ' ').trim();
-    if (!IWDIE_VC_OBJ_TEXT[o.role] && text === iwdieVcObjectCaption(o)) text = '';
+    if (o.kind !== 'label' && o.kind !== 'bar' && (!o.hasTag || text === iwdieVcObjectCaption(o))) text = '';
     objects.push({ obj_id: o.id, name: 'object_0', id: 'driver_id', posWidth: w, posHeight: h, posLeft: x, posTop: y, zIndex: zOf(o),
       tag_text: text, linked: 'false', link_name: '', link_tag: '', sub_group: '', driver_id: 'driver_id', unit_id: '', unit_ref: '', alias_text: '' });
   });
@@ -7779,10 +7927,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        drop point, as one group named after the file - "IWMAC <obj_id>", which makes it a
        placeholder, as one dragged from Libraries. */
     /** The IWMAC menu on the editor's page; `say(html, bad)` hears what went wrong. */
-    function vcObjectMenu(say) {
+    function vcObjectMenu(say, looks) {
       if (document.getElementById('iwdie-vcm')) return;
-      var esc2 = iwdieEscHtml, byId = iwdieVcObjectIndex(), roles = [], byRole = {};
-      iwdieVcObjectCatalog().forEach(function (o) {
+      var esc2 = iwdieEscHtml, all = iwdieVcObjects(looks), byId = {}, roles = [], byRole = {};
+      all.forEach(function (o) {
+        byId[o.id] = o;
         if (!byRole[o.role]) { byRole[o.role] = []; roles.push(o.role); }
         byRole[o.role].push(o);
       });
@@ -7801,7 +7950,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '.iwdie-vcm-l{flex:1}',
         '.iwdie-vcm-k{color:#b0b0b0;font-size:11.5px}',
         '.iwdie-vcm-i:hover .iwdie-vcm-k,.iwdie-vcm-i.iwdie-on .iwdie-vcm-k{color:#e4e4e4}',
-        '.iwdie-vcm-p{flex:none;width:30px;height:18px;display:flex;align-items:center;justify-content:center}',
+        '.iwdie-vcm-p{flex:none;width:44px;height:22px;display:flex;align-items:center;justify-content:center}',
+        '.iwdie-vcm-p img{max-width:44px;max-height:22px}',
         '.iwdie-vcm-h{padding:2px 6px 4px;color:#b0b0b0;font-size:11px;line-height:1.4}',
         '.iwdie-vcm-x{height:1px;background:#4b4b4b;margin:5px 0}',
         '.iwdie-vcm-s{display:block;width:100%;height:26px;box-sizing:border-box;margin:0 0 6px;padding:0 7px;background:#454545;border:1px solid #5f5f5f;',
@@ -7826,9 +7976,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       document.body.appendChild(title);
 
       var menu = null, sub = null, pending = null, placing = null, tag = null, downAt = null, swallow = false, pointer = { x: 0, y: 0 };
-      // a box in the object's proportions, as the placeholder looks
+      // the Designer's picture of the object (v1.43.0), else a box in its proportions
       var preview = function (o) {
-        var k = Math.min(28 / o.w, 16 / o.h), w = Math.max(3, Math.round(o.w * k)), h = Math.max(3, Math.round(o.h * k));
+        if (o.src) return '<img src="' + o.src + '" alt="">';
+        var k = Math.min(42 / o.w, 20 / o.h), w = Math.max(3, Math.round(o.w * k)), h = Math.max(3, Math.round(o.h * k));
         return '<svg width="' + w + '" height="' + h + '"><rect x="0.5" y="0.5" width="' + (w - 1) + '" height="' + (h - 1) +
           '" fill="#eaf1ff" stroke="#4f80ff" stroke-width="1" stroke-dasharray="2 1.5"/></svg>';
       };
@@ -7915,7 +8066,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         title.classList.add('iwdie-on');
         var input = menu.querySelector('.iwdie-vcm-s'), list = menu.querySelector('.iwdie-vcm-list');
         var fill = function () {
-          var q = input.value.trim(), hits = q ? iwdieVcObjectSearch(q) : null;
+          var q = input.value.trim(), hits = q ? iwdieVcObjectSearch(q).map(function (o) { return byId[o.id]; }) : null;
           closeSub();
           list.innerHTML = !hits ? roles.map(roleRow).join('') : hits.length ? hits.map(objectRow).join('') : '<div class="iwdie-vcm-n">No IWMAC object matches.</div>';
         };
@@ -8219,7 +8370,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       comp(lib ? iwdieN(lib.items.length, 'component', 'components') + ' from <b>' + esc2(lib.file || 'an Illustrator file') + '</b> - in Libraries once the editor has started.'
         : 'none yet. <b>Components from .ai…</b> reads the objects placed around an Illustrator file’s artboard - where Maskin files keep them - into VectorCraft’s Libraries.');
       // the Designer's own objects, as placeholders that become them when saved back (v1.40.0)
-      var objItems = iwdieVcObjectItems();
+      var looks = null;
+      try { looks = (GM_getValue(IWDIE_VC_LOOKS_KEY, null) || {}).items || null; } catch (e) { looks = null; }
+      var objItems = iwdieVcObjectItems(looks);
       var objLine = function (html, bad) {
         var o = ui.el.querySelector('.iwdie-vcb-o');
         o.className = 'iwdie-vcb-o' + (bad ? ' iwdie-vcb-e' : '');
@@ -8391,7 +8544,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         try { vcDropFile(job.svg, job.name || 'panel.svg', 'image/svg+xml', 'center'); }
         catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
         ui.later(20000);
-        try { vcObjectMenu(note); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
+        try { vcObjectMenu(note, looks); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
         try { vcSaveSync(job, note, saves); } catch (e) { note('Ctrl+S could not be set to sync: ' + esc2(String((e && e.message) || e)), true); }
         (libText ? libText.then(function (text) {
           return pause(1200).then(function () {
@@ -8426,8 +8579,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       libMigrate();
       var url = grabBackgroundUrl();
       var info = { url: url, bg: null, found: null, objects: exportPanelObjects(), size: exportPanelSize(), plant: currentPlantId(), panel: currentPanelName() };
+      // the objects' looks for the editor's page (v1.43.0); without them it shows boxes
+      var looked = vcObjectLooks().then(null, function () { return null; });
       // a background that cannot be read must not become an empty one in the editor
       (url ? fetchBackgroundBytes(url) : Promise.resolve(null)).then(function (bg) {
+        return looked.then(function () { return bg; });
+      }).then(function (bg) {
         info.bg = bg;
         info.found = (bg && iwdieSniffMime(bg.bytes) === 'image/png') ? iwdieDrawExtract(bg.bytes) : null;
         vcStartEdit(info, tab);
@@ -8655,6 +8812,60 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return { ok: false, name: name, message: (e && e.name === 'AbortError') ? 'the server did not answer within a minute' : String((e && e.message) || e) };
           })
           .then(function (r) { if (timer) clearTimeout(timer); return r; });
+      });
+    }
+
+    /* ---------- the IWMAC objects' looks (v1.43.0) ---------- */
+    /** A picture of the Designer's as PNG: a data URL, its size, and the mean colour of its opaque
+     *  pixels (the header's bar). -> Promise<{url, w, h, mean}> */
+    function vcIconPng(url) {
+      return fetch(url, { credentials: 'same-origin' }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.blob();
+      }).then(function (blob) {
+        var u = URL.createObjectURL(blob);
+        return loadPicture(u).then(function (img) {
+          URL.revokeObjectURL(u);
+          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+          if (!(w > 0 && h > 0)) throw new Error('an empty picture');
+          var c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          var g = c.getContext('2d');
+          g.drawImage(img, 0, 0);
+          var d = g.getImageData(0, 0, w, h).data, r = 0, gg = 0, b = 0, n = 0;
+          for (var i = 0; i < d.length; i += 4) if (d[i + 3] > 200) { r += d[i]; gg += d[i + 1]; b += d[i + 2]; n++; }
+          var hex = function (v) { v = Math.round(v / Math.max(1, n)); return (v < 16 ? '0' : '') + v.toString(16); };
+          return { url: c.toDataURL('image/png'), w: w, h: h, mean: n ? '#' + hex(r) + hex(gg) + hex(b) : '' };
+        }, function (e) { URL.revokeObjectURL(u); throw e; });
+      });
+    }
+
+    /** Each IWMAC object's size as the Designer draws it - its live render definition, `controls` -
+     *  and its picture from /iw_icons/, as PNG, left in Tampermonkey's storage for the editor's page.
+     *  Kept a week; fetched again sooner when the catalogue has an object they lack. -> Promise<looks> */
+    function vcObjectLooks() {
+      var cat = iwdieVcObjectCatalog(), kept = null;
+      try { kept = GM_getValue(IWDIE_VC_LOOKS_KEY, null); } catch (e) { kept = null; }
+      if (kept && kept.items && kept.at > Date.now() - 7 * 864e5 && cat.every(function (o) { return kept.items[o.id]; })) return Promise.resolve(kept.items);
+      var ctl = W.controls || {}, items = {};
+      return Promise.all(cat.map(function (o) {
+        var live = null, w = o.w, h = o.h, pic = o.pic;
+        try { live = ctl[o.id]; } catch (e) { live = null; }
+        if (live) {
+          var lw = parseFloat(live.width), lh = parseFloat(live.height);
+          if (lw >= 8) w = lw;              // a label's render width is a stub: it sizes to its text
+          if (lh >= 8) h = lh;
+          if (typeof live.file === 'string' && live.file) pic = live.file;
+        }
+        var look = items[o.id] = { w: w, h: h };
+        if (!pic) return null;
+        return vcIconPng(vcDesignerUrl('../iw_icons/' + pic)).then(function (p) {
+          look.src = p.url; look.iw = p.w; look.ih = p.h;
+          if (p.mean) look.bar = p.mean;
+        }, function () {});
+      })).then(function () {
+        try { GM_setValue(IWDIE_VC_LOOKS_KEY, { at: Date.now(), items: items }); } catch (e) {}
+        return items;
       });
     }
 
@@ -10360,6 +10571,10 @@ if (typeof module !== 'undefined' && module.exports) {
     vcObjectCaption: iwdieVcObjectCaption,
     vcObjectItems: iwdieVcObjectItems,
     vcObjectItem: iwdieVcObjectItem,
+    vcObjects: iwdieVcObjects,
+    VC_OBJ_LOOK: IWDIE_VC_OBJ_LOOK,
+    VC_LOOKS_KEY: IWDIE_VC_LOOKS_KEY,
+    vcPixelHash: iwdieVcPixelHash,
     vcObjectSvg: iwdieVcObjectSvg,
     vcObjectSearch: iwdieVcObjectSearch,
     VC_UPLOADS_KEY: IWDIE_VC_UPLOADS_KEY,
