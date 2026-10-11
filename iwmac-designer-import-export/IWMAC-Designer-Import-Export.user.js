@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.43.0
+// @version      1.44.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.43.0';
+var IWDIE_VERSION = '1.44.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -5985,7 +5985,9 @@ var IWDIE_LIB_META_KEY = 'iwdie.library.meta';
 var IWDIE_LIB_OLD_KEY = 'iwdie.draw.library.v1';
 
 /** The panel as an SVG VectorCraft opens with layers: Bakgrunn (the canvas colour and the
- *  picture), Tegning (Draw's shapes) and, hidden, Panelobjekter (each object's box and label). */
+ *  picture), Tegning (Draw's shapes) and, hidden, Panelobjekter (each object's box and label).
+ *  With components found in the picture (v1.44.0, `components`), those go on a layer of their own,
+ *  Komponenter, and the picture as it was (`original`) on a hidden one under the rest. */
 function iwdieVcSvg(o) {
   var W = Math.max(1, Math.round(o.width)), H = Math.max(1, Math.round(o.height)), esc = iwdieDrawEsc, f = iwdieDrawFmt;
   var shapes = Array.isArray(o.shapes) ? o.shapes : [], objects = Array.isArray(o.objects) ? o.objects : [];
@@ -5994,6 +5996,12 @@ function iwdieVcSvg(o) {
   if (o.title) out.push('  <title>' + esc(o.title) + '</title>');
   var defs = iwdieDrawDefsSvg(shapes);
   if (defs) out.push('  <defs>' + defs + '</defs>');
+  var picOk = function (u) { return !!u && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+\/=]+$/.test(u); };
+  if (picOk(o.original)) {
+    out.push('  <g id="Bakgrunn_original" data-name="Bakgrunn (original)" display="none">');
+    out.push('    <image width="' + W + '" height="' + H + '" preserveAspectRatio="none" xlink:href="' + o.original + '"/>');
+    out.push('  </g>');
+  }
   out.push('  <g id="Bakgrunn" data-name="Bakgrunn">');
   var plate = iwdieDrawColor(o.plate);
   if (plate) out.push('    <rect width="' + W + '" height="' + H + '" fill="' + plate + '"/>');
@@ -6001,6 +6009,13 @@ function iwdieVcSvg(o) {
     out.push('    <image width="' + W + '" height="' + H + '" preserveAspectRatio="none" xlink:href="' + o.picture + '"/>');
   }
   out.push('  </g>');
+  var found = Array.isArray(o.components) ? o.components : [];
+  if (found.length) {
+    var used = { Bakgrunn: 1, Bakgrunn_original: 1, Komponenter: 1, Tegning: 1, Panelobjekter: 1 };
+    out.push('  <g id="Komponenter" data-name="Komponenter">');
+    found.forEach(function (c) { out.push('    ' + iwdieVcComponentSvg(c, used)); });
+    out.push('  </g>');
+  }
   out.push('  <g id="Tegning" data-name="Tegning">');
   shapes.forEach(function (sh) { out.push('    ' + iwdieDrawShapeSvg(sh)); });
   out.push('  </g>');
@@ -6210,11 +6225,10 @@ function iwdieVcNativeDoc(item) {
  *  and the prefix of its graphics' ids (v1.40.0): {name, prefix}. -> JSON text */
 function iwdieVcLibraryFile(lib, thumbs, opts) {
   opts = opts || {};
-  var graphics = [], groups = [], byName = {}, count = {}, prefix = opts.prefix || 'iwdie-';
+  var graphics = [], groups = [], byName = {}, prefix = opts.prefix || 'iwdie-', names = iwdieVcComponentNames((lib && lib.items) || []);
   ((lib && lib.items) || []).forEach(function (it, k) {
     var layer = it.layer || 'Komponenter', id = prefix + (k + 1);
-    count[layer] = (count[layer] || 0) + 1;
-    graphics.push({ id: id, name: it.name || (layer + ' ' + count[layer]), width: it.w, height: it.h,
+    graphics.push({ id: id, name: names[k], width: it.w, height: it.h,
       data: iwdieBytesToBase64(iwdieUtf8Encode(iwdieVcNativeDoc(it))), thumbnail: (thumbs && thumbs[k]) || '' });
     if (!byName[layer]) { byName[layer] = { name: layer, items: [] }; groups.push(byName[layer]); }
     byName[layer].items.push({ kind: 'graphic', item: id });
@@ -6729,6 +6743,233 @@ function iwdieVcUploadReply(text) {
     return { ok: ok, message: j.message == null ? '' : String(j.message) };
   }
   return { ok: false, message: s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) || 'the server gave no answer' };
+}
+
+/* ===================== Components found in the picture (v1.44.0) =====================
+   Edit in VectorCraft looks in a panel's picture for the components of the library kept from an
+   Illustrator file (Components from .ai…). Each component is drawn at 1:1 and looked for in four
+   quarter turns, on the picture and on itself blurred a little, as Illustrator and the browser
+   smooth edges a little differently. A component found is taken out of the picture - its pixels
+   filled from round it - and goes to VectorCraft as vectors, a group of its own named as in the
+   library, where it can be moved, resized or replaced. The picture as it was goes along on a
+   hidden layer. These functions are pure, so a worker can run them. */
+
+/** RGBA blurred by a 3 × 3 binomial kernel; the edges repeat. -> Uint8ClampedArray */
+function iwdieVcBlur(src, w, h) {
+  var tmp = new Float32Array(w * h * 4), out = new Uint8ClampedArray(w * h * 4), x, y, c, i;
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++) for (c = 0; c < 4; c++) {
+    i = (y * w + x) * 4 + c;
+    tmp[i] = (src[(y * w + Math.max(0, x - 1)) * 4 + c] + 2 * src[i] + src[(y * w + Math.min(w - 1, x + 1)) * 4 + c]) / 4;
+  }
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++) for (c = 0; c < 4; c++) {
+    i = (y * w + x) * 4 + c;
+    out[i] = (tmp[(Math.max(0, y - 1) * w + x) * 4 + c] + 2 * tmp[i] + tmp[(Math.min(h - 1, y + 1) * w + x) * 4 + c]) / 4;
+  }
+  return out;
+}
+
+/** A template ({k, w, h, rgba}) turned a quarter `q` times clockwise. */
+function iwdieVcTurn(t, q) {
+  if (!q) return t;
+  var w = t.w, h = t.h, W2 = q % 2 ? h : w, H2 = q % 2 ? w : h, d = new Uint8ClampedArray(w * h * 4);
+  for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+    var nx = q === 1 ? h - 1 - y : q === 2 ? w - 1 - x : y, ny = q === 1 ? x : q === 2 ? h - 1 - y : w - 1 - x;
+    var s = (y * w + x) * 4, o = (ny * W2 + nx) * 4;
+    d[o] = t.rgba[s]; d[o + 1] = t.rgba[s + 1]; d[o + 2] = t.rgba[s + 2]; d[o + 3] = t.rgba[s + 3];
+  }
+  return { k: t.k, w: W2, h: H2, rgba: d };
+}
+
+/** A picture made ready to look for components in: blurred a little, its pixels filed by colour
+ *  (eight levels a channel), and its background - the mean of its commonest colour. */
+function iwdieVcComponentIndex(pic, W, H) {
+  var P = iwdieVcBlur(pic, W, H), n = W * H, count = new Int32Array(512), start = new Int32Array(513), i;
+  var bucket = function (j) { return (P[j] >> 5) << 6 | (P[j + 1] >> 5) << 3 | (P[j + 2] >> 5); };
+  for (i = 0; i < n; i++) count[bucket(i * 4)]++;
+  for (i = 0; i < 512; i++) start[i + 1] = start[i] + count[i];
+  var fill = start.slice(0, 512), where = new Int32Array(n), top = 0;
+  for (i = 0; i < n; i++) where[fill[bucket(i * 4)]++] = i;
+  for (i = 1; i < 512; i++) if (count[i] > count[top]) top = i;
+  var bg = [0, 0, 0];
+  for (i = start[top]; i < start[top + 1]; i++) { bg[0] += P[where[i] * 4]; bg[1] += P[where[i] * 4 + 1]; bg[2] += P[where[i] * 4 + 2]; }
+  return { P: P, W: W, H: H, count: count, start: start, where: where, bg: bg.map(function (v) { return v / Math.max(1, count[top]); }) };
+}
+
+/** Where one template - a component drawn at 1:1, {k, w, h, rgba} - turned a quarter `q` times
+ *  clockwise is in the picture of `ix`: each place pushed to `found` ({k, turn, x, y, w, h, score,
+ *  ink}). A turn that looks like one looked for already (a round thing turned, a twin) is not
+ *  looked for again: `seen` keeps them.
+ *  - Only a component of more than one colour is looked for: one of one colour fits everywhere.
+ *  - A place must match it closely: on average within 22 (the sum over red, green and blue) on
+ *    all its solid pixels, and within 36 on those of its other colours, its lines and spots.
+ *  - And it must not be a piece of something bigger in its own colours: of the clear pixels round
+ *    it, at most a quarter may be of its colours, unless those are the picture's background. */
+function iwdieVcFindOne(ix, t0, q, found, seen) {
+  var t = iwdieVcTurn(t0, q), tw = t.w, th = t.h, W = ix.W, H = ix.H, P = ix.P;
+  if (tw > W || th > H) return;
+  var sig = tw + 'x' + th + ':' + iwdieVcPixelHash(t.rgba);
+  if (seen[sig]) return;
+  seen[sig] = 1;
+  var T = iwdieVcBlur(t.rgba, tw, th), raw = t.rgba, bucket = function (r, g, b) { return (r >> 5) << 6 | (g >> 5) << 3 | (b >> 5); };
+  var px = [], hist = {}, tx, ty, q2;
+  for (ty = 0; ty < th; ty++) for (tx = 0; tx < tw; tx++) {
+    var s = (ty * tw + tx) * 4;
+    if (raw[s + 3] < 250 || T[s + 3] < 250) continue;
+    px.push(tx, ty, T[s], T[s + 1], T[s + 2]);
+    var key = bucket(T[s], T[s + 1], T[s + 2]);
+    hist[key] = (hist[key] || 0) + 1;
+  }
+  var np = px.length / 5;
+  if (np < 40) return;
+  var mk = -1, mc = 0;
+  Object.keys(hist).forEach(function (key) { if (hist[key] > mc) { mc = hist[key]; mk = +key; } });
+  var mr = 0, mg = 0, mb = 0, mn = 0;
+  for (q2 = 0; q2 < px.length; q2 += 5) if (bucket(px[q2 + 2], px[q2 + 3], px[q2 + 4]) === mk) { mr += px[q2 + 2]; mg += px[q2 + 3]; mb += px[q2 + 4]; mn++; }
+  mr /= mn; mg /= mn; mb /= mn;
+  var ink = [], main = [], ir = 0, ig = 0, ib = 0;
+  for (q2 = 0; q2 < px.length; q2 += 5) {
+    if (Math.abs(px[q2 + 2] - mr) + Math.abs(px[q2 + 3] - mg) + Math.abs(px[q2 + 4] - mb) > 60) { ink.push(q2); ir += px[q2 + 2]; ig += px[q2 + 3]; ib += px[q2 + 4]; }
+    else main.push(q2);
+  }
+  if (ink.length < Math.max(16, np * 0.04) || main.length < 16) return;
+  ir /= ink.length; ig /= ink.length; ib /= ink.length;
+  var clear = [];
+  for (ty = 0; ty < th; ty++) for (tx = 0; tx < tw; tx++) if (raw[(ty * tw + tx) * 4 + 3] < 8) clear.push(tx, ty);
+  // anchors over its other colours and its main one; the first tried is the one whose colour is rarest in the picture
+  var spread = function (arr, m) { var out = []; for (var a = 0; a < m; a++) out.push(arr[Math.floor((a + 0.5) * arr.length / m)]); return out; };
+  var anchors = spread(ink, 10).concat(spread(main, 6)), pivot = anchors[0], rare = Infinity;
+  anchors.forEach(function (q3) { var c = ix.count[bucket(px[q3 + 2], px[q3 + 3], px[q3 + 4])]; if (c < rare) { rare = c; pivot = q3; } });
+  var diff = function (pi, q3) { return Math.abs(P[pi] - px[q3 + 2]) + Math.abs(P[pi + 1] - px[q3 + 3]) + Math.abs(P[pi + 2] - px[q3 + 4]); };
+  var pr = px[pivot + 2] >> 5, pg = px[pivot + 3] >> 5, pb = px[pivot + 4] >> 5, dr, dg, db, bgr = ix.bg[0], bgg = ix.bg[1], bgb = ix.bg[2];
+  // every picture pixel of the pivot's colour, or of one next to it, is a place it may start
+  for (dr = -1; dr <= 1; dr++) for (dg = -1; dg <= 1; dg++) for (db = -1; db <= 1; db++) {
+    var br = pr + dr, bgx = pg + dg, bb = pb + db;
+    if (br < 0 || bgx < 0 || bb < 0 || br > 7 || bgx > 7 || bb > 7) continue;
+    var bk = br << 6 | bgx << 3 | bb;
+    for (var w2 = ix.start[bk]; w2 < ix.start[bk + 1]; w2++) {
+      var at = ix.where[w2], x0 = at % W - px[pivot], y0 = (at / W | 0) - px[pivot + 1];
+      if (x0 < 0 || y0 < 0 || x0 + tw > W || y0 + th > H || diff(at * 4, pivot) > 70) continue;
+      var ok = true;
+      for (var a = 0; a < anchors.length && ok; a++) if (diff(((y0 + px[anchors[a] + 1]) * W + x0 + px[anchors[a]]) * 4, anchors[a]) > 70) ok = false;
+      if (!ok) continue;
+      var sAll = 0, sInk = 0, limit = 22 * np, q5;
+      for (q5 = 0; q5 < px.length && sAll <= limit; q5 += 5) sAll += diff(((y0 + px[q5 + 1]) * W + x0 + px[q5]) * 4, q5);
+      if (sAll > limit) continue;
+      for (q5 = 0; q5 < ink.length; q5++) sInk += diff(((y0 + px[ink[q5] + 1]) * W + x0 + px[ink[q5]]) * 4, ink[q5]);
+      if (sInk / ink.length > 36) continue;
+      var inky = 0;
+      for (q5 = 0; q5 < clear.length; q5 += 2) {
+        var ci = ((y0 + clear[q5 + 1]) * W + x0 + clear[q5]) * 4, cr = P[ci], cg = P[ci + 1], cb = P[ci + 2];
+        if (Math.abs(cr - bgr) + Math.abs(cg - bgg) + Math.abs(cb - bgb) <= 60) continue;
+        if (Math.abs(cr - ir) + Math.abs(cg - ig) + Math.abs(cb - ib) < 60 || Math.abs(cr - mr) + Math.abs(cg - mg) + Math.abs(cb - mb) < 60) inky++;
+      }
+      if (clear.length && inky / (clear.length / 2) > 0.25) continue;
+      found.push({ k: t.k, turn: q, x: x0, y: y0, w: tw, h: th, score: Math.round(sAll / np * 10) / 10, ink: Math.round(sInk / ink.length * 10) / 10 });
+    }
+  }
+}
+
+/** One component per place: the biggest first, then the closest; one that overlaps a kept one by
+ *  more than a third of the smaller goes. -> the kept ones */
+function iwdieVcPickComponents(found) {
+  var sorted = found.slice().sort(function (a, b) { return b.w * b.h - a.w * a.h || a.score - b.score; }), keep = [];
+  sorted.forEach(function (f) {
+    var clash = keep.some(function (o) {
+      var ix = Math.max(0, Math.min(o.x + o.w, f.x + f.w) - Math.max(o.x, f.x)), iy = Math.max(0, Math.min(o.y + o.h, f.y + f.h) - Math.max(o.y, f.y));
+      return ix * iy > Math.min(o.w * o.h, f.w * f.h) / 3;
+    });
+    if (!clash) keep.push(f);
+  });
+  return keep;
+}
+
+/** The components of `templates` in a picture, in all four quarter turns, at once; `progress(done,
+ *  of)` hears how far it is. -> [{k, turn, x, y, w, h, score, ink}] */
+function iwdieVcFindComponents(pic, W, H, templates, progress) {
+  var ix = iwdieVcComponentIndex(pic, W, H), found = [], seen = {};
+  templates.forEach(function (t, i) {
+    for (var q = 0; q < 4; q++) iwdieVcFindOne(ix, t, q, found, seen);
+    if (progress) progress(i + 1, templates.length);
+  });
+  return iwdieVcPickComponents(found);
+}
+
+/** The picture with the components found taken out (`holes`: [{x, y, w, h, rgba}], each its turned
+ *  template where it was found). Each of their pixels, and one more round them for the smoothed
+ *  edge, is filled from the nearest pixels left: on its row when those on either side agree (a
+ *  pipe running through), else on its column when those agree, else the nearest of the four.
+ *  Changes `pic` and returns it. */
+function iwdieVcErase(pic, W, H, holes) {
+  var M = new Uint8Array(W * H), x, y, c;
+  (holes || []).forEach(function (o) {
+    for (var ty = 0; ty < o.h; ty++) for (var tx = 0; tx < o.w; tx++) {
+      if (o.rgba[(ty * o.w + tx) * 4 + 3] < 8) continue;
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+        var X = o.x + tx + dx, Y = o.y + ty + dy;
+        if (X >= 0 && Y >= 0 && X < W && Y < H) M[Y * W + X] = 1;
+      }
+    }
+  });
+  var src = new Uint8ClampedArray(pic);
+  var near = function (x0, y0, dx, dy) {
+    for (var s = 1; s <= 120; s++) {
+      var X = x0 + dx * s, Y = y0 + dy * s;
+      if (X < 0 || Y < 0 || X >= W || Y >= H) return null;
+      if (!M[Y * W + X]) return { s: s, i: (Y * W + X) * 4 };
+    }
+    return null;
+  };
+  var same = function (a, b) { return Math.abs(src[a.i] - src[b.i]) + Math.abs(src[a.i + 1] - src[b.i + 1]) + Math.abs(src[a.i + 2] - src[b.i + 2]) < 40; };
+  for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+    if (!M[y * W + x]) continue;
+    var l = near(x, y, -1, 0), r = near(x, y, 1, 0), u = near(x, y, 0, -1), d = near(x, y, 0, 1), a = null, b = null, o = (y * W + x) * 4;
+    if (l && r && same(l, r)) { a = l; b = r; } else if (u && d && same(u, d)) { a = u; b = d; }
+    if (a) {
+      var t = a.s / (a.s + b.s);
+      for (c = 0; c < 4; c++) pic[o + c] = src[a.i + c] * (1 - t) + src[b.i + c] * t;
+      continue;
+    }
+    var best = null;
+    [l, r, u, d].forEach(function (p) { if (p && (!best || p.s < best.s)) best = p; });
+    if (best) for (c = 0; c < 4; c++) pic[o + c] = src[best.i + c];
+  }
+  return pic;
+}
+
+/** The names the library gives its components, by index: its own name, else its layer's and a
+ *  number, as in VectorCraft's Libraries panel ("Komponenter v1 23"). */
+function iwdieVcComponentNames(items) {
+  var count = {};
+  return (items || []).map(function (it) {
+    var layer = it.layer || 'Komponenter';
+    count[layer] = (count[layer] || 0) + 1;
+    return it.name || (layer + ' ' + count[layer]);
+  });
+}
+
+/** An XML id from a name, as VectorCraft's own SVG makes one - anything but letters, digits, "-",
+ *  "_" and "." becomes "_" - and "-2", "-3"... to keep it apart from those in `used`. */
+function iwdieVcSvgId(name, used) {
+  var base = String(name || '').trim().replace(/[^A-Za-z0-9_.\-]/g, '_');
+  if (!/^[A-Za-z_]/.test(base)) base = '_' + base;
+  var id = base, k = 1;
+  while (used[id]) id = base + '-' + (++k);
+  used[id] = 1;
+  return id;
+}
+
+/** A component found, as a group of the job's SVG: its shapes, named, where it was found and turned
+ *  as it was ({name, shapes, x, y, turn, tw, th}: tw × th its size drawn, before the turn). The id
+ *  must be unique and XML's; `data-name` keeps the name itself, which VectorCraft shows. */
+function iwdieVcComponentSvg(c, used) {
+  var f = iwdieDrawFmt, x = c.x, y = c.y, id = iwdieVcSvgId(c.name, used), name = String(c.name || '').trim();
+  var xf = c.turn === 1 ? 'translate(' + f(x + c.th) + ' ' + f(y) + ') rotate(90)'
+    : c.turn === 2 ? 'translate(' + f(x + c.tw) + ' ' + f(y + c.th) + ') rotate(180)'
+    : c.turn === 3 ? 'translate(' + f(x) + ' ' + f(y + c.tw) + ') rotate(270)'
+    : 'translate(' + f(x) + ' ' + f(y) + ')';
+  var defs = iwdieDrawDefsSvg(c.shapes);
+  return '<g id="' + iwdieDrawEsc(id) + '"' + (name && name !== id ? ' data-name="' + iwdieDrawEsc(name) + '"' : '') + ' transform="' + xf + '">' +
+    (defs ? '<defs>' + defs + '</defs>' : '') + c.shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</g>';
 }
 
 /* ===================== browser body ===================== */
@@ -8629,8 +8870,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (doc) { vc = true; return shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc; }
         return exportPaint(base && base.bytes, base && base.mime, size, null).then(function (c) {
           var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
-          return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: base ? c.toDataURL('image/png') : null, shapes: shapes, objects: info.objects,
-            title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
+          var picture = base ? c.toDataURL('image/png') : null, lib = base ? libLoad() : null;
+          // the kept components looked for in the picture (v1.44.0): those found become vectors of their own
+          return (lib ? vcRecognize(c, lib, tab) : Promise.resolve(null)).then(function (got) {
+            info.recognized = got;
+            return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: got ? got.cleaned : picture, original: got ? picture : null,
+              components: got ? got.components : null, shapes: shapes, objects: info.objects,
+              title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
+          });
         });
       });
       build.then(function (svg) {
@@ -8655,12 +8902,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           ? 'The VectorCraft document behind this background' + (shapes.length ? ', with the drawing from Draw on a layer of its own,' : '')
           : (base ? 'The picture' : 'An empty ' + size.w + ' × ' + size.h + ' canvas') +
             (shapes.length ? ', the drawing from Draw (' + iwdieN(shapes.length, 'shape', 'shapes') + ')' : '') + ' and the panel’s objects (on a hidden layer)';
+        var got = info.recognized;
         outcomeToast({
           tone: 'good', title: 'Opening in VectorCraft',
-          lines: [what + ' - in a new tab.',
+          lines: (got ? [iwdieN(got.count, 'component', 'components') + ' of your library found in the picture (' + got.summary + ') in ' + got.seconds +
+            ' s: each is a group of its own on the layer Komponenter, to move, resize or replace. The picture as it was is on the hidden layer Bakgrunn (original).'] : [])
+            .concat([what + ' - in a new tab.',
             'Press Ctrl+S there and choose Sync to IWMAC Designer: the picture comes straight back to this background, and its PNG goes to the plant’s pictures.',
             'The Designer’s own objects are in its IWMAC menu, after Help, and in its Libraries panel: placed and saved back, each becomes that object here. ' +
-              'Your components from Illustrator are in Libraries too, once read.'],
+              'Your components from Illustrator are in Libraries too, once read.']),
           footer: 'Nothing leaves the browser. The first start downloads the editor (about 20 MB); after that it is cached.'
         });
       }).then(null, function (e) {
@@ -8867,6 +9117,158 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         try { GM_setValue(IWDIE_VC_LOOKS_KEY, { at: Date.now(), items: items }); } catch (e) {}
         return items;
       });
+    }
+
+    /* ---------- components found in the picture (v1.44.0) ---------- */
+    /** What the editor's tab shows while the panel is made ready: what is being done, how far, and a
+     *  way to go on without it. The tab is still about:blank, so it is this page's to write. */
+    function vcPaper(tab) {
+      var doc = null, skipped = false, onSkip = null, line = null, fill = null;
+      try { doc = tab && !tab.closed ? tab.document : null; } catch (e) { doc = null; }
+      if (doc) {
+        try {
+          doc.open();
+          doc.write('<!doctype html><meta charset="utf-8"><title>IWMAC Designer → VectorCraft</title>' +
+            '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#535353;color:#d1d1d1;font:13px/1.45 \'Segoe UI\',Roboto,Arial,sans-serif">' +
+            '<div style="width:440px;padding:22px;box-sizing:border-box;background:#424242;border:1px solid #383838;border-radius:6px;box-shadow:0 8px 14px rgba(0,0,0,.55)">' +
+            '<div style="font-size:16px;font-weight:600;color:#ffffff;margin-bottom:10px">Preparing the panel for VectorCraft</div>' +
+            '<div id="line">Looking for the components in the picture…</div>' +
+            '<div style="height:6px;margin:12px 0;background:#383838;border-radius:3px"><div id="fill" style="height:6px;width:2%;background:#378ef0;border-radius:3px"></div></div>' +
+            '<button id="skip" style="height:28px;padding:0 16px;border:0;border-radius:14px;background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0;font:600 12.5px \'Segoe UI\',Arial,sans-serif">' +
+            'Skip - open the picture as it is</button></div></body>');
+          doc.close();
+          line = doc.getElementById('line');
+          fill = doc.getElementById('fill');
+          doc.getElementById('skip').addEventListener('click', function () { skipped = true; if (onSkip) onSkip(); });
+        } catch (e) { line = fill = null; }
+      }
+      return {
+        set: function (part, text) {
+          try {
+            if (fill) fill.style.width = Math.max(2, Math.min(100, Math.round(part * 100))) + '%';
+            if (line && text) line.textContent = text;
+          } catch (e) {}
+        },
+        onSkip: function (fn) { onSkip = fn; },
+        skipped: function () { var gone = true; try { gone = !tab || tab.closed; } catch (e) {} return skipped || gone; }
+      };
+    }
+
+    /** The library's components drawn at 1:1 on one sheet and read back, each a template
+     *  {k, w, h, rgba}: those of 8 to 600 px a side (lines and outlines are not looked for). */
+    function vcComponentTemplates(items) {
+      var cells = [], parts = [], x = 0, y = 0, row = 0, SW = 2048;
+      items.forEach(function (it, k) {
+        var w = Math.ceil(it.w), h = Math.ceil(it.h);
+        if (!(w >= 8 && h >= 8 && w <= 600 && h <= 600)) return;
+        if (x + w > SW) { x = 0; y += row + 2; row = 0; }
+        cells.push({ k: k, x: x, y: y, w: w, h: h });
+        var defs = iwdieDrawDefsSvg(it.shapes);
+        parts.push('<g transform="translate(' + x + ' ' + y + ')">' + (defs ? '<defs>' + defs + '</defs>' : '') +
+          it.shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</g>');
+        x += w + 2;
+        row = Math.max(row, h);
+      });
+      if (!cells.length) return Promise.resolve([]);
+      var SH = y + row + 2, url = URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="' + SW + '" height="' + SH + '">' +
+        parts.join('') + '</svg>'], { type: 'image/svg+xml' }));
+      return loadPicture(url).then(function (img) {
+        URL.revokeObjectURL(url);
+        var c = document.createElement('canvas');
+        c.width = SW; c.height = SH;
+        var g = c.getContext('2d');
+        g.drawImage(img, 0, 0);
+        return cells.map(function (cl) { return { k: cl.k, w: cl.w, h: cl.h, rgba: g.getImageData(cl.x, cl.y, cl.w, cl.h).data }; });
+      }, function (e) { URL.revokeObjectURL(url); throw e; });
+    }
+
+    /** The search, in a worker, so the page does not stand still for it; without one (a page that
+     *  forbids it), here, a few templates at a time. `step(done, of)` hears how far it is; `stop()`
+     *  ends it. -> {promise, stop} */
+    function vcFindAll(pic, W, H, templates, step) {
+      // stopped, the search ends with null at once: a worker ended answers nothing more
+      var stopped = false, worker = null, finish = null, handle = { stop: function () {
+        stopped = true;
+        if (worker) { try { worker.terminate(); } catch (e) {} worker = null; }
+        if (finish) finish(null);
+      } };
+      var here = function () {
+        return new Promise(function (resolve) {
+          var ix = iwdieVcComponentIndex(pic, W, H), found = [], seen = {}, i = 0;
+          (function some() {
+            if (stopped) { resolve(null); return; }
+            var until = Date.now() + 40;
+            while (i < templates.length && Date.now() < until) {
+              for (var q = 0; q < 4; q++) iwdieVcFindOne(ix, templates[i], q, found, seen);
+              i++;
+            }
+            step(i, templates.length);
+            if (i < templates.length) setTimeout(some, 0); else resolve(iwdieVcPickComponents(found));
+          })();
+        });
+      };
+      handle.promise = new Promise(function (resolve, reject) {
+        finish = resolve;
+        var code = [iwdieVcBlur, iwdieVcTurn, iwdieVcPixelHash, iwdieVcComponentIndex, iwdieVcFindOne, iwdieVcPickComponents].map(String).join('\n') +
+          '\nonmessage = function (ev) {\n  var d = ev.data, ix = iwdieVcComponentIndex(d.pic, d.W, d.H), found = [], seen = {}, n = d.templates.length;\n' +
+          '  for (var i = 0; i < n; i++) {\n    for (var q = 0; q < 4; q++) iwdieVcFindOne(ix, d.templates[i], q, found, seen);\n' +
+          '    if (i % 4 === 3 || i === n - 1) postMessage({ done: i + 1, of: n });\n  }\n  postMessage({ found: iwdieVcPickComponents(found) });\n};\n';
+        var url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+        try { worker = new Worker(url); } catch (e) { worker = null; }
+        if (!worker) { URL.revokeObjectURL(url); here().then(resolve, reject); return; }
+        worker.onmessage = function (ev) {
+          var d = ev.data || {};
+          if (d.found) { URL.revokeObjectURL(url); try { worker.terminate(); } catch (e) {} resolve(d.found); return; }
+          step(d.done, d.of);
+        };
+        worker.onerror = function () {
+          // a worker that cannot run this (a page's rules) leaves it to this page
+          URL.revokeObjectURL(url);
+          try { worker.terminate(); } catch (e) {}
+          worker = null;
+          here().then(resolve, reject);
+        };
+        worker.postMessage({ pic: pic, W: W, H: H, templates: templates });
+      });
+      return handle;
+    }
+
+    /** The components of the kept library found in the panel's picture (`canvas`, at panel size), taken
+     *  out of it and as groups for the job's SVG; the editor's tab shows how far it is, and may skip
+     *  it. -> Promise<null | {cleaned: data URL, components: [...], count, summary}> */
+    function vcRecognize(canvas, lib, tab) {
+      var paper = vcPaper(tab), W = canvas.width, H = canvas.height, t0 = Date.now();
+      var items = lib.items, names = iwdieVcComponentNames(items), job = null;
+      paper.onSkip(function () { if (job) job.stop(); });
+      return vcComponentTemplates(items).then(function (templates) {
+        if (!templates.length || paper.skipped()) return null;
+        var pic = canvas.getContext('2d').getImageData(0, 0, W, H).data;
+        job = vcFindAll(pic, W, H, templates, function (done, of) {
+          // the editor's tab closed: nobody is waiting for the rest
+          if (job && paper.skipped()) { job.stop(); return; }
+          paper.set(done / of, 'Looking for the ' + of + ' components of “' + (lib.file || 'the library') + '” in the picture… ' + done + ' of ' + of);
+        });
+        return job.promise.then(function (found) {
+          if (!found || !found.length || paper.skipped()) return null;
+          paper.set(1, 'Taking the ' + found.length + ' components found out of the picture…');
+          var byK = {};
+          templates.forEach(function (t) { byK[t.k] = t; });
+          var holes = found.map(function (m) { var t = iwdieVcTurn(byK[m.k], m.turn); return { x: m.x, y: m.y, w: t.w, h: t.h, rgba: t.rgba }; });
+          var c = document.createElement('canvas');
+          c.width = W; c.height = H;
+          var g = c.getContext('2d'), img = g.createImageData(W, H);
+          img.data.set(iwdieVcErase(new Uint8ClampedArray(pic), W, H, holes));
+          g.putImageData(img, 0, 0);
+          var count = {}, components = found.map(function (m) {
+            var it = items[m.k];
+            count[names[m.k]] = (count[names[m.k]] || 0) + 1;
+            return { name: names[m.k], shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, tw: byK[m.k].w, th: byK[m.k].h };
+          });
+          var summary = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5)
+            .map(function (n) { return n + (count[n] > 1 ? ' ×' + count[n] : ''); }).join(', ');
+          return { cleaned: c.toDataURL('image/png'), components: components, count: found.length, summary: summary, seconds: Math.round((Date.now() - t0) / 100) / 10 };
+        });
+      }).then(null, function () { return null; });
     }
 
     /** What VectorCraft saved, as the panel's background: drawn at panel size, with the SVG
@@ -10575,6 +10977,16 @@ if (typeof module !== 'undefined' && module.exports) {
     VC_OBJ_LOOK: IWDIE_VC_OBJ_LOOK,
     VC_LOOKS_KEY: IWDIE_VC_LOOKS_KEY,
     vcPixelHash: iwdieVcPixelHash,
+    vcBlur: iwdieVcBlur,
+    vcTurn: iwdieVcTurn,
+    vcComponentIndex: iwdieVcComponentIndex,
+    vcFindOne: iwdieVcFindOne,
+    vcPickComponents: iwdieVcPickComponents,
+    vcFindComponents: iwdieVcFindComponents,
+    vcErase: iwdieVcErase,
+    vcComponentNames: iwdieVcComponentNames,
+    vcSvgId: iwdieVcSvgId,
+    vcComponentSvg: iwdieVcComponentSvg,
     vcObjectSvg: iwdieVcObjectSvg,
     vcObjectSearch: iwdieVcObjectSearch,
     VC_UPLOADS_KEY: IWDIE_VC_UPLOADS_KEY,

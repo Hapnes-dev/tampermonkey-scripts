@@ -242,7 +242,7 @@ documents in it.
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
 | Drawing background artwork | **Edit in VectorCraft…** opens the panel in an open-source vector editor in a new tab, with the picture, any drawing and the objects on a hidden layer. Saving there sets the background through `iw_set_base_image`, and the next edit reopens the same document (v1.35.0; on the sidebar since v1.36.0, in place of *Draw background…*) |
 | Editing the background in Illustrator | *Background → Illustrator* writes a real .ai: the picture on a locked layer, the drawing as Illustrator objects, the panel's objects on a hidden reference layer (v1.34.0) |
-| Components from Illustrator | The objects around a `.ai` file's artboard go into VectorCraft's own Libraries panel, to drag onto the drawing (v1.33.0; in VectorCraft's Libraries since v1.37.0) |
+| Components from Illustrator | The objects around a `.ai` file's artboard go into VectorCraft's own Libraries panel, to drag onto the drawing (v1.33.0; in VectorCraft's Libraries since v1.37.0). Those drawn in the panel's picture are found there and opened as editable groups (v1.44.0) |
 | Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green when every object and container arrived and red when any did not, and says how many (since v1.31.1 the file's own warnings are listed but never colour it) |
 | Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
 | Not-a-panel-file / VV sketch file on **insert** | Blocked with an itemised error panel, canvas untouched |
@@ -894,10 +894,38 @@ the panel as a document with three layers:
   to draw on, when there is none.
 - **Panelobjekter**, hidden: every object on the panel as a dashed box with its label.
   Turn it on to see where the live values will sit.
+- **Komponenter** and, hidden, **Bakgrunn (original)**, when components were found in the
+  picture (v1.44.0, below).
 
 A panel without a background opens as an empty canvas of its size. A background that cannot
 be read stops the edit with a message, so it is never replaced by an empty one. The first
 start downloads the editor (about 20 MB). After that the browser has it cached.
+
+**Components found in the picture (v1.44.0).** When components from Illustrator are kept
+(by **Components from .ai…**), *Edit in VectorCraft…* first looks for them in the panel's
+picture. Those it finds can then be moved, resized, recoloured or replaced one by one, instead
+of being drawn again:
+- Each component is drawn at its size in the library and looked for in four quarter turns.
+  A place must match it closely, and must not be a piece of something bigger in the
+  component's own colours.
+- Each one found is taken out of the picture. Its pixels are filled from those round it, so a
+  pipe that ran through it runs on.
+- It arrives as a group of its own on a new layer, **Komponenter**, named as in the library
+  (*Temperatur 92*, *MiniVifte*), where it was found and turned as it was. Every path in it can
+  be edited, and a component from Libraries can take its place.
+- The picture as it was goes along on a hidden layer under the rest, **Bakgrunn (original)**.
+
+While it looks, the new tab shows how far it has come, with a **Skip - open the picture as it
+is** button. Closing the tab stops it too. The search runs in a worker, so the Designer does
+not freeze. The message in the Designer then says how many were found, and of which kind.
+
+Measured on the Maskin panel of plant 2349, with the 386 components of `2349_Maskin.ai` kept
+(the 331 between 8 and 600 px a side are looked for): 45 found in about 14 seconds, none of
+them false. Only a component drawn in the picture as it is in the library is found. One that
+was scaled, mirrored or changed in the artwork stays part of the picture: there, the gas
+cooler, the receiver and some valves. The colours must match too: a library read from a file
+without its colour profile may find nothing. Without kept components, the panel opens as
+before.
 
 Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Components
 from .ai…** in the banner reads another file's. The Designer's own objects arrive there too, as
@@ -1130,7 +1158,9 @@ The kit's `tests/test-vectorcraft-bridge.js` holds the SVG the Designer sends, t
 the merge, the PNG chunk, the component library as a `.vclibrary`, the script header and the
 sidebar. It also holds the IWMAC objects: the library, the names, the placeholders taken out
 and made into objects, the menu's placeholder files and search, the sync's upload (the name,
-the server's list and its answer), and the objects' looks.
+the server's list and its answer), and the objects' looks. And the components found in the
+picture: the search on a made-up picture, run as the worker runs it, the picture with them
+taken out, and their groups turned as they were found.
 
 ## AI-generated panels (Copilot)
 
