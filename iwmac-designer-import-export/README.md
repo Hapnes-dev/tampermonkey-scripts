@@ -1172,8 +1172,8 @@ tab of its own, to paste in place as the background (Ctrl+A, Ctrl+C in its tab; 
 *Bakgrunn* in the panel's tab; Ctrl+Shift+V). The file travels through Tampermonkey's storage, at
 most 40 MB, and leaves it as soon as VectorCraft's tab has it.
 
-The Designer's page cannot read folders, so what the card shows comes from VectorCraft's tab.
-Once the plants' folder is connected there, that tab reads its grouping folders in the
+Where the Designer's page cannot read folders (on http; but see v1.52.0 below), what the card
+shows comes from VectorCraft's tab. Once the plants' folder is connected there, that tab reads its grouping folders in the
 background, at most every 12 hours, and keeps every plant's folder by number in Tampermonkey's
 storage, with the `.ai` files it has seen in each plant's own. Until then the card links to
 Explorer only.
@@ -1191,6 +1191,35 @@ Measured in the stub host:
   that is no `.ai` was refused there.
 - **Trace the picture.** It ran the steps as before: 52 places, 7 components, 58 pills and 37
   pipes, in 3 seconds.
+
+**The card reads the plant's folder itself (v1.52.0).** Version 1.51.0 assumed the Designer is
+served on http, where Chrome lets no page read folders. So the card showed only what VectorCraft's
+tab had read. On a first edit that was nothing: just *Open in Explorer*, which does nothing on a
+PC without Anleggsmappe's links. The Designer is served on https, though, and there Chrome lets
+the page read a folder its user picks. So the card now does it itself:
+
+- **Connect the plants' folder…**, once: choose the folder that holds every plant's folder
+  (*Anlegg*). It is kept in the Designer site's storage. The browser asks again once a session,
+  when **Open plant folder…** is clicked.
+- The plant's folder is found by its number, by the same search as VectorCraft's banner. It is
+  shown with its `.ai` files, the panel's own marked, and a click on one uses it.
+- **Open plant folder…** opens the file dialog in the plant's folder, where the panel's file
+  lies.
+- If you choose the plant's own folder instead of the one that holds them all, it is used as it
+  is and not kept.
+
+Where the page cannot read folders (http), the card shows what VectorCraft's tab last read, as
+in v1.51.0.
+
+Measured in the stub host. Its page is on 127.0.0.1, which Chrome treats as secure, as it does
+https. The folder dialog was stood in by the site's own file system, laid out like the share.
+
+- **Connect.** The dialog was asked once and the folder kept. The card showed *2300-2349 › 2313
+  COOP EXTRA Sveio +1* with three `.ai` files, the panel's own marked.
+- **Open plant folder….** The file dialog opened in `Tegninger`.
+- **A click on the file.** It was handed on (2,136 kB).
+- **The next edit.** It found the folder without a click.
+- **The plant's own folder chosen.** It was used and not kept.
 
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
