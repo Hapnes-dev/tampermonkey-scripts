@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.34.1
+// @version      1.34.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.34.1';
+var IWDIE_VERSION = '1.34.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6216,9 +6216,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-draw-grow{flex:1 1 8px}',
       '.iwdie-draw-grip{cursor:move;color:#8a96a3;padding:0 4px;user-select:none;font-size:15px;touch-action:none}',
       '.iwdie-draw-title{margin-right:6px;white-space:nowrap}',
-      '.iwdie-draw-lbl{color:#5a6570;margin:0 2px 0 6px}',
+      '.iwdie-draw-lbl{color:#5a6570;margin:0 2px 0 6px;font-size:12.5px;font-weight:400}',
       '.iwdie-draw-bar .iwdie-draw-sw{width:16px;height:16px;padding:0;border-radius:3px;border:1px solid rgba(0,0,0,.28)}',
-      '.iwdie-draw-style{display:inline-flex;flex-wrap:nowrap;align-items:center;gap:3px}',
+      '.iwdie-draw-style{display:inline-flex;flex-wrap:nowrap;align-items:center;gap:3px;color:inherit;font-size:inherit;font-weight:inherit}',
       '.iwdie-draw-bar .iwdie-draw-sw.iwdie-on{outline:2px solid #2f6fb2;outline-offset:1px;border-color:rgba(0,0,0,.28)}',
       '.iwdie-draw-bar .iwdie-draw-sw.iwdie-none{background:linear-gradient(to top right,#fff calc(50% - 1px),#c0392b 50%,#fff calc(50% + 1px)) !important}',
       '.iwdie-draw-bar input[type=number]{width:54px;font:12.5px Roboto,Arial,sans-serif;padding:1px 3px}',
@@ -6248,6 +6248,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '  max-height:calc(100vh - 40px);overflow:auto;padding:22px;box-sizing:border-box;background:var(--vc-panel);border:1px solid var(--vc-border);border-radius:6px;',
       '  box-shadow:0 8px 14px rgba(0,0,0,.55);font:400 13px/1.326 var(--vc-font);color:var(--vc-text);text-align:left}',
       '.iwdie-vc-dlg h2{margin:0 0 4px;font:600 16px/1.326 var(--vc-font);color:var(--vc-text);border:0;padding:0;background:none}',
+      /* v1.34.2: the Designer's V3_designer.css ends a rule with ", span" - every span on the
+         page gets #5e6468, 14 px and weight 500 - so the option labels went dark on dark. */
+      '.iwdie-vc-dlg span{color:inherit;font-size:inherit;font-weight:inherit;line-height:inherit;font-family:inherit}',
       '.iwdie-vc-sub{margin:0 0 14px;font-size:11.5px;color:var(--vc-text-dim)}',
       '.iwdie-vc-sub b{color:var(--vc-text);font-weight:600}',
       '.iwdie-vc-cards{display:grid;gap:8px}',
@@ -6284,7 +6287,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-draw-lib.iwdie-drop{box-shadow:0 0 0 3px #2f6fb2,0 6px 24px rgba(0,0,0,.3);background:#eef4fa}',
       '.iwdie-draw-lib-head{display:flex;align-items:center;gap:6px;padding:8px 8px 4px 10px}',
       '.iwdie-draw-lib-head b{flex:0 0 auto}',
-      '.iwdie-draw-lib-count{flex:1 1 auto;color:#5a6570;font-size:12px}',
+      '.iwdie-draw-lib-count{flex:1 1 auto;color:#5a6570;font-size:12px;font-weight:400}',
       '.iwdie-draw-lib-head button{border:none;background:transparent;font-size:17px;line-height:1;cursor:pointer;color:#5a6570;padding:2px 6px;border-radius:4px}',
       '.iwdie-draw-lib-head button:hover{background:#eef4fa}',
       '.iwdie-draw-lib-tools{display:flex;gap:6px;padding:4px 10px}',
@@ -6302,7 +6305,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-draw-lib-item:hover{border-color:#9fb6cc;background:#eef4fa}',
       '.iwdie-draw-lib-item.iwdie-on{border-color:#2f6fb2;box-shadow:0 0 0 2px rgba(47,111,178,.35)}',
       '.iwdie-draw-lib-item img{display:block;width:100%;height:58px;object-fit:contain;background:#e5e7ea;border-radius:4px}',
-      '.iwdie-draw-lib-item span{font-size:11px;color:#425664;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}',
+      '.iwdie-draw-lib-item span{font-size:11px;font-weight:400;color:#425664;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}',
       '.iwdie-draw-lib-empty{color:#5a6570;padding:8px 4px;line-height:1.5}',
       '.iwdie-draw-layer text{pointer-events:bounding-box}',
       '.iwdie-draw-selbox{fill:none;stroke:#2f6fb2;stroke-width:1;stroke-dasharray:4 3;pointer-events:none}',

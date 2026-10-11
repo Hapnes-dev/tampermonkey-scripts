@@ -936,6 +936,12 @@ Filename: `iwmac-bg_<plant>_<panel>_<stamp>.ai` (or `.svg`, `.png`, `.jpg`). The
 
 **In VectorCraft's style (v1.34.0).** [VectorCraft](https://github.com/storytold/vectorcraft) is an open-source Rust reimplementation of Illustrator (MIT OR Apache-2.0). The export dialog takes its Medium Dark theme: panel `#535353`, cards `#424242`, text `#d1d1d1`, accent `#378ef0`, primary `#1473e6`, Source Sans 3. It also takes its metrics: 22 px padding, radius 6, 28 px pill buttons, a 2 px accent ring on the chosen card. The tokens are CSS custom properties on `.iwdie-vc` (`--vc-panel`, `--vc-accent`, …), so other dialogs can follow. No VectorCraft or ArtCraft branding is used.
 
+v1.34.2: on the live Designer the option labels came out dark grey on dark grey. A rule in the
+Designer's own `V3_designer.css` ends in `, span`, so every span on the page is `#5e6468`,
+14 px, weight 500. The dialog's spans now take the dialog's text colour, and the library
+panel and the style row are pinned against the same rule. The stub host page carries that
+rule now, so a test sees what the live page shows.
+
 ## AI-generated panels (Copilot)
 
 Insert JSON also takes **AI-authored** files — generate a panel from a P&ID or system description and insert it, then link the objects by hand. The authoring kit lives in the private `tampermonkey-scripts-documents` repository.
