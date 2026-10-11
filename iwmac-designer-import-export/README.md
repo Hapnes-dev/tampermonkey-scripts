@@ -1172,11 +1172,10 @@ tab of its own, to paste in place as the background (Ctrl+A, Ctrl+C in its tab; 
 *Bakgrunn* in the panel's tab; Ctrl+Shift+V). The file travels through Tampermonkey's storage, at
 most 40 MB, and leaves it as soon as VectorCraft's tab has it.
 
-Where the Designer's page cannot read folders (on http; but see v1.52.0 below), what the card
-shows comes from VectorCraft's tab. Once the plants' folder is connected there, that tab reads its grouping folders in the
-background, at most every 12 hours, and keeps every plant's folder by number in Tampermonkey's
-storage, with the `.ai` files it has seen in each plant's own. Until then the card links to
-Explorer only.
+In v1.51.0 and v1.52.0, the card's plant folder came from VectorCraft's tab, where the page could
+not read folders itself. With the plants' folder connected there, that tab read its grouping
+folders in the background and kept every plant's folder by number in Tampermonkey's storage.
+Since v1.53.0, PANG tells the card where the folder is (below), and that index is gone.
 
 Measured in the stub host:
 - **The index.** A plants' folder laid out like the share, connected in VectorCraft's tab, gave
@@ -1220,6 +1219,39 @@ https. The folder dialog was stood in by the site's own file system, laid out li
 - **A click on the file.** It was handed on (2,136 kB).
 - **The next edit.** It found the folder without a click.
 - **The plant's own folder chosen.** It was used and not kept.
+
+**The plant's folder from PANG (v1.53.0).** PANG, IWMAC's plant admin, already knows where every
+plant's folder is: its **Folder** button asks its own server (`get_folder_location`, at
+`tools.iwmac.local/services/pang/folder.php`, no login needed) and opens the answer in Explorer
+through `pang://folder`, a link type PANG's tools register on IWMAC's PCs. The card and
+VectorCraft's banner now do the same, through Tampermonkey, as PANG is on another site:
+
+- **Plant folder** shows the folder in full, as PANG tells it - such as
+  `\\…\Anlegg\2300-2349\2349 COOP EXTRA Sveio` - with **Copy path**, for Explorer's or a file
+  dialog's address bar. VectorCraft's banner shows its name.
+- **Open plant folder** opens it in Explorer, as PANG's Folder button does. Nothing to install:
+  Anleggsmappe's `anlegg://` link is used only when PANG has not answered.
+- From there, drag the panel's `.ai` onto the card.
+- On https, **List them here…** connects the folder that holds every plant's folder, once, and
+  lists the plant's `.ai` files on the card, each used with a click (v1.52.0). It copies that
+  folder's path, taken from PANG's answer, so it can be pasted in the dialog's address bar.
+
+Nothing about the share is in the script: PANG says it, each time.
+
+Measured: on IWMAC's network, PANG's service answered for plant 2349 without a login, with that
+plant's folder. PANG's handler log shows the link form it receives from its own Folder button
+(`pang://folder/?server=…&path=…`), which is the form the card writes. In the stub host, with
+Tampermonkey's request answered as PANG answers:
+
+- the card asked for plant 2313 in that form and showed the folder;
+- **Open plant folder** linked to `pang://folder?server=…&path=…/2313%20COOP%20EXTRA%20Sveio`;
+- **Copy path** copied the folder's path;
+- **List them here…** copied the plants' folder's path, then listed the plant's `.ai` files, and a
+  click on one handed it on;
+- VectorCraft's banner showed the folder's name, linked to the same.
+
+`pang://` is registered on the test PC, so the links were checked rather than clicked: there, a
+click opens Chrome's prompt, which a headless browser cannot show.
 
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
