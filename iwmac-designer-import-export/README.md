@@ -1038,6 +1038,32 @@ one differs). Under two statuses and a value with its own bubble there is the gr
 became pieces of the picture, and none was drawn again. Both questions were answered, Start
 again for an older drawing by Enter, and each read the original picture again.
 
+**An older drawing mended, and a progress page that never stands still (v1.48.1).** The dark
+rings stayed after 1.48.0 for those who went on with a drawing made by an earlier version. Its
+pills under the values were vectors, drawn again from the first edit on, and every later edit
+opened that drawing again. Starting again removed them, but with them everything drawn since.
+Now going on mends such a drawing, and that is what Enter does:
+- The pieces the old drawing drew again under the panel's objects are taken out: each group of
+  its layer Komponenter an object covers by half or more.
+- Its picture's own copy of a bubble there is taken out too.
+- Each value that is bare text gets its bubble cut afresh from the picture the drawing came from
+  (its hidden layer), as a fresh reading cuts it. Under an object the Designer draws itself
+  nothing is put back.
+- Everything else in the drawing stays: what you drew, moved or placed in VectorCraft since.
+
+A drawing of v1.47.0, which already kept the bubbles exactly, is gone on with as it is. Measured
+in the stub host on a drawing made the 1.46.0 way (six pills under objects drawn again, their
+ring dark and 1.5 px off): Enter, then a sync. Under the four bare-text values and the dark Ref
+pill, the bubbles are the picture's pixel for pixel; under the two statuses there is the ground.
+
+The progress page's time now runs on by itself, in the tab's own timer: the clock, the running
+step's own time, and the bar creeping on towards the step's end while nothing else is heard.
+Reading the pills and the pipes held the page for seconds on a slow machine, and the tab with
+it, so both now run in workers, and the ground's colour comes from the search's workers. What
+each found place shows is checked a few at a time. Measured with the CPU slowed six times: the
+page used to stand still for 4.2 s after the search; now the longest pause is 0.4 s, and the
+editor starts after 4.3 s instead of 7.9 s.
+
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
 off. An object placed by a sync is known again at the next one too: moved, resized or deleted

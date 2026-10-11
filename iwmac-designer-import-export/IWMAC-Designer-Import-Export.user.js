@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.48.0
+// @version      1.48.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.48.0';
+var IWDIE_VERSION = '1.48.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6864,8 +6864,10 @@ function iwdieVcPanelSent(objects) {
  *  an earlier sync kept of the objects (v1.47.0: each piece with its box, data-iwdie-box) goes back
  *  into the placeholder of the object over it; the layer the last placeholders were on goes, or,
  *  holding more, is called IWMAC-rammer. */
-function iwdieVcAddPanelObjects(svg, objects, looks) {
+function iwdieVcAddPanelObjects(svg, objects, looks, more) {
   var s = String(svg || ''), at = s.lastIndexOf('</svg>'), used = {}, unders = {};
+  // art cut afresh for some of them (v1.48.1, `more` by name: an older drawing mended)
+  Object.keys(more || {}).forEach(function (nm) { unders[nm] = (more[nm] || []).slice(); });
   if (at < 0) return s;
   var pieces = [], re = /<(\w+)\b[^>]*\sdata-iwdie-box="([^"]*)"[^>]*>/g, m;
   while ((m = re.exec(s))) {
@@ -6879,7 +6881,7 @@ function iwdieVcAddPanelObjects(svg, objects, looks) {
   }
   for (var i = pieces.length - 1; i >= 0; i--) {
     var p = pieces[i];
-    (unders[p.name] = unders[p.name] || []).unshift({ markup: s.slice(p.from, p.to), box: p.box });
+    (unders[p.name] = unders[p.name] || []).splice((more && more[p.name] || []).length, 0, { markup: s.slice(p.from, p.to), box: p.box });
     s = s.slice(0, p.from) + s.slice(p.to);
   }
   if (pieces.length) {
@@ -10117,16 +10119,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // from again - the one way to be rid of what an earlier version drew again in it
         var orig = doc ? iwdieVcOriginalPicture(doc) : null;
         if (!orig) return doc;
-        var made = iwdieVcMadeBy(doc), older = !made || iwdieVcVersionLess(made, IWDIE_VERSION);
-        var lines = older ? ['Its drawing was made by ' + (made ? 'version ' + made : 'a version before 1.48.0') + ' of this script, which drew the pills - the ' +
+        var made = iwdieVcMadeBy(doc), older = !made || iwdieVcVersionLess(made, '1.48.0');
+        // drawn before 1.48.0 and before 1.47.0 kept what the objects stand on exactly: the bubbles may be drawn again in it
+        var mend = older && !/\sdata-iwdie-box="/.test(doc);
+        var lines = mend ? ['Its drawing was made by ' + (made ? 'version ' + made : 'a version before 1.48.0') + ' of this script, which drew the pills - the ' +
           'bubbles under the values - again as vectors, so their rings can look dark and a little off.',
-          'Read the picture it came from again with ' + IWDIE_VERSION + ': the bubbles stay exactly as the picture has them, and what the panel’s objects draw ' +
-          'themselves is left to them.'] : ['Go on with its drawing as it was saved, or read the picture it came from again.'];
-        lines.push('Starting again leaves out what was changed in VectorCraft before; the picture is the one from before the first edit.');
+          'Going on, those under the panel’s objects are taken out, and each value’s bubble is cut afresh from the picture the drawing came from; what you drew ' +
+          'in VectorCraft stays. Starting again reads that picture anew instead, leaving out what was changed in VectorCraft.']
+          : ['Go on with its drawing as it was saved, or read the picture it came from again. Starting again leaves out what was changed in VectorCraft before.'];
         return vcAsk(tab, 'This background was made in VectorCraft', lines, [
-          { key: 'again', label: 'Start again from the picture', main: older },
-          { key: 'go', label: 'Go on with the drawing', main: !older }]).then(function (k) {
+          { key: 'again', label: 'Start again from the picture', main: false },
+          { key: 'go', label: mend ? 'Go on, the bubbles from the picture' : 'Go on with the drawing', main: true }]).then(function (k) {
           if (k === null) { var stop = new Error('the editor’s tab was closed'); stop.cancelled = true; throw stop; }
+          if (k !== 'again' && mend) return vcMend(doc, orig, info.objects, size, libLoad()).then(function (m) { info.mended = m; return m.svg; });
           if (k !== 'again') return doc;
           var b64 = orig.slice(orig.indexOf(',') + 1), bin = atob(b64), bytes = new Uint8Array(bin.length);
           for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -10139,14 +10144,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (doc) {
           vc = true;
           paper = vcPaper(tab, [['build', 'The VectorCraft document behind the background'], ['open', 'Opening VectorCraft']]);
-          paper.step('build', nObj ? 'with ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : '', 0.3);
-          return iwdieVcAddPanelObjects(shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc, info.objects, info.looks);
+          paper.step('build', nObj ? 'with ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : '', 0.3, 0.9);
+          return iwdieVcAddPanelObjects(shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc, info.objects, info.looks, info.mended ? info.mended.unders : null);
         }
         var lib = base ? libLoad() : null;
         paper = lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
           ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
           : vcPaper(tab, [['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']]);
-        if (!lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3);
+        if (!lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3, 0.9);
         return exportPaint(base && base.bytes, base && base.mime, size, null).then(function (c) {
           var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
           var picture = base ? c.toDataURL('image/png') : null;
@@ -10159,7 +10164,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 paper.done(paper.skipped() ? 'skipped' : 'nothing to draw');
                 ['check', 'pills', 'pipes'].forEach(function (k) { paper.none(k); });
               }
-              paper.step('build', 'the picture' + (got ? ' without what was found' : '') + (nObj ? ', ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : ''), 0.96);
+              paper.step('build', 'the picture' + (got ? ' without what was found' : '') + (nObj ? ', ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : ''), 0.96, 0.98);
             }
             return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: got ? got.cleaned : picture, original: got ? picture : null,
               components: got ? got.components : null, pipes: got ? got.pipes : null, shapes: shapes, objects: info.objects, looks: info.looks,
@@ -10190,7 +10195,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (tab && !tab.closed) tab.location.href = url; else tab = W.open(url, '_blank');
         if (!tab) { toast('The browser blocked the new tab - allow pop-ups for this page, then try again.', true, 10000); return; }
         var what = vc
-          ? 'The VectorCraft document behind this background' + (shapes.length ? ', with the drawing from Draw on a layer of its own,' : '')
+          ? 'The VectorCraft document behind this background' + (shapes.length ? ', with the drawing from Draw on a layer of its own,' : '') +
+            (info.mended ? ' (mended: ' + iwdieN(info.mended.removed, 'piece', 'pieces') + ' it drew again under the panel’s objects taken out, ' +
+              iwdieN(info.mended.cut, 'bubble', 'bubbles') + ' cut afresh from the picture it came from)' : '')
           : info.again ? 'The picture this background was first read from, read again'
           : (base ? 'The picture' : 'An empty ' + size.w + ' × ' + size.h + ' canvas') +
             (shapes.length ? ', the drawing from Draw (' + iwdieN(shapes.length, 'shape', 'shapes') + ')' : '');
@@ -10516,6 +10523,83 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /** An older VectorCraft drawing mended (v1.48.1): what it drew again under the panel's `objects` -
+     *  each group of its layer Komponenter an object covers by half or more - taken out, and so is the
+     *  bubble its picture still has there; each value that is bare text gets its bubble cut afresh from
+     *  `origUrl`, the picture the drawing came from, as a fresh reading cuts it. Under an object the
+     *  Designer draws itself nothing is put back. The rest of the drawing stays as it was.
+     *  -> Promise<{svg, unders: {name: [{x, y, w, h, href}]}, removed, cut}> */
+    function vcMend(svg, origUrl, objects, size, lib) {
+      var W2 = Math.round(size.w), H2 = Math.round(size.h), self = {};
+      (objects || []).forEach(function (ob) { if (ob && ob.iwdieSelf && ob.name) self[String(ob.name)] = 1; });
+      var pixels = function (url) {
+        return loadPicture(url).then(function (img) {
+          var c = document.createElement('canvas');
+          c.width = W2; c.height = H2;
+          var g = c.getContext('2d');
+          g.drawImage(img, 0, 0, W2, H2);
+          return g.getImageData(0, 0, W2, H2).data;
+        });
+      };
+      return pixels(origUrl).then(function (pic) {
+        var palette = lib && lib.items ? iwdieVcPalette(lib.items) : null;
+        return vcOffPage(iwdieVcFindPills, [iwdieVcAreas, iwdieVcMix], [pic, W2, H2, palette]).then(function (round) {
+          var M = new Uint8Array(W2 * H2), unders = {}, gone = [], cut = 0;
+          (round || []).forEach(function (p) {
+            var on = iwdieVcUnderOf(p.outer, objects);
+            if (!on) return;
+            gone.push(p);
+            if (self[on]) return;
+            iwdieVcPillCells(p, W2, H2, function (x, y) { M[y * W2 + x] = 1; });
+            var x0 = Math.max(0, Math.floor(p.outer.x) - 3), y0 = Math.max(0, Math.floor(p.outer.y) - 3);
+            var x1 = Math.min(W2 - 1, Math.ceil(p.outer.x + p.outer.w) + 3), y1 = Math.min(H2 - 1, Math.ceil(p.outer.y + p.outer.h) + 3);
+            var piece = iwdieVcCrop(pic, W2, H2, M, x0, y0, x1, y1);
+            for (var yy = y0; yy <= y1; yy++) for (var xx = x0; xx <= x1; xx++) M[yy * W2 + xx] = 0;
+            if (!piece) return;
+            (unders[on] = unders[on] || []).push({ x: piece.x, y: piece.y, w: piece.w, h: piece.h, href: vcPng(piece.rgba, piece.w, piece.h) });
+            cut++;
+          });
+          // the drawing: its own art under the objects out, and the bubbles its picture still has there
+          var doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+          if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return { svg: svg, unders: unders, removed: 0, cut: cut };
+          var root = doc.documentElement, layer = null, kids = [], removed = 0;
+          Array.prototype.forEach.call(root.childNodes, function (n) {
+            if (n.nodeType === 1 && n.tagName.toLowerCase() === 'g' && (n.getAttribute('id') === 'Komponenter' || n.getAttribute('data-name') === 'Komponenter')) layer = n;
+          });
+          if (layer) Array.prototype.forEach.call(layer.childNodes, function (n) { if (n.nodeType === 1) kids.push(n); });
+          var boxes = kids.length ? vcMeasure(doc, kids, size) : [];
+          kids.forEach(function (k, i) {
+            var b = boxes[i];
+            if (b && !b.hidden && b.w > 0 && b.h > 0 && iwdieVcUnderOf(b, objects)) { k.parentNode.removeChild(k); removed++; }
+          });
+          var back = null;
+          Array.prototype.forEach.call(root.childNodes, function (n) {
+            if (n.nodeType === 1 && n.tagName.toLowerCase() === 'g' && (n.getAttribute('id') === 'Bakgrunn' || n.getAttribute('data-name') === 'Bakgrunn')) back = n;
+          });
+          var image = back ? back.getElementsByTagName('image')[0] : null;
+          var href = image ? (image.getAttribute('xlink:href') || image.getAttribute('href') || '') : '';
+          var finish = function () {
+            var out = new XMLSerializer().serializeToString(doc);
+            if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
+            return { svg: out, unders: unders, removed: removed, cut: cut };
+          };
+          if (!gone.length || !/^data:image\/(png|jpeg);base64,/.test(href)) return finish();
+          return pixels(href).then(function (bgPic) {
+            var copy = new Uint8ClampedArray(bgPic);
+            iwdieVcErasePills(copy, W2, H2, gone);
+            var c = document.createElement('canvas');
+            c.width = W2; c.height = H2;
+            var g = c.getContext('2d'), img = g.createImageData(W2, H2);
+            img.data.set(copy);
+            g.putImageData(img, 0, 0);
+            var url = c.toDataURL('image/png');
+            if (image.hasAttribute('xlink:href')) image.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', url); else image.setAttribute('href', url);
+            return finish();
+          }, finish);
+        });
+      });
+    }
+
     /** A question in the editor's tab before the editor opens there (v1.48.0), in VectorCraft's look:
      *  `choices` [{key, label, main}], the main one Enter's. -> Promise<key | null when the tab closed> */
     function vcAsk(tab, title, lines, choices) {
@@ -10597,20 +10681,44 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (time) put('t-' + key, time);
       };
       var tick = function () { put('clock', secs(Date.now() - t0)); };
+      // the time runs on by itself (v1.48.1): the clock, the running step's own time, and the bar
+      // creeping on towards the step's end (`to`) while nothing is heard - in the tab's own timer, not
+      // this page's, which a page behind another runs once a second
+      var from = 0, to = 0, creepAt = 0, timer = null, owner = null;
+      var stopLive = function () { if (timer !== null) { try { owner.clearInterval(timer); } catch (e) {} timer = null; } };
+      var live = function () {
+        var gone = true;
+        try { gone = !tab || tab.closed || tab.document !== doc; } catch (e) { gone = true; }
+        if (gone) { stopLive(); return; }
+        tick();
+        if (cur) put('t-' + cur, secs(Date.now() - began));
+        if (to > from) bar(from + (to - from) * (1 - Math.exp(-(Date.now() - creepAt) / 2500)));
+      };
+      if (doc) {
+        try { owner = tab; timer = tab.setInterval(live, 100); } catch (e) { owner = window; timer = setInterval(live, 250); }
+      }
       var paper = {
-        step: function (key, detail, part) {
+        // `part` where the bar is at the start, `until` how far it may creep while the step says nothing
+        step: function (key, detail, part, until) {
           if (cur) paper.done(null);
           cur = key; began = Date.now();
           show(key, 'now', detail || '');
           bar(part);
+          from = at; to = typeof until === 'number' ? Math.max(at, until) : at; creepAt = Date.now();
           tick();
         },
-        say: function (detail, part) { if (cur) show(cur, 'now', detail); bar(part); tick(); },
+        say: function (detail, part) {
+          if (cur) show(cur, 'now', detail);
+          bar(part);
+          if (typeof part === 'number') { from = at; creepAt = Date.now(); }
+          tick();
+        },
         done: function (detail, part) {
           if (!cur) return;
           show(cur, 'done', detail, secs(Date.now() - began));
           cur = null;
           bar(part);
+          from = to = at;
           tick();
         },
         // a step not reached
@@ -10621,6 +10729,57 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         skipped: function () { var gone = true; try { gone = !tab || tab.closed; } catch (e) {} return skipped || gone; }
       };
       return paper;
+    }
+
+    /** `main(...args)`, one of the pure functions, in a worker of its own (v1.48.1): its source and that
+     *  of the functions it calls (`deps`), so the page is not held up by it - nor the editor's tab, which
+     *  runs on this page's thread. Without workers (a page whose rules forbid them), here. -> Promise<its result> */
+    function vcOffPage(main, deps, args) {
+      return new Promise(function (resolve, reject) {
+        var here = function () { try { resolve(main.apply(null, args)); } catch (e) { reject(e); } };
+        var url = null, wk = null, done = false;
+        try {
+          url = URL.createObjectURL(new Blob([deps.concat([main]).map(String).join('\n') + '\nonmessage = function (ev) {\n  var r;\n  try { r = { ok: ' +
+            main.name + '.apply(null, ev.data) }; } catch (e) { r = { err: String((e && e.message) || e) }; }\n  postMessage(r);\n};\n'], { type: 'text/javascript' }));
+          wk = new Worker(url);
+        } catch (e) {
+          if (url) URL.revokeObjectURL(url);
+          here();
+          return;
+        }
+        var end = function () { try { wk.terminate(); } catch (e) {} URL.revokeObjectURL(url); };
+        wk.onmessage = function (ev) {
+          if (done) return;
+          done = true;
+          end();
+          var d = ev.data || {};
+          if (d.err) reject(new Error(d.err)); else resolve(d.ok);
+        };
+        // a worker that cannot run it (a page's rules) leaves it to this page
+        wk.onerror = function (e) {
+          if (done) return;
+          done = true;
+          try { if (e && e.preventDefault) e.preventDefault(); } catch (e2) {}
+          end();
+          here();
+        };
+        wk.postMessage(args);
+      });
+    }
+
+    /** `fn` for each of `list`, a few at a time (v1.48.1): between them the editor's tab shows how far
+     *  it is (`say(done, of)`), and its clock runs on. Skipped, it stops. -> Promise<all done> */
+    function vcEach(list, fn, tab, paper, say) {
+      var i = 0;
+      return new Promise(function (resolve) {
+        (function some() {
+          if (paper.skipped()) { resolve(false); return; }
+          var until = Date.now() + 50;
+          while (i < list.length && Date.now() < until) fn(list[i++]);
+          if (say) say(i, list.length);
+          if (i < list.length) vcBreath(tab).then(some); else resolve(true);
+        })();
+      });
     }
 
     /** A moment for the editor's tab to show what it was told (v1.47.0): its next frame, then a task
@@ -10718,6 +10877,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var here = function () {
         return new Promise(function (resolve) {
           var ix = iwdieVcComponentIndex(pic, PW, PH), found = [], seen = {}, i = 0;
+          handle.bg = ix.bg;
           (function some() {
             if (stopped) { resolve(null); return; }
             var until = Date.now() + 40;
@@ -10733,7 +10893,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var code = [iwdieVcBlur, iwdieVcTurn, iwdieVcPixelHash, iwdieVcComponentIndex, iwdieVcPrepare, iwdieVcFindPrepared, iwdieVcSearch].map(String).join('\n') +
           '\nonmessage = function (ev) {\n  var d = ev.data, ix = iwdieVcComponentIndex(d.pic, d.W, d.H);\n' +
           '  var found = iwdieVcSearch(ix, d.templates, function (done) { if (done % 4 === 0 || done === d.templates.length) postMessage({ done: done }); });\n' +
-          '  postMessage({ found: found });\n};\n';
+          '  postMessage({ found: found, bg: ix.bg });\n};\n';
         var url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
         // the biggest first, dealt round, so each worker has as much to do
         var parts = [];
@@ -10755,6 +10915,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             workers.push(wk);
             wk.onmessage = function (ev) {
               var d = ev.data || {};
+              if (d.bg && !handle.bg) handle.bg = d.bg;
               if (d.found) {
                 results = results.concat(d.found);
                 try { wk.terminate(); } catch (e) {}
@@ -10809,7 +10970,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var W2 = canvas.width, H2 = canvas.height, t0 = Date.now();
       var items = lib.items, names = iwdieVcComponentNames(items), job = null;
       paper.onSkip(function () { if (job) job.stop(); });
-      paper.step('lib', iwdieN(items.length, 'component', 'components') + ' of “' + (lib.file || 'the library') + '”, drawn at 1:1', 0.02);
+      paper.step('lib', iwdieN(items.length, 'component', 'components') + ' of “' + (lib.file || 'the library') + '”, drawn at 1:1', 0.02, 0.07);
       return vcBreath(tab).then(function () { return vcComponentTemplates(items); }).then(function (templates) {
         if (!templates.length || paper.skipped()) return null;
         paper.done(iwdieN(templates.length, 'look', 'looks') + ' to look for', 0.08);
@@ -10825,7 +10986,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return job.promise.then(function (found) {
           if (!found || paper.skipped()) return null;
           paper.done(iwdieN(found.length, 'place', 'places') + ' found', 0.78);
-          paper.step('check', 'drawing their shapes one by one…', 0.79);
+          paper.step('check', 'drawing their shapes one by one…', 0.79, 0.8);
           var byK = {}, ks = [];
           templates.forEach(function (t) { byK[t.k] = t; });
           found.forEach(function (m) { if (ks.indexOf(m.k) < 0) ks.push(m.k); });
@@ -10849,11 +11010,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             carried++;
           };
           return vcShapeLayers(items, ks).then(function (layers) {
-            bg = iwdieVcComponentIndex(pic, W2, H2).bg;
+            // the ground's colour as the search's workers saw it (v1.48.1), not worked out here again
+            bg = (job && job.bg) || iwdieVcComponentIndex(pic, W2, H2).bg;
             cleaned = new Uint8ClampedArray(pic);
             M = new Uint8Array(W2 * H2);
             var under = 0;
-            found.forEach(function (m) {
+            var one = function (m) {
               var t = byK[m.k], it = items[m.k];
               // a pill of the library is measured as a pill (below) instead: so it looks exactly as it did, without a stub it does not have
               if (pill[m.k] === undefined) pill[m.k] = iwdieVcIsPill(t, bg.map(Math.round));
@@ -10877,52 +11039,62 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               if (on) { under++; if (self[on]) left++; else carry(on, m, function (MM) { iwdieVcHoleMask(W2, H2, [hole], 1, MM); }); return; }
               count[names[m.k]] = (count[names[m.k]] || 0) + 1;
               comps.push({ name: names[m.k], shapes: shapes, x: m.x, y: m.y, turn: m.turn, tw: t.w, th: t.h });
-            });
-            iwdieVcErase(cleaned, W2, H2, holes);
-            paper.done(iwdieN(comps.length, 'component', 'components') + ' to draw' + (under ? ', ' + under + ' under objects' : ''), 0.84);
-            if (paper.skipped()) return null;
-            paper.step('pills', 'reading their rings…', 0.85);
-            return vcBreath(tab).then(function () {
+            };
+            // a few at a time, the tab showing how far (v1.48.1): never still for long
+            return vcEach(found, one, tab, paper, function (i, of) { paper.say('what ' + i + ' of ' + of + ' places show…', 0.79 + 0.04 * i / of); }).then(function (all) {
+              if (!all) return null;
+              paper.say('erasing them from the picture…');
+              iwdieVcErase(cleaned, W2, H2, holes);
+              paper.done(iwdieN(comps.length, 'component', 'components') + ' to draw' + (under ? ', ' + under + ' under objects' : ''), 0.84);
               if (paper.skipped()) return null;
-              var palette = iwdieVcPalette(items);
-              // never drawn again (v1.48.0): under a value that is bare text the pill is its bubble, and goes
-              // with it as the picture has it; under an object the Designer draws itself it is left to that
-              // object; under none it is a piece of the picture of its own
-              iwdieVcFindPills(cleaned, W2, H2, palette).forEach(function (p) {
-                var on = iwdieVcUnderOf(p.outer, objects), mark = function (MM) { iwdieVcPillCells(p, W2, H2, function (x, y) { MM[y * W2 + x] = 1; }); };
-                if (on) { cp++; if (self[on]) left++; else carry(on, p.outer, mark); }
-                else {
-                  var piece = cut(p.outer, mark);
-                  if (piece) { piece.p = p; pieces.push(piece); }
-                }
-                iwdieVcErasePills(cleaned, W2, H2, [p]);
-              });
-              paper.done(iwdieN(pieces.length + cp, 'pill', 'pills') + ', as the picture has them' + (cp ? ' - ' + cp + ' under objects' : ''), 0.9);
-              paper.step('pipes', 'following them in the library’s colours…', 0.9);
+              paper.step('pills', 'reading their rings…', 0.85, 0.89);
               return vcBreath(tab).then(function () {
                 if (paper.skipped()) return null;
-                lines = iwdieVcFindLines(cleaned, W2, H2, bg.map(Math.round), iwdieVcPipeColours(palette));
-                iwdieVcEraseMask(cleaned, W2, H2, lines.mask);
-                paper.done(iwdieN(lines.lines.length, 'pipe', 'pipes'), 0.94);
-                if (!comps.length && !pieces.length && !lines.lines.length && !carried && !left) return null;
-                paper.noSkip();
-                paper.step('build', 'the picture without them, as PNG…', 0.95);
-                return vcBreath(tab).then(function () {
-                  var looks = templates.map(function (t) { return { name: names[t.k], w: t.w, h: t.h, main: vcMainColour(t) }; });
-                  var parts = pieces.map(function (u) { return { kind: 'piece', name: iwdieVcPillName(u.p, looks), x: u.x, y: u.y, w: u.w, h: u.h, href: vcPng(u.rgba, u.w, u.h) }; });
-                  var hrefs = {};
-                  Object.keys(unders).forEach(function (nm) {
-                    hrefs[nm] = unders[nm].map(function (u) { return { x: u.x, y: u.y, w: u.w, h: u.h, href: vcPng(u.rgba, u.w, u.h) }; });
+                var palette = iwdieVcPalette(items);
+                // in a worker of its own (v1.48.1): reading every plain area of the picture held the page,
+                // and the editor's tab with it, for seconds on a slow machine
+                return vcOffPage(iwdieVcFindPills, [iwdieVcAreas, iwdieVcMix], [cleaned, W2, H2, palette]).then(function (round) {
+                  if (!round || paper.skipped()) return null;
+                  // never drawn again (v1.48.0): under a value that is bare text the pill is its bubble, and goes
+                  // with it as the picture has it; under an object the Designer draws itself it is left to that
+                  // object; under none it is a piece of the picture of its own
+                  round.forEach(function (p) {
+                    var on = iwdieVcUnderOf(p.outer, objects), mark = function (MM) { iwdieVcPillCells(p, W2, H2, function (x, y) { MM[y * W2 + x] = 1; }); };
+                    if (on) { cp++; if (self[on]) left++; else carry(on, p.outer, mark); }
+                    else {
+                      var piece = cut(p.outer, mark);
+                      if (piece) { piece.p = p; pieces.push(piece); }
+                    }
+                    iwdieVcErasePills(cleaned, W2, H2, [p]);
                   });
-                  var c = document.createElement('canvas');
-                  c.width = W2; c.height = H2;
-                  var g = c.getContext('2d'), img = g.createImageData(W2, H2);
-                  img.data.set(cleaned);
-                  g.putImageData(img, 0, 0);
-                  var summary = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5)
-                    .map(function (nm) { return nm + (count[nm] > 1 ? ' ×' + count[nm] : ''); }).join(', ');
-                  return { cleaned: c.toDataURL('image/png'), components: comps.concat(parts), pipes: lines.lines, count: comps.length, pills: parts.length,
-                    carried: carried, left: left, unders: hrefs, summary: summary, seconds: Math.round((Date.now() - t0) / 100) / 10 };
+                  paper.done(iwdieN(pieces.length + cp, 'pill', 'pills') + ', as the picture has them' + (cp ? ' - ' + cp + ' under objects' : ''), 0.9);
+                  paper.step('pipes', 'following them in the library’s colours…', 0.9, 0.93);
+                  return vcOffPage(iwdieVcFindLines, [], [cleaned, W2, H2, bg.map(Math.round), iwdieVcPipeColours(palette)]);
+                }).then(function (pipes) {
+                  if (!pipes || paper.skipped()) return null;
+                  lines = pipes;
+                  iwdieVcEraseMask(cleaned, W2, H2, lines.mask);
+                  paper.done(iwdieN(lines.lines.length, 'pipe', 'pipes'), 0.94);
+                  if (!comps.length && !pieces.length && !lines.lines.length && !carried && !left) return null;
+                  paper.noSkip();
+                  paper.step('build', 'the picture without them, as PNG…', 0.95, 0.97);
+                  return vcBreath(tab).then(function () {
+                    var looks = templates.map(function (t) { return { name: names[t.k], w: t.w, h: t.h, main: vcMainColour(t) }; });
+                    var parts = pieces.map(function (u) { return { kind: 'piece', name: iwdieVcPillName(u.p, looks), x: u.x, y: u.y, w: u.w, h: u.h, href: vcPng(u.rgba, u.w, u.h) }; });
+                    var hrefs = {};
+                    Object.keys(unders).forEach(function (nm) {
+                      hrefs[nm] = unders[nm].map(function (u) { return { x: u.x, y: u.y, w: u.w, h: u.h, href: vcPng(u.rgba, u.w, u.h) }; });
+                    });
+                    var c = document.createElement('canvas');
+                    c.width = W2; c.height = H2;
+                    var g = c.getContext('2d'), img = g.createImageData(W2, H2);
+                    img.data.set(cleaned);
+                    g.putImageData(img, 0, 0);
+                    var summary = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5)
+                      .map(function (nm) { return nm + (count[nm] > 1 ? ' ×' + count[nm] : ''); }).join(', ');
+                    return { cleaned: c.toDataURL('image/png'), components: comps.concat(parts), pipes: lines.lines, count: comps.length, pills: parts.length,
+                      carried: carried, left: left, unders: hrefs, summary: summary, seconds: Math.round((Date.now() - t0) / 100) / 10 };
+                  });
                 });
               });
             });
