@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.41.0
+// @version      1.42.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.41.0';
+var IWDIE_VERSION = '1.42.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6532,6 +6532,57 @@ function iwdieVcTakePlaceholders(doc, measure) {
   return { found: found, skipped: skipped };
 }
 
+/* ===================== Sync to IWMAC Designer (v1.42.0) =====================
+   Ctrl+S in the editor offers to sync the drawing to the Designer tab it came from. The Designer
+   sets it as the panel's background and uploads its PNG to the plant's pictures on the server, as
+   Manage Images' Upload to server (designer_site/iw_upload_image.php) and Set background
+   (imagesetValue) do. */
+
+/** Where this script notes the pictures it uploaded, by plant: a name of its own may be written
+ *  over by a later sync, a picture it did not upload never is. */
+var IWDIE_VC_UPLOADS_KEY = 'iwdie.vc.uploads';
+
+/** The name a panel's picture is uploaded under: plant, panel and day, as the plants' own pictures
+ *  are named ("2349_oversikt_100326.png"), with "-2", "-3"... while that name is taken by a
+ *  picture this script did not upload. `taken`: the names on the server; `ours`: the ones this
+ *  script uploaded. æ, ø and å are written ae, o and a, and anything but letters, digits, dots
+ *  and dashes "_". */
+function iwdieVcUploadName(plant, panel, date, taken, ours) {
+  var latin = String(panel || '').replace(/æ/g, 'ae').replace(/Æ/g, 'Ae').replace(/ø/g, 'o').replace(/Ø/g, 'O').replace(/å/g, 'a').replace(/Å/g, 'A');
+  var safe = latin.replace(/[^A-Za-z0-9.-]+/g, '_').replace(/_+/g, '_').replace(/^[_.-]+|[_.-]+$/g, '') || 'panel';
+  var d = date || new Date(), two = function (v) { return (v < 10 ? '0' : '') + v; };
+  var plantPart = String(plant || '').replace(/[^A-Za-z0-9]+/g, '');
+  var stem = (plantPart ? plantPart + '_' : '') + safe + '_' + two(d.getDate()) + two(d.getMonth() + 1) + two(d.getFullYear() % 100);
+  var set = function (list) { var o = {}; (list || []).forEach(function (n) { o[String(n).toLowerCase()] = 1; }); return o; };
+  var onServer = set(taken), mine = set(ours);
+  for (var k = 1; k < 100; k++) {
+    var name = stem + (k > 1 ? '-' + k : '') + '.png', low = name.toLowerCase();
+    if (!onServer[low] || mine[low]) return name;
+  }
+  return stem + '-' + d.getTime() + '.png';
+}
+
+/** The pictures' names in the server's list of a plant's pictures (designer_site/iw_get_image.php:
+ *  <data><name>…</name><file>…</file></data>…). */
+function iwdieVcImageNames(xml) {
+  var out = [], re = /<name>\s*([^<]*?)\s*<\/name>/gi, m;
+  while ((m = re.exec(String(xml || '')))) if (m[1]) out.push(m[1]);
+  return out;
+}
+
+/** The server's answer to an upload, read as Upload to server reads it: JSON {status, message},
+ *  taken when status == 1. Anything else is a refusal, shown as text. -> {ok, message} */
+function iwdieVcUploadReply(text) {
+  var s = String(text || '').trim(), j = null;
+  try { j = JSON.parse(s); } catch (e) { j = null; }
+  if (j && typeof j === 'object') {
+    // get_image.htm compares loosely (status == 1): 1, "1" and true all count
+    var ok = j.status === 1 || j.status === '1' || j.status === true;
+    return { ok: ok, message: j.message == null ? '' : String(j.message) };
+  }
+  return { ok: false, message: s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) || 'the server gave no answer' };
+}
+
 /* ===================== browser body ===================== */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   (function () {
@@ -7933,6 +7984,219 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }, true);
     }
 
+    /* ---------- Ctrl+S: Sync to IWMAC Designer (v1.42.0) ----------
+       Ctrl+S on the editor's page offers to sync the drawing to the Designer tab it came from.
+       VectorCraft has no way in but its own Save. A document it has saved as SVG once is saved
+       again straight away. The first time, its Save As is answered here as the banner used to ask
+       it of the user - Format SVG, OK, Preserve Editing Capabilities, OK - by clicks where those
+       dialogs sit, centred in the window, and only once egui's own text field shows that the
+       dialog is there. The SVG then goes to the Designer as any SVG save from this page does. */
+    /** The Save chooser on Ctrl+S; `say(html, bad, keep)` hears how it went; `state` is shared
+     *  with the catcher of saves ({caught, editing, download}). */
+    function vcSaveSync(job, say, state) {
+      if (document.getElementById('iwdie-vcs-style')) return;
+      var esc2 = iwdieEscHtml, font = '"Source Sans 3","Segoe UI",Roboto,Arial,sans-serif';
+      var css = [
+        // a VectorCraft dialog: the panel colour, a 1 px border, 6 px corners, the window shadow, 22 px padding
+        '.iwdie-vcs{position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483646;background:rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;',
+        '  font:400 13px/1.4 ' + font + ';color:#d1d1d1;-webkit-user-select:none;user-select:none}',
+        '.iwdie-vcs-d{width:430px;box-sizing:border-box;padding:22px;background:#535353;border:1px solid #383838;border-radius:6px;box-shadow:0 8px 14px rgba(0,0,0,.55)}',
+        '.iwdie-vcs-t{font-size:16px;font-weight:600;color:#ffffff;margin-bottom:14px}',
+        '.iwdie-vcs-o{display:block;width:100%;margin:0 0 8px;padding:10px 12px;box-sizing:border-box;text-align:left;background:#454545;border:1px solid #5f5f5f;',
+        '  border-radius:4px;color:#d1d1d1;font:inherit;cursor:default}',
+        '.iwdie-vcs-o b{display:block;color:#ffffff;font-weight:600;font-size:13px;margin-bottom:2px}',
+        '.iwdie-vcs-o span{display:block;color:#b0b0b0;font-size:12px}',
+        '.iwdie-vcs-o:hover{background:#606060}',
+        '.iwdie-vcs-o.iwdie-on{border-color:#378ef0;box-shadow:inset 0 0 0 1px #378ef0}',
+        '.iwdie-vcs-a{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}',
+        '.iwdie-vcs-b{height:28px;padding:0 16px;border:0;border-radius:14px;background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0;',
+        '  font:600 12.5px ' + font + ';cursor:default}',
+        '.iwdie-vcs-b:hover{background:#606060;color:#ffffff}',
+        '.iwdie-vcs-p{background:#1473e6;color:#ffffff;box-shadow:none}',
+        '.iwdie-vcs-p:hover{background:#378ef0}',
+        // while VectorCraft's own dialogs are being answered: the pointer is kept off them
+        '.iwdie-vcs-g{position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483645;cursor:progress}'
+      ].join('\n');
+      var st = document.createElement('style');
+      st.id = 'iwdie-vcs-style';
+      st.textContent = css;
+      (document.head || document.documentElement).appendChild(st);
+
+      var chooser = null, chosen = 0, busy = false, passing = false;
+      var canvas = function () { return document.getElementById('vectorcraft_canvas'); };
+      var wait = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
+      // Waits are counted in the page's frames as well as in time: VectorCraft draws, and takes a click
+      // on what it drew, a frame at a time, and a tab in the background draws no frames at all - or one
+      // a second - so a wait in time alone can run ahead of it.
+      var raf = W.requestAnimationFrame ? W.requestAnimationFrame.bind(W) : function (fn) { return setTimeout(fn, 16); };
+      var settle = function (ms, n) {
+        return wait(ms).then(function () {
+          return new Promise(function (resolve) { var left = n; (function tick() { if (--left < 0) resolve(); else raf(tick); })(); });
+        });
+      };
+      // true as soon as test() holds, false after `n` frames
+      var until = function (test, n) {
+        return new Promise(function (resolve) {
+          var left = n;
+          (function tick() {
+            if (test()) resolve(true);
+            else if (--left < 0) resolve(false);
+            else raf(tick);
+          })();
+        });
+      };
+      // a key as egui hears one, on its canvas, past this script's own Ctrl+S
+      var key = function (k, code, mods) {
+        var c = canvas();
+        if (!c) return;
+        try { c.focus({ preventScroll: true }); } catch (e) {}
+        passing = true;
+        try {
+          ['keydown', 'keyup'].forEach(function (type) {
+            c.dispatchEvent(new W.KeyboardEvent(type, { key: k, code: code, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, bubbles: true, cancelable: true }));
+          });
+        } finally { passing = false; }
+      };
+      // a click as egui hears one, `dx`, `dy` from the window's centre: the pointer there, pressed, released
+      var tap = function (dx, dy) {
+        var c = canvas();
+        if (!c) return Promise.resolve();
+        var x = window.innerWidth / 2 + dx, y = window.innerHeight / 2 + dy;
+        var ev = function (type, buttons) {
+          c.dispatchEvent(new W.PointerEvent(type, { clientX: x, clientY: y, button: 0, buttons: buttons, pointerId: 1, pointerType: 'mouse',
+            isPrimary: true, bubbles: true, cancelable: true }));
+        };
+        ev('pointermove', 0);
+        return wait(80).then(function () { ev('pointerdown', 1); return wait(80); }).then(function () { ev('pointerup', 0); });
+      };
+      // egui gives the focus to its hidden text field while one of its own fields has it: a save dialog's file name
+      var typing = function () {
+        var a = document.activeElement;
+        return !!a && a.tagName === 'INPUT' && a.type === 'text' && !(a.closest && a.closest('.iwdie-vcb,.iwdie-vcm-m,.iwdie-vcs'));
+      };
+      var sync = function () {
+        if (busy) return;
+        if (typing()) {
+          say('Finish what is being typed in VectorCraft first (Esc), then <b>Ctrl+S</b> again.', true);
+          return;
+        }
+        busy = true;
+        // while it syncs, a save in another format is held back and noted: it is no file the user asked for
+        state.download = 0;
+        state.syncing = true;
+        state.other = 0;
+        var before = state.caught;
+        var saved = function () { return state.caught > before; };
+        // VectorCraft's Save As, answered where its dialogs sit: Format SVG, OK, Preserve Editing Capabilities,
+        // OK. `k` slows it down: each step waits for its dialog or menu to settle, k × 300 ms and k × 15 frames.
+        var answer = function (k) {
+          var guard = document.createElement('div');
+          guard.className = 'iwdie-vcs-g';
+          document.body.appendChild(guard);
+          var done = function (ok) { if (guard.parentNode) guard.parentNode.removeChild(guard); return ok; };
+          var step = function () { return settle(300 * k, 15 * k); };
+          return step().then(function () { return tap(5, -159); }).then(step)          // Format ▾
+            .then(function () { return tap(-92, -40); }).then(step)                     // SVG
+            .then(function () {
+              // the menu took the keyboard from the file name; if it did not, the clicks went astray: no more
+              if (typing()) return false;
+              return tap(154, 19)                                                       // OK
+                .then(function () { return until(function () { return typing() || state.other; }, 240 * k); })
+                .then(function () { return typing(); });
+            })
+            .then(function (options) {
+              // SVG Options gives its first field the keyboard: it is open, and the clicks went where they should
+              if (!options) return false;
+              return step()
+                .then(function () { return state.editing ? null : tap(-185, 106).then(step); })   // Preserve Editing Capabilities
+                .then(function () { return tap(154, 194); })                                     // OK
+                .then(function () { return until(saved, 1200); });
+            })
+            .then(done, function () { return done(false); });
+        };
+        // Save As (again): when an answer went faster than the menus, the save came in VectorCraft's own
+        // format and was held back - so once more, twice as slowly, up to three times
+        var saveAs = function (k, tries) {
+          state.other = 0;
+          key('S', 'KeyS', { ctrl: true, shift: true });
+          return until(typing, 480).then(function (open) { return open ? answer(k) : false; }).then(function (ok) {
+            return ok || !state.other || tries <= 1 ? ok : saveAs(k * 2, tries - 1);
+          });
+        };
+        say('Syncing to the Designer…');
+        key('s', 'KeyS', { ctrl: true });
+        until(function () { return saved() || typing() || state.other; }, 480).then(function () {
+          if (saved()) return true;
+          if (typing()) return answer(1).then(function (ok) { return ok || !state.other ? ok : saveAs(2, 2); });
+          // this document saves in another format, as it was saved here before: Save As, to make it SVG
+          return state.other ? saveAs(1, 3) : false;
+        }).then(function (ok) {
+          busy = false;
+          state.syncing = false;
+          if (!ok) {
+            say('VectorCraft did not save it. If its Save As is open, finish it by hand: Format <b>SVG</b> → OK → tick ' +
+              '<b>Preserve Editing Capabilities</b> → OK - that syncs all the same.', true, true);
+          }
+        });
+      };
+      var close = function () {
+        if (chooser) { chooser.parentNode.removeChild(chooser); chooser = null; }
+        var c = canvas();
+        try { if (c) c.focus({ preventScroll: true }); } catch (e) {}
+      };
+      var choose = function (act) {
+        close();
+        if (act === 'sync') sync();
+        else if (act === 'file') {
+          // VectorCraft's own Save As; what it saves in the next five minutes goes to Downloads
+          state.download = Date.now() + 300000;
+          key('S', 'KeyS', { ctrl: true, shift: true });
+        }
+      };
+      var mark = function () {
+        if (!chooser) return;
+        Array.prototype.forEach.call(chooser.querySelectorAll('.iwdie-vcs-o'), function (b, k) { b.classList.toggle('iwdie-on', k === chosen); });
+      };
+      var open = function () {
+        if (chooser) return;
+        chooser = document.createElement('div');
+        chooser.className = 'iwdie-vcs';
+        chooser.innerHTML = '<div class="iwdie-vcs-d" role="dialog" aria-label="Save"><div class="iwdie-vcs-t">Save</div>' +
+          '<button class="iwdie-vcs-o" data-act="sync"><b>Sync to IWMAC Designer</b><span>' + (job.panel ? '“' + esc2(job.panel) + '”' : 'The panel') +
+          ' gets this drawing as its background, and its PNG goes to the plant’s pictures on the server.</span></button>' +
+          '<button class="iwdie-vcs-o" data-act="file"><b>Save a file…</b><span>VectorCraft’s own Save As: a format and its options, to Downloads.</span></button>' +
+          '<div class="iwdie-vcs-a"><button class="iwdie-vcs-b" data-act="cancel">Cancel</button><button class="iwdie-vcs-b iwdie-vcs-p" data-act="ok">OK</button></div></div>';
+        document.body.appendChild(chooser);
+        chosen = 0;
+        mark();
+        chooser.addEventListener('click', function (e) {
+          var b = e.target && e.target.closest ? e.target.closest('button') : null;
+          if (!b && e.target === chooser) { close(); return; }
+          if (!b) return;
+          var act = b.getAttribute('data-act');
+          if (act === 'cancel') close();
+          else if (act === 'ok') choose(chosen ? 'file' : 'sync');
+          else choose(act);
+        });
+      };
+      // Ctrl+S is this script's while the drawing is a job's; the chooser has the keyboard while it is open
+      window.addEventListener('keydown', function (e) {
+        if (passing) return;
+        if (chooser) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (e.key === 'Escape') close();
+          else if (e.key === 'Enter') choose(chosen ? 'file' : 'sync');
+          else if (/^(ArrowUp|ArrowDown|Tab)$/.test(e.key)) { chosen = 1 - chosen; mark(); }
+          return;
+        }
+        if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || !(e.code === 'KeyS' || e.key === 's' || e.key === 'S')) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!busy) open();
+      }, true);
+    }
+
     function vcAppSide() {
       if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') return;
       var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null;
@@ -7940,8 +8204,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') return;
       var esc2 = iwdieEscHtml, lib = libLoad(), busy = false;
       var ui = vcBanner('IWMAC Designer · ' + esc2(job.panel || 'panel') + (job.plant ? ' (plant ' + esc2(job.plant) + ')' : ''),
-        'To send it back: <b>Ctrl+S</b> → Format <b>SVG</b> → OK → tick <b>Preserve Editing Capabilities</b> → OK. ' +
-        'The panel’s background updates; keep editing and save again for more.<div class="iwdie-vcb-c"></div><div class="iwdie-vcb-o"></div>',
+        'To send it back: <b>Ctrl+S</b> → <b>Sync to IWMAC Designer</b>. The panel’s background updates and its PNG goes to the plant’s ' +
+        'pictures; keep editing and sync again for more.<div class="iwdie-vcb-c"></div><div class="iwdie-vcb-o"></div>',
         [{ act: 'trace', label: 'Ready for Image Trace', title: 'Open a copy whose picture is enlarged and set to its own flat colours, so Image Trace makes clean shapes of it' },
           { act: 'aibg', label: 'Background from .ai…', title: 'Open the panel’s own Illustrator file here as a document of its own, to paste in place as the background' },
           { act: 'import', label: 'Components from .ai…', title: 'Read the components around an Illustrator file’s artboard into Libraries; they replace the ones kept' }]);
@@ -8030,6 +8294,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // or 'failed'. No answer means no Designer tab is listening any more (closed, reloaded,
       // discarded): the save then goes to Downloads instead, so no work is lost.
       var pending = null, canAck = typeof GM_addValueChangeListener === 'function' && typeof GM_deleteValue === 'function';
+      // the SVG saves caught, whether one kept VectorCraft's document, until when a save is for Downloads,
+      // and while a sync runs, when a save in another format was held back (v1.42.0)
+      var saves = { caught: 0, editing: false, download: 0, syncing: false, other: 0 };
       if (canAck) {
         GM_addValueChangeListener('iwdie.vc.ack.' + job.id, function (key, old, val) {
           if (!val || !val.state || !pending) return;
@@ -8050,8 +8317,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 : already ? ' Its IWMAC objects were in the panel already.' : '') +
               (skipped ? ' ' + iwdieN(skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.' : '') +
               (val.objError ? ' The IWMAC objects were not placed: ' + esc2(String(val.objError)) + ' - save again to try again.' : '') +
+              (val.uploaded ? ' Its PNG is in the plant’s pictures as <b>' + esc2(String(val.uploaded)) + '</b>.' : '') +
+              (val.uploadError ? ' Its PNG was not uploaded to the plant’s pictures: ' + esc2(String(val.uploadError)) + '.' : '') +
               (placed ? ' A placeholder becomes its object once: saved again where it is, it is skipped; moved, it is placed again. ' +
-                'Move the objects in the Designer from now on, or delete the placeholders here.' : ''), !!val.objError, placed > 0);
+                'Move the objects in the Designer from now on, or delete the placeholders here.' : ''), !!val.objError || !!val.uploadError, placed > 0);
           } else {
             note('Not applied: ' + esc2(String(val.msg || val.state)), true);
           }
@@ -8068,11 +8337,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       W.HTMLAnchorElement.prototype.click = function () {
         var a = this, b = a && a.download ? blobs[a.href] : null;
+        if (b && saves.download) {
+          // Save a file… on Ctrl+S (v1.42.0): this one is for Downloads
+          var forFile = Date.now() < saves.download;
+          saves.download = 0;
+          if (forFile) return click.apply(this, arguments);
+        }
+        if (b && saves.syncing && !/\.svg$/i.test(a.download)) {
+          // a sync's save in another format, as the document was saved before: held back; the sync makes it SVG
+          saves.other = Date.now();
+          return undefined;
+        }
         if (b && /\.svg$/i.test(a.download)) {
           var name = String(a.download), key = 'iwdie.vc.result.' + job.id;
+          saves.caught++;
           b.text().then(function (text) {
             if (!/<svg\b/i.test(text)) throw new Error('the saved file is not an SVG');
             var editing = /vectorcraft:document/.test(text);
+            if (editing) saves.editing = true;
             if (pending && pending.timer) clearTimeout(pending.timer);
             var mine = pending = { editing: editing, timer: null };
             GM_setValue(key, { svg: text, name: name, at: Date.now(), editing: editing });
@@ -8110,6 +8392,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
         ui.later(20000);
         try { vcObjectMenu(note); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
+        try { vcSaveSync(job, note, saves); } catch (e) { note('Ctrl+S could not be set to sync: ' + esc2(String((e && e.message) || e)), true); }
         (libText ? libText.then(function (text) {
           return pause(1200).then(function () {
             vcDropFile(text, 'Komponenter.vclibrary', 'application/json', 'menu');
@@ -8218,7 +8501,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         outcomeToast({
           tone: 'good', title: 'Opening in VectorCraft',
           lines: [what + ' - in a new tab.',
-            'Save there with Ctrl+S → Format SVG → OK → tick Preserve Editing Capabilities → OK: the picture comes straight back to this background.',
+            'Press Ctrl+S there and choose Sync to IWMAC Designer: the picture comes straight back to this background, and its PNG goes to the plant’s pictures.',
             'The Designer’s own objects are in its IWMAC menu, after Help, and in its Libraries panel: placed and saved back, each becomes that object here. ' +
               'Your components from Illustrator are in Libraries too, once read.'],
           footer: 'Nothing leaves the browser. The first start downloads the editor (about 20 MB); after that it is cached.'
@@ -8318,6 +8601,63 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return { placed: made.objects.length, already: made.already, error: '' };
     }
 
+    /* ---------- Sync to IWMAC Designer (v1.42.0): the picture uploaded ---------- */
+    /** A path of the Designer's own site, from the page this runs on. */
+    function vcDesignerUrl(path) {
+      return new URL(path, location.href).href;
+    }
+
+    /** The plant as the Designer's own pages name it to the server (cust_id). */
+    function vcCustId() {
+      try { if (typeof W.get_cust_id === 'function' && W.get_cust_id()) return String(W.get_cust_id()); } catch (e) {}
+      return String(currentPlantId() || '');
+    }
+
+    /** The background's PNG uploaded to the plant's pictures, as Manage Images' Upload to server
+     *  does it: the same request, read the same way. Its name is chosen at the first sync of an
+     *  edit (iwdieVcUploadName) and written over by the later ones. -> Promise<{ok, name, message}> */
+    function vcUploadPng(bytes, info) {
+      var cust = vcCustId();
+      if (!cust) return Promise.resolve({ ok: false, name: '', message: 'the plant is not known here' });
+      var kept = function () {
+        var all = {};
+        try { all = GM_getValue(IWDIE_VC_UPLOADS_KEY, {}) || {}; } catch (e) { all = {}; }
+        return all;
+      };
+      var naming = info.uploadName ? Promise.resolve(info.uploadName) :
+        fetch(vcDesignerUrl('designer_site/iw_get_image.php?cust_id=' + encodeURIComponent(cust)), { credentials: 'same-origin', cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.text() : ''; }, function () { return ''; })
+          .then(function (xml) {
+            var ours = kept()[cust];
+            info.uploadName = iwdieVcUploadName(info.plant || cust, info.panel, new Date(), iwdieVcImageNames(xml), Array.isArray(ours) ? ours : []);
+            return info.uploadName;
+          });
+      return naming.then(function (name) {
+        var form = new FormData();
+        form.append('userfile', new Blob([bytes], { type: 'image/png' }), name);
+        var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+        var timer = ctl ? setTimeout(function () { ctl.abort(); }, 60000) : null;
+        return fetch(vcDesignerUrl('designer_site/iw_upload_image.php?cust_id=' + encodeURIComponent(cust)),
+          { method: 'POST', body: form, credentials: 'same-origin', signal: ctl ? ctl.signal : undefined })
+          .then(function (r) { return r.text(); })
+          .then(function (text) {
+            var reply = iwdieVcUploadReply(text);
+            if (reply.ok) {
+              try {
+                var all = kept(), list = Array.isArray(all[cust]) ? all[cust] : [];
+                if (list.indexOf(name) < 0) list.push(name);
+                all[cust] = list.slice(-200);
+                GM_setValue(IWDIE_VC_UPLOADS_KEY, all);
+              } catch (e) {}
+            }
+            return { ok: reply.ok, name: name, message: reply.message };
+          }, function (e) {
+            return { ok: false, name: name, message: (e && e.name === 'AbortError') ? 'the server did not answer within a minute' : String((e && e.message) || e) };
+          })
+          .then(function (r) { if (timer) clearTimeout(timer); return r; });
+      });
+    }
+
     /** What VectorCraft saved, as the panel's background: drawn at panel size, with the SVG
      *  (and VectorCraft's own document inside it) kept in the PNG for the next edit. The IWMAC
      *  placeholders in it come out of the picture and become their objects (v1.40.0). */
@@ -8381,12 +8721,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           (objs.already ? '; ' + objs.already + ' there already' : '') + '.');
         else if (objs.already) lines.push('Its IWMAC objects were on the panel already, where their placeholders are.');
         if (ph.skipped) lines.push(iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.');
-        outcomeToast({
-          tone: objs.error ? 'caution' : 'good', title: objs.placed ? '✅ Background and IWMAC objects from VectorCraft' : '✅ Background updated from VectorCraft',
-          lines: lines,
-          footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.'
+        // and its PNG to the plant's pictures, as Upload to server does, named on the panel as Set background names it (v1.42.0)
+        return vcUploadPng(withDoc, info).then(function (up) {
+          if (up.ok) {
+            try {
+              if (typeof W.imagesetValue === 'function') W.imagesetValue(up.name, size.w, size.h, dataUrl);
+              else W.$('#main_image').attr('org_image_name', up.name);
+            } catch (e) {}
+            lines.push('Its PNG is in the plant’s pictures on the server as ' + up.name + '.');
+          } else {
+            lines.push('Its PNG was not uploaded to the plant’s pictures: ' + up.message + '. The background is set all the same.');
+          }
+          outcomeToast({
+            tone: objs.error || !up.ok ? 'caution' : 'good', title: objs.placed ? '✅ Background and IWMAC objects from VectorCraft' : '✅ Background updated from VectorCraft',
+            lines: lines,
+            footer: 'The panel is not saved yet — use the designer’s own Save when you are happy.'
+          });
+          ack('applied', Math.round(withDoc.length / 1024) + ' kB', { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error,
+            uploaded: up.ok ? up.name : '', uploadError: up.ok ? '' : up.message });
         });
-        ack('applied', Math.round(withDoc.length / 1024) + ' kB', { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error });
       }).then(null, function (e) {
         try { URL.revokeObjectURL(url); } catch (e2) {}
         toast('The VectorCraft picture could not be used: ' + ((e && e.message) || e), true, 10000);
@@ -10009,6 +10362,10 @@ if (typeof module !== 'undefined' && module.exports) {
     vcObjectItem: iwdieVcObjectItem,
     vcObjectSvg: iwdieVcObjectSvg,
     vcObjectSearch: iwdieVcObjectSearch,
+    VC_UPLOADS_KEY: IWDIE_VC_UPLOADS_KEY,
+    vcUploadName: iwdieVcUploadName,
+    vcImageNames: iwdieVcImageNames,
+    vcUploadReply: iwdieVcUploadReply,
     vcObjectId: iwdieVcObjectId,
     vcDesignerObjects: iwdieVcDesignerObjects,
     vcTakePlaceholders: iwdieVcTakePlaceholders,

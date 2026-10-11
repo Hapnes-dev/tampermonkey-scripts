@@ -907,19 +907,47 @@ The banner sits at the drawing's top left. It folds into a one-line tab 20 secon
 panel opens, and again 12 seconds after each message. A click on its title folds or unfolds
 it, and after that it stays as you left it.
 
-**Sending it back.** In VectorCraft, press **Ctrl+S** → Format **SVG** → OK → tick
-**Preserve Editing Capabilities** → OK. A banner in the editor's tab repeats this. The SVG
-does not go to Downloads. It goes to the Designer tab, which draws it at panel size and makes
-it the background through the host's own `iw_set_base_image`. The banner then reports one
-of these:
+**Sending it back (v1.42.0).** In VectorCraft, press **Ctrl+S** and choose **Sync to IWMAC
+Designer**; **Enter** takes it. The drawing goes to the Designer tab the edit started from,
+which draws it at panel size and makes it the background through the host's own
+`iw_set_base_image`. **Save a file…**, the other choice, is VectorCraft's own Save As, to
+Downloads. The banner then reports one of these:
 
 - *Received by the Designer - updating the panel…*;
 - *✓ The panel's background was updated at 09:44*, with the number of IWMAC objects placed
-  (v1.40.0);
+  (v1.40.0) and the name the PNG was uploaded under (v1.42.0);
 - *Not applied:* and the reason.
 
-Keep editing and save as often as you like. Nothing is stored on the server until you use
-the Designer's own Save.
+Keep editing and sync as often as you like. The panel itself is not saved until you use the
+Designer's own Save.
+
+VectorCraft offers no way in other than its own Save, so the sync uses it:
+- A document VectorCraft has saved as SVG once is saved again straight away: a sync takes a
+  moment.
+- The first time, VectorCraft's Save As opens, and the script answers it as you would by hand:
+  Format **SVG**, OK, **Preserve Editing Capabilities**, OK.
+  - It clicks where those dialogs sit, centred in the window, and only after VectorCraft's own
+    text field shows that the dialog is open.
+  - Each step waits for VectorCraft to draw, so a tab left in the background meanwhile is
+    slower but not wrong.
+  - Measured: 2.9 seconds in front, 78 seconds behind another tab.
+- A save that comes out in another format meanwhile is held back, and Save As is tried again
+  more slowly.
+- If it still does not save, the banner says so; finish the dialog by hand, as before
+  (Format SVG → OK → tick Preserve Editing Capabilities → OK), and it syncs all the same.
+
+**The PNG on the server (v1.42.0).** Each sync also uploads the background's PNG to the plant's
+pictures, as Manage Images' *Upload to server* does. It is the same request
+(`designer_site/iw_upload_image.php`, field `userfile`), read the same way. The panel then
+carries that name, as *Set background* sets it, through the host's own `imagesetValue`.
+- The name follows the plants' own pictures: plant, panel and day, as in
+  `2349_Maskin_111026.png`.
+- The first sync of an edit picks the name. Later ones write over it.
+- A picture that this script did not upload is never written over: the name gets `-2`, `-3`
+  instead. The script notes what it uploaded in Tampermonkey's storage.
+- If the upload is refused, the background is set all the same, and the toast and the banner
+  say why.
+- The PNG carries the VectorCraft document in its `iwVz` chunk, like the background.
 
 **The next edit.** The PNG keeps the saved SVG, with VectorCraft's own document inside it,
 in a private chunk that viewers skip: `iwVz`, zlib-compressed, since v1.38.0 (`iwVc`, plain,
@@ -1087,7 +1115,8 @@ VectorCraft's colours but carries none of those marks. VectorCraft calls itself 
 The kit's `tests/test-vectorcraft-bridge.js` holds the SVG the Designer sends, the sizing,
 the merge, the PNG chunk, the component library as a `.vclibrary`, the script header and the
 sidebar. It also holds the IWMAC objects: the library, the names, the placeholders taken out
-and made into objects, and the menu's placeholder files and search.
+and made into objects, the menu's placeholder files and search, and the sync's upload: the
+name, the server's list and its answer.
 
 ## AI-generated panels (Copilot)
 
