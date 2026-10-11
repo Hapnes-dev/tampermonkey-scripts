@@ -887,13 +887,15 @@ browser.
 
 **Opening.** **Edit in VectorCraft…** on the sidebar (v1.36.0, in place of *Draw
 background…*; in v1.35.0 it was a choice under *Background → Illustrator*). A new tab opens
-the panel as a document with three layers:
+the panel as a document with these layers:
 
 - **Bakgrunn**: the canvas colour and the picture, at panel size.
 - **Tegning**: a drawing made in Draw (v1.32.0 to v1.35.0) as editable shapes; empty, ready
   to draw on, when there is none.
-- **Panelobjekter**, hidden: every object on the panel as a dashed box with its label.
-  Turn it on to see where the live values will sit.
+- **IWMAC-objekter**, on top (v1.46.0): the panel's own objects, each as a placeholder like
+  the ones the IWMAC menu places. It shows the Designer's picture of the object, at the
+  object's size, where it is on the panel, with its tag text (below). Until v1.45.0 they were
+  dashed boxes on a hidden layer, Panelobjekter.
 - **Komponenter** and, hidden, **Bakgrunn (original)**, when components were found in the
   picture (v1.44.0, below), and **Rør** under them when pipes were (v1.45.0).
 
@@ -981,8 +983,14 @@ Designer's own Save.
 VectorCraft offers no way in other than its own Save, so the sync uses it:
 - A document VectorCraft has saved as SVG once is saved again straight away: a sync takes a
   moment.
-- The first time, VectorCraft's Save As opens, and the script answers it as you would by hand:
-  Format **SVG**, OK, **Preserve Editing Capabilities**, OK.
+- **Ctrl+S is made ready when the panel opens (v1.46.0).** VectorCraft's first save of a
+  document is its Save As, so the script answers that once, right after the panel and the
+  libraries are in, while the tab is in front. That save stays in the tab and goes nowhere.
+  The banner then says *Ready*. Every sync after that is VectorCraft's own Save, without a
+  dialog: Ctrl+S, Enter, and the Designer has it, measured at 0.2 seconds. While it is being
+  made ready (about 3 seconds), keys typed are held back from VectorCraft's dialog.
+- When it could not be made ready, the first sync answers the Save As instead, as you would by
+  hand: Format **SVG**, OK, **Preserve Editing Capabilities**, OK.
   - It clicks where those dialogs sit, centred in the window, and only after VectorCraft's own
     text field shows that the dialog is open.
   - Each step waits for VectorCraft to draw, so a tab left in the background meanwhile is
@@ -1114,6 +1122,29 @@ A placeholder becomes its object once:
 So after the first save, move the objects in the Designer, or delete the placeholders in
 VectorCraft.
 
+**The panel's own objects (v1.46.0).** The placeholders on the layer **IWMAC-objekter** stand
+for objects that are already on the panel. Each says which object it is: its name on the
+panel (`object_12`), its obj_id and where it was, as `data-iwdie-*` attributes, which
+VectorCraft keeps through a save. A sync then changes that object instead of placing another:
+- Moved or resized in VectorCraft, the object moves or is resized on the panel. It keeps its
+  link, its driver and everything else about it.
+- Its text written over (JV401 → JV402, a label's text), its tag text changes.
+- Left as it was (a pixel either way), it is left alone.
+- Deleted in VectorCraft, the object stays on the panel. The toast names it, to delete in the
+  Designer if it should go.
+- Copied in VectorCraft (Alt+drag), the copy becomes a new object of its kind, even one outside
+  the catalogue.
+- If the panel's objects were renamed meanwhile, as deleting one in the Designer renames
+  them, the object is found by its kind and where it was.
+
+Their pictures are the Designer's own: for every kind on the panel, not only the catalogue's
+72, the script takes the Designer's render definition and picture from `/iw_icons/`, as for
+the menu, and keeps them in Tampermonkey's storage for a week. The objects are changed on the
+Designer's canvas, where its Save reads them: the element's place and size, and its
+`tag_text`. Measured in the stub host: a placeholder dragged 200 px moved its object from 20
+to 220 px at the sync, and the two others stayed as they were. Not yet tried in the live
+Designer.
+
 The picture is then kept without VectorCraft's own copy of the document, which still holds the
 placeholders, so the next edit opens what is left, as layers and paths. A hidden placeholder
 stays as it is and becomes nothing. Keep each placeholder a group with its name: the name is
@@ -1197,7 +1228,10 @@ picture: the search on a made-up picture, run as the worker runs it, the picture
 taken out, and their groups turned as they were found. And (v1.45.0) a made-up pill measured to
 a tenth of a pixel, its name, its SVG and its erasing; a box that is no pill; a library pill known
 as one; a pipe round a corner, its width, and a letter's stroke left alone; a component's absent
-stub left out; and the job's layers with Rør.
+stub left out; and the job's layers with Rør. And (v1.46.0) the panel's objects as
+placeholders - each with its picture, its tag text and which object it is - what a sync asks of
+the panel (moved, relabelled, resized, found again after a renaming, new, gone), and Ctrl+S
+made ready.
 
 ## AI-generated panels (Copilot)
 
