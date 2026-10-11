@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.35.0
+// @version      1.36.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.35.0';
+var IWDIE_VERSION = '1.36.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -4327,13 +4327,13 @@ function iwdieBuildParamExportFilename(plantId, unitLabel, now) {
   return 'parameters_' + (plantId || 'plant') + '_' + unit + '_' + stamp + '.xlsx';
 }
 
-/* ===================== Draw background (v1.32.0): the pure part =====================
-   Draw mode edits a list of shapes in panel coordinates and, on Done, turns them
-   into the panel's background picture. Everything here is pure so node can test
-   it: the shape model and its SVG, bounds and move/resize maths, snapping, and
-   the PNG chunks that carry the drawing - and the untouched picture it was drawn
-   on - inside the PNG it produces. The Designer keeps a plain picture; Draw mode
-   can still reopen every shape. */
+/* ===================== Drawings: the shape model (Draw background, v1.32.0) =====================
+   Draw mode (1.32.0 to 1.35.0) drew a list of shapes in panel coordinates and kept
+   them, with the untouched picture under them, in chunks of the PNG it made. Edit in
+   VectorCraft took its place in 1.36.0. What stays is pure, so node can test it: the
+   shape model, its cleaning and its SVG - which the component library, Edit in
+   VectorCraft and the .ai export use - and the reading of those chunks, so a
+   background drawn in Draw still opens with its shapes. */
 
 /** iTXt keyword of the chunk that holds the drawing as JSON. */
 var IWDIE_DRAW_KEYWORD = 'iwdie-draw';
@@ -4341,33 +4341,6 @@ var IWDIE_DRAW_KEYWORD = 'iwdie-draw';
  *  letter = ancillary, so every viewer skips it; lowercase second = private;
  *  uppercase third = the reserved bit PNG requires; lowercase fourth = safe to copy. */
 var IWDIE_DRAW_BASE_CHUNK = 'iwBs';
-
-/** The Maskin light palette, sampled from reference_data/maskin-light-style-reference.png
- *  in the kit: pipes 2 px, equipment white with a grey outline. */
-var IWDIE_DRAW_PALETTE = [
-  { hex: '#f79f79', name: 'Hot gas / discharge pipe' },
-  { hex: '#83c2ce', name: 'M-T suction pipe' },
-  { hex: '#70abc5', name: 'L-T suction pipe' },
-  { hex: '#8ec1a3', name: 'Water / heat recovery pipe' },
-  { hex: '#6bc4a1', name: 'Running green' },
-  { hex: '#9da4ae', name: 'Equipment outline' },
-  { hex: '#687c87', name: 'Junction dots and flow arrows' },
-  { hex: '#425664', name: 'Label text' },
-  { hex: '#5d717d', name: 'Slate' },
-  { hex: '#ffffff', name: 'White' },
-  { hex: '#e5e7ea', name: 'Canvas grey' },
-  { hex: '#cdd2d7', name: 'Side panel grey' }
-];
-
-/** Each tool's starting style: the house look of what that tool usually draws. */
-var IWDIE_DRAW_DEFAULT_STYLES = {
-  line: { stroke: '#f79f79', fill: null, sw: 2, dash: false, arrow: false },
-  pen: { stroke: '#83c2ce', fill: null, sw: 2, dash: false, arrow: false },
-  rect: { stroke: '#9da4ae', fill: '#ffffff', sw: 2, dash: false, arrow: false, rx: 8 },
-  ellipse: { stroke: '#9da4ae', fill: '#ffffff', sw: 2, dash: false, arrow: false },
-  dot: { stroke: null, fill: '#687c87', sw: 0, dash: false, arrow: false, r: 3 },
-  text: { stroke: null, fill: '#425664', sw: 0, dash: false, arrow: false, size: 13 }
-};
 
 /** A finite number rounded to 1/100, or null. */
 function iwdieDrawNum(v) {
@@ -4489,13 +4462,6 @@ function iwdieDrawLibItems(list) {
   }).filter(Boolean);
 }
 
-/** Every x, y pair of clean path data, in order. */
-function iwdieDrawDPairs(d) {
-  var nums = d.match(/-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [], out = [];
-  for (var i = 0; i + 1 < nums.length; i += 2) out.push([parseFloat(nums[i]), parseFloat(nums[i + 1])]);
-  return out;
-}
-
 function iwdieDrawFmt(v) { return String(Math.round(v * 100) / 100); }
 
 function iwdieDrawEsc(s) {
@@ -4548,7 +4514,8 @@ function iwdieDrawShapeSvg(s, extra) {
   var f = iwdieDrawFmt, st = s.st;
   extra = extra || '';
   if (s.t === 'group') {
-    return '<g' + extra + '>' + s.items.map(function (c) { return iwdieDrawShapeSvg(c); }).join('') + '</g>';
+    // the name rides along as data-name, which VectorCraft (and Illustrator) show as the group's name
+    return '<g' + (s.name ? ' data-name="' + iwdieDrawEsc(s.name) + '"' : '') + extra + '>' + s.items.map(function (c) { return iwdieDrawShapeSvg(c); }).join('') + '</g>';
   }
   if (s.t === 'd') {
     var mk = (st.arrow && st.stroke && st.sw > 0) ? ' marker-end="url(#' + iwdieDrawArrowId(st.stroke) + ')"' : '';
@@ -4590,45 +4557,6 @@ function iwdieDrawDefsSvg(shapes) {
   return Object.keys(seen).map(iwdieDrawMarkerSvg).join('');
 }
 
-/** The drawing as a standalone SVG at panel size. `base`, a data: URL, puts the
- *  picture it was drawn on underneath, for the .svg download; the picture Done
- *  builds draws the base itself and passes none. */
-function iwdieDrawSvg(shapes, w, h, base) {
-  var f = iwdieDrawFmt, defs = iwdieDrawDefsSvg(shapes);
-  return '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="' + f(w) + '" height="' + f(h) +
-    '" viewBox="0 0 ' + f(w) + ' ' + f(h) + '">' +
-    (defs ? '<defs>' + defs + '</defs>' : '') +
-    (base ? '<image x="0" y="0" width="' + f(w) + '" height="' + f(h) + '" preserveAspectRatio="none" xlink:href="' + iwdieDrawEsc(base) + '"/>' : '') +
-    '<g id="iwdie-drawing">' + (shapes || []).map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</g></svg>';
-}
-
-/** A shape's box {x, y, w, h}, strokes left out. Text is estimated from its length;
- *  the editor measures the rendered text instead where it can. */
-function iwdieDrawBounds(s) {
-  if (s.t === 'rect') return { x: s.x, y: s.y, w: s.w, h: s.h };
-  if (s.t === 'ellipse') return { x: s.cx - s.rx, y: s.cy - s.ry, w: 2 * s.rx, h: 2 * s.ry };
-  if (s.t === 'text') return { x: s.x, y: s.y - s.size * 0.8, w: s.text.length * s.size * 0.56, h: s.size };
-  if (s.t === 'group') return iwdieDrawUnion(s.items.map(iwdieDrawBounds));
-  var xs = [], ys = [];
-  if (s.t === 'd') iwdieDrawDPairs(s.d).forEach(function (p) { xs.push(p[0]); ys.push(p[1]); });
-  if (s.t === 'line') s.pts.forEach(function (p) { xs.push(p[0]); ys.push(p[1]); });
-  if (s.t === 'path') s.nodes.forEach(function (k) { xs.push(k.x, k.ix, k.ox); ys.push(k.y, k.iy, k.oy); });
-  var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys);
-  return { x: x0, y: y0, w: Math.max.apply(null, xs) - x0, h: Math.max.apply(null, ys) - y0 };
-}
-
-/** The box around several boxes, or null for none. */
-function iwdieDrawUnion(boxes) {
-  var b = null;
-  (boxes || []).forEach(function (q) {
-    if (!q) return;
-    if (!b) { b = { x: q.x, y: q.y, w: q.w, h: q.h }; return; }
-    var x1 = Math.max(b.x + b.w, q.x + q.w), y1 = Math.max(b.y + b.h, q.y + q.h);
-    b.x = Math.min(b.x, q.x); b.y = Math.min(b.y, q.y); b.w = x1 - b.x; b.h = y1 - b.y;
-  });
-  return b;
-}
-
 /** The shape under x' = ax*x + bx, y' = ay*y + by: a move when both a are 1, a
  *  resize otherwise, a mirror when one is negative. Line widths, corner radii and
  *  text sizes do not scale, as in Illustrator by default. */
@@ -4663,44 +4591,6 @@ function iwdieDrawMap(s, ax, bx, ay, by) {
     c.x = X(s.x); c.y = Y(s.y);
   }
   return c;
-}
-
-/** Where a box's edges go when `handle` (n, ne, e, se, s, sw, w, nw) is dragged
- *  to p. keepRatio holds the proportions on a corner handle. The result may be
- *  inside out - that is a mirror, and iwdieDrawScaleFor turns it into one. */
-function iwdieDrawResizeBox(b, handle, p, keepRatio) {
-  var x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.h;
-  if (handle.indexOf('w') >= 0) x0 = p.x;
-  if (handle.indexOf('e') >= 0) x1 = p.x;
-  if (handle.indexOf('n') >= 0) y0 = p.y;
-  if (handle.indexOf('s') >= 0) y1 = p.y;
-  if (keepRatio && handle.length === 2 && b.w > 0 && b.h > 0) {
-    var sx = (x1 - x0) / b.w, sy = (y1 - y0) / b.h, k = Math.max(Math.abs(sx), Math.abs(sy));
-    var nw = b.w * k * (sx < 0 ? -1 : 1), nh = b.h * k * (sy < 0 ? -1 : 1);
-    if (handle.indexOf('w') >= 0) x0 = x1 - nw; else x1 = x0 + nw;
-    if (handle.indexOf('n') >= 0) y0 = y1 - nh; else y1 = y0 + nh;
-  }
-  return { x0: x0, y0: y0, x1: x1, y1: y1 };
-}
-
-/** The ax, bx, ay, by that carry box b onto edges nb. A box with no width (a
- *  vertical line) is moved, never stretched, along that axis. */
-function iwdieDrawScaleFor(b, nb) {
-  var ax = b.w > 0 ? (nb.x1 - nb.x0) / b.w : 1, ay = b.h > 0 ? (nb.y1 - nb.y0) / b.h : 1;
-  return { ax: ax, bx: nb.x0 - ax * b.x, ay: ay, by: nb.y0 - ay * b.y };
-}
-
-/** v on a grid of `grid` px; 0 leaves it alone. */
-function iwdieDrawSnap(v, grid) { return grid > 0 ? Math.round(v / grid) * grid : v; }
-
-/** Point b moved onto the nearest 45-degree direction from a, following the
- *  pointer along that direction - Shift in the line and pen tools. */
-function iwdieDrawConstrain(ax, ay, bx, by) {
-  var dx = bx - ax, dy = by - ay;
-  if (!dx && !dy) return { x: bx, y: by };
-  var step = Math.PI / 4, ang = Math.round(Math.atan2(dy, dx) / step) * step;
-  var c = Math.cos(ang), s = Math.sin(ang), along = dx * c + dy * s;
-  return { x: iwdieDrawNum(ax + along * c), y: iwdieDrawNum(ay + along * s) };
 }
 
 /* ---- PNG chunks ---- */
@@ -4769,15 +4659,6 @@ function iwdieUtf8Decode(u8) {
   return Buffer.from(u8).toString('utf8');
 }
 
-/** An uncompressed iTXt chunk body: keyword, no language tag, UTF-8 text. */
-function iwdiePngITxt(keyword, text) {
-  var k = iwdieUtf8Encode(keyword), t = iwdieUtf8Encode(text);
-  var d = new Uint8Array(k.length + 5 + t.length);   // keyword NUL, flag 0, method 0, lang NUL, translated NUL
-  d.set(k, 0);
-  d.set(t, k.length + 5);
-  return d;
-}
-
 /** {keyword, text} from an iTXt chunk body; null for a compressed one, which Draw
  *  mode never writes. */
 function iwdiePngReadITxt(data) {
@@ -4811,26 +4692,6 @@ function iwdieBytesToBase64(u8) {
   var s = '';
   for (var i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
   return btoa(s);
-}
-
-/** The PNG with the drawing - and the base picture it was drawn on - stored
- *  inside it, replacing any earlier copy. Viewers skip both chunks. */
-function iwdieDrawEmbed(png, drawing, baseBytes) {
-  var chunks = iwdiePngChunks(png);
-  if (!chunks) throw new Error('the picture to embed in is not a PNG');
-  var keep = chunks.filter(function (c) {
-    if (c.type === IWDIE_DRAW_BASE_CHUNK) return false;
-    if (c.type === 'iTXt') {
-      var t = iwdiePngReadITxt(c.data);
-      if (t && t.keyword === IWDIE_DRAW_KEYWORD) return false;
-    }
-    return true;
-  });
-  var end = keep.pop();
-  keep.push({ type: 'iTXt', data: iwdiePngITxt(IWDIE_DRAW_KEYWORD, JSON.stringify(drawing)) });
-  if (baseBytes && baseBytes.length) keep.push({ type: IWDIE_DRAW_BASE_CHUNK, data: baseBytes });
-  keep.push(end);
-  return iwdiePngBuild(keep);
 }
 
 /** What Draw mode left inside a PNG: {drawing: {w, h, shapes}, base: {mime, bytes} | null},
@@ -6110,6 +5971,13 @@ function iwdieAiTraceShapes(svg) {
 var IWDIE_VC_URL = 'https://hapnes-dev.github.io/iwmac-vector/app/';
 /** Private PNG chunk with the VectorCraft SVG: ancillary, private, safe to copy. */
 var IWDIE_VC_CHUNK = 'iwVc';
+/** Where the component library is kept (v1.36.0): Tampermonkey's storage, which the Designer and
+ *  the editor's page share - the whole library, and a small note of what it holds. These are top-level
+ *  so they are set before the editor's page runs, which happens before the rest of the page setup. */
+var IWDIE_LIB_KEY = 'iwdie.library.v1';
+var IWDIE_LIB_META_KEY = 'iwdie.library.meta';
+/** Where Draw (1.33.0 to 1.35.0) kept it: the Designer's own localStorage. */
+var IWDIE_LIB_OLD_KEY = 'iwdie.draw.library.v1';
 
 /** The panel as an SVG VectorCraft opens with layers: Bakgrunn (the canvas colour and the
  *  picture), Tegning (Draw's shapes) and, hidden, Panelobjekter (each object's box and label). */
@@ -6145,18 +6013,6 @@ function iwdieVcSvg(o) {
   }
   out.push('</svg>');
   return out.join('\n') + '\n';
-}
-
-/** The width and height an SVG declares: its own, else its viewBox's; null when it has neither. */
-function iwdieVcSize(svg) {
-  var m = /<svg\b[^>]*>/i.exec(String(svg || ''));
-  if (!m) return null;
-  var num = function (a) { var r = new RegExp('\\s' + a + '\\s*=\\s*"\\s*([\\d.]+)(px)?\\s*"').exec(m[0]); return r ? parseFloat(r[1]) : null; };
-  var vb = /\sviewBox\s*=\s*"\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)\s*"/.exec(m[0]);
-  var w = num('width'), h = num('height');
-  if (!(w > 0) && vb) w = parseFloat(vb[1]);
-  if (!(h > 0) && vb) h = parseFloat(vb[2]);
-  return (w > 0 && h > 0) ? { w: w, h: h } : null;
 }
 
 /** The SVG with an explicit size on its root, so a browser draws it at that size. */
@@ -6207,6 +6063,68 @@ function iwdieVcExtract(png) {
     }
   }
   return null;
+}
+
+/** The component library as a sheet VectorCraft opens (v1.36.0): one layer per Illustrator
+ *  layer the components came from, each component a named group at its own size, in rows
+ *  under its layer's heading; the headings and names on a layer of their own, Navn, under
+ *  the rest, so a selection takes the art without its label. */
+function iwdieVcLibrarySvg(lib) {
+  var items = (lib && Array.isArray(lib.items)) ? lib.items : [], esc = iwdieDrawEsc, f = iwdieDrawFmt;
+  var M = 40, GAP_X = 28, GAP_Y = 22, CAPTION = 14, HEAD = 34;
+  var widest = items.reduce(function (m, it) { return Math.max(m, it.w || 0); }, 0);
+  var rowW = Math.max(1200, Math.ceil(widest));
+  var sections = [], byName = {};
+  items.forEach(function (it) {
+    var key = it.layer || 'Komponenter';
+    if (!byName[key]) { byName[key] = { name: key, items: [] }; sections.push(byName[key]); }
+    byName[key].items.push(it);
+  });
+  // VectorCraft names a layer by its data-name but a group inside one only by its id, so a
+  // named component gets an id made from its name - unique, as ids must be
+  var used = { navn: 1 };
+  sections.forEach(function (sec, n) { used['komponenter-' + (n + 1)] = 1; });
+  var idFor = function (name) {
+    var base = String(name).trim().replace(/[^A-Za-z0-9_.\-À-ɏ]/g, '_');
+    if (!/^[A-Za-z_À-ɏ]/.test(base)) base = '_' + base;
+    var id = base, k = 2;
+    while (used[id]) id = base + '-' + k++;
+    used[id] = 1;
+    return id;
+  };
+  var y = M, right = M, layers = [], names = [], all = [];
+  sections.forEach(function (sec, n) {
+    names.push('    <text x="' + M + '" y="' + f(y + 18) + '" font-family="Arial" font-size="16" font-weight="bold" fill="#33414d">' +
+      esc(sec.name) + ' (' + sec.items.length + ')</text>');
+    y += HEAD;
+    var x = M, rowH = 0, groups = [];
+    sec.items.forEach(function (it) {
+      var w = Math.max(1, it.w || 0), h = Math.max(1, it.h || 0);
+      if (x > M && x + w > M + rowW) { x = M; y += rowH + CAPTION + GAP_Y; rowH = 0; }
+      var shapes = it.shapes.map(function (s) { return iwdieDrawMap(s, 1, x, 1, y); });
+      all.push.apply(all, shapes);
+      groups.push('    <g' + (it.name ? ' id="' + esc(idFor(it.name)) + '" data-name="' + esc(it.name) + '"' : '') + '>' +
+        shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</g>');
+      if (it.name) {
+        names.push('    <text x="' + f(x) + '" y="' + f(y + h + 11) + '" font-family="Arial" font-size="9" fill="#6b7782">' + esc(it.name.slice(0, 40)) + '</text>');
+      }
+      right = Math.max(right, x + w);
+      rowH = Math.max(rowH, h);
+      x += w + GAP_X;
+    });
+    y += rowH + CAPTION + GAP_Y + 12;
+    layers.push('  <g id="komponenter-' + (n + 1) + '" data-name="' + esc(sec.name) + '">\n' + groups.join('\n') + '\n  </g>');
+  });
+  var W = Math.ceil(Math.max(right + M, 400)), H = Math.ceil(Math.max(y - GAP_Y - 12 + M, 300));
+  var defs = iwdieDrawDefsSvg(all);
+  return ['<?xml version="1.0" encoding="UTF-8"?>',
+    '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">',
+    '  <title>Komponenter' + (lib && lib.file ? ' - ' + esc(String(lib.file)) : '') + '</title>']
+    .concat(defs ? ['  <defs>' + defs + '</defs>'] : [])
+    // the names first, so they sit at the bottom of the Layers panel with the components above them
+    .concat(names.length ? ['  <g id="navn" data-name="Navn">', names.join('\n'), '  </g>'] : [])
+    .concat(layers)
+    .concat(['</svg>']).join('\n') + '\n';
 }
 
 /* ===================== browser body ===================== */
@@ -6314,49 +6232,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-facts div+div{margin-top:4px}',
       '.iwdie-facts code{font:12px Consolas,monospace;background:#fff;border:1px solid #d5dbe1;border-radius:3px;padding:1px 5px}',
       '.iwdie-arrow{color:#2f6fb2;font-weight:700;margin:0 6px}',
-      /* Draw background (v1.32.0): the bar floats above a shade that dims and
-         blocks everything but the canvas; the drawing layer itself lives in the
-         page, between the background and the objects.
-         v1.32.3: page tools stack at the very top too - the Designer Toolkit's
-         toolbar sits at z-index 2147483647 across the top of the window and hid
-         Done and Cancel. The shade, the bar, the dialogs and the toasts use that
-         same z-index and win by coming later in the document. */
-      '.iwdie-draw-shade{position:fixed;inset:0;background:rgba(18,24,30,.38);z-index:2147483647}',
-      '.iwdie-draw-bar{position:fixed;top:8px;left:50%;transform:translateX(-50%);width:max-content;z-index:2147483647;background:#fff;border:1px solid #c9d1d9;border-radius:8px;',
-      '  box-shadow:0 6px 24px rgba(0,0,0,.3);padding:6px 10px;font:12.5px/1.4 Roboto,Arial,sans-serif;color:#222;max-width:96vw;box-sizing:border-box;overflow-x:auto}',
-      '.iwdie-draw-row{display:flex;flex-wrap:nowrap;align-items:center;gap:4px;margin:2px 0}',
-      '.iwdie-draw-row>*,.iwdie-draw-style>*{flex-shrink:0}',
-      '.iwdie-draw-bar button{white-space:nowrap;font:12.5px Roboto,Arial,sans-serif;border:1px solid #c9d1d9;background:#f6f8fa;border-radius:4px;padding:3px 8px;margin:0;cursor:pointer;color:#222;line-height:1.3}',
-      '.iwdie-draw-bar button:hover:not(:disabled){background:#eef4fa;border-color:#9fb6cc}',
-      '.iwdie-draw-bar button:disabled{opacity:.45;cursor:default}',
-      '.iwdie-draw-bar button.iwdie-on{background:#2f6fb2;border-color:#2f6fb2;color:#fff}',
-      '.iwdie-draw-bar button.iwdie-draw-done{background:#2f6fb2;border-color:#2f6fb2;color:#fff;padding:3px 16px;font-weight:600}',
-      '.iwdie-draw-bar button.iwdie-draw-done:hover:not(:disabled){background:#265d96}',
-      '.iwdie-draw-sep{width:1px;height:20px;background:#d5dbe1;margin:0 4px}',
-      '.iwdie-draw-grow{flex:1 1 8px}',
-      '.iwdie-draw-grip{cursor:move;color:#8a96a3;padding:0 4px;user-select:none;font-size:15px;touch-action:none}',
-      '.iwdie-draw-title{margin-right:6px;white-space:nowrap}',
-      '.iwdie-draw-lbl{color:#5a6570;margin:0 2px 0 6px;font-size:12.5px;font-weight:400}',
-      '.iwdie-draw-bar .iwdie-draw-sw{width:16px;height:16px;padding:0;border-radius:3px;border:1px solid rgba(0,0,0,.28)}',
-      '.iwdie-draw-style{display:inline-flex;flex-wrap:nowrap;align-items:center;gap:3px;color:inherit;font-size:inherit;font-weight:inherit}',
-      '.iwdie-draw-bar .iwdie-draw-sw.iwdie-on{outline:2px solid #2f6fb2;outline-offset:1px;border-color:rgba(0,0,0,.28)}',
-      '.iwdie-draw-bar .iwdie-draw-sw.iwdie-none{background:linear-gradient(to top right,#fff calc(50% - 1px),#c0392b 50%,#fff calc(50% + 1px)) !important}',
-      '.iwdie-draw-bar input[type=number]{width:54px;font:12.5px Roboto,Arial,sans-serif;padding:1px 3px}',
-      '.iwdie-draw-bar input[type=color]{width:26px;height:22px;padding:0 1px;border:1px solid #c9d1d9;border-radius:3px;background:#fff;cursor:pointer}',
-      '.iwdie-draw-bar label{display:inline-flex;align-items:center;gap:3px;margin:0 4px;font-weight:400;cursor:pointer;white-space:nowrap}',
-      '.iwdie-draw-bar select{font:12.5px Roboto,Arial,sans-serif;padding:1px 2px}',
-      '.iwdie-draw-style.iwdie-off{opacity:.4;pointer-events:none}',
-      '.iwdie-draw-foot{margin-top:3px;padding-top:3px;border-top:1px solid #edf0f3}',
-      '.iwdie-draw-bar .iwdie-draw-hint{flex:1 1 300px;flex-shrink:1;min-width:0;color:#4a545e;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '.iwdie-draw-hint b{color:#1f6f43}',
-      '.iwdie-draw-text{position:fixed;z-index:2147483647;border:1px solid #2f6fb2;outline:none;background:rgba(255,255,255,.96);padding:0 3px;font-family:Arial,Helvetica,sans-serif;min-width:120px;line-height:1.2}',
-      '.iwdie-draw-layer{cursor:crosshair}',
-      '.iwdie-draw-layer.iwdie-tool-select{cursor:default}',
-      '.iwdie-draw-layer.iwdie-tool-select [data-i]{cursor:move}',
-      '.iwdie-draw-layer.iwdie-tool-text{cursor:text}',
-      '.iwdie-draw-layer .iwdie-draw-hit{stroke-opacity:0;fill:none;pointer-events:stroke}',
-      '.iwdie-draw-layer .iwdie-draw-hitbox{fill:#000;fill-opacity:0;stroke:none;pointer-events:all}',
-      '.iwdie-draw-layer.iwdie-tool-stamp{cursor:copy}',
       /* Export Background (v1.34.0), in VectorCraft's Medium Dark: its tokens as custom
          properties, so other dialogs can follow. Flat panel, 1 px border, radius 6, choice
          cards with a 2 px accent ring, one blue pill for the one action. */
@@ -6400,44 +6275,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-vc-secondary{background:transparent;color:var(--vc-text);box-shadow:inset 0 0 0 1.5px var(--vc-text-dim)}',
       '.iwdie-vc-secondary:hover{background:var(--vc-hover)}',
       '.iwdie-vc-pill:focus-visible,.iwdie-vc-card:focus-visible{outline:1px solid var(--vc-accent);outline-offset:1px}',
-      /* The library (v1.33.0): components from an Illustrator file, down the left. */
-      '.iwdie-draw-lib{position:fixed;left:8px;top:120px;bottom:8px;width:284px;z-index:2147483647;background:#fff;border:1px solid #c9d1d9;border-radius:8px;',
-      '  box-shadow:0 6px 24px rgba(0,0,0,.3);display:flex;flex-direction:column;font:12.5px/1.4 Roboto,Arial,sans-serif;color:#222;box-sizing:border-box}',
-      '.iwdie-draw-lib[hidden]{display:none}',
-      '.iwdie-draw-lib.iwdie-drop{box-shadow:0 0 0 3px #2f6fb2,0 6px 24px rgba(0,0,0,.3);background:#eef4fa}',
-      '.iwdie-draw-lib-head{display:flex;align-items:center;gap:6px;padding:8px 8px 4px 10px}',
-      '.iwdie-draw-lib-head b{flex:0 0 auto}',
-      '.iwdie-draw-lib-count{flex:1 1 auto;color:#5a6570;font-size:12px;font-weight:400}',
-      '.iwdie-draw-lib-head button{border:none;background:transparent;font-size:17px;line-height:1;cursor:pointer;color:#5a6570;padding:2px 6px;border-radius:4px}',
-      '.iwdie-draw-lib-head button:hover{background:#eef4fa}',
-      '.iwdie-draw-lib-tools{display:flex;gap:6px;padding:4px 10px}',
-      '.iwdie-draw-lib-tools input{flex:1 1 auto;min-width:0;font:12.5px Roboto,Arial,sans-serif;padding:3px 6px;border:1px solid #c9d1d9;border-radius:4px}',
-      '.iwdie-draw-lib-tools button{white-space:nowrap;font:12.5px Roboto,Arial,sans-serif;border:1px solid #c9d1d9;background:#f6f8fa;border-radius:4px;padding:3px 8px;cursor:pointer;color:#222}',
-      '.iwdie-draw-lib-tools button:hover:not(:disabled){background:#eef4fa;border-color:#9fb6cc}',
-      '.iwdie-draw-lib-status{padding:2px 10px 6px;color:#5a6570;font-size:12px;line-height:1.45}',
-      '.iwdie-draw-lib-status.iwdie-bad{color:#b3261e}',
-      '.iwdie-draw-lib-list{flex:1 1 auto;overflow:auto;padding:0 6px 8px 10px}',
-      '.iwdie-draw-lib-list details{margin:2px 0 6px}',
-      '.iwdie-draw-lib-list summary{cursor:pointer;font-weight:600;color:#33414d;padding:3px 0}',
-      '.iwdie-draw-lib-list summary span{font-weight:400;color:#7a8692}',
-      '.iwdie-draw-lib-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}',
-      '.iwdie-draw-lib-item{display:flex;flex-direction:column;align-items:stretch;gap:2px;border:1px solid #d5dbe1;background:#f8f9fb;border-radius:6px;padding:4px;cursor:pointer;min-width:0;font:inherit;color:inherit}',
-      '.iwdie-draw-lib-item:hover{border-color:#9fb6cc;background:#eef4fa}',
-      '.iwdie-draw-lib-item.iwdie-on{border-color:#2f6fb2;box-shadow:0 0 0 2px rgba(47,111,178,.35)}',
-      '.iwdie-draw-lib-item img{display:block;width:100%;height:58px;object-fit:contain;background:#e5e7ea;border-radius:4px}',
-      '.iwdie-draw-lib-item span{font-size:11px;font-weight:400;color:#425664;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left}',
-      '.iwdie-draw-lib-empty{color:#5a6570;padding:8px 4px;line-height:1.5}',
-      '.iwdie-draw-layer text{pointer-events:bounding-box}',
-      '.iwdie-draw-selbox{fill:none;stroke:#2f6fb2;stroke-width:1;stroke-dasharray:4 3;pointer-events:none}',
-      '.iwdie-draw-handle{fill:#fff;stroke:#2f6fb2;stroke-width:1.2}',
-      '.iwdie-draw-handle[data-h=nw],.iwdie-draw-handle[data-h=se]{cursor:nwse-resize}',
-      '.iwdie-draw-handle[data-h=ne],.iwdie-draw-handle[data-h=sw]{cursor:nesw-resize}',
-      '.iwdie-draw-handle[data-h=n],.iwdie-draw-handle[data-h=s]{cursor:ns-resize}',
-      '.iwdie-draw-handle[data-h=e],.iwdie-draw-handle[data-h=w]{cursor:ew-resize}',
-      '.iwdie-draw-live{pointer-events:none}',
-      '.iwdie-draw-marquee{fill:rgba(47,111,178,.08);stroke:#2f6fb2;stroke-width:1;stroke-dasharray:3 3}',
-      '.iwdie-draw-node{fill:#fff;stroke:#2f6fb2;stroke-width:1}',
-      '.iwdie-draw-hl{fill:none;stroke:#2f6fb2;stroke-width:1}',
       '#manager_widget_iwdie fieldset{margin-top:4px}',
       /* The host hard-codes #manager_div to height:900px (overflow-y:auto);
          the added full-size button rows make the content taller, so the
@@ -6592,7 +6429,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '    <legend>Panel JSON</legend>',
         "    <button id='iwdie_export_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExport()\">Export JSON</button>",
         "    <button id='iwdie_import_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.openImportPanel()\">Insert JSON…</button>",
-        "    <button id='iwdie_draw_btn' class='btn_full ui-button ui-corner-all' title='Draw Maskin background artwork on the canvas' onclick=\"window.__IWDIE.openDraw()\">Draw background…</button>",
+        "    <button id='iwdie_vc_btn' class='btn_full ui-button ui-corner-all' title='Edit the background in VectorCraft, a vector editor, in a new tab - saving there updates this panel' onclick=\"window.__IWDIE.editInVectorCraft()\">Edit in VectorCraft…</button>",
         "    <button id='iwdie_ai_btn' class='btn_full ui-button ui-corner-all' title='Background → Adobe Illustrator (.ai / .svg)' onclick=\"window.__IWDIE.doExportBackgroundAi()\">Background → Illustrator</button>",
         '  </fieldset>',
         '</div>'].join('\n');
@@ -7201,40 +7038,197 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
 
+    /* ---------- the component library (v1.33.0; in VectorCraft since v1.36.0) ----------
+       Illustrator files for Maskin panels keep their components - compressors, valves, pumps,
+       symbols - around the artboard, and VectorCraft's own .ai reader leaves those out. Import
+       .ai… on the components tab reads them here, into Tampermonkey's storage, where the
+       Designer and the editor's page both reach them. Nothing leaves the browser. */
+
+    function libStore(lib) {
+      GM_setValue(IWDIE_LIB_KEY, { v: 1, file: lib.file, imported: lib.imported, hidden: lib.hidden, noArtboard: lib.noArtboard,
+        items: lib.items.map(function (it) { return { name: it.name, layer: it.layer, w: it.w, h: it.h, shapes: it.shapes }; }) });
+      GM_setValue(IWDIE_LIB_META_KEY, { file: lib.file, imported: lib.imported, count: lib.items.length });
+    }
+
+    /** A stored library as it may be trusted, or null: it is cleaned on the way in, the
+     *  same way a drawing is. */
+    function libClean(o) {
+      var items = (o && typeof o === 'object') ? iwdieDrawLibItems(o.items) : [];
+      if (!items.length) return null;
+      return { file: typeof o.file === 'string' ? o.file.slice(0, 200) : '', imported: typeof o.imported === 'string' ? o.imported : '',
+        hidden: Math.max(0, parseInt(o.hidden, 10) || 0), noArtboard: !!o.noArtboard, items: items };
+    }
+
+    function libLoad() {
+      try { return libClean(GM_getValue(IWDIE_LIB_KEY, null)); } catch (e) { return null; }
+    }
+
+    /** A library imported in Draw (1.33.0 to 1.35.0) lives in the Designer's own storage:
+     *  copied over once, so the editor's page has it too. The old copy stays where it is. */
+    function libMigrate() {
+      try {
+        if (GM_getValue(IWDIE_LIB_META_KEY, null)) return;
+        var raw = window.localStorage.getItem(IWDIE_LIB_OLD_KEY), lib = libClean(raw ? JSON.parse(raw) : null);
+        if (lib) libStore(lib);
+      } catch (e) {}
+    }
+
+    function libNextFrame() {
+      return new Promise(function (resolve) { setTimeout(resolve, 30); });   // lets a status line show before a long step
+    }
+
+    /** zlib data inflated by the browser. A PDF stream may carry a byte or two
+     *  past the end of its data, which DecompressionStream reports as an error
+     *  after it has produced everything - so what came out is kept. */
+    function libInflate(u8) {
+      var DS = typeof DecompressionStream === 'function' ? DecompressionStream : (W && W.DecompressionStream);
+      if (typeof DS !== 'function') return Promise.reject(new Error('this browser cannot unpack it (no DecompressionStream)'));
+      var ds = new DS('deflate'), writer = ds.writable.getWriter(), reader = ds.readable.getReader(), chunks = [], total = 0;
+      writer.write(u8).then(null, function () {});
+      writer.close().then(null, function () {});
+      var pump = function () {
+        return reader.read().then(function (r) {
+          if (r.done) return null;
+          chunks.push(r.value);
+          total += r.value.length;
+          return pump();
+        });
+      };
+      return pump().then(null, function (e) { if (!total) throw e; }).then(function () {
+        var out = new Uint8Array(total), o = 0;
+        chunks.forEach(function (c) { out.set(c, o); o += c.length; });
+        return out;
+      });
+    }
+
+    function libDecode(block) {
+      if (!block.filter) return Promise.resolve(block.data);
+      if (block.filter === 'FlateDecode') return libInflate(block.data);
+      return Promise.reject(new Error('its data is packed as ' + block.filter + ', which cannot be read here'));
+    }
+
+    /** The components of an Illustrator file: its visible objects wholly outside the
+     *  artboard. `step(html)` hears each stage. -> Promise<{file, imported, hidden, noArtboard, items}> */
+    function libRead(file, step) {
+      var esc2 = iwdieEscHtml, name = String(file.name || 'the file'), box = null;
+      step('Reading <b>' + esc2(name) + '</b>…');
+      return file.arrayBuffer().then(function (ab) {
+        box = iwdieAiContainer(new Uint8Array(ab));
+        return Promise.all(box.blocks.map(libDecode));
+      }).then(function (parts) {
+        var total = 0, o = 0;
+        parts.forEach(function (p) { total += p.length; });
+        var joined = new Uint8Array(total);
+        parts.forEach(function (p) { joined.set(p, o); o += p.length; });
+        step('Unpacking <b>' + esc2(name) + '</b>…');
+        return libNextFrame().then(function () { return iwdieAiNative(joined); });
+      }).then(function (nat) {
+        return Promise.all([nat.bytes || libInflate(nat.inflate), box.icc ? libDecode(box.icc).then(null, function () { return null; }) : null]);
+      }).then(function (r) {
+        step('Finding the objects around the artboard…');
+        return libNextFrame().then(function () {
+          var color = (r[1] && iwdieIccCmykConverter(r[1])) || iwdieCmykNaive;
+          var parsed = iwdieAiParse(iwdieLatin1(r[0])), res = iwdieAiLibrary(parsed, color);
+          return { file: name, imported: new Date().toISOString(), hidden: res.hidden, noArtboard: !parsed.artboards.length, items: iwdieDrawLibItems(res.items) };
+        });
+      });
+    }
+
     /* ---------- Edit in VectorCraft (v1.35.0): the editor's side ----------
-       Runs on the VectorCraft page when it was opened for a job: drops the panel's SVG
-       on the canvas once the app has started, shows how to save, and catches the SVG the
-       app saves - a blob download - to hand it back through Tampermonkey's storage instead. */
+       Runs on the VectorCraft page. Opened for a job (#job=…) it drops the panel's SVG on the
+       canvas once the app has started, shows how to save, and catches the SVG the app saves -
+       a blob download - to hand it back through Tampermonkey's storage instead. Opened for the
+       components (#lib, v1.36.0) it drops the library there, as a sheet to copy from. */
+    /** The banner on the editor's page: a title, a text, buttons, and a line for news. */
+    function vcBanner(titleHtml, bodyHtml, actions) {
+      if (!document.getElementById('iwdie-vcb-style')) {
+        var css = [
+          '.iwdie-vcb{position:fixed;right:16px;bottom:64px;z-index:2147483647;width:340px;padding:12px 30px 12px 14px;box-sizing:border-box;background:#424242;',
+          '  border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#d1d1d1}',
+          '.iwdie-vcb b{color:#ffffff;font-weight:600}',
+          '.iwdie-vcb .iwdie-vcb-t{font-weight:600;color:#ffffff;margin-bottom:4px}',
+          '.iwdie-vcb .iwdie-vcb-s{margin-top:6px;color:#8fd19e}',
+          '.iwdie-vcb .iwdie-vcb-e{margin-top:6px;color:#ff9f9f}',
+          '.iwdie-vcb .iwdie-vcb-x{position:absolute;top:6px;right:6px;width:20px;height:20px;border:0;background:transparent;color:#b0b0b0;font:16px/20px Arial,sans-serif;cursor:default;padding:0}',
+          '.iwdie-vcb .iwdie-vcb-x:hover{color:#ffffff}',
+          '.iwdie-vcb .iwdie-vcb-a{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}',
+          '.iwdie-vcb .iwdie-vcb-a button{height:24px;padding:0 12px;border:0;border-radius:12px;background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0;',
+          '  font:600 12px "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;cursor:default}',
+          '.iwdie-vcb .iwdie-vcb-a button:hover{background:#606060;color:#ffffff}'
+        ].join('\n');
+        var st = document.createElement('style');
+        st.id = 'iwdie-vcb-style';
+        st.textContent = css;
+        (document.head || document.documentElement).appendChild(st);
+      }
+      var esc2 = iwdieEscHtml, el = document.createElement('div'), handlers = {};
+      el.className = 'iwdie-vcb';
+      el.innerHTML = '<button class="iwdie-vcb-x" title="Hide">×</button><div class="iwdie-vcb-t">' + titleHtml + '</div><div class="iwdie-vcb-b">' + bodyHtml + '</div>' +
+        ((actions && actions.length) ? '<div class="iwdie-vcb-a">' + actions.map(function (a) {
+          return '<button data-act="' + esc2(a.act) + '"' + (a.title ? ' title="' + esc2(a.title) + '"' : '') + '>' + esc2(a.label) + '</button>';
+        }).join('') + '</div>' : '') + '<div class="iwdie-vcb-n"></div>';
+      document.body.appendChild(el);
+      el.addEventListener('click', function (ev) {
+        var b = ev.target && ev.target.closest ? ev.target.closest('button') : null;
+        if (!b) return;
+        if (b.classList.contains('iwdie-vcb-x')) { el.style.display = 'none'; return; }
+        var fn = handlers[b.getAttribute('data-act')];
+        if (fn) fn();
+      });
+      return {
+        el: el,
+        on: function (act, fn) { handlers[act] = fn; },
+        note: function (html, bad) {
+          var n = el.querySelector('.iwdie-vcb-n');
+          n.className = 'iwdie-vcb-n ' + (bad ? 'iwdie-vcb-e' : 'iwdie-vcb-s');
+          n.innerHTML = html;
+          el.style.display = '';
+        }
+      };
+    }
+
+    /** Drop an SVG on the canvas once the app has started. A fresh app has no document, so
+     *  it opens as one; the first start downloads the editor, which may take a while. */
+    function vcDropWhenReady(svg, name, note) {
+      var tries = 0;
+      var go = function () {
+        var canvas = document.getElementById('vectorcraft_canvas');
+        if (!canvas || document.getElementById('vectorcraft_loading')) {
+          if (++tries > 720) { note('The editor did not start - reload this tab.', true); return; }
+          setTimeout(go, 250);
+          return;
+        }
+        setTimeout(function () {
+          try {
+            var r = canvas.getBoundingClientRect(), dt = new W.DataTransfer();
+            dt.items.add(new W.File([svg], name, { type: 'image/svg+xml' }));
+            ['dragenter', 'dragover', 'drop'].forEach(function (t) {
+              canvas.dispatchEvent(new W.DragEvent(t, { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true, dataTransfer: dt }));
+            });
+          } catch (e) { note('It could not be opened here: ' + iwdieEscHtml(String((e && e.message) || e)), true); }
+        }, 1500);
+      };
+      go();
+    }
+
     function vcAppSide() {
       if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') return;
-      var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null;
+      if (/^#lib\b/.test(location.hash || '')) { vcLibrarySide(); return; }
+      var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null, meta = null;
       try { job = GM_getValue('iwdie.vc.job', null); } catch (e) { job = null; }
       if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') return;
-      var css = [
-        '.iwdie-vcb{position:fixed;right:16px;bottom:64px;z-index:2147483647;width:330px;padding:12px 30px 12px 14px;box-sizing:border-box;background:#424242;',
-        '  border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#d1d1d1}',
-        '.iwdie-vcb b{color:#ffffff;font-weight:600}',
-        '.iwdie-vcb .iwdie-vcb-t{font-weight:600;color:#ffffff;margin-bottom:4px}',
-        '.iwdie-vcb .iwdie-vcb-s{margin-top:6px;color:#8fd19e}',
-        '.iwdie-vcb .iwdie-vcb-e{margin-top:6px;color:#ff9f9f}',
-        '.iwdie-vcb button{position:absolute;top:6px;right:6px;width:20px;height:20px;border:0;background:transparent;color:#b0b0b0;font:16px/20px Arial,sans-serif;cursor:default;padding:0}',
-        '.iwdie-vcb button:hover{color:#ffffff}'
-      ].join('\n');
-      try { GM_addStyle(css); } catch (e) { var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st); }
-      var esc2 = iwdieEscHtml, banner = document.createElement('div');
-      banner.className = 'iwdie-vcb';
-      banner.innerHTML = '<button title="Hide">×</button><div class="iwdie-vcb-t">IWMAC Designer · ' + esc2(job.panel || 'panel') +
-        (job.plant ? ' (plant ' + esc2(job.plant) + ')' : '') + '</div>' +
-        '<div>To send it back: <b>Ctrl+S</b> → Format <b>SVG</b> → OK → tick <b>Preserve Editing Capabilities</b> → OK. ' +
-        'The panel’s background updates; keep editing and save again for more.</div><div class="iwdie-vcb-n"></div>';
-      document.body.appendChild(banner);
-      banner.querySelector('button').addEventListener('click', function () { banner.style.display = 'none'; });
-      var note = function (html, bad) {
-        var n = banner.querySelector('.iwdie-vcb-n');
-        n.className = 'iwdie-vcb-n ' + (bad ? 'iwdie-vcb-e' : 'iwdie-vcb-s');
-        n.innerHTML = html;
-        banner.style.display = '';
-      };
+      try { meta = GM_getValue(IWDIE_LIB_META_KEY, null); } catch (e) { meta = null; }
+      var esc2 = iwdieEscHtml;
+      var ui = vcBanner('IWMAC Designer · ' + esc2(job.panel || 'panel') + (job.plant ? ' (plant ' + esc2(job.plant) + ')' : ''),
+        'To send it back: <b>Ctrl+S</b> → Format <b>SVG</b> → OK → tick <b>Preserve Editing Capabilities</b> → OK. ' +
+        'The panel’s background updates; keep editing and save again for more.',
+        [{ act: 'lib', label: 'Komponenter' + (meta && meta.count ? ' (' + meta.count + ')' : ''),
+          title: 'The components from your Illustrator file, in a tab of their own: copy there, paste here' }]);
+      var note = ui.note;
+      ui.on('lib', function () {
+        var t = W.open(IWDIE_VC_URL + '#lib', 'iwdie-vc-lib');
+        if (!t) note('The browser blocked the new tab - allow pop-ups for this page.', true);
+      });
       // what the app saves arrives as a blob download: keep the blobs, and send an SVG back instead of downloading it
       var blobs = {}, make = W.URL.createObjectURL, revoke = W.URL.revokeObjectURL, click = W.HTMLAnchorElement.prototype.click;
       var hhmm = function () { var d = new Date(), p = function (v) { return (v < 10 ? '0' : '') + v; }; return p(d.getHours()) + ':' + p(d.getMinutes()); };
@@ -7309,38 +7303,82 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (b && /\.svgz$/i.test(a.download)) note('Saved as SVG Compressed, which goes to Downloads - choose <b>SVG</b> to send it to the panel.', true);
         return click.apply(this, arguments);
       };
-      // drop the panel in once the app is up; a fresh app has no document, so it opens as one
-      var tries = 0;
-      var waitAndDrop = function () {
-        var canvas = document.getElementById('vectorcraft_canvas');
-        if (!canvas || document.getElementById('vectorcraft_loading')) {
-          if (++tries > 240) { note('The editor did not start - reload this tab.', true); return; }
-          setTimeout(waitAndDrop, 250);
-          return;
-        }
-        setTimeout(function () {
-          try {
-            var r = canvas.getBoundingClientRect(), dt = new W.DataTransfer();
-            dt.items.add(new W.File([job.svg], job.name || 'panel.svg', { type: 'image/svg+xml' }));
-            ['dragenter', 'dragover', 'drop'].forEach(function (t) {
-              canvas.dispatchEvent(new W.DragEvent(t, { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true, dataTransfer: dt }));
-            });
-          } catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); }
-        }, 1500);
-      };
-      waitAndDrop();
+      vcDropWhenReady(job.svg, job.name || 'panel.svg', note);
+    }
+
+    /** The components tab (v1.36.0): the library as a sheet in VectorCraft - one layer per
+     *  Illustrator layer, each component a named group - to copy into the panel's tab, and
+     *  Import .ai… to read another file's components in their place. */
+    function vcLibrarySide() {
+      var esc2 = iwdieEscHtml, lib = libLoad(), busy = false;
+      var when = '';
+      try { when = lib && lib.imported ? ', ' + new Date(lib.imported).toLocaleDateString() : ''; } catch (e) {}
+      var facts = lib ? ['From <b>' + esc2(lib.file || 'an Illustrator file') + '</b>' + esc2(when)] : [];
+      if (lib && lib.hidden) facts.push(iwdieN(lib.hidden, 'hidden object', 'hidden objects') + ' left out, as in Illustrator');
+      if (lib && lib.noArtboard) facts.push('no artboard found, so every object is here');
+      var ui = vcBanner(lib ? 'Komponenter · ' + iwdieN(lib.items.length, 'component', 'components') : 'Komponenter',
+        lib ? facts.join(' · ') + '. Select a component - click it, or drag around several - then <b>Ctrl+C</b> here and <b>Ctrl+V</b> in the panel’s tab: ' +
+          'it lands in the layer selected there, in the middle of the view.'
+          : 'None yet. <b>Import .ai…</b> reads the objects placed around an Illustrator file’s artboard - where Maskin files keep their components. ' +
+          'The file stays on this computer.',
+        [{ act: 'import', label: 'Import .ai…', title: 'Read the components of an Illustrator file; they replace the ones here' }]);
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.ai,.pdf,application/pdf,application/postscript,application/illustrator';
+      input.style.display = 'none';
+      ui.el.appendChild(input);
+      ui.on('import', function () { if (!busy) input.click(); });
+      input.addEventListener('change', function () {
+        var f = input.files && input.files[0];
+        input.value = '';
+        if (!f || busy) return;
+        busy = true;
+        libRead(f, function (html) { ui.note(html); }).then(function (got) {
+          if (!got.items.length) {
+            busy = false;
+            ui.note('<b>' + esc2(got.file) + '</b> has no objects outside its artboard' + (got.hidden ? ' that are not hidden' : '') + ' - the components are unchanged.', true);
+            return;
+          }
+          libStore(got);
+          ui.note('✓ ' + iwdieN(got.items.length, 'component', 'components') + ' from <b>' + esc2(got.file) + '</b> - opening them…');
+          setTimeout(function () { location.reload(); }, 700);
+        }).then(null, function (e) {
+          busy = false;
+          ui.note('<b>' + esc2(String(f.name || 'The file')) + '</b> could not be read: ' + esc2(String((e && e.message) || e)) + '.', true);
+        });
+      });
+      if (lib) vcDropWhenReady(iwdieVcLibrarySvg(lib), 'komponenter.svg', ui.note);
     }
 
     /* ---------- Edit in VectorCraft (v1.35.0): the Designer's side ---------- */
-    /** Open the panel in VectorCraft: the document it came from when the background has one,
-     *  else an SVG of the picture, the drawing and the panel's objects. */
-    function vcStartEdit(info) {
+    /** Edit in VectorCraft… on the sidebar (v1.36.0, in place of Draw background…): the panel
+     *  straight into the editor, in a new tab. */
+    function doEditInVectorCraft() {
+      if (!hostReady()) { toast('IWMAC Designer not ready yet — host functions missing.', true); return; }
       if (typeof GM_setValue !== 'function' || typeof GM_addValueChangeListener !== 'function') {
         toast('This needs Tampermonkey’s storage (GM_setValue) - update Tampermonkey and the script.', true, 8000);
         return;
       }
       var tab = W.open('about:blank', '_blank');          // opened now, inside the click, or the browser blocks it
-      try { if (tab) tab.opener = null; } catch (e) {}    // the editor's page gets no handle on this one
+      if (!tab) { toast('The browser blocked the new tab - allow pop-ups for this page, then try again.', true, 10000); return; }
+      try { tab.opener = null; } catch (e) {}             // the editor's page gets no handle on this one
+      libMigrate();
+      var url = grabBackgroundUrl();
+      var info = { url: url, bg: null, found: null, objects: exportPanelObjects(), size: exportPanelSize(), plant: currentPlantId(), panel: currentPanelName() };
+      // a background that cannot be read must not become an empty one in the editor
+      (url ? fetchBackgroundBytes(url) : Promise.resolve(null)).then(function (bg) {
+        info.bg = bg;
+        info.found = (bg && iwdieSniffMime(bg.bytes) === 'image/png') ? iwdieDrawExtract(bg.bytes) : null;
+        vcStartEdit(info, tab);
+      }, function (e) {
+        try { tab.close(); } catch (e2) {}
+        toast('The background picture could not be read, so VectorCraft was not opened: ' + ((e && e.message) || e), true, 10000);
+      });
+    }
+
+    /** Open the panel in the tab given: the VectorCraft document the background came from
+     *  when it has one, else an SVG of the picture, any drawing in it and the panel's objects. */
+    function vcStartEdit(info, tab) {
       var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea';
       var png = info.bg && iwdieSniffMime(info.bg.bytes) === 'image/png' ? info.bg.bytes : null;
       var vc = png ? iwdieVcExtract(png) : null;
@@ -7370,11 +7408,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var url = IWDIE_VC_URL + '#job=' + id;
         if (tab && !tab.closed) tab.location.href = url; else tab = W.open(url, '_blank');
         if (!tab) { toast('The browser blocked the new tab - allow pop-ups for this page, then try again.', true, 10000); return; }
+        var what = vc
+          ? 'The VectorCraft document behind this background' + (shapes.length ? ', with the drawing from Draw on a layer of its own,' : '')
+          : (base ? 'The picture' : 'An empty ' + size.w + ' × ' + size.h + ' canvas') +
+            (shapes.length ? ', the drawing from Draw (' + iwdieN(shapes.length, 'shape', 'shapes') + ')' : '') + ' and the panel’s objects (on a hidden layer)';
         outcomeToast({
           tone: 'good', title: 'Opening in VectorCraft',
-          lines: [(vc ? 'The VectorCraft document behind this background' + (shapes.length ? ', with the Designer drawing on its own layer,' : '') : 'The picture, ' +
-            (shapes.length ? 'the drawing (' + iwdieN(shapes.length, 'shape', 'shapes') + ')' : 'an empty drawing layer') + ' and the panel’s objects (hidden)') + ' - in a new tab.',
-            'Save there with Ctrl+S → Format SVG → OK → tick Preserve Editing Capabilities → OK: the picture comes straight back to this background.'],
+          lines: [what + ' - in a new tab.',
+            'Save there with Ctrl+S → Format SVG → OK → tick Preserve Editing Capabilities → OK: the picture comes straight back to this background.',
+            'Komponenter, in the banner there, opens the components of your Illustrator file to copy from.'],
           footer: 'Nothing leaves the browser. The first start downloads the editor (about 20 MB); after that it is cached.'
         });
       }).then(null, function (e) {
@@ -7393,11 +7435,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         ack('failed', 'The Designer could not use it: it is not a usable SVG.');
         return;
       }
-      if (draw) {
-        toast('A VectorCraft save arrived while Draw is open - close Draw, then save again in VectorCraft.', true, 10000);
-        ack('refused', 'Draw is open in the Designer - close it there, then save again.');
-        return;
-      }
       // the Designer changes panels without reloading, and this listener outlives that
       var panelNow = currentPanelName(), plantNow = currentPlantId();
       if ((info.panel && panelNow !== info.panel) || (info.plant && plantNow !== String(info.plant))) {
@@ -7409,7 +7446,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       ack('received');
       var size = exportPanelSize(), sized = iwdieVcSized(svg, size.w, size.h);
       var url = URL.createObjectURL(new Blob([sized], { type: 'image/svg+xml' }));
-      drawLoadImage(url).then(function (img) {
+      loadPicture(url).then(function (img) {
         URL.revokeObjectURL(url);
         var c = document.createElement('canvas');
         c.width = size.w; c.height = size.h;
@@ -7514,9 +7551,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             opt('objects', 'Panel objects, on a hidden layer', objects.length ? '(' + objects.length + ')' : '(none found)', !!objects.length, !objects.length) +
             opt('trace', 'Vector trace of the picture, on a hidden layer', IWDIE_TRACER ? '(seconds to minutes)' : '(not available here)', false, !IWDIE_TRACER),
             true, false),
-          card('vc', 'Edit in VectorCraft',
-            'Opens the picture, the drawing and the panel’s objects in VectorCraft - an Illustrator-like editor in the browser - in a new tab. Save there as SVG and the result comes straight back as this background.',
-            '', false, typeof GM_setValue !== 'function'),
           card('svg', 'SVG — vector trace',
             'The picture traced to editable shapes in its own colours, grouped and named by what they are. Small text becomes outlines; retype it in Illustrator.',
             '', false, !deliver.svg),
@@ -7544,7 +7578,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           closeExportDialog();
           if (fmt === 'svg' && deliver.svg) deliver.svg();
           else if (fmt === 'raw') deliver.raw();
-          else if (fmt === 'vc') vcStartEdit({ url: url, bg: bg, found: found, objects: objects, size: size, plant: plant, panel: panelName });
           else exportIllustratorDocument({ url: url, bg: bg, found: found, objects: objects, size: size, plant: plant, panel: panelName }, opts);
         };
         dlg.addEventListener('click', function (ev) {
@@ -7565,6 +7598,48 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    function loadPicture(src) {
+      return new Promise(function (resolve, reject) {
+        var img = new Image();
+        img.onload = function () { resolve(img); };
+        img.onerror = function () { reject(new Error('a picture would not load')); };
+        img.src = src;
+      });
+    }
+
+    /** Paint the base the way the canvas shows it - its CSS size, position and
+     *  repeat - so a picture that is not exactly panel-sized lands where the canvas shows it. */
+    function paintPlaced(ctx, img, d) {
+      var W0 = d.w, H0 = d.h;
+      var iw = img.naturalWidth || img.width || W0, ih = img.naturalHeight || img.height || H0;
+      var w = iw, h = ih, sz = String(d.place.size || 'auto').trim().split(/\s+/);
+      if (sz[0] === 'cover' || sz[0] === 'contain') {
+        var k = (sz[0] === 'cover' ? Math.max : Math.min)(W0 / iw, H0 / ih);
+        w = iw * k; h = ih * k;
+      } else {
+        var len = function (v, full) { if (!v || v === 'auto') return null; var n = parseFloat(v); return isNaN(n) ? null : (/%$/.test(v) ? full * n / 100 : n); };
+        var a = len(sz[0], W0), b = len(sz.length > 1 ? sz[1] : 'auto', H0);
+        if (a !== null && b !== null) { w = a; h = b; }
+        else if (a !== null) { w = a; h = ih * a / iw; }
+        else if (b !== null) { h = b; w = iw * b / ih; }
+      }
+      var ps = String(d.place.pos || '0% 0%').trim().split(/\s+/);
+      var off = function (v, free) { var n = parseFloat(v) || 0; return /%$/.test(v) ? free * n / 100 : n; };
+      var x = off(ps[0], W0 - w), y = off(ps.length > 1 ? ps[1] : '0%', H0 - h);
+      var rep = String(d.place.repeat || 'repeat');
+      var rx = rep === 'repeat' || rep === 'repeat-x' || /^repeat\s/.test(rep);
+      var ry = rep === 'repeat' || rep === 'repeat-y' || /\srepeat$/.test(rep);
+      if (!(w >= 1 && h >= 1)) return;
+      var x0 = rx ? x - Math.ceil(x / w) * w : x, y0 = ry ? y - Math.ceil(y / h) * h : y;
+      for (var yy = y0; yy < H0; yy += h) {
+        for (var xx = x0; xx < W0; xx += w) {
+          ctx.drawImage(img, xx, yy, w, h);
+          if (!rx) break;
+        }
+        if (!ry) break;
+      }
+    }
+
     /** A picture drawn onto a panel-sized canvas the way the canvas shows it: its CSS size,
      *  position and repeat, over `fill` when one is given. -> Promise<canvas> */
     function exportPaint(bytes, mime, size, fill) {
@@ -7575,15 +7650,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var ctx = c.getContext('2d');
       if (fill) { ctx.fillStyle = fill; ctx.fillRect(0, 0, size.w, size.h); }
       if (!bytes) return Promise.resolve(c);
-      return drawLoadImage('data:' + (mime || 'image/png') + ';base64,' + iwdieBytesToBase64(bytes)).then(function (img) {
-        drawPlaceBase(ctx, img, { w: size.w, h: size.h, place: place });
+      return loadPicture('data:' + (mime || 'image/png') + ';base64,' + iwdieBytesToBase64(bytes)).then(function (img) {
+        paintPlaced(ctx, img, { w: size.w, h: size.h, place: place });
         return c;
       });
     }
 
     /** The picture as the tracer wants it, traced in the worker (or, without one, here). -> Promise<tidied svg> */
     function exportTrace(canvas, size, fill) {
-      return drawLoadImage(canvas.toDataURL('image/png')).then(function (img) {
+      return loadPicture(canvas.toDataURL('image/png')).then(function (img) {
         var got = buildTraceSource(img, size.w, size.h, fill);
         if (!got) throw new Error('the picture’s pixels could not be read for tracing');
         var prog = openTraceProgress('Tracing the picture for the .ai');
@@ -8379,1612 +8454,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
-    /* ---------- Draw background (v1.32.0) ----------
-       Maskin artwork drawn on the panel itself. The drawing layer is an SVG
-       inserted just before #control_container and matched to its box, so it
-       sits above the background and below the objects: what you see while
-       drawing is what the panel will show. The objects stay visible and stop
-       taking clicks; everything outside the canvas is dimmed and blocked; and
-       no key reaches the Designer while the layer is open, because its own
-       hotkeys (Delete, arrows, Ctrl+A/C/V/G - HOST.md §13) act on the objects.
-       Done turns the drawing into the background picture through the host's own
-       iw_set_base_image, with the drawing and the untouched base stored inside
-       the PNG (iwdieDrawEmbed), so the next Draw reopens every shape. Nothing
-       reaches the server until the designer's own Save, as with Insert. */
-    var SVG_NS = 'http://www.w3.org/2000/svg';
-    var draw = null;
-
-    var DRAW_TOOLS = [
-      { id: 'select', key: 'v', icon: '↖', label: 'Select',
-        hint: 'Click to select, Shift-click to add, drag on empty canvas for several · drag to move, handles resize (Shift keeps proportions) · arrows nudge · double-click a label to edit it.' },
-      { id: 'line', key: 'l', icon: '╱', label: 'Line',
-        hint: 'Click points · double-click or Enter finishes · a click on the first point closes · Shift keeps 45°.' },
-      { id: 'pen', key: 'p', icon: '✒', label: 'Pen',
-        hint: 'Click for a corner, drag for a curve · double-click or Enter finishes · a click on the first point closes · Shift keeps 45°.' },
-      { id: 'rect', key: 'r', icon: '▭', label: 'Box',
-        hint: 'Drag a box, Shift for a square · a click places an 80 × 40 one.' },
-      { id: 'ellipse', key: 'e', icon: '◯', label: 'Ellipse',
-        hint: 'Drag an ellipse, Shift for a circle · a click places a 40 × 40 circle.' },
-      { id: 'dot', key: 'd', icon: '•', label: 'Dot',
-        hint: 'Click to place a junction dot.' },
-      { id: 'text', key: 't', icon: 'T', label: 'Text',
-        hint: 'Click where the label starts, type, press Enter.' }
-    ];
-
-    /** Placing a library component: a tool of its own, picked from the library
-     *  rather than the bar. */
-    var DRAW_STAMP_TOOL = { id: 'stamp', key: '', icon: '', label: 'Place', hint: '' };
-
-    function drawToolById(id) {
-      for (var i = 0; i < DRAW_TOOLS.length; i++) if (DRAW_TOOLS[i].id === id) return DRAW_TOOLS[i];
-      if (id === 'stamp' && draw && draw.stamp) return DRAW_STAMP_TOOL;
-      return DRAW_TOOLS[0];
-    }
-
-    function openDrawMode() {
-      if (draw) return;
-      var cc = document.getElementById('control_container');
-      var mi = document.getElementById('main_image');
-      if (!cc || !mi || typeof W.iw_set_base_image !== 'function') {
-        toast('Open a panel in the designer first — there is no canvas to draw on.', true);
-        return;
-      }
-      var w = 0, h = 0;
-      try { w = parseInt(W.$(mi).css('width'), 10); h = parseInt(W.$(mi).css('height'), 10); } catch (e) {}
-      if (!(w > 0)) w = cc.clientWidth;
-      if (!(h > 0)) h = cc.clientHeight;
-      if (!(w > 0 && h > 0)) { toast('The canvas has no size yet — load or create a panel first.', true); return; }
-      draw = { opening: true };
-      var url = grabBackgroundUrl();
-      (url ? fetchBackgroundBytes(url).then(null, function () { return null; }) : Promise.resolve(null)).then(function (bg) {
-        var found = (bg && iwdieSniffMime(bg.bytes) === 'image/png') ? iwdieDrawExtract(bg.bytes) : null;
-        startDraw(cc, mi, w, h, bg, found);
-      }).then(null, function (e) {
-        draw = null;
-        toast('Draw background could not start: ' + e, true);
-      });
-    }
-
-    function drawDataUrl(pic) {
-      return 'data:' + pic.mime + ';base64,' + iwdieBytesToBase64(pic.bytes);
-    }
-
-    function startDraw(cc, mi, w, h, bg, found) {
-      var cs = getComputedStyle(mi);
-      var d = draw = {
-        cc: cc, mi: mi, w: w, h: h,
-        shapes: found ? found.drawing.shapes : [],
-        reopened: !!found,
-        base: found ? found.base : (bg && bg.bytes && bg.bytes.length
-          ? { mime: iwdieSniffMime(bg.bytes) === 'application/octet-stream' ? (bg.mime || 'image/png') : iwdieSniffMime(bg.bytes), bytes: bg.bytes }
-          : null),
-        place: { size: cs.backgroundSize, pos: cs.backgroundPosition, repeat: cs.backgroundRepeat },
-        tool: 'select', sel: [], live: null, drag: null, textEdit: null, clip: [],
-        past: [], future: [], dirty: false, busy: false,
-        styles: JSON.parse(JSON.stringify(IWDIE_DRAW_DEFAULT_STYLES)),
-        snap: false, grid: 10, objects: 'show', note: '',
-        restore: {
-          ccPointer: cc.style.pointerEvents, ccOpacity: cc.style.opacity, ccVisibility: cc.style.visibility,
-          miBg: mi.style.backgroundImage
-        }
-      };
-      // A reopened drawing is edited over the picture it was drawn on, not over
-      // the flattened result - or every shape would show twice.
-      if (d.reopened) mi.style.backgroundImage = d.base ? 'url("' + drawDataUrl(d.base) + '")' : 'none';
-      d.note = d.reopened
-        ? '<b>Your drawing is back:</b> ' + iwdieN(d.shapes.length, 'shape', 'shapes') + ', all editable, on the picture it was drawn on.'
-        : d.base ? 'This background has no drawing of its own in it, so it stays as it is and what you draw goes on top.'
-          : 'No background yet — you are drawing on an empty canvas.';
-
-      var svg = document.createElementNS(SVG_NS, 'svg');
-      svg.setAttribute('class', 'iwdie-draw-layer');
-      svg.setAttribute('width', String(w));
-      svg.setAttribute('height', String(h));
-      svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
-      var ccs = getComputedStyle(cc);
-      svg.style.cssText = 'position:absolute;left:' + (cc.offsetLeft + cc.clientLeft) + 'px;top:' + (cc.offsetTop + cc.clientTop) + 'px;' +
-        'width:' + w + 'px;height:' + h + 'px;overflow:visible;touch-action:none;user-select:none' +
-        (ccs.zIndex && ccs.zIndex !== 'auto' ? ';z-index:' + ccs.zIndex : '') +
-        (ccs.transform && ccs.transform !== 'none' ? ';transform:' + ccs.transform + ';transform-origin:' + ccs.transformOrigin : '');
-      svg.innerHTML = '<defs></defs><g class="iwdie-draw-grid"></g><g class="iwdie-draw-shapes"></g><g class="iwdie-draw-live"></g><g class="iwdie-draw-sel"></g>';
-      cc.parentNode.insertBefore(svg, cc);
-      cc.style.pointerEvents = 'none';
-      d.svg = svg;
-      d.defs = svg.querySelector('defs');
-      d.gGrid = svg.querySelector('.iwdie-draw-grid');
-      d.gShapes = svg.querySelector('.iwdie-draw-shapes');
-      d.gLive = svg.querySelector('.iwdie-draw-live');
-      d.gSel = svg.querySelector('.iwdie-draw-sel');
-
-      d.ui = buildDrawUi();
-      document.body.appendChild(d.ui);
-      d.shade = d.ui.querySelector('.iwdie-draw-shade');
-      d.bar = d.ui.querySelector('.iwdie-draw-bar');
-      d.textInput = d.ui.querySelector('.iwdie-draw-text');
-      wireDrawUi();
-
-      // Pointer input on the layer, kept from the Designer's own handlers above it.
-      svg.addEventListener('pointerdown', drawPointerDown);
-      svg.addEventListener('pointermove', drawPointerMove);
-      svg.addEventListener('pointerup', drawPointerUp);
-      svg.addEventListener('pointercancel', drawPointerUp);
-      window.addEventListener('pointerup', drawPointerUpOutside, true);
-      ['mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'wheel'].forEach(function (t) {
-        svg.addEventListener(t, function (ev) { ev.stopPropagation(); if (t === 'contextmenu') ev.preventDefault(); });
-      });
-      window.addEventListener('keydown', drawKey, true);
-      window.addEventListener('keyup', drawKey, true);
-      window.addEventListener('keypress', drawKey, true);
-      window.addEventListener('beforeunload', drawBeforeUnload);
-      d.onScroll = function () {
-        if (d.raf) return;
-        d.raf = requestAnimationFrame(function () { d.raf = 0; drawShade(); });
-      };
-      window.addEventListener('scroll', d.onScroll, true);
-      window.addEventListener('resize', d.onScroll);
-      setDrawTool('select');
-      drawRender();
-      drawShade();
-      drawPlaceBar();
-      drawKeepOnTop();
-      drawMountSurface(d);
-      // The shade's hole follows the canvas through scrolls and through layout
-      // changes nothing announces - a side panel opening moves the canvas too.
-      // About twice a second the bar also checks that nothing has covered it.
-      var frames = 0;
-      var watch = function () {
-        if (draw !== d) return;
-        var r = d.svg.getBoundingClientRect(), key = [r.left, r.top, r.width, r.height].join();
-        if (key !== d.rectKey) { d.rectKey = key; drawShade(); }
-        if (++frames % 30 === 0) { drawKeepOnTop(); drawPlaceLib(); }
-        d.watch = requestAnimationFrame(watch);
-      };
-      d.watch = requestAnimationFrame(watch);
-    }
-
-    /* The input surface (v1.32.2). A tool on the page can sit at window level ahead
-       of every listener of ours. The Designer Toolkit extension stops each
-       pointerdown over the canvas there and then acts on it itself: on plant 2349
-       it selected a Designer label under a press meant for Draw, and its selection
-       panel moved the canvas 260 px. An invisible same-origin iframe laid over the
-       canvas takes the pointer and the keyboard instead. Events inside it belong to
-       its own window, so nothing in the page hears them, whatever order the page's
-       listeners were registered in. The drawing still renders in the page, under
-       the objects; the surface only listens, and hands each event on in page
-       coordinates. */
-    function drawMountSurface(d) {
-      var f = document.createElement('iframe');
-      f.className = 'iwdie-draw-surface';
-      f.setAttribute('title', 'Draw background');
-      f.setAttribute('tabindex', '0');
-      f.srcdoc = '<!doctype html><html><head><meta charset="utf-8"><style>' +
-        ':root{color-scheme:normal}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;user-select:none;touch-action:none}' +
-        'body{cursor:crosshair}body.sel{cursor:default}body.txt{cursor:text}' +
-        '.t{position:absolute;margin:0;border:1px solid #2f6fb2;outline:none;background:rgba(255,255,255,.96);padding:0 3px;' +
-        'font-family:Arial,Helvetica,sans-serif;min-width:120px;line-height:1.2;display:none}' +
-        '</style></head><body><input class="t" type="text" spellcheck="false"></body></html>';
-      var s = d.svg.style;
-      f.style.cssText = 'position:absolute;left:' + s.left + ';top:' + s.top + ';width:' + d.w + 'px;height:' + d.h + 'px;' +
-        'border:0;margin:0;padding:0;background:transparent;color-scheme:normal;z-index:2147483000' +
-        (s.transform ? ';transform:' + s.transform + ';transform-origin:' + s.transformOrigin : '');
-      f.addEventListener('load', function () {
-        if (draw !== d) return;
-        var win = f.contentWindow, doc = f.contentDocument;
-        if (!win || !doc || !doc.body) return;
-        d.surfWin = win; d.surfDoc = doc; d.surfInput = doc.querySelector('.t');
-        var toPage = function (ev) {
-          var r = f.getBoundingClientRect(), kx = f.offsetWidth ? r.width / f.offsetWidth : 1, ky = f.offsetHeight ? r.height / f.offsetHeight : 1;
-          return { x: r.left + ev.clientX * kx, y: r.top + ev.clientY * ky };
-        };
-        var proxy = function (ev) {
-          var p = toPage(ev);
-          return { type: ev.type, button: ev.button, buttons: ev.buttons, clientX: p.x, clientY: p.y, pointerId: ev.pointerId,
-            shiftKey: ev.shiftKey, ctrlKey: ev.ctrlKey, metaKey: ev.metaKey, altKey: ev.altKey, target: drawHitAt(p.x, p.y),
-            preventDefault: function () { ev.preventDefault(); }, stopPropagation: function () {} };
-        };
-        doc.addEventListener('pointerdown', function (ev) {
-          if (ev.target === d.surfInput || ev.button !== 0) return;     // the label being typed keeps its clicks
-          try { doc.body.setPointerCapture(ev.pointerId); } catch (e) {}
-          drawPointerDown(proxy(ev));
-        });
-        doc.addEventListener('pointermove', function (ev) { drawPointerMove(proxy(ev)); });
-        doc.addEventListener('pointerup', function (ev) { if (draw && (ev.target !== d.surfInput || draw.pressed)) drawPointerUp(proxy(ev)); });
-        doc.addEventListener('pointercancel', function (ev) { drawPointerUp(proxy(ev)); });
-        doc.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
-        doc.addEventListener('wheel', drawForwardWheel, { passive: true });
-        doc.addEventListener('dragover', function (ev) { if (drawHasFiles(ev)) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; } });
-        doc.addEventListener('drop', function (ev) {
-          if (!drawHasFiles(ev)) return;
-          ev.preventDefault();
-          var f = ev.dataTransfer.files && ev.dataTransfer.files[0];
-          if (f && draw) { drawLibToggle(true); drawLibImport(f); }
-        });
-        win.addEventListener('mouseout', function (ev) {
-          if (!ev.relatedTarget && draw && draw.live && draw.live.kind === 'stamp') { draw.live = null; drawRenderLive(); }
-        });
-        ['keydown', 'keyup', 'keypress'].forEach(function (t) { win.addEventListener(t, drawKey, true); });
-        d.surfInput.addEventListener('keydown', function (ev) {
-          if (ev.key === 'Enter') { ev.preventDefault(); drawCommitText(); drawSurfaceFocus(); }
-          else if (ev.key === 'Escape') { ev.preventDefault(); drawCloseText(); drawSurfaceFocus(); }
-        });
-        d.surfInput.addEventListener('blur', function () { if (draw && draw.textEdit) drawCommitText(); });
-        drawSurfaceCursor();
-        drawSurfaceFocus();
-      });
-      d.cc.parentNode.insertBefore(f, d.cc.nextSibling);
-      d.surface = f;
-    }
-
-    /** The drawing's own element under a page point, looking through the surface. */
-    function drawHitAt(x, y) {
-      var d = draw, list = document.elementsFromPoint(x, y);
-      for (var i = 0; i < list.length; i++) if (d.svg.contains(list[i])) return list[i];
-      return d.svg;
-    }
-
-    function drawSurfaceFocus() {
-      var d = draw;
-      if (d && d.surfWin && !d.textEdit && !confirmOverlay) { try { d.surfWin.focus(); } catch (e) {} }
-    }
-
-    function drawSurfaceCursor() {
-      var d = draw;
-      if (d && d.surfDoc && d.surfDoc.body) d.surfDoc.body.className = d.tool === 'select' ? 'sel' : d.tool === 'text' ? 'txt' : '';
-    }
-
-    /** The wheel over the surface scrolls what it would have scrolled without it. */
-    function drawForwardWheel(ev) {
-      var d = draw;
-      if (!d) return;
-      for (var el = d.svg.parentNode; el && el.nodeType === 1; el = el.parentNode) {
-        var cs = getComputedStyle(el);
-        if (/(auto|scroll)/.test(cs.overflowY + cs.overflowX) && (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth)) {
-          el.scrollBy(ev.deltaX, ev.deltaY);
-          return;
-        }
-      }
-      window.scrollBy(ev.deltaX, ev.deltaY);
-    }
-
-    /** Park the bar where it covers none of the canvas if the window allows:
-     *  the top when the canvas starts below it, else under the canvas. When
-     *  neither fits it stays at the top, and its grip moves it. */
-    function drawPlaceBar() {
-      var d = draw, bar = d.bar, r = d.svg.getBoundingClientRect(), bh = bar.offsetHeight, vh = window.innerHeight;
-      if (r.top >= bh + 16) return;
-      if (vh - r.bottom >= bh + 16) { bar.style.top = 'auto'; bar.style.bottom = '8px'; }
-    }
-
-    /** Draw's layers share the top z-index with page tools and win by coming
-     *  later in the document. A tool that adds itself afterwards would cover the
-     *  bar again, so when anything covers Done, the layers move to the end. */
-    function drawKeepOnTop() {
-      var d = draw;
-      if (!d || !d.ui || !d.bar || d.ui.parentNode !== document.body) return;
-      var b = d.bar.querySelector('[data-act="done"]'), r = b.getBoundingClientRect();
-      if (!(r.width > 0) || r.right < 0 || r.bottom < 0 || r.left > window.innerWidth || r.top > window.innerHeight) return;
-      var top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      if (!top || b.contains(top) || (confirmOverlay && confirmOverlay.contains(top))) return;
-      if (document.body.lastElementChild === d.ui || (confirmOverlay && document.body.lastElementChild === confirmOverlay)) return;
-      document.body.appendChild(d.ui);
-      if (confirmOverlay && confirmOverlay.parentNode === document.body) document.body.appendChild(confirmOverlay);
-    }
-
-    function buildDrawUi() {
-      var esc2 = iwdieEscHtml;
-      var swatches = function (attr) {
-        return IWDIE_DRAW_PALETTE.map(function (c) {
-          return '<button class="iwdie-draw-sw" data-' + attr + '="' + c.hex + '" title="' + esc2(c.name) + '" style="background:' + c.hex + '"></button>';
-        }).join('') + '<button class="iwdie-draw-sw iwdie-none" data-' + attr + '="none" title="None"></button>';
-      };
-      var ui = document.createElement('div');
-      ui.className = 'iwdie-draw-ui';
-      ui.innerHTML = [
-        '<div class="iwdie-draw-shade"></div>',
-        '<div class="iwdie-draw-bar">',
-        '  <div class="iwdie-draw-row">',
-        '    <span class="iwdie-draw-grip" title="Drag to move this bar">⠿</span>',
-        '    <b class="iwdie-draw-title">Draw background</b>',
-        DRAW_TOOLS.map(function (t) {
-          return '<button class="iwdie-draw-tool" data-tool="' + t.id + '" title="' + esc2(t.label) + ' (' + t.key.toUpperCase() + ')">' + t.icon + ' ' + esc2(t.label) + '</button>';
-        }).join(''),
-        '    <button data-act="lib" class="iwdie-draw-libbtn" title="Components from an Illustrator file (.ai): the objects placed around its artboard">▦ Library</button>',
-        '    <span class="iwdie-draw-sep"></span>',
-        '    <button data-act="undo" title="Undo (Ctrl+Z)">↶</button>',
-        '    <button data-act="redo" title="Redo (Ctrl+Shift+Z)">↷</button>',
-        '    <button data-act="front" title="Bring to front">Front</button>',
-        '    <button data-act="back" title="Send to back">Back</button>',
-        '    <button data-act="dup" title="Duplicate (Ctrl+D)">Duplicate</button>',
-        '    <button data-act="del" title="Delete (Del)">Delete</button>',
-        '    <span class="iwdie-draw-grow"></span>',
-        '    <button data-act="svg" title="Download the drawing, with the picture it was drawn on, as an .svg Illustrator opens">⤓ .svg</button>',
-        '    <button data-act="cancel" title="Leave without changing the background">Cancel</button>',
-        '    <button data-act="done" class="iwdie-draw-done" title="Put the drawing on the background">Done</button>',
-        '  </div>',
-        '  <div class="iwdie-draw-row">',
-        '    <span class="iwdie-draw-style">',
-        '      <span class="iwdie-draw-lbl">Line</span>' + swatches('stroke') +
-        '      <input type="color" data-ctl="strokeCustom" title="Another line colour">',
-        '      <span class="iwdie-draw-lbl">Fill</span>' + swatches('fill') +
-        '      <input type="color" data-ctl="fillCustom" title="Another fill colour">',
-        '      <label data-for="sw">Width <input type="number" data-ctl="sw" min="0" max="60" step="0.5"></label>',
-        '      <label data-for="dash"><input type="checkbox" data-ctl="dash"> Dashed</label>',
-        '      <label data-for="arrow"><input type="checkbox" data-ctl="arrow"> Arrow</label>',
-        '      <label data-for="rx">Corners <input type="number" data-ctl="rx" min="0" max="200" step="1"></label>',
-        '      <label data-for="size">Text size <input type="number" data-ctl="size" min="4" max="200" step="1"></label>',
-        '    </span>',
-        '    <span class="iwdie-draw-grow"></span>',
-        '    <button data-act="group" title="Group the selected shapes (Ctrl+G)">Group</button>',
-        '    <button data-act="ungroup" title="Split the selected group back into its shapes (Ctrl+Shift+G)">Ungroup</button>',
-        '  </div>',
-        '  <div class="iwdie-draw-row iwdie-draw-foot">',
-        '    <div class="iwdie-draw-hint"></div>',
-        '    <label title="Snap points and moves to a grid"><input type="checkbox" data-ctl="snap"> Grid</label>',
-        '    <select data-ctl="grid" title="Grid size in pixels"><option value="5">5</option><option value="10" selected>10</option><option value="20">20</option></select>',
-        '    <select data-ctl="objects" title="The panel\'s objects, for reference while you draw">',
-        '      <option value="show">Objects shown</option><option value="dim">Objects dimmed</option><option value="hide">Objects hidden</option>',
-        '    </select>',
-        '  </div>',
-        '</div>',
-        '<div class="iwdie-draw-lib" hidden>',
-        '  <div class="iwdie-draw-lib-head"><b>Library</b><span class="iwdie-draw-lib-count"></span>' +
-        '<button data-lib="close" title="Close the library">×</button></div>',
-        '  <div class="iwdie-draw-lib-tools"><button data-lib="import" title="Read the objects placed around the artboard of an Illustrator file - or drop the file on this panel">Import .ai…</button>' +
-        '<input type="search" data-lib="search" placeholder="Search" spellcheck="false"></div>',
-        '  <div class="iwdie-draw-lib-status"></div>',
-        '  <div class="iwdie-draw-lib-list"></div>',
-        '  <input type="file" data-lib="file" accept=".ai,.pdf" style="display:none">',
-        '</div>',
-        '<input class="iwdie-draw-text" type="text" spellcheck="false" style="display:none">'
-      ].join('\n');
-      return ui;
-    }
-
-    function wireDrawUi() {
-      var d = draw, ui = d.ui, bar = d.bar;
-      // Nothing that happens in the draw UI reaches the page below it.
-      ['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'keydown', 'keyup', 'keypress', 'wheel'].forEach(function (t) {
-        ui.addEventListener(t, function (ev) { ev.stopPropagation(); });
-      });
-      bar.addEventListener('click', function (ev) {
-        var b = ev.target.closest ? ev.target.closest('button') : null;
-        if (!b || !draw) return;
-        if (b.getAttribute('data-tool')) setDrawTool(b.getAttribute('data-tool'));
-        else if (b.hasAttribute('data-stroke')) drawApplyStyle({ stroke: b.getAttribute('data-stroke') === 'none' ? null : b.getAttribute('data-stroke') });
-        else if (b.hasAttribute('data-fill')) drawApplyStyle({ fill: b.getAttribute('data-fill') === 'none' ? null : b.getAttribute('data-fill') });
-        else if (b.getAttribute('data-act')) drawAct(b.getAttribute('data-act'));
-        drawSurfaceFocus();                    // keys go back to the surface, away from the page
-      });
-      bar.addEventListener('change', function (ev) {
-        var c = ev.target.getAttribute('data-ctl');
-        if (!c || !draw) return;
-        var v = ev.target.type === 'checkbox' ? ev.target.checked : ev.target.value;
-        if (c === 'snap') { draw.snap = !!v; drawRenderGrid(); }
-        else if (c === 'grid') { draw.grid = parseInt(v, 10) || 10; drawRenderGrid(); }
-        else if (c === 'objects') drawObjects(v);
-        else if (c === 'strokeCustom') drawApplyStyle({ stroke: v });
-        else if (c === 'fillCustom') drawApplyStyle({ fill: v });
-        else if (c === 'sw') drawApplyStyle({ sw: Math.max(0, Math.min(60, parseFloat(v) || 0)) });
-        else if (c === 'dash') drawApplyStyle({ dash: !!v });
-        else if (c === 'arrow') drawApplyStyle({ arrow: !!v });
-        else if (c === 'rx') drawApplyStyle({ rx: Math.max(0, parseFloat(v) || 0) });
-        else if (c === 'size') drawApplyStyle({ size: Math.max(4, Math.min(200, parseFloat(v) || 13)) });
-        if (ev.target.tagName === 'SELECT' || ev.target.type === 'checkbox' || ev.target.type === 'color') drawSurfaceFocus();
-      });
-      // The bar moves by its grip, so it never has to sit over the part of the panel you are drawing.
-      var grip = bar.querySelector('.iwdie-draw-grip');
-      grip.addEventListener('pointerdown', function (ev) {
-        ev.preventDefault();
-        var r = bar.getBoundingClientRect(), dx = ev.clientX - r.left, dy = ev.clientY - r.top;
-        bar.style.transform = 'none';
-        bar.style.bottom = 'auto';
-        var move = function (e) {
-          bar.style.left = Math.max(0, Math.min(window.innerWidth - 60, e.clientX - dx)) + 'px';
-          bar.style.top = Math.max(0, Math.min(window.innerHeight - 30, e.clientY - dy)) + 'px';
-        };
-        var up = function () { window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerup', up, true); };
-        window.addEventListener('pointermove', move, true);
-        window.addEventListener('pointerup', up, true);
-      });
-      var ti = d.textInput;
-      ti.addEventListener('keydown', function (ev) {
-        if (ev.key === 'Enter') { ev.preventDefault(); drawCommitText(); }
-        else if (ev.key === 'Escape') { ev.preventDefault(); drawCloseText(); }
-      });
-      var lib = d.lib = ui.querySelector('.iwdie-draw-lib');
-      lib.addEventListener('click', function (ev) {
-        var b = ev.target.closest ? ev.target.closest('[data-lib], .iwdie-draw-lib-item') : null;
-        if (!b || !draw) return;
-        var what = b.getAttribute('data-lib');
-        if (what === 'close') drawLibToggle(false);
-        else if (what === 'import') { if (!draw.libBusy) lib.querySelector('[data-lib="file"]').click(); return; }
-        else if (what) return;
-        else drawLibArm(parseInt(b.getAttribute('data-k'), 10));
-        drawSurfaceFocus();
-      });
-      lib.querySelector('[data-lib="file"]').addEventListener('change', function (ev) {
-        var f = ev.target.files && ev.target.files[0];
-        ev.target.value = '';
-        if (f) drawLibImport(f);
-      });
-      lib.querySelector('[data-lib="search"]').addEventListener('input', function (ev) { drawLibRender(ev.target.value); });
-      // A dropped .ai imports like Import .ai… does (v1.34.1). It is also the way in when a
-      // remote driver attached to the tab - a test harness - takes the file picker over.
-      lib.addEventListener('dragover', function (ev) {
-        if (!draw || !drawHasFiles(ev)) return;
-        ev.preventDefault();
-        ev.dataTransfer.dropEffect = 'copy';
-        lib.classList.add('iwdie-drop');
-      });
-      lib.addEventListener('dragleave', function (ev) { if (!ev.relatedTarget || !lib.contains(ev.relatedTarget)) lib.classList.remove('iwdie-drop'); });
-      lib.addEventListener('drop', function (ev) {
-        lib.classList.remove('iwdie-drop');
-        var f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
-        if (!f || !draw) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        drawLibImport(f);
-      });
-      // a file let go over the shade or the bar must not replace the Designer with itself
-      ['dragover', 'drop'].forEach(function (t) {
-        ui.addEventListener(t, function (ev) { if (drawHasFiles(ev)) ev.preventDefault(); });
-      });
-      ti.addEventListener('blur', function () { if (draw && draw.textEdit) drawCommitText(); });
-    }
-
-    /* ---- the shade: dims and blocks everything but the canvas ---- */
-    function drawShade() {
-      var d = draw;
-      if (!d || !d.shade) return;
-      var r = d.svg.getBoundingClientRect(), m = 8;
-      var vw = window.innerWidth, vh = window.innerHeight;
-      var f = function (v) { return Math.round(v * 10) / 10; };
-      d.shade.style.clipPath = 'path(evenodd, "M0 0H' + vw + 'V' + vh + 'H0Z M' + f(r.left - m) + ' ' + f(r.top - m) +
-        'H' + f(r.right + m) + 'V' + f(r.bottom + m) + 'H' + f(r.left - m) + 'Z")';
-    }
-
-    function drawObjects(mode) {
-      var d = draw;
-      d.objects = mode;
-      d.cc.style.opacity = mode === 'dim' ? '0.3' : d.restore.ccOpacity;
-      d.cc.style.visibility = mode === 'hide' ? 'hidden' : d.restore.ccVisibility;
-    }
-
-    /* ---- rendering ---- */
-    function drawRender() {
-      var d = draw;
-      if (!d || !d.svg) return;
-      var all = d.shapes.slice();
-      if (d.live) all.push(drawLiveShape());
-      d.defs.innerHTML = iwdieDrawDefsSvg(all);
-      d.gShapes.innerHTML = d.shapes.map(function (s, i) {
-        return iwdieDrawShapeSvg(s, ' data-i="' + i + '"') + drawHitSvg(s, i);
-      }).join('');
-      drawRenderLive();
-      drawRenderSel();
-      syncDrawBar();
-    }
-
-    /* A wide transparent outline over each shape, so a 2 px pipe or an
-       unfilled box is as easy to pick as a filled one. */
-    function drawHitSvg(s, i) {
-      if (s.t === 'text') return '';
-      if (s.t === 'group') {
-        // a component is picked anywhere inside its box, not only on its lines
-        var b = iwdieDrawBounds(s), f = iwdieDrawFmt;
-        return b ? '<rect data-i="' + i + '" class="iwdie-draw-hitbox" x="' + f(b.x - 3) + '" y="' + f(b.y - 3) + '" width="' + f(b.w + 6) + '" height="' + f(b.h + 6) + '"/>' : '';
-      }
-      var c = JSON.parse(JSON.stringify(s));
-      c.st = { stroke: '#000000', fill: null, sw: Math.max(10, (s.st.sw || 0) + 8), dash: false, arrow: false };
-      return iwdieDrawShapeSvg(c, ' data-i="' + i + '" class="iwdie-draw-hit"');
-    }
-
-    function drawRenderGrid() {
-      var d = draw, g = d.grid;
-      d.gGrid.innerHTML = d.snap ? '<pattern id="iwdie-draw-gridpat" width="' + g + '" height="' + g + '" patternUnits="userSpaceOnUse">' +
-        '<path d="M' + g + ' 0L0 0 0 ' + g + '" fill="none" stroke="#2f6fb2" stroke-opacity=".22" stroke-width=".6"/></pattern>' +
-        '<rect width="' + d.w + '" height="' + d.h + '" fill="url(#iwdie-draw-gridpat)" pointer-events="none"/>' : '';
-    }
-
-    /** The shape being drawn, as it would be if finished now. */
-    function drawLiveShape() {
-      var d = draw, L = d.live;
-      if (!L) return null;
-      if (L.kind === 'line') return { t: 'line', pts: L.pts.concat(L.hover ? [L.hover] : []), closed: false, st: d.styles.line };
-      if (L.kind === 'pen') {
-        var nodes = L.nodes.slice();
-        if (L.hover && !d.drag) nodes.push({ x: L.hover[0], y: L.hover[1], ix: L.hover[0], iy: L.hover[1], ox: L.hover[0], oy: L.hover[1] });
-        return { t: 'path', nodes: nodes, closed: false, st: d.styles.pen };
-      }
-      return L.shape || null;
-    }
-
-    function drawRenderLive() {
-      var d = draw, L = d.live, f = iwdieDrawFmt;
-      if (!L) { d.gLive.innerHTML = ''; return; }
-      var s = drawLiveShape(), html = '';
-      if (s && (s.t !== 'line' || s.pts.length > 1) && (s.t !== 'path' || s.nodes.length > 1)) html += iwdieDrawShapeSvg(s);
-      if (L.kind === 'line') {
-        L.pts.forEach(function (p) { html += '<rect class="iwdie-draw-node" x="' + f(p[0] - 3) + '" y="' + f(p[1] - 3) + '" width="6" height="6"/>'; });
-      } else if (L.kind === 'pen') {
-        L.nodes.forEach(function (k) {
-          if (k.ox !== k.x || k.oy !== k.y) {
-            html += '<path class="iwdie-draw-hl" d="M' + f(k.ix) + ' ' + f(k.iy) + 'L' + f(k.ox) + ' ' + f(k.oy) + '"/>' +
-              '<circle class="iwdie-draw-node" cx="' + f(k.ix) + '" cy="' + f(k.iy) + '" r="2.5"/>' +
-              '<circle class="iwdie-draw-node" cx="' + f(k.ox) + '" cy="' + f(k.oy) + '" r="2.5"/>';
-          }
-          html += '<rect class="iwdie-draw-node" x="' + f(k.x - 3) + '" y="' + f(k.y - 3) + '" width="6" height="6"/>';
-        });
-      } else if (L.kind === 'marquee') {
-        html = '<rect class="iwdie-draw-marquee" x="' + f(L.box.x) + '" y="' + f(L.box.y) + '" width="' + f(L.box.w) + '" height="' + f(L.box.h) + '"/>';
-      } else if (L.kind === 'stamp' && L.at && d.stamp) {
-        var at = drawStampAt(L.at);
-        html = '<g opacity=".55" pointer-events="none" transform="translate(' + f(at.x) + ' ' + f(at.y) + ')">' + d.stamp.svg + '</g>';
-      }
-      d.gLive.innerHTML = html;
-    }
-
-    /** A shape's box as drawn: measured where the browser can (curves, text), the
-     *  model's own box otherwise. */
-    function drawShapeBox(i) {
-      var d = draw, el = d.gShapes.querySelector('[data-i="' + i + '"]:not(.iwdie-draw-hit)');
-      if (el && typeof el.getBBox === 'function') {
-        try { var b = el.getBBox(); return { x: b.x, y: b.y, w: b.width, h: b.height }; } catch (e) {}
-      }
-      return iwdieDrawBounds(d.shapes[i]);
-    }
-
-    function drawSelBox() {
-      return iwdieDrawUnion(draw.sel.map(drawShapeBox));
-    }
-
-    function drawRenderSel() {
-      var d = draw, f = iwdieDrawFmt;
-      if (!d.sel.length) { d.gSel.innerHTML = ''; return; }
-      var b = drawSelBox();
-      if (!b) { d.gSel.innerHTML = ''; return; }
-      var html = '<rect class="iwdie-draw-selbox" x="' + f(b.x - 2) + '" y="' + f(b.y - 2) + '" width="' + f(b.w + 4) + '" height="' + f(b.h + 4) + '"/>';
-      var onlyText = d.sel.every(function (i) { return d.shapes[i].t === 'text'; });
-      if (!onlyText) {
-        var xs = { w: b.x - 2, c: b.x + b.w / 2, e: b.x + b.w + 2 }, ys = { n: b.y - 2, c: b.y + b.h / 2, s: b.y + b.h + 2 };
-        [['nw', 'w', 'n'], ['n', 'c', 'n'], ['ne', 'e', 'n'], ['e', 'e', 'c'], ['se', 'e', 's'], ['s', 'c', 's'], ['sw', 'w', 's'], ['w', 'w', 'c']].forEach(function (h) {
-          html += '<rect class="iwdie-draw-handle" data-h="' + h[0] + '" x="' + f(xs[h[1]] - 4) + '" y="' + f(ys[h[2]] - 4) + '" width="8" height="8"/>';
-        });
-      }
-      d.gSel.innerHTML = html;
-    }
-
-    /* ---- the bar ---- */
-    function setDrawTool(id) {
-      var d = draw;
-      drawFinishLive();
-      d.tool = drawToolById(id).id;
-      if (d.tool !== 'select') d.sel = [];
-      d.svg.setAttribute('class', 'iwdie-draw-layer iwdie-tool-' + d.tool);
-      drawSurfaceCursor();
-      drawLibMarkArmed();
-      drawRender();
-    }
-
-    /** What the style controls show and change: the first selected shape, else
-     *  the active tool's own style. Null for the select tool with nothing selected. */
-    function drawStyleView() {
-      var d = draw;
-      if (d.sel.length) {
-        // a group keeps its own colours; Ungroup gets at its shapes
-        var styled = d.sel.map(function (i) { return d.shapes[i]; }).filter(function (x) { return x && x.t !== 'group'; });
-        if (!styled.length) return null;
-        var s = styled[0];
-        return { st: s.st, kind: s.t, rx: s.t === 'rect' ? s.rx : null, size: s.t === 'text' ? s.size : null };
-      }
-      var ts = d.styles[d.tool];
-      if (!ts) return null;
-      return { st: ts, kind: d.tool === 'pen' ? 'path' : d.tool === 'dot' ? 'ellipse' : d.tool, rx: d.tool === 'rect' ? ts.rx : null, size: d.tool === 'text' ? ts.size : null };
-    }
-
-    function syncDrawBar() {
-      var d = draw, bar = d.bar, v = drawStyleView();
-      Array.prototype.forEach.call(bar.querySelectorAll('.iwdie-draw-tool'), function (b) {
-        b.classList.toggle('iwdie-on', b.getAttribute('data-tool') === d.tool);
-      });
-      bar.querySelector('[data-act="undo"]').disabled = !d.past.length;
-      bar.querySelector('[data-act="redo"]').disabled = !d.future.length;
-      ['front', 'back', 'dup', 'del'].forEach(function (a) { bar.querySelector('[data-act="' + a + '"]').disabled = !d.sel.length; });
-      var groups = d.sel.filter(function (i) { return d.shapes[i] && d.shapes[i].t === 'group'; }).length;
-      bar.querySelector('[data-act="group"]').disabled = d.sel.length < 2;
-      bar.querySelector('[data-act="ungroup"]').disabled = !groups;
-      var libBtn = bar.querySelector('[data-act="lib"]'), libNow = drawLibLoad();
-      libBtn.classList.toggle('iwdie-on', !!(d.lib && !d.lib.hidden));
-      libBtn.textContent = '▦ Library' + (libNow ? ' (' + libNow.items.length + ')' : '');
-      var row = bar.querySelector('.iwdie-draw-style');
-      row.classList.toggle('iwdie-off', !v);
-      var hint = d.tool === 'stamp' && d.stamp
-        ? 'Click to place ' + (d.stamp.item.name ? '“' + d.stamp.item.name + '” ' : 'the component ') + '(' + Math.round(d.stamp.w) + ' × ' + Math.round(d.stamp.h) + ') · it goes on centred where you click · keep clicking for more · Esc or V when done.'
-        : (groups && groups === d.sel.length && d.tool === 'select')
-          ? 'A group keeps its own colours and moves and resizes as one · Ungroup (Ctrl+Shift+G) to change its shapes one by one.'
-          : drawToolById(d.tool).hint;
-      var hintEl = bar.querySelector('.iwdie-draw-hint');
-      hintEl.innerHTML = (d.note ? d.note + ' · ' : '') + iwdieEscHtml(hint);
-      hintEl.title = hintEl.textContent;
-      if (!v) return;
-      var on = function (attr, val) {
-        Array.prototype.forEach.call(row.querySelectorAll('[data-' + attr + ']'), function (b) {
-          b.classList.toggle('iwdie-on', b.getAttribute('data-' + attr) === (val || 'none'));
-        });
-      };
-      on('stroke', v.st.stroke);
-      on('fill', v.st.fill);
-      var set = function (ctl, val) { var el = row.querySelector('[data-ctl="' + ctl + '"]'); if (el && document.activeElement !== el) { if (el.type === 'checkbox') el.checked = !!val; else el.value = val; } };
-      set('strokeCustom', v.st.stroke || '#000000');
-      set('fillCustom', v.st.fill || '#ffffff');
-      set('sw', v.st.sw);
-      set('dash', v.st.dash);
-      set('arrow', v.st.arrow);
-      var show = function (k, yes) { var el = row.querySelector('[data-for="' + k + '"]'); if (el) el.style.display = yes ? '' : 'none'; };
-      var stroked = v.kind !== 'text';
-      show('sw', stroked);
-      show('dash', stroked);
-      show('arrow', v.kind === 'line' || v.kind === 'path');
-      show('rx', v.rx !== null);
-      show('size', v.size !== null);
-      if (v.rx !== null) set('rx', v.rx);
-      if (v.size !== null) set('size', v.size);
-    }
-
-    /** A style change: to the selection when there is one, else to the tool. */
-    function drawApplyStyle(patch) {
-      var d = draw;
-      if (d.sel.length) {
-        drawChange(function () {
-          d.sel.forEach(function (i) {
-            var s = d.shapes[i];
-            if (s.t === 'group') return;
-            Object.keys(patch).forEach(function (k) {
-              if (k === 'rx') { if (s.t === 'rect') s.rx = patch.rx; }
-              else if (k === 'size') { if (s.t === 'text') s.size = patch.size; }
-              else {
-                s.st[k] = patch[k];
-                if (k === 'dash') delete s.st.da;          // Illustrator's own dash pattern gives way to the switch
-              }
-            });
-            d.shapes[i] = iwdieDrawShape(s) || s;
-          });
-        });
-        return;
-      }
-      var ts = d.styles[d.tool];
-      if (!ts) return;
-      Object.keys(patch).forEach(function (k) { ts[k] = patch[k]; });
-      syncDrawBar();
-    }
-
-    /* ---- undo ---- */
-    function drawState() { return JSON.stringify(draw.shapes); }
-
-    /** Run a change; it becomes one undo step if it changed anything. */
-    function drawChange(fn) {
-      var d = draw, before = drawState();
-      fn();
-      if (drawState() !== before) {
-        drawPushPast(before);
-        d.note = '';   // the opening note has been read by now; the hint line needs the room
-      }
-      drawRender();
-    }
-
-    /** One undo step. Components make big steps, so the history is held to
-     *  about 50 MB as well as to 200 steps. */
-    function drawPushPast(before) {
-      var d = draw, total = 0, i;
-      d.past.push(before);
-      for (i = 0; i < d.past.length; i++) total += d.past[i].length;
-      while (d.past.length > 200 || (d.past.length > 20 && total > 5e7)) total -= d.past.shift().length;
-      d.future = [];
-      d.dirty = true;
-    }
-
-    function drawUndo(redo) {
-      var d = draw, from = redo ? d.future : d.past, to = redo ? d.past : d.future;
-      if (!from.length) return;
-      drawFinishLive();
-      to.push(drawState());
-      d.shapes = JSON.parse(from.pop());
-      d.sel = d.sel.filter(function (i) { return i < d.shapes.length; });
-      d.dirty = true;
-      drawRender();
-    }
-
-    /* ---- pointer ---- */
-    function drawPoint(ev) {
-      var svg = draw.svg, m = svg.getScreenCTM(), pt = svg.createSVGPoint();
-      pt.x = ev.clientX; pt.y = ev.clientY;
-      var p = m ? pt.matrixTransform(m.inverse()) : pt;
-      return { x: p.x, y: p.y };
-    }
-
-    function drawSnapped(p) {
-      var d = draw;
-      return d.snap ? { x: iwdieDrawSnap(p.x, d.grid), y: iwdieDrawSnap(p.y, d.grid) } : { x: iwdieDrawNum(p.x), y: iwdieDrawNum(p.y) };
-    }
-
-    function drawShapeIndex(el) {
-      var at = el && el.closest ? el.closest('[data-i]') : el;
-      if (at && draw && draw.svg && !draw.svg.contains(at)) at = null;     // only the drawing's own shapes count
-      var v = at && at.getAttribute ? at.getAttribute('data-i') : null;
-      return v === null || v === undefined ? null : parseInt(v, 10);
-    }
-
-    function drawStyleFor(tool) {
-      var ts = draw.styles[tool];
-      return { stroke: ts.stroke, fill: ts.fill, sw: ts.sw, dash: !!ts.dash, arrow: !!ts.arrow };
-    }
-
-    function drawAdd(shape) {
-      var d = draw, clean = iwdieDrawShape(shape);
-      if (!clean) return;
-      drawChange(function () { d.shapes.push(clean); d.sel = [d.shapes.length - 1]; });
-    }
-
-    function drawDown(ev) {
-      var d = draw;
-      if (!d || ev.button !== 0) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (d.textEdit) drawCommitText();
-      var raw = drawPoint(ev), p = drawSnapped(raw);
-      if (d.tool === 'select') {
-        var h = ev.target.getAttribute && ev.target.getAttribute('data-h');
-        if (h) {
-          d.drag = { kind: 'resize', handle: h, box: drawSelBox(), orig: d.sel.map(function (i) { return d.shapes[i]; }), before: drawState() };
-        } else {
-          var i = drawShapeIndex(ev.target);
-          if (i !== null && !isNaN(i)) {
-            if (ev.shiftKey) {
-              var at = d.sel.indexOf(i);
-              if (at >= 0) d.sel.splice(at, 1); else d.sel.push(i);
-              drawRender();
-              return;
-            }
-            if (d.sel.indexOf(i) < 0) d.sel = [i];
-            d.drag = { kind: 'move', p0: raw, box: drawSelBox(), orig: d.sel.map(function (k) { return d.shapes[k]; }), before: drawState() };
-          } else {
-            d.drag = { kind: 'marquee', p0: raw, keep: ev.shiftKey ? d.sel.slice() : [] };
-            if (!ev.shiftKey) d.sel = [];
-            d.live = { kind: 'marquee', box: { x: raw.x, y: raw.y, w: 0, h: 0 } };
-          }
-        }
-        drawCapture(ev);
-        drawRender();
-        return;
-      }
-      if (d.tool === 'stamp') { drawLibPlace(raw); return; }
-      if (d.tool === 'dot') {
-        var r = d.styles.dot.r || 3;
-        drawAdd({ t: 'ellipse', cx: p.x, cy: p.y, rx: r, ry: r, st: drawStyleFor('dot') });
-        return;
-      }
-      if (d.tool === 'text') { drawOpenText(p, null); return; }
-      if (d.tool === 'rect' || d.tool === 'ellipse') {
-        d.drag = { kind: 'box', p0: p };
-        d.live = { kind: 'box', shape: null };
-        drawCapture(ev);
-        return;
-      }
-      if (d.tool === 'line') {
-        var L = d.live;
-        if (!L) { d.live = { kind: 'line', pts: [[p.x, p.y]], hover: null }; drawRender(); return; }
-        var last = L.pts[L.pts.length - 1], q = ev.shiftKey ? iwdieDrawConstrain(last[0], last[1], raw.x, raw.y) : p;
-        var first = L.pts[0];
-        if (L.pts.length >= 3 && Math.hypot(q.x - first[0], q.y - first[1]) <= 6) { drawFinishLive(true); return; }
-        if (Math.hypot(q.x - last[0], q.y - last[1]) < 1) return;   // the second click of a double-click
-        L.pts.push([q.x, q.y]);
-        drawRender();
-        return;
-      }
-      if (d.tool === 'pen') {
-        var P = d.live || (d.live = { kind: 'pen', nodes: [], hover: null });
-        var n = P.nodes.length;
-        if (n) {
-          var lastN = P.nodes[n - 1];
-          if (ev.shiftKey) p = iwdieDrawConstrain(lastN.x, lastN.y, raw.x, raw.y);
-          if (n >= 2 && Math.hypot(p.x - P.nodes[0].x, p.y - P.nodes[0].y) <= 6) { drawFinishLive(true); return; }
-          if (Math.hypot(p.x - lastN.x, p.y - lastN.y) < 1) return;
-        }
-        var node = { x: p.x, y: p.y, ix: p.x, iy: p.y, ox: p.x, oy: p.y };
-        P.nodes.push(node);
-        d.drag = { kind: 'pen', node: node };
-        drawCapture(ev);
-        drawRender();
-      }
-    }
-
-    /* Presses that never arrive (v1.32.1). The Designer Toolkit extension stops
-       every pointerdown over the canvas at window level - stopImmediatePropagation
-       and preventDefault, before any listener of ours runs - while moves and
-       releases still come through. Measured live on plant 2349, 2026-10-11. So a
-       press is also inferred: a move with the button held, or a release, with no
-       press seen before it, starts one where the pointer last was. Double-clicks
-       are counted here from the presses, not taken from dblclick, because a page
-       that eats presses may eat that too. Without such a tool the real
-       pointerdown arrives first and nothing is inferred. */
-    function drawLike(src, live) {
-      var t = drawHitAt(src.clientX, src.clientY);
-      return { button: 0, buttons: 1, clientX: src.clientX, clientY: src.clientY, pointerId: live.pointerId,
-        shiftKey: !!live.shiftKey, ctrlKey: !!live.ctrlKey, metaKey: !!live.metaKey, altKey: !!live.altKey,
-        target: t, preventDefault: function () {}, stopPropagation: function () {} };
-    }
-
-    function drawPointerDown(ev) {
-      var d = draw;
-      if (!d || ev.button !== 0) return;
-      d.pressed = { x: ev.clientX, y: ev.clientY, t: Date.now() };
-      drawDown(ev);
-    }
-
-    function drawPointerMove(ev) {
-      var d = draw;
-      if (!d) return;
-      var held = (ev.buttons & 1) === 1;
-      if (held && !d.pressed) {
-        var from = d.hover || ev;
-        d.pressed = { x: from.clientX, y: from.clientY, t: Date.now() };
-        drawDown(drawLike(from, ev));
-        if (!draw) return;
-      } else if (!held && d.pressed) {
-        drawPointerUp(ev);                     // released somewhere we did not hear it
-        return;
-      }
-      if (!held) d.hover = { clientX: ev.clientX, clientY: ev.clientY };
-      drawMove(ev);
-    }
-
-    function drawPointerUp(ev) {
-      var d = draw;
-      if (!d) return;
-      if (!d.pressed) {                        // a click whose press never arrived
-        d.pressed = { x: ev.clientX, y: ev.clientY, t: Date.now() };
-        drawDown(drawLike(ev, ev));
-        if (!draw) return;
-      }
-      var p = d.pressed;
-      d.pressed = null;
-      drawUp(ev);
-      if (!draw) return;
-      var now = Date.now();
-      var still = Math.abs(ev.clientX - p.x) < 4 && Math.abs(ev.clientY - p.y) < 4 && now - p.t < 500;
-      if (!still) { d.lastClick = null; return; }
-      var lc = d.lastClick;
-      if (lc && now - lc.t < 450 && Math.abs(ev.clientX - lc.x) < 6 && Math.abs(ev.clientY - lc.y) < 6) {
-        d.lastClick = null;
-        drawDblClick(drawLike(ev, ev));
-      } else {
-        d.lastClick = { x: ev.clientX, y: ev.clientY, t: now };
-      }
-    }
-
-    function drawPointerUpOutside(ev) {
-      if (draw && draw.pressed && draw.svg && !draw.svg.contains(ev.target)) drawPointerUp(ev);
-    }
-
-    function drawCapture(ev) {
-      try { draw.svg.setPointerCapture(ev.pointerId); } catch (e) {}
-    }
-
-    function drawMove(ev) {
-      var d = draw;
-      if (!d) return;
-      ev.stopPropagation();
-      var raw = drawPoint(ev), p = drawSnapped(raw), g = d.drag;
-      if (!g && d.tool === 'stamp' && d.stamp) {
-        d.live = { kind: 'stamp', at: raw };
-        drawRenderLive();
-        return;
-      }
-      if (!g) {
-        // the rubber band from the last point to the pointer
-        if (d.live && (d.live.kind === 'line' || d.live.kind === 'pen')) {
-          var pts = d.live.kind === 'line' ? d.live.pts : d.live.nodes.map(function (k) { return [k.x, k.y]; });
-          var last = pts[pts.length - 1];
-          var q = (ev.shiftKey && last) ? iwdieDrawConstrain(last[0], last[1], raw.x, raw.y) : p;
-          d.live.hover = [q.x, q.y];
-          drawRenderLive();
-        }
-        return;
-      }
-      if (g.kind === 'move') {
-        var dx = raw.x - g.p0.x, dy = raw.y - g.p0.y;
-        if (d.snap && g.box) { dx = iwdieDrawSnap(g.box.x + dx, d.grid) - g.box.x; dy = iwdieDrawSnap(g.box.y + dy, d.grid) - g.box.y; }
-        if (ev.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
-        d.sel.forEach(function (i, k) { d.shapes[i] = iwdieDrawMap(g.orig[k], 1, dx, 1, dy); });
-        g.moved = !!(dx || dy);
-        drawRender();
-      } else if (g.kind === 'resize' && g.box) {
-        var nb = iwdieDrawResizeBox(g.box, g.handle, p, ev.shiftKey), t = iwdieDrawScaleFor(g.box, nb);
-        d.sel.forEach(function (i, k) { d.shapes[i] = iwdieDrawMap(g.orig[k], t.ax, t.bx, t.ay, t.by); });
-        g.moved = true;
-        drawRender();
-      } else if (g.kind === 'marquee') {
-        var bx = { x: Math.min(g.p0.x, raw.x), y: Math.min(g.p0.y, raw.y), w: Math.abs(raw.x - g.p0.x), h: Math.abs(raw.y - g.p0.y) };
-        d.live.box = bx;
-        var hit = [];
-        d.shapes.forEach(function (s, i) {
-          var b = drawShapeBox(i);
-          if (b.x <= bx.x + bx.w && b.x + b.w >= bx.x && b.y <= bx.y + bx.h && b.y + b.h >= bx.y) hit.push(i);
-        });
-        d.sel = g.keep.concat(hit.filter(function (i) { return g.keep.indexOf(i) < 0; }));
-        drawRenderLive();
-        drawRenderSel();
-      } else if (g.kind === 'box') {
-        var x0 = g.p0.x, y0 = g.p0.y, w = p.x - x0, h = p.y - y0;
-        if (ev.shiftKey) { var m = Math.max(Math.abs(w), Math.abs(h)); w = w < 0 ? -m : m; h = h < 0 ? -m : m; }
-        var bx2 = { x: Math.min(x0, x0 + w), y: Math.min(y0, y0 + h), w: Math.abs(w), h: Math.abs(h) };
-        d.live.shape = d.tool === 'rect'
-          ? { t: 'rect', x: bx2.x, y: bx2.y, w: Math.max(1, bx2.w), h: Math.max(1, bx2.h), rx: d.styles.rect.rx || 0, st: drawStyleFor('rect') }
-          : { t: 'ellipse', cx: bx2.x + bx2.w / 2, cy: bx2.y + bx2.h / 2, rx: Math.max(0.5, bx2.w / 2), ry: Math.max(0.5, bx2.h / 2), st: drawStyleFor('ellipse') };
-        g.box = bx2;
-        drawRenderLive();
-      } else if (g.kind === 'pen') {
-        var nd = g.node;
-        nd.ox = p.x; nd.oy = p.y;
-        nd.ix = iwdieDrawNum(2 * nd.x - p.x); nd.iy = iwdieDrawNum(2 * nd.y - p.y);
-        drawRenderLive();
-      }
-    }
-
-    function drawUp(ev) {
-      var d = draw;
-      if (!d) return;
-      ev.stopPropagation();
-      var g = d.drag;
-      d.drag = null;
-      if (!g) return;
-      if (g.kind === 'move' || g.kind === 'resize') {
-        if (g.moved && drawState() !== g.before) drawPushPast(g.before);
-        drawRender();
-      } else if (g.kind === 'marquee') {
-        d.live = null;
-        drawRender();
-      } else if (g.kind === 'box') {
-        var shape = d.live && d.live.shape;
-        d.live = null;
-        if (!g.box || (g.box.w < 3 && g.box.h < 3)) {
-          // a click: the standard size, anchored where it was clicked
-          shape = d.tool === 'rect'
-            ? { t: 'rect', x: g.p0.x, y: g.p0.y, w: 80, h: 40, rx: d.styles.rect.rx || 0, st: drawStyleFor('rect') }
-            : { t: 'ellipse', cx: g.p0.x, cy: g.p0.y, rx: 20, ry: 20, st: drawStyleFor('ellipse') };
-        }
-        drawAdd(shape);
-      } else if (g.kind === 'pen') {
-        drawRender();
-      }
-    }
-
-    function drawDblClick(ev) {
-      var d = draw;
-      if (!d) return;
-      ev.stopPropagation();
-      ev.preventDefault();
-      if (d.tool === 'line' || d.tool === 'pen') { drawFinishLive(false); return; }
-      if (d.tool === 'select') {
-        var i = drawShapeIndex(ev.target);
-        if (i !== null && !isNaN(i) && d.shapes[i] && d.shapes[i].t === 'text') drawOpenText({ x: d.shapes[i].x, y: d.shapes[i].y }, i);
-      }
-    }
-
-    /** Finish the line or path being drawn - closed when asked - or drop it if
-     *  it has too few points to be a shape. */
-    function drawFinishLive(closed) {
-      var d = draw;
-      if (!d || !d.live) return;
-      var L = d.live;
-      d.live = null;
-      d.drag = null;
-      if (L.kind === 'line' && L.pts.length >= 2) {
-        drawAdd({ t: 'line', pts: L.pts, closed: !!closed && L.pts.length >= 3, st: drawStyleFor('line') });
-      } else if (L.kind === 'pen' && L.nodes.length >= 2) {
-        drawAdd({ t: 'path', nodes: L.nodes, closed: !!closed, st: drawStyleFor('pen') });
-      } else {
-        drawRender();
-      }
-    }
-
-    /* ---- text ---- */
-    /** Where labels are typed: inside the surface when it is up (keys typed there
-     *  never reach the page), else the page's own field. */
-    function drawTextEl() { return draw.surfInput || draw.textInput; }
-
-    function drawOpenText(p, idx) {
-      var d = draw, ti = drawTextEl(), svg = d.svg;
-      var s = idx !== null ? d.shapes[idx] : null;
-      var size = s ? s.size : (d.styles.text.size || 13);
-      d.textEdit = { p: p, idx: idx };
-      ti.value = s ? s.text : '';
-      if (ti === d.surfInput) {
-        // the surface lies over the canvas 1:1, so canvas coordinates are its own
-        ti.style.left = p.x + 'px';
-        ti.style.top = (p.y - size * 0.85) + 'px';
-        ti.style.fontSize = size + 'px';
-      } else {
-        var m = svg.getScreenCTM(), pt = svg.createSVGPoint();
-        pt.x = p.x; pt.y = p.y - size * 0.85;
-        var c = m ? pt.matrixTransform(m) : pt, k = m ? Math.sqrt(Math.abs(m.a * m.d)) : 1;
-        ti.style.left = c.x + 'px';
-        ti.style.top = c.y + 'px';
-        ti.style.fontSize = (size * k) + 'px';
-      }
-      ti.style.color = (s ? s.st.fill : d.styles.text.fill) || '#222';
-      ti.style.display = 'block';
-      setTimeout(function () {
-        try { if (ti === d.surfInput && d.surfWin) d.surfWin.focus(); ti.focus(); ti.select(); } catch (e) {}
-      }, 0);
-    }
-
-    function drawCloseText() {
-      var d = draw;
-      if (!d) return;
-      d.textEdit = null;
-      var ti = drawTextEl();
-      ti.style.display = 'none';
-      // A hidden field keeps the focus until the browser's next frame, and a key
-      // pressed straight after Enter would vanish into it instead of switching tool.
-      try { if (ti.ownerDocument.activeElement === ti) ti.blur(); } catch (e) {}
-    }
-
-    function drawCommitText() {
-      var d = draw;
-      if (!d || !d.textEdit) return;
-      var te = d.textEdit, text = drawTextEl().value;
-      drawCloseText();
-      if (te.idx !== null) {
-        drawChange(function () {
-          if (!text.trim()) { d.shapes.splice(te.idx, 1); d.sel = []; }
-          else d.shapes[te.idx].text = text.slice(0, 500);
-        });
-      } else if (text.trim()) {
-        var ts = d.styles.text;
-        drawAdd({ t: 'text', x: te.p.x, y: te.p.y, text: text, size: ts.size || 13, st: drawStyleFor('text') });
-      }
-    }
-
-    /* ---- keys: everything stops here while Draw is open ---- */
-    function drawKey(ev) {
-      var d = draw;
-      if (!d || d.opening) return;
-      if (confirmOverlay) {                             // the discard question owns the keyboard
-        if (ev.type === 'keydown' && ev.key === 'Escape') onConfirmKeydown(ev);
-        return;
-      }
-      var t = ev.target;
-      if (t && t.nodeType === 1 && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName) &&
-          ((d.ui && d.ui.contains(t)) || (d.surfDoc && t.ownerDocument === d.surfDoc))) return;   // our own fields; the UI root and the surface keep their keys from the page
-      ev.stopPropagation();
-      if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
-      if (ev.type !== 'keydown') return;
-      var k = ev.key || '', ctrl = ev.ctrlKey || ev.metaKey, lower = k.toLowerCase(), handled = true;
-      if (ctrl && lower === 'z') drawUndo(ev.shiftKey);
-      else if (ctrl && lower === 'y') drawUndo(true);
-      else if (ctrl && lower === 'a') { drawFinishLive(); if (d.tool !== 'select') setDrawTool('select'); d.sel = d.shapes.map(function (s, i) { return i; }); drawRender(); }
-      else if (ctrl && lower === 'g') drawAct(ev.shiftKey ? 'ungroup' : 'group');
-      else if (ctrl && lower === 'd') drawAct('dup');
-      else if (ctrl && lower === 'c') drawAct('copy');
-      else if (ctrl && lower === 'v') drawAct('paste');
-      else if (k === 'Delete' || k === 'Backspace') drawAct('del');
-      else if (k === 'Enter') drawFinishLive(false);
-      else if (k === 'Escape') {
-        if (d.tool === 'stamp') setDrawTool('select');
-        else if (d.live) drawFinishLive(false);
-        else if (d.sel.length) { d.sel = []; drawRender(); }
-      } else if (/^Arrow/.test(k)) {
-        var step = ev.shiftKey ? 10 : 1, dx = k === 'ArrowLeft' ? -step : k === 'ArrowRight' ? step : 0, dy = k === 'ArrowUp' ? -step : k === 'ArrowDown' ? step : 0;
-        if (d.sel.length) drawChange(function () { d.sel.forEach(function (i) { d.shapes[i] = iwdieDrawMap(d.shapes[i], 1, dx, 1, dy); }); });
-      } else if (!ctrl && !ev.altKey) {
-        var tool = null;
-        DRAW_TOOLS.forEach(function (tt) { if (tt.key === lower) tool = tt.id; });
-        if (tool) setDrawTool(tool); else handled = false;
-      } else handled = false;
-      if (handled) ev.preventDefault();
-    }
-
-    function drawBeforeUnload(ev) {
-      if (draw && draw.dirty) { ev.preventDefault(); ev.returnValue = ''; }
-    }
-
-    /* ---- actions ---- */
-    function drawAct(a) {
-      var d = draw;
-      if (!d || d.busy) return;
-      if (a === 'undo') drawUndo(false);
-      else if (a === 'redo') drawUndo(true);
-      else if (a === 'del' && d.sel.length) {
-        drawChange(function () {
-          var gone = d.sel.slice().sort(function (x, y) { return y - x; });
-          gone.forEach(function (i) { d.shapes.splice(i, 1); });
-          d.sel = [];
-        });
-      } else if (a === 'dup' && d.sel.length) {
-        drawChange(function () {
-          var start = d.shapes.length;
-          d.sel.slice().sort(function (x, y) { return x - y; }).forEach(function (i) { d.shapes.push(iwdieDrawMap(d.shapes[i], 1, 10, 1, 10)); });
-          d.sel = d.shapes.slice(start).map(function (s, k) { return start + k; });
-        });
-      } else if (a === 'copy' && d.sel.length) {
-        d.clip = d.sel.slice().sort(function (x, y) { return x - y; }).map(function (i) { return JSON.parse(JSON.stringify(d.shapes[i])); });
-      } else if (a === 'paste' && d.clip.length) {
-        drawChange(function () {
-          var start = d.shapes.length;
-          d.clip = d.clip.map(function (s) { return iwdieDrawMap(s, 1, 10, 1, 10); });
-          d.clip.forEach(function (s) { d.shapes.push(JSON.parse(JSON.stringify(s))); });
-          d.sel = d.clip.map(function (s, k) { return start + k; });
-        });
-      } else if ((a === 'front' || a === 'back') && d.sel.length) {
-        drawChange(function () {
-          var picked = d.sel.slice().sort(function (x, y) { return x - y; }).map(function (i) { return d.shapes[i]; });
-          var rest = d.shapes.filter(function (s, i) { return d.sel.indexOf(i) < 0; });
-          d.shapes = a === 'front' ? rest.concat(picked) : picked.concat(rest);
-          d.sel = picked.map(function (s, k) { return a === 'front' ? rest.length + k : k; });
-        });
-      } else if (a === 'group') drawGroup();
-      else if (a === 'ungroup') drawUngroup();
-      else if (a === 'lib') drawLibToggle();
-      else if (a === 'svg') drawDownloadSvg();
-      else if (a === 'cancel') drawCancel();
-      else if (a === 'done') drawDone();
-    }
-
-    function drawDownloadSvg() {
-      var d = draw;
-      drawFinishLive();
-      var svg = iwdieDrawSvg(d.shapes, d.w, d.h, d.base ? drawDataUrl(d.base) : null);
-      var name = iwdieBuildExportFilename(currentPlantId(), currentPanelName()).replace(/^iwmac-panel_/, 'iwmac-drawing_').replace(/\.json$/, '.svg');
-      downloadBytes(iwdieUtf8Encode(svg), name, 'image/svg+xml');
-    }
-
-    function drawCancel() {
-      var d = draw;
-      if (!d) return;
-      drawCloseText();
-      if (!d.dirty) { closeDrawMode(); return; }
-      openConfirmDialog({
-        title: 'Leave without applying the drawing?',
-        intro: 'What you drew is not on the background yet. Leaving now throws it away.',
-        yes: { label: 'Discard the drawing', desc: 'The background stays exactly as it was before Draw background opened.' },
-        no: { label: 'Keep drawing', desc: 'Back to the drawing — Done puts it on the background.' },
-        hint: 'Esc or a click outside keeps you drawing.'
-      }, function (discard) { if (discard) closeDrawMode(); else drawSurfaceFocus(); });
-    }
-
-    /** Leave Draw mode and put everything back as it was. */
-    function closeDrawMode() {
-      var d = draw;
-      if (!d) return;
-      draw = null;
-      window.removeEventListener('keydown', drawKey, true);
-      window.removeEventListener('keyup', drawKey, true);
-      window.removeEventListener('keypress', drawKey, true);
-      window.removeEventListener('beforeunload', drawBeforeUnload);
-      window.removeEventListener('pointerup', drawPointerUpOutside, true);
-      if (d.onScroll) { window.removeEventListener('scroll', d.onScroll, true); window.removeEventListener('resize', d.onScroll); }
-      if (d.raf) cancelAnimationFrame(d.raf);
-      if (d.watch) cancelAnimationFrame(d.watch);
-      if (d.surface && d.surface.parentNode) d.surface.parentNode.removeChild(d.surface);
-      if (d.svg && d.svg.parentNode) d.svg.parentNode.removeChild(d.svg);
-      if (d.ui && d.ui.parentNode) d.ui.parentNode.removeChild(d.ui);
-      if (d.cc) {
-        d.cc.style.pointerEvents = d.restore.ccPointer;
-        d.cc.style.opacity = d.restore.ccOpacity;
-        d.cc.style.visibility = d.restore.ccVisibility;
-      }
-      if (d.mi) d.mi.style.backgroundImage = d.restore.miBg;
-    }
-
-    function drawLoadImage(src) {
-      return new Promise(function (resolve, reject) {
-        var img = new Image();
-        img.onload = function () { resolve(img); };
-        img.onerror = function () { reject(new Error('a picture would not load')); };
-        img.src = src;
-      });
-    }
-
-    /** Paint the base the way the canvas shows it - its CSS size, position and
-     *  repeat - so Done does not shift a picture that is not exactly panel-sized. */
-    function drawPlaceBase(ctx, img, d) {
-      var W0 = d.w, H0 = d.h;
-      var iw = img.naturalWidth || img.width || W0, ih = img.naturalHeight || img.height || H0;
-      var w = iw, h = ih, sz = String(d.place.size || 'auto').trim().split(/\s+/);
-      if (sz[0] === 'cover' || sz[0] === 'contain') {
-        var k = (sz[0] === 'cover' ? Math.max : Math.min)(W0 / iw, H0 / ih);
-        w = iw * k; h = ih * k;
-      } else {
-        var len = function (v, full) { if (!v || v === 'auto') return null; var n = parseFloat(v); return isNaN(n) ? null : (/%$/.test(v) ? full * n / 100 : n); };
-        var a = len(sz[0], W0), b = len(sz.length > 1 ? sz[1] : 'auto', H0);
-        if (a !== null && b !== null) { w = a; h = b; }
-        else if (a !== null) { w = a; h = ih * a / iw; }
-        else if (b !== null) { h = b; w = iw * b / ih; }
-      }
-      var ps = String(d.place.pos || '0% 0%').trim().split(/\s+/);
-      var off = function (v, free) { var n = parseFloat(v) || 0; return /%$/.test(v) ? free * n / 100 : n; };
-      var x = off(ps[0], W0 - w), y = off(ps.length > 1 ? ps[1] : '0%', H0 - h);
-      var rep = String(d.place.repeat || 'repeat');
-      var rx = rep === 'repeat' || rep === 'repeat-x' || /^repeat\s/.test(rep);
-      var ry = rep === 'repeat' || rep === 'repeat-y' || /\srepeat$/.test(rep);
-      if (!(w >= 1 && h >= 1)) return;
-      var x0 = rx ? x - Math.ceil(x / w) * w : x, y0 = ry ? y - Math.ceil(y / h) * h : y;
-      for (var yy = y0; yy < H0; yy += h) {
-        for (var xx = x0; xx < W0; xx += w) {
-          ctx.drawImage(img, xx, yy, w, h);
-          if (!rx) break;
-        }
-        if (!ry) break;
-      }
-    }
-
-    /** The finished picture: the base, the drawing over it, both stored inside. */
-    function drawCompose() {
-      var d = draw;
-      var drawingSvg = iwdieDrawSvg(d.shapes, d.w, d.h, null);
-      return Promise.all([
-        d.base ? drawLoadImage(drawDataUrl(d.base)) : null,
-        drawLoadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(drawingSvg))
-      ]).then(function (imgs) {
-        var c = document.createElement('canvas');
-        c.width = d.w; c.height = d.h;
-        var ctx = c.getContext('2d');
-        if (imgs[0]) drawPlaceBase(ctx, imgs[0], d);
-        ctx.drawImage(imgs[1], 0, 0, d.w, d.h);
-        return new Promise(function (resolve, reject) {
-          c.toBlob(function (blob) {
-            if (!blob) { reject(new Error('the browser would not encode the PNG')); return; }
-            blob.arrayBuffer().then(function (ab) { resolve(new Uint8Array(ab)); }, reject);
-          }, 'image/png');
-        });
-      }).then(function (png) {
-        return iwdieDrawEmbed(png, {
-          format: IWDIE_DRAW_KEYWORD, v: 1, w: d.w, h: d.h, made_by: 'IWDIE ' + IWDIE_VERSION, shapes: d.shapes
-        }, d.base ? d.base.bytes : null);
-      });
-    }
-
-    /** An empty picture at panel size, for removing a drawing that had nothing under it. */
-    function drawBlankPng() {
-      var c = document.createElement('canvas');
-      c.width = draw.w; c.height = draw.h;
-      return new Promise(function (resolve, reject) {
-        c.toBlob(function (blob) {
-          if (!blob) { reject(new Error('the browser would not encode the PNG')); return; }
-          blob.arrayBuffer().then(function (ab) { resolve(new Uint8Array(ab)); }, reject);
-        }, 'image/png');
-      });
-    }
-
-    function drawApply(dataUrl) {
-      var d = draw, mi = d.mi;
-      var wc = mi.style.width || (d.w + 'px'), hc = mi.style.height || (d.h + 'px');
-      closeDrawMode();
-      W.iw_set_base_image(wc, hc, dataUrl);
-      try { if (!W.$('#main_image').attr('org_image_name')) W.$('#main_image').attr('org_image_name', 'iwdie-drawing.png'); } catch (e) {}
-    }
-
-    function drawDone() {
-      var d = draw;
-      if (!d || d.busy) return;
-      drawCommitText();
-      drawFinishLive();
-      var n = d.shapes.length;
-      if (!n && !d.reopened) { closeDrawMode(); toast('Nothing was drawn — the background is unchanged.', false, 5000, 'good'); return; }
-      d.busy = true;
-      var btn = d.bar.querySelector('[data-act="done"]');
-      btn.textContent = 'Building…';
-      var job;
-      if (n) {
-        job = drawCompose().then(function (png) { return 'data:image/png;base64,' + iwdieBytesToBase64(png); });
-      } else {
-        // every shape deleted: put back the picture it was drawn on, byte for byte
-        job = d.base ? Promise.resolve(drawDataUrl(d.base)) : drawBlankPng().then(function (png) { return 'data:image/png;base64,' + iwdieBytesToBase64(png); });
-      }
-      var base = !!d.base;
-      job.then(function (dataUrl) {
-        drawApply(dataUrl);
-        outcomeToast(n ? {
-          tone: 'good',
-          title: '✅ Background drawn',
-          lines: [
-            iwdieN(n, 'shape', 'shapes') + (base ? ' drawn over the picture that was there.' : ' on an empty background.'),
-            'The drawing is stored inside the picture — Draw background… reopens it with every shape editable.'
-          ],
-          footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.'
-        } : {
-          tone: 'good',
-          title: '✅ Drawing removed',
-          lines: [base ? 'The picture it was drawn on is back, unchanged.' : 'The background is empty again.'],
-          footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.'
-        });
-      }, function (e) {
-        if (draw) { draw.busy = false; btn.textContent = 'Done'; }
-        toast('The drawing could not be turned into a picture: ' + ((e && e.message) || e), true, 12000);
-      });
-    }
-
-    /** Group the selected shapes into one, where the topmost of them was. */
-    function drawGroup() {
-      var d = draw;
-      if (!d || d.sel.length < 2) return;
-      var depth = function (x) { return x.t === 'group' ? 1 + Math.max.apply(null, x.items.map(depth)) : 0; };
-      var sorted = d.sel.slice().sort(function (a, b) { return a - b; });
-      var items = sorted.map(function (i) { return d.shapes[i]; });
-      if (Math.max.apply(null, items.map(depth)) >= 8) { toast('Groups can be nested eight deep - ungroup one first.', true, 6000); return; }
-      drawChange(function () {
-        var rest = d.shapes.filter(function (x, i) { return sorted.indexOf(i) < 0; });
-        var at = sorted[sorted.length - 1] - (sorted.length - 1);
-        rest.splice(at, 0, { t: 'group', name: '', items: items });
-        d.shapes = rest;
-        d.sel = [at];
-      });
-    }
-
-    /** Split each selected group into its shapes, in place. */
-    function drawUngroup() {
-      var d = draw;
-      if (!d || !d.sel.some(function (i) { return d.shapes[i] && d.shapes[i].t === 'group'; })) return;
-      drawChange(function () {
-        var out = [], sel = [];
-        d.shapes.forEach(function (x, i) {
-          var picked = d.sel.indexOf(i) >= 0;
-          if (picked && x.t === 'group') x.items.forEach(function (c) { sel.push(out.length); out.push(c); });
-          else { if (picked) sel.push(out.length); out.push(x); }
-        });
-        d.shapes = out;
-        d.sel = sel;
-      });
-    }
-
-    /* ---- the library (v1.33.0) ----
-       Illustrator files for Maskin panels keep their components - compressors,
-       valves, pumps, symbols - around the artboard. Import .ai… reads those
-       objects into a library down the left, kept in this browser between
-       sessions; a click on one arms it, and each click on the drawing places it
-       there as a group. Nothing leaves the browser. */
-    var DRAW_LIB_KEY = 'iwdie.draw.library.v1';
-    var drawLibCache;                                    // undefined until read; null when there is none
-
-    function drawLibLoad() {
-      if (drawLibCache !== undefined) return drawLibCache;
-      drawLibCache = null;
-      try {
-        var raw = window.localStorage.getItem(DRAW_LIB_KEY);
-        var o = raw ? JSON.parse(raw) : null;
-        var items = o ? iwdieDrawLibItems(o.items) : [];
-        if (items.length) {
-          drawLibCache = { file: typeof o.file === 'string' ? o.file.slice(0, 200) : '', imported: typeof o.imported === 'string' ? o.imported : '',
-            hidden: Math.max(0, parseInt(o.hidden, 10) || 0), noArtboard: !!o.noArtboard, items: items, stored: true };
-        }
-      } catch (e) {}
-      return drawLibCache;
-    }
-
-    function drawLibSave(lib) {
-      try {
-        window.localStorage.setItem(DRAW_LIB_KEY, JSON.stringify({ v: 1, file: lib.file, imported: lib.imported, hidden: lib.hidden,
-          noArtboard: lib.noArtboard, items: lib.items.map(function (it) { return { name: it.name, layer: it.layer, w: it.w, h: it.h, shapes: it.shapes }; }) }));
-        lib.stored = true;
-      } catch (e) {
-        lib.stored = false;
-      }
-    }
-
-    function drawLibToggle(open) {
-      var d = draw;
-      if (!d || !d.lib) return;
-      if (open === undefined) open = d.lib.hidden;
-      d.lib.hidden = !open;
-      if (open) {
-        drawPlaceLib();
-        drawLibRender(d.lib.querySelector('[data-lib="search"]').value);
-        if (!d.libBusy) drawLibInfo();
-      } else if (d.tool === 'stamp') setDrawTool('select');
-      syncDrawBar();
-    }
-
-    /** Down the left, under the bar when the bar is at the top, above it when at the bottom. */
-    function drawPlaceLib() {
-      var d = draw;
-      if (!d || !d.lib || d.lib.hidden) return;
-      var br = d.bar.getBoundingClientRect(), vh = window.innerHeight, top = 8, bottom = 8;
-      if (br.left < 300) {
-        if (br.top + br.height / 2 < vh / 2) top = Math.min(vh - 220, br.bottom + 8);
-        else bottom = Math.min(vh - 220, vh - br.top + 8);
-      }
-      d.lib.style.top = Math.max(8, top) + 'px';
-      d.lib.style.bottom = Math.max(8, bottom) + 'px';
-    }
-
-    function drawLibStatus(html, bad) {
-      var d = draw;
-      if (!d || !d.lib) return;
-      var el = d.lib.querySelector('.iwdie-draw-lib-status');
-      el.innerHTML = html;
-      el.classList.toggle('iwdie-bad', !!bad);
-    }
-
-    /** What the library holds and where it came from. */
-    function drawLibInfo() {
-      var lib = drawLibLoad(), esc2 = iwdieEscHtml;
-      if (!lib) { drawLibStatus(''); return; }
-      var when = '';
-      try { when = lib.imported ? new Date(lib.imported).toLocaleDateString() : ''; } catch (e) {}
-      var bits = ['From <b>' + esc2(lib.file || 'an Illustrator file') + '</b>' + (when ? ', ' + esc2(when) : '')];
-      if (lib.hidden) bits.push(iwdieN(lib.hidden, 'hidden object', 'hidden objects') + ' left out, as in Illustrator');
-      if (lib.noArtboard) bits.push('no artboard found, so every object is here');
-      if (!lib.stored) bits.push('kept until the page reloads - the browser had no room to store it');
-      drawLibStatus(bits.join(' · ') + '.');
-    }
-
-    function drawLibRender(query) {
-      var d = draw, esc2 = iwdieEscHtml;
-      if (!d || !d.lib) return;
-      var lib = drawLibLoad(), list = d.lib.querySelector('.iwdie-draw-lib-list');
-      d.lib.querySelector('.iwdie-draw-lib-count').textContent = lib ? iwdieN(lib.items.length, 'component', 'components') : '';
-      if (!lib) {
-        list.innerHTML = '<div class="iwdie-draw-lib-empty">Import an Illustrator file (.ai) - or drop it on this panel - and the objects placed around its artboard ' +
-          'become components here. Click one, then click the drawing to place it.<br><br>The file stays on this computer; the components are kept in this browser.</div>';
-        return;
-      }
-      var q = String(query || '').trim().toLowerCase(), groups = [], byName = {};
-      lib.items.forEach(function (it, k) {
-        if (q && (it.name + ' ' + it.layer).toLowerCase().indexOf(q) < 0) return;
-        var key = it.layer || 'Components';
-        if (!byName[key]) { byName[key] = { name: key, ks: [] }; groups.push(byName[key]); }
-        byName[key].ks.push(k);
-      });
-      if (!groups.length) { list.innerHTML = '<div class="iwdie-draw-lib-empty">Nothing matches “' + esc2(q) + '”.</div>'; return; }
-      list.innerHTML = groups.map(function (g) {
-        return '<details open><summary>' + esc2(g.name) + ' <span>(' + g.ks.length + ')</span></summary><div class="iwdie-draw-lib-grid">' +
-          g.ks.map(function (k) {
-            var it = lib.items[k], size = Math.round(it.w) + ' × ' + Math.round(it.h);
-            return '<button class="iwdie-draw-lib-item" data-k="' + k + '" title="' + esc2((it.name ? it.name + ' - ' : '') + size + ' px' + (it.layer ? ' · layer ' + it.layer : '')) + '">' +
-              '<img alt="" loading="lazy" src="' + drawLibThumb(it) + '"><span>' + esc2(it.name || size) + '</span></button>';
-          }).join('') + '</div></details>';
-      }).join('');
-      drawLibMarkArmed();
-    }
-
-    /** A component's picture for its tile, made once. */
-    function drawLibThumb(it) {
-      if (it.thumb) return it.thumb;
-      var sw = 0, f = iwdieDrawFmt;
-      (function walk(list) { list.forEach(function (x) { if (x.t === 'group') walk(x.items); else if (x.st && x.st.sw > sw) sw = x.st.sw; }); })(it.shapes);
-      var pad = 2 + sw / 2, w = Math.max(it.w, 1) + 2 * pad, h = Math.max(it.h, 1) + 2 * pad;
-      var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + [-pad, -pad, w, h].map(f).join(' ') + '" width="' + f(w) + '" height="' + f(h) + '">' +
-        '<defs>' + iwdieDrawDefsSvg(it.shapes) + '</defs>' + it.shapes.map(function (x) { return iwdieDrawShapeSvg(x); }).join('') + '</svg>';
-      it.thumb = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
-      return it.thumb;
-    }
-
-    function drawLibMarkArmed() {
-      var d = draw;
-      if (!d || !d.lib) return;
-      var armed = d.tool === 'stamp' && d.stamp ? d.stamp.k : -1;
-      Array.prototype.forEach.call(d.lib.querySelectorAll('.iwdie-draw-lib-item'), function (b) {
-        b.classList.toggle('iwdie-on', parseInt(b.getAttribute('data-k'), 10) === armed);
-      });
-    }
-
-    /** Arm component k: every click on the drawing now places it. */
-    function drawLibArm(k) {
-      var d = draw, lib = drawLibLoad();
-      if (!d || !lib || !lib.items[k]) return;
-      if (d.textEdit) drawCommitText();
-      var it = lib.items[k];
-      d.stamp = { k: k, item: it, w: it.w, h: it.h, svg: it.shapes.map(function (x) { return iwdieDrawShapeSvg(x); }).join('') };
-      setDrawTool('stamp');
-    }
-
-    /** Where the armed component goes for a pointer at p: centred on it, on the grid when it is on. */
-    function drawStampAt(p) {
-      var d = draw, x = p.x - d.stamp.w / 2, y = p.y - d.stamp.h / 2;
-      return d.snap ? { x: iwdieDrawSnap(x, d.grid), y: iwdieDrawSnap(y, d.grid) } : { x: iwdieDrawNum(x), y: iwdieDrawNum(y) };
-    }
-
-    function drawLibPlace(p) {
-      var d = draw, s = d.stamp;
-      if (!s) return;
-      var at = drawStampAt(p);
-      var shapes = s.item.shapes.map(function (x) { return iwdieDrawMap(x, 1, at.x, 1, at.y); });
-      var one = shapes.length === 1 ? shapes[0] : null;
-      // a component keeps its library name, which the .ai export hands on to Illustrator
-      if (one && one.t === 'group' && !one.name && s.item.name) one = { t: 'group', name: s.item.name, items: one.items };
-      drawAdd(one || { t: 'group', name: s.item.name, items: shapes });
-    }
-
-    /** Whether a drag carries files (not text or a link from the page). */
-    function drawHasFiles(ev) {
-      var types = ev && ev.dataTransfer && ev.dataTransfer.types;
-      if (!types) return false;
-      for (var i = 0; i < types.length; i++) if (types[i] === 'Files') return true;
-      return false;
-    }
-
-    function drawNextFrame() {
-      return new Promise(function (resolve) { setTimeout(resolve, 30); });   // lets a status line show before a long step
-    }
-
-    /** zlib data inflated by the browser. A PDF stream may carry a byte or two
-     *  past the end of its data, which DecompressionStream reports as an error
-     *  after it has produced everything - so what came out is kept. */
-    function drawInflate(u8) {
-      var DS = typeof DecompressionStream === 'function' ? DecompressionStream : (W && W.DecompressionStream);
-      if (typeof DS !== 'function') return Promise.reject(new Error('this browser cannot unpack it (no DecompressionStream)'));
-      var ds = new DS('deflate'), writer = ds.writable.getWriter(), reader = ds.readable.getReader(), chunks = [], total = 0;
-      writer.write(u8).then(null, function () {});
-      writer.close().then(null, function () {});
-      var pump = function () {
-        return reader.read().then(function (r) {
-          if (r.done) return null;
-          chunks.push(r.value);
-          total += r.value.length;
-          return pump();
-        });
-      };
-      return pump().then(null, function (e) { if (!total) throw e; }).then(function () {
-        var out = new Uint8Array(total), o = 0;
-        chunks.forEach(function (c) { out.set(c, o); o += c.length; });
-        return out;
-      });
-    }
-
-    function drawLibDecode(block) {
-      if (!block.filter) return Promise.resolve(block.data);
-      if (block.filter === 'FlateDecode') return drawInflate(block.data);
-      return Promise.reject(new Error('its data is packed as ' + block.filter + ', which cannot be read here'));
-    }
-
-    function drawLibImport(file) {
-      var d = draw, esc2 = iwdieEscHtml;
-      if (!d || d.libBusy) return;
-      d.libBusy = true;
-      var name = String(file.name || 'the file'), box = null;
-      drawLibStatus('Reading <b>' + esc2(name) + '</b>…');
-      file.arrayBuffer().then(function (ab) {
-        box = iwdieAiContainer(new Uint8Array(ab));
-        return Promise.all(box.blocks.map(drawLibDecode));
-      }).then(function (parts) {
-        var total = 0, o = 0;
-        parts.forEach(function (p) { total += p.length; });
-        var joined = new Uint8Array(total);
-        parts.forEach(function (p) { joined.set(p, o); o += p.length; });
-        drawLibStatus('Unpacking <b>' + esc2(name) + '</b>…');
-        return drawNextFrame().then(function () { return iwdieAiNative(joined); });
-      }).then(function (nat) {
-        return Promise.all([nat.bytes || drawInflate(nat.inflate), box.icc ? drawLibDecode(box.icc).then(null, function () { return null; }) : null]);
-      }).then(function (r) {
-        drawLibStatus('Finding the objects around the artboard…');
-        return drawNextFrame().then(function () {
-          var color = (r[1] && iwdieIccCmykConverter(r[1])) || iwdieCmykNaive;
-          var parsed = iwdieAiParse(iwdieLatin1(r[0]));
-          return { res: iwdieAiLibrary(parsed, color), artboards: parsed.artboards.length };
-        });
-      }).then(function (o) {
-        if (draw !== d) return;
-        d.libBusy = false;
-        var items = iwdieDrawLibItems(o.res.items);
-        if (!items.length) {
-          drawLibStatus('<b>' + esc2(name) + '</b> has no objects outside its artboard' + (o.res.hidden ? ' that are not hidden' : '') + ' - the library is unchanged.', true);
-          return;
-        }
-        var lib = { file: name, imported: new Date().toISOString(), hidden: o.res.hidden, noArtboard: !o.artboards, items: items };
-        drawLibSave(lib);
-        drawLibCache = lib;
-        if (d.stamp) { d.stamp = null; if (d.tool === 'stamp') setDrawTool('select'); }
-        drawLibRender(d.lib.querySelector('[data-lib="search"]').value);
-        drawLibInfo();
-        syncDrawBar();
-      }).then(null, function (e) {
-        if (draw !== d) return;
-        d.libBusy = false;
-        drawLibStatus('<b>' + esc2(name) + '</b> could not be read: ' + esc2((e && e.message) || String(e)) + '.', true);
-      });
-    }
-
     /* ---------- Excel (.xlsx) writer ----------------------------------------
        Mirrors supermarket-superuser's export block byte-for-byte where
        possible (store-only ZIP + CRC32 + minimal SpreadsheetML, COM-verified
@@ -10484,7 +8953,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       openImportPanel: openImportPanel,
       applyImport: applyImport,
       doExportBackgroundAi: doExportBackgroundAi,
-      openDraw: openDrawMode,
+      editInVectorCraft: doEditInVectorCraft,
       stageImportText: stageImportText,
       doExportParams: doExportParams,
       doExportAllParams: doExportAllParams,
@@ -10559,21 +9028,11 @@ if (typeof module !== 'undefined' && module.exports) {
     plural: iwdieN,
     DRAW_KEYWORD: IWDIE_DRAW_KEYWORD,
     DRAW_BASE_CHUNK: IWDIE_DRAW_BASE_CHUNK,
-    DRAW_PALETTE: IWDIE_DRAW_PALETTE,
-    DRAW_DEFAULT_STYLES: IWDIE_DRAW_DEFAULT_STYLES,
     drawShape: iwdieDrawShape,
     drawShapes: iwdieDrawShapes,
     drawShapeSvg: iwdieDrawShapeSvg,
-    drawSvg: iwdieDrawSvg,
     drawPathD: iwdieDrawPathD,
-    drawBounds: iwdieDrawBounds,
-    drawUnion: iwdieDrawUnion,
     drawMap: iwdieDrawMap,
-    drawResizeBox: iwdieDrawResizeBox,
-    drawScaleFor: iwdieDrawScaleFor,
-    drawSnap: iwdieDrawSnap,
-    drawConstrain: iwdieDrawConstrain,
-    drawEmbed: iwdieDrawEmbed,
     drawExtract: iwdieDrawExtract,
     drawCleanD: iwdieDrawCleanD,
     drawLibItems: iwdieDrawLibItems,
@@ -10608,11 +9067,11 @@ if (typeof module !== 'undefined' && module.exports) {
     VC_URL: IWDIE_VC_URL,
     VC_CHUNK: IWDIE_VC_CHUNK,
     vcSvg: iwdieVcSvg,
-    vcSize: iwdieVcSize,
     vcSized: iwdieVcSized,
     vcMergeShapes: iwdieVcMergeShapes,
     vcEmbed: iwdieVcEmbed,
     vcExtract: iwdieVcExtract,
+    vcLibrarySvg: iwdieVcLibrarySvg,
     pngChunks: iwdiePngChunks,
     pngCrc32: iwdiePngCrc32,
     sniffMime: iwdieSniffMime,

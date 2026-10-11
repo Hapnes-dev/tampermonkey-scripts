@@ -1,6 +1,6 @@
 # IWMAC Designer Import/Export
 
-Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four stacked buttons — **Export JSON**, **Insert JSON…**, **Draw background…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, the background artwork can be drawn on the canvas itself, and it can be handed to Adobe Illustrator for editing. The designer itself has no way to do any of these; this script adds them.
+Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four stacked buttons — **Export JSON**, **Insert JSON…**, **Edit in VectorCraft…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, the background artwork can be edited as vectors in a browser editor, and it can be handed to Adobe Illustrator for editing. The designer itself has no way to do any of these; this script adds them.
 
 Runs on `http(s)://legacy.iwmac.local/iwmac_designer_v4/?plant_id=<id>` ("IWMAC Designer V5"). Since v1.35.0 it also runs on the hosted vector editor, `https://hapnes-dev.github.io/iwmac-vector/app/`, for [Edit in VectorCraft](#edit-in-vectorcraft-v1350); Tampermonkey asks once to allow that, and Tampermonkey's storage, when it updates.
 
@@ -132,128 +132,54 @@ rejection now names the box as the way through.
 > onto a panel whose current content you no longer want; adding a full export instead duplicates
 > every object. Maskin drawing rules and validators live in the private `tampermonkey-scripts-documents` repository.
 
-## Draw background (v1.32.0)
+## Draw background (v1.32.0 to v1.35.0): replaced by Edit in VectorCraft
 
-**Draw background…** turns the panel's canvas into a drawing surface for Maskin-style
-artwork: pipes, equipment boxes, fans and pumps, junction dots, labels. You draw on the
-panel itself. The drawing layer sits between the background and the objects, so what you
-see while drawing is what the panel will show. The objects stay in view for reference
-(shown, dimmed or hidden) and cannot be clicked while you draw.
+Until v1.35.0, **Draw background…** drew Maskin artwork on the canvas itself: pipes, boxes,
+dots and labels in the house palette, a pen tool, and components from an Illustrator file.
+In v1.36.0, **Edit in VectorCraft…** takes its place on the sidebar. VectorCraft is a full
+vector editor, with the pen and direct selection, pathfinder, layers, zoom and undo, so the
+homegrown editor was removed.
 
-| Tool | Key | Does |
-|---|---|---|
-| Select | V | Click to select, Shift-click to add, drag across empty canvas for several. Drag to move, the eight handles to resize (Shift keeps the proportions), arrow keys to nudge (Shift = 10 px). Double-click a label to edit it. |
-| Line | L | Pipes: click points; double-click or Enter finishes, a click on the first point closes the shape. Shift keeps 45°. |
-| Pen | P | Click for a corner, drag for a curve, as in Illustrator. |
-| Box | R | Drag a box (Shift: square), or click for an 80 × 40 one. Rounded corners by default. |
-| Ellipse | E | Drag (Shift: circle), or click for a 40 × 40 circle. |
-| Dot | D | A junction dot where you click. |
-| Text | T | Click, type, Enter. |
+Backgrounds drawn with it keep working. Draw stored its shapes inside the PNG, in an `iTXt`
+chunk with the keyword `iwdie-draw`, and the untouched picture under them in `iwBs`. Both are
+still read:
+- **Edit in VectorCraft…** opens such a background as the picture under the shapes, with the
+  shapes as editable objects on the *Tegning* layer.
+- **Background → Illustrator** writes the shapes as Illustrator objects.
 
-Each tool starts in the house style. Line draws a 2 px hot-gas pipe, Pen a suction pipe,
-Box and Ellipse white equipment with the grey outline, Dot the junction grey, and Text
-the label colour. The swatches are the Maskin light palette, sampled from
-`maskin-light-style-reference.png`:
-- pipes: hot gas `#f79f79`, M-T suction `#83c2ce`, L-T suction `#70abc5`, water `#8ec1a3`;
-- equipment outline `#9da4ae`, dots and arrows `#687c87`, labels `#425664`;
-- ground `#e5e7ea`, side panel `#cdd2d7`, white and slate.
+A drawing read from a file is cleaned on the way in: known shapes, numbers, `#rrggbb`
+colours and plain text only. So a hostile PNG cannot put markup into the page.
 
-Any other colour is one click away. The style row also sets line width, dashes, an
-arrowhead at the end of a line, corner radius and text size. It applies to whatever is
-selected, or to the next shape when nothing is. Undo and redo (Ctrl+Z, Ctrl+Shift+Z)
-cover every change. Delete, Ctrl+D duplicate, Ctrl+C / Ctrl+V, Ctrl+A, and Front/Back
-work on the selection, and a grid snaps points and moves to 5, 10 or 20 px.
-
-**Done** draws the picture that was there and your shapes into one PNG at panel size, and
-puts it on the canvas with the designer's own `iw_set_base_image`, the same call Insert
-uses. Nothing reaches the server until you press the designer's Save. Cancel puts
-everything back as it was, and asks first if you drew anything. Reloading the page with an
-unapplied drawing raises the browser's *Leave site?* question.
-
-**The drawing stays editable.** The PNG carries two extra chunks that every viewer skips:
-the shapes as JSON (`iTXt`, keyword `iwdie-draw`) and the untouched picture they were
-drawn on (`iwBs`). The Designer stores and shows a plain picture. The next **Draw
-background…** reads both chunks back and shows the original picture again, with every
-shape editable on top. Deleting every shape and pressing Done gives back that original
-picture byte for byte.
-
-A background that did not come from Draw mode opens as it is, and what you draw goes on top
-of it. **⤓ .svg** downloads the drawing, with the picture under it, as an SVG Illustrator
-opens. The drawing travels inside the picture, so Export and Insert carry it to other
-panels too. A drawing read from a file is cleaned on the way in — known shapes, numbers,
-`#rrggbb` colours and plain text only — so a hostile PNG cannot put markup into the page.
-
-While Draw mode is open, everything outside the canvas is dimmed and blocked. No key
-reaches the Designer: its own hotkeys (Delete, arrows, Ctrl+A/C/V/G) act on the objects,
-so they must not fire while you draw.
-
-**With the Designer Toolkit extension (v1.32.1, v1.32.2).** Tested live on plant 2349:
-- dtk stops every `pointerdown` over the canvas at window level (`stopImmediatePropagation`
-  and `preventDefault`), before any other listener runs, so Draw received no presses at all;
-- dtk then acts on the press itself: it selected a Designer label under a press meant for Draw,
-  and its selection panel moved the canvas 260 px.
-
-1.32.1 inferred the missing presses from moves and releases. 1.32.2 removes the conflict
-instead. Draw lays an invisible, same-origin iframe over the canvas as its input surface.
-Pointer and keyboard events inside an iframe belong to its own window, so nothing in the page
-hears them, whatever order the page's listeners were registered in: not dtk, not keymaster,
-not the Designer's body handlers. The drawing itself still renders in the page, between the
-background and the objects; the surface only listens. Labels are typed inside the surface
-too. The shade's hole follows the canvas every frame, so a panel that moves the canvas no
-longer leaves it misplaced.
-
-1.32.3 comes from the live test of 1.32.2 on plant 2349, which drew, moved, deleted, undid,
-finished, reopened and removed a drawing through the surface without dtk noticing. Two things
-still went wrong:
-- dtk's own toolbar sits across the top of the window at z-index 2147483647 and covered
-  Delete, *.svg*, Cancel and Done on the bar. Draw's shade and bar, the dialogs and the toasts
-  now use that same z-index and win by coming later in the document. About twice a second the
-  bar checks that nothing has covered Done, and moves itself back on top if something has.
-- Esc did not answer the *Leave without applying the drawing?* question. A click on the bar
-  handed the keyboard back to the surface, behind the question. The question now keeps the
-  keyboard until it is answered.
-
-A key pressed straight after Enter on a label no longer vanishes into the hidden label field.
-
-**Not yet:** editing the points of an existing path, rotation, layers, snapping to objects,
-and zoom inside the editor. The bar stays out of the canvas when the window has room for it,
-and its grip moves it when it does not.
-
-Tested live on plant 2349 with 1.32.2, with the Designer Toolkit running: drawing, moving,
-deleting, undo, Done, reopening and removing a drawing. Every flow also runs in a stub host
-page that loads this script with the Designer's loaders and `iw_set_base_image` stubbed, over
-the Maskin style reference:
-- drawing with each tool;
-- moving, deleting and undoing;
-- Done, then reopening with all shapes editable;
-- Cancel, with and without changes;
-- removing every shape;
-- key isolation: no key and no click reached the page's own handlers.
-
-**Still to check once on a scratch panel:** that the server keeps the PNG's extra chunks
-through Save. If it re-encodes the picture, the drawing shows as drawn but reopens as a
-locked picture.
-
-## Draw library: components from Illustrator (v1.33.0)
+## Komponenter: components from Illustrator (v1.33.0, in VectorCraft since v1.36.0)
 
 The Maskin artwork's Illustrator files keep their components around the artboard: fans,
-pumps, compressors, tanks, valves, alarm and temperature symbols, arrows. **▦ Library** on the
-Draw bar opens a panel down the left. **Import .ai…** reads a `.ai` file, and every visible
-object lying wholly outside its artboard becomes a component there. Components are grouped by
-their Illustrator layer and carry their Illustrator name where they have one, their size where
-they do not.
+pumps, compressors, tanks, valves, alarm and temperature symbols, arrows. VectorCraft's own
+`.ai` reader leaves those out. Measured: `2349_Maskin.ai` opens there with the artboard
+only. So this script reads the components itself and hands them to VectorCraft as a sheet to
+copy from.
 
-Since v1.34.1 a `.ai` dropped on the library panel imports the same way, and so does one dropped
-on the canvas (the panel opens for it). That is also the way in when a remote driver attached
-to the tab takes the file picker over. Playwright MCP does this: while it is connected, *Import
-.ai…* opens a picker only it can see. A file dropped anywhere else while Draw is open is caught,
-so it can no longer replace the Designer in the tab.
+**Komponenter** sits in the banner of a panel opened with *Edit in VectorCraft…*. It opens
+the components in a VectorCraft tab of their own (`…/app/#lib`):
 
-Click a component, and every click on the drawing places it, centred where you click and on
-the grid when the grid is on. Esc or V stops. A placed component is a group: it moves and
-resizes as one and keeps its own colours. **Ungroup** (Ctrl+Shift+G) turns it back into its
-shapes, which then take the style row like any other shape. **Group** (Ctrl+G) joins a
-selection into one.
+- Each Illustrator layer they came from is a layer of the sheet.
+- Each component is a group at its own size, named after its Illustrator name where it has
+  one. VectorCraft's Layers panel shows that name.
+- The names stand under the components, on a layer of their own: *Navn*.
+
+To use one, select it (click it, or drag around several) and press **Ctrl+C** there. Then
+press **Ctrl+V** in the panel's tab. The component lands in the layer selected there, in the
+middle of the view. Copying between VectorCraft tabs goes through the clipboard as SVG, so a
+pasted component keeps its shapes and colours, but not its name.
+
+**Import .ai…** in the components tab reads a `.ai` file. Every visible object lying wholly
+outside its artboard becomes a component, the new set replaces the old one, and the tab
+reloads with them.
+
+**Where they are kept.** The components live in Tampermonkey's storage (`iwdie.library.v1`,
+about 0.5 MB for these files), where the Designer and the editor's page both reach them.
+Nothing is uploaded. A library imported in Draw (v1.33.0 to v1.35.0) lived in the Designer's
+own `localStorage` (`iwdie.draw.library.v1`). The first *Edit in VectorCraft…* copies it
+over, and the old copy stays where it is.
 
 How the file is read:
 - A PDF-compatible `.ai` carries two copies of the drawing. The PDF page that previews the
@@ -267,38 +193,25 @@ How the file is read:
 - Groups wider or taller than 700 px are opened into their parts, so a sheet of components
   becomes the components. A group that straddles the artboard's edge gives up the parts that
   lie outside it.
-- Hidden objects and hidden layers are left out, as Illustrator hides them; the panel says how
-  many.
+- Hidden objects and hidden layers are left out, as Illustrator hides them; the banner says
+  how many.
 - Compound paths stay one path, so their holes stay holes. Opacity, dash patterns, caps and
   joins come along.
-- Text, placed pictures, gradients and clipping are not read: Draw cannot show them yet.
+- Symbol instances are read through the art they carry. VectorCraft's own reader gives up on
+  those.
+- Text, placed pictures, gradients and clipping are not read.
 
-`2349_Maskin.ai` (Illustrator 2020 or later) gives 386 components in about half a second. The
-kit's Maskin template (Illustrator 23) gives 418.
+`2349_Maskin.ai` (Illustrator 2020 or later) gives 386 components in about half a second, on
+a sheet of 1278 × 3816 px. The kit's Maskin template (Illustrator 23) gives 418.
 
-The library is kept in this browser's storage (`localStorage`, key `iwdie.draw.library.v1`,
-about 0.5 MB for these files). It comes back the next time Draw opens, on any panel of the
-Designer, and a new import replaces it. Nothing is uploaded. If the browser has no room left,
-the library lasts until the page reloads, and the panel says so.
-
-A stored library is cleaned on the way in, the same way a drawing is. Components bring two new
-shape kinds into drawings, and both are checked:
+A stored library is cleaned on the way in, the same way a drawing is:
 - path data: absolute M, L, C and Z only, rebuilt from its numbers;
 - groups: at most nine deep, at most 5000 shapes each.
 
-So neither a hostile file nor a doctored storage entry can put markup into the page. Undo keeps
-up to 200 steps and, since components make big steps, at most about 50 MB of history.
-
-Verified in the stub host with real mouse and keyboard:
-- importing `2349_Maskin.ai`;
-- placing components from three layers;
-- moving one by its middle;
-- Ungroup and undo, then Group;
-- Done, and reopening with the groups intact;
-- the library still there after a reload.
+So neither a hostile file nor a doctored storage entry can put markup into the page.
 
 The kit's `tests/test-draw-library.js` holds the reader, the decoder, the colours and the
-cleaning.
+cleaning, and `tests/test-vectorcraft-bridge.js` holds the sheet.
 
 ## What it handles for you
 
@@ -308,10 +221,9 @@ cleaning.
 | Cross-plant driver ids | Detected via the `<plant>_` prefix; offered rebind on insert; leftovers reported |
 | A target panel that is not empty | Replace-or-add is asked before anything is touched; Replace clears the canvas and the host's own object/container caches the way a full panel load does, Add keeps everything and merges |
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
-| Drawing background artwork | *Draw background…* draws on the canvas between the background and the objects; Done applies one PNG through `iw_set_base_image`, carrying the editable drawing inside it (v1.32.0) |
+| Drawing background artwork | **Edit in VectorCraft…** opens the panel in an open-source vector editor in a new tab, with the picture, any drawing and the objects on a hidden layer. Saving there sets the background through `iw_set_base_image`, and the next edit reopens the same document (v1.35.0; on the sidebar since v1.36.0, in place of *Draw background…*) |
 | Editing the background in Illustrator | *Background → Illustrator* writes a real .ai: the picture on a locked layer, the drawing as Illustrator objects, the panel's objects on a hidden reference layer (v1.34.0) |
-| Editing the background in the browser | *Background → Illustrator* → **Edit in VectorCraft** opens the panel in an open-source vector editor in a new tab; saving there updates the background, and the next edit reopens the same document (v1.35.0) |
-| Components from Illustrator | *▦ Library* in Draw mode reads the objects around a `.ai` file's artboard and places them as groups (v1.33.0) |
+| Components from Illustrator | **Komponenter**, in the editor's banner, opens the objects around a `.ai` file's artboard as a sheet to copy from (v1.33.0; in VectorCraft since v1.36.0) |
 | Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green when every object and container arrived and red when any did not, and says how many (since v1.31.1 the file's own warnings are listed but never colour it) |
 | Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
 | Not-a-panel-file / VV sketch file on **insert** | Blocked with an itemised error panel, canvas untouched |
@@ -912,7 +824,7 @@ system.
 
 The third button exports the **current panel's background image as a file Adobe Illustrator edits directly**. (The host hard-codes the manager sidebar to 900px; the script relaxes `#manager_div` to fit its content so the extra button never causes a sidebar scrollbar while the buttons stay the host's standard size. v1.3.3 capped that growth to the viewport, which turned out to clip the fieldset's bottom edge on shorter windows — since v1.5.2 there is no cap and `overflow` is forced visible. Since v1.5.4 a measured **compact mode** kicks in only when the column wouldn't fit the window — fieldset gaps 8→4px and slimmer paddings reclaim ~68px with the buttons untouched at 28px; tall windows keep the host's stock spacing, with hysteresis so the mode never flaps. And v1.5.5 found the *actual* constant clipper: the host also hard-codes the sidebar's parent `#master_wrapper` to 900px with `overflow:hidden`, which cut the last ~18px of the fieldset at **any** window size — it now grows with content exactly like `#manager_div`.)
 
-- **PNG/JPG background** → **Export Background** (v1.34.0) offers four deliveries, because **pixels contain no vectors**. It is drawn in VectorCraft's style (see below): one choice among cards, the chosen one's options under it, then Cancel and a blue Export. Enter exports, Esc cancels, and a double-click on a card exports that one.
+- **PNG/JPG background** → **Export Background** (v1.34.0) offers three deliveries, because **pixels contain no vectors**. It is drawn in VectorCraft's style (see below): one choice among cards, the chosen one's options under it, then Cancel and a blue Export. Enter exports, Esc cancels, and a double-click on a card exports that one.
   - **Illustrator document (.ai)** (v1.34.0; it replaces the v1.3.0 pixel-exact .ai). This is a real Illustrator document with layers, written as Illustrator's own editing data:
     - **Bakgrunn**, locked: the canvas colour and the picture, pixel-exact at panel size (1 px = 1 pt). When the background carries a Draw drawing, this is the picture *under* the drawing, so nothing shows twice.
     - **Tegning**: the Draw drawing (v1.32.0) as Illustrator objects. Paths keep their fill and stroke as one object. Boxes keep their rounded corners. Pipes keep their dashes, caps, joins and arrowheads. Labels become point text in Arial, and opacity is kept. Groups keep their names, library components (v1.33.0) included. With no drawing the layer is empty, ready to draw on.
@@ -929,7 +841,6 @@ The third button exports the **current panel's background image as a file Adobe 
     - a closed path repeating its first point;
     - the picture's rows bottom-up, with the alpha bytes after the colour;
     - no two objects sharing an id: one repeat and Illustrator refuses the whole file.
-  - **Edit in VectorCraft** (v1.35.0): the same layers, opened in a vector editor in a new browser tab, and the saved result taken straight back as the background. See [Edit in VectorCraft](#edit-in-vectorcraft-v1350) below.
   - **SVG — vector trace** (v1.4.0): the image is auto-traced to an **`.svg` of editable vector shapes** (vendored [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs), public domain — the script stays one self-contained file). Shapes, pills and pipe runs come out clean **in the drawing's own colours** (v1.5.1: the palette is built from the image's exact colours with a guaranteed slot for saturated ones — before that, flat schematics traced to grey because thin coloured lines never won a sampled palette slot); **small text becomes rough outlines** — retype labels in Illustrator (that limitation is inherent to tracing, Illustrator's own Image Trace included). Since v1.4.1 the trace runs **in a Web Worker**, so the browser stays fully responsive even on photo backgrounds that take minutes (measured: main thread answers in ~4 ms while tracing; ~1–2 s total for a 1400×750 schematic, ≈7–16 k paths depending on colours). The worker is built by lifting the tracer's own constructor source — no second copy of the library, and a main-thread fallback covers browsers that cannot start a worker at all (since v1.29.0 that is the *only* case it covers: a failure inside the worker is reported, not retried on the main thread, and a progress panel with a Cancel shows the stage the worker is at).
   - **Save the picture as-is** (v1.11.0, flatten v1.16.2): opaque pixels stay **byte-for-byte**; transparent holes are filled with `#main_image`'s CSS background-color so the file matches the designer (a transparent PNG otherwise renders those holes black in viewers). Same file the empty-canvas export path produces. This is what an AI asked to look at the panel and propose link positions actually wants; a trace or a PDF only makes the drawing harder for it to read.
 - **SVG background** (e.g. an AI-authored `image_svg` one) → the **`.svg` itself**, because it is already vector and Illustrator opens `.svg` natively (*File → Open*) with full editability — wrapping it in a PDF would rasterize exactly what you want to edit. The toast says so.
@@ -955,15 +866,22 @@ VectorCraft contributors). Its official web build runs entirely in the browser
 the Designer and that page, so a background can be edited as vectors without leaving the
 browser.
 
-**Opening.** *Background → Illustrator* → **Edit in VectorCraft** → *Export*. A new tab opens
+**Opening.** **Edit in VectorCraft…** on the sidebar (v1.36.0, in place of *Draw
+background…*; in v1.35.0 it was a choice under *Background → Illustrator*). A new tab opens
 the panel as a document with three layers:
 
 - **Bakgrunn**: the canvas colour and the picture, at panel size.
-- **Tegning**: the Draw drawing (v1.32.0) as editable shapes; empty when there is none.
+- **Tegning**: a drawing made in Draw (v1.32.0 to v1.35.0) as editable shapes; empty, ready
+  to draw on, when there is none.
 - **Panelobjekter**, hidden: every object on the panel as a dashed box with its label.
   Turn it on to see where the live values will sit.
 
-The first start downloads the editor (about 20 MB). After that the browser has it cached.
+A panel without a background opens as an empty canvas of its size. A background that cannot
+be read stops the edit with a message, so it is never replaced by an empty one. The first
+start downloads the editor (about 20 MB). After that the browser has it cached.
+
+The banner in the editor's tab also has **Komponenter**: the components of your Illustrator
+file, in a tab of their own to copy from. See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcraft-since-v1360).
 
 **Sending it back.** In VectorCraft, press **Ctrl+S** → Format **SVG** → OK → tick
 **Preserve Editing Capabilities** → OK. A banner in the editor's tab repeats this. The SVG
@@ -981,8 +899,8 @@ the Designer's own Save.
 **The next edit.** The PNG keeps the saved SVG, with VectorCraft's own document inside it,
 in a private chunk (`iwVc`) that viewers skip. *Edit in VectorCraft* on that background
 reopens exactly that document, with its layers and editable shapes, not a flattened picture.
-Suppose you draw over it in the Designer with *Draw background…*. That drawing then goes
-along as a layer of its own, *Tegning (Designer)*. Without *Preserve Editing Capabilities*
+A background drawn in Draw over a VectorCraft document (v1.35.0) brings that drawing along
+as a layer of its own, *Tegning (Designer)*. Without *Preserve Editing Capabilities*
 the next edit starts from the picture instead, and both tabs say so.
 
 **What it refuses, and why:**
@@ -990,7 +908,6 @@ the next edit starts from the picture instead, and both tabs say so.
 - **The wrong panel.** The Designer changes panels without reloading the page. A save that
   arrives while another panel is open is refused, in both tabs. Open the panel again, then
   save again in VectorCraft.
-- **Draw is open.** A save that arrives then is refused. Close Draw first.
 - **No Designer tab answers within 8 seconds.** The tab may have been closed, reloaded or
   discarded by the browser. The SVG then goes to **Downloads**, so no work is lost. Open
   *Edit in VectorCraft* again from the Designer to send work back.
@@ -1020,7 +937,7 @@ only inside that unmodified build, as its brand terms allow. This script's own d
 VectorCraft's colours but carries none of those marks. VectorCraft calls itself alpha.
 
 The kit's `tests/test-vectorcraft-bridge.js` holds the SVG the Designer sends, the sizing,
-the merge, the PNG chunk and the script header.
+the merge, the PNG chunk, the component sheet, the script header and the sidebar.
 
 ## AI-generated panels (Copilot)
 
