@@ -184,7 +184,8 @@ components of `2349_Maskin.ai` the file is about 3.5 MB and takes about a second
 Libraries in VectorCraft's web version last for that tab only, so every *Edit in VectorCraft…*
 brings them again. Nothing is uploaded.
 
-**Import .ai…**, in the banner of the editor's tab, reads a `.ai` file. Every visible object
+**Components from .ai…** (*Import .ai…* until v1.39.0), in the banner of the editor's tab,
+reads a `.ai` file. Every visible object
 lying wholly outside its artboard becomes a component. The new set replaces the one kept, and
 goes into Libraries at once.
 
@@ -898,8 +899,8 @@ A panel without a background opens as an empty canvas of its size. A background 
 be read stops the edit with a message, so it is never replaced by an empty one. The first
 start downloads the editor (about 20 MB). After that the browser has it cached.
 
-Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Import .ai…**
-in the banner reads another file's. See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcrafts-libraries-since-v1370).
+Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Components
+from .ai…** in the banner reads another file's. See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcrafts-libraries-since-v1370).
 The banner sits at the drawing's top left. It folds into a one-line tab 20 seconds after the
 panel opens, and again 12 seconds after each message. A click on its title folds or unfolds
 it, and after that it stays as you left it.
@@ -968,6 +969,22 @@ would be thousands of specks.
 
 A fully traced panel is thousands of paths. Often it is better to keep the picture, and trace
 or draw only what is to change.
+
+**The panel's own .ai as its background (v1.39.0).** Maskin artwork is drawn in Illustrator.
+When the panel's `.ai` is at hand, it is the exact vector version of the picture, and lighter
+than any trace. **Background from .ai…**, in the banner, opens it in the same VectorCraft as a
+document of its own. VectorCraft reads its artboard as vectors, with the text as outlines.
+Then:
+1. In that tab, **Ctrl+A** and **Ctrl+C**.
+2. In the panel's tab, click the **Bakgrunn** layer in Layers.
+3. **Ctrl+Shift+V** (Edit ▸ Paste in Place). It lands where it was on the artboard.
+4. Hide or delete the old picture, and save as usual.
+
+Measured with `2349_Maskin.ai`: 436 objects at X 705.595, Y 375, W 1388.809, H 750 in the
+.ai, and the same numbers after Paste in Place on the panel. That works because the panel's
+document and the .ai have the same artboard, 1400 × 750, one point to a pixel. A file whose
+artboard has another size lands where it was on its own artboard: scale it to fit. The file
+is only read in the browser; nothing is uploaded.
 
 When a VectorCraft tab was closed with unsaved changes, the next one asks to *Recover
 Documents*: choose *Discard* unless you want them back.

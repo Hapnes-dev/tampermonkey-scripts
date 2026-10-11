@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.38.0
+// @version      1.39.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.38.0';
+var IWDIE_VERSION = '1.39.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -7342,8 +7342,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!document.getElementById('iwdie-vcb-style')) {
         var css = [
           // the drawing's top left: clear of the Libraries panel on the right and of the dialogs' buttons
+          // and not selectable: Ctrl+A in VectorCraft would select its text as well (v1.39.0)
           '.iwdie-vcb{position:fixed;left:56px;top:76px;z-index:2147483647;width:340px;padding:12px 30px 12px 14px;box-sizing:border-box;background:#424242;',
-          '  border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#d1d1d1}',
+          '  border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#d1d1d1;-webkit-user-select:none;user-select:none}',
           '.iwdie-vcb b{color:#ffffff;font-weight:600}',
           '.iwdie-vcb .iwdie-vcb-t{font-weight:600;color:#ffffff;margin-bottom:4px;cursor:default;user-select:none}',
           '.iwdie-vcb .iwdie-vcb-t::before{content:"\\25BE";color:#b0b0b0;font-weight:400;margin-right:5px}',
@@ -7398,13 +7399,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         on: function (act, fn) { handlers[act] = fn; },
         /** Fold after `ms`, unless it has been folded or unfolded by hand. */
         later: later,
-        note: function (html, bad) {
+        /** News; `keep` (instructions) leaves the banner open until it is folded by hand. */
+        note: function (html, bad, keep) {
           var n = el.querySelector('.iwdie-vcb-n');
           n.className = 'iwdie-vcb-n ' + (bad ? 'iwdie-vcb-e' : 'iwdie-vcb-s');
           n.innerHTML = html;
           el.style.display = '';
           fold(false);
-          later(12000);
+          if (keep) { if (timer) clearTimeout(timer); timer = null; } else later(12000);
         }
       };
     }
@@ -7495,7 +7497,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         vcDropFile(svg.slice(0, pic.start) + r.url + svg.slice(pic.end), name, 'image/svg+xml', 'menu');
         say('A copy is open in a new tab here, <b>' + esc2(name) + '</b>, its picture ' + r.k + '× sharper in its ' + r.colors + ' own colours. ' +
           'Select the picture → <b>Image Trace ▾</b> → <b>16 Colors</b> → <b>Expand</b>, then save from that tab as usual. ' +
-          'Do it before you edit: the copy starts from the panel as it opened.');
+          'Do it before you edit: the copy starts from the panel as it opened.', false, true);
       }, function (e) { say('The picture could not be made ready: ' + esc2(String((e && e.message) || e)), true); });
     }
 
@@ -7519,7 +7521,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         'To send it back: <b>Ctrl+S</b> → Format <b>SVG</b> → OK → tick <b>Preserve Editing Capabilities</b> → OK. ' +
         'The panel’s background updates; keep editing and save again for more.<div class="iwdie-vcb-c"></div>',
         [{ act: 'trace', label: 'Ready for Image Trace', title: 'Open a copy whose picture is enlarged and set to its own flat colours, so Image Trace makes clean shapes of it' },
-          { act: 'import', label: 'Import .ai…', title: 'Read the components around an Illustrator file’s artboard into Libraries; they replace the ones kept' }]);
+          { act: 'aibg', label: 'Background from .ai…', title: 'Open the panel’s own Illustrator file here as a document of its own, to paste in place as the background' },
+          { act: 'import', label: 'Components from .ai…', title: 'Read the components around an Illustrator file’s artboard into Libraries; they replace the ones kept' }]);
       var note = ui.note;
       // what the components line says: where they are, or how to get them
       var comp = function (html, bad) {
@@ -7528,13 +7531,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         c.innerHTML = 'Komponenter: ' + html;
       };
       comp(lib ? iwdieN(lib.items.length, 'component', 'components') + ' from <b>' + esc2(lib.file || 'an Illustrator file') + '</b> - in Libraries once the editor has started.'
-        : 'none yet. <b>Import .ai…</b> reads the objects placed around an Illustrator file’s artboard - where Maskin files keep them - into VectorCraft’s Libraries.');
+        : 'none yet. <b>Components from .ai…</b> reads the objects placed around an Illustrator file’s artboard - where Maskin files keep them - into VectorCraft’s Libraries.');
       var input = document.createElement('input');
       input.type = 'file';
       input.accept = '.ai,.pdf,application/pdf,application/postscript,application/illustrator';
       input.style.display = 'none';
       ui.el.appendChild(input);
       ui.on('import', function () { if (!busy) input.click(); });
+      var aiInput = document.createElement('input');
+      aiInput.type = 'file';
+      aiInput.accept = '.ai,.pdf,.eps,application/pdf,application/postscript,application/illustrator';
+      aiInput.style.display = 'none';
+      ui.el.appendChild(aiInput);
+      ui.on('aibg', function () { aiInput.click(); });
+      aiInput.addEventListener('change', function () {
+        var f = aiInput.files && aiInput.files[0];
+        aiInput.value = '';
+        if (!f) return;
+        f.arrayBuffer().then(function (ab) {
+          vcWhenReady(function () {
+            // on the menu bar a file opens as a document; on the drawing it would be placed as art
+            try { vcDropFile(new Uint8Array(ab), String(f.name || 'background.ai'), f.type || 'application/pdf', 'menu'); }
+            catch (e) { note('<b>' + esc2(String(f.name || 'The file')) + '</b> could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
+            note('<b>' + esc2(String(f.name || 'The file')) + '</b> is open in a new tab here, its artboard as vectors. To make it this panel’s background: ' +
+              'there, <b>Ctrl+A</b> and <b>Ctrl+C</b>; back in the panel’s tab, click the <b>Bakgrunn</b> layer in Layers, then <b>Ctrl+Shift+V</b> ' +
+              '(Edit ▸ Paste in Place) - it lands where it was on the artboard. Hide or delete the old picture, then save as usual.', false, true);
+          }, note);
+        }, function (e) { note('<b>' + esc2(String(f.name || 'The file')) + '</b> could not be read: ' + esc2(String((e && e.message) || e)), true); });
+      });
       var sharpening = false;
       ui.on('trace', function () {
         if (sharpening) return;
