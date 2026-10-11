@@ -186,6 +186,7 @@ brings them again. Nothing is uploaded.
 
 **Open plant .ai…** (since v1.50.0; *Plant .ai…* in v1.49.0, *Components from .ai…* before,
 *Import .ai…* until v1.39.0), in the banner of the editor's tab, reads a `.ai` file - see *One button for the panel's .ai* below.
+Since v1.55.0 it only opens the file; the components row then offers to read its components.
 Every visible object
 lying wholly outside its artboard becomes a component. The new set replaces the one kept, and
 goes into Libraries at once.
@@ -1129,6 +1130,7 @@ to the Designer*, and then has a row for each thing there is:
 | Plant folder | the plant's folder by name - a link that opens it in Explorer - and its `.ai` files | where it lies in the plants' folder |
 | Components | *386 in Libraries (12 pages)* | what the components are, and how to use Libraries' pages |
 | IWMAC objects | *72 in the IWMAC menu* | how to place one, and what a sync does with it |
+| Drawing (v1.55.0) | *locked - only the IWMAC objects move · Unlock* | what is locked, and how to lock or unlock it |
 
 Under them are **Open plant .ai…** and the link *Image Trace copy*, then the news, kept short:
 *✓ Ready to sync*, *Sending…*, *✓ Synced 18:56 · 1 placed · 2 changed · 1 removed* (the name of
@@ -1253,7 +1255,7 @@ Tampermonkey's request answered as PANG answers:
 `pang://` is registered on the test PC, so the links were checked rather than clicked: there, a
 click opens Chrome's prompt, which a headless browser cannot show.
 
-**The .ai becomes the background by itself (v1.54.0).** Until now the `.ai` opened in a tab of its
+**The .ai becomes the background by itself (v1.54.0; replaced in v1.55.0, below).** Until now the `.ai` opened in a tab of its
 own, and making it the panel's background meant Ctrl+A and Ctrl+C there, then the layer *Bakgrunn*
 and Ctrl+Shift+V in the panel's tab, and its IWMAC objects were not in that tab. Now the script
 does it, both for the `.ai` chosen on the card and for **Open plant .ai…** in VectorCraft:
@@ -1297,6 +1299,76 @@ Measured in the stub host with `2349_Maskin.ai`:
   5 carried pieces went.
 - **Its labels.** They matched the file's own, as checked against the first run.
 
+**The .ai opens as it is, and the drawing is locked under the objects (v1.55.0).** Thomas asked
+for two things. Choosing an `.ai` should run no check of its vectors: it should open as
+VectorCraft's File › Open opens it, and then ask whether to add the IWMAC Designer's objects to
+it. And the background should not move, only what is on top of it. So, for the `.ai` chosen on
+the card and for **Open plant .ai…** alike:
+
+1. VectorCraft opens the file as a document, as its File › Open does. Nothing is read, saved,
+   converted or merged. Its components are not read either: the components row offers that,
+   *read them from 2349_Maskin.ai*.
+2. A question in VectorCraft's look: **Add the panel's 6 objects** (Enter) or **Just the
+   drawing** (Esc).
+3. Added, the file's drawing is locked (Select All, then Object › Lock › Selection), the objects
+   go on a new layer over it (*Layer 4* for 2349's three layers), and they are pasted in place,
+   where they are on the panel.
+
+The panel's own drawing opens the same way: the picture, a trace of it, or the VectorCraft
+drawing behind the background. It opens without its objects and is locked, and they are pasted
+in place on its layer *IWMAC-objekter*. A click or a drag on the drawing then moves nothing; only
+the objects move. The banner's new row, **Drawing**, says *locked - only the IWMAC objects move ·
+Unlock*. **Unlock** is VectorCraft's Object › Unlock All (Ctrl+Alt+2); Object › Lock › Selection
+(Ctrl+2) locks what is selected again.
+
+How the objects land where they were:
+
+- VectorCraft takes a paste whose text is SVG as art, centred on the view's centre, and pastes
+  it in place while Ctrl+Shift is held. The script sends such a paste event with the keys held,
+  after Fit Artboard in Window (Ctrl+0) has put the view's centre on the artboard's.
+- The SVG pasted holds a hidden frame, *IWMAC-ramme*, three artboards wide and centred on the
+  artboard, so the centre of what is pasted is the artboard's too.
+- On an `.ai` whose artboard is not the panel's size, the objects are scaled as the Designer
+  lays that drawing on the panel: evenly, centred. The artboard's size is read from the file's
+  own bytes (its first page's trim box).
+- On the panel's drawing they go into *IWMAC-objekter*, because a paste goes to the current
+  layer, and Select All makes the layer of the last object it selects the current one. That
+  layer is last, and holds a transparent 1 × 1 anchor, *IWMAC-anker*, which is locked with the
+  rest.
+
+**Open plant .ai…** takes the objects as the panel's drawing has them at that moment, saved for
+the script when Ctrl+S is ready. A placeholder moved there and not yet synced lands where it was
+moved to.
+
+A sync stays safe if a paste does not arrive:
+
+- The frame says the objects' layer is in the save. A drawing with the anchor but no frame never
+  got them: a sync then takes no object off the panel, and says *the drawing holds none of them*.
+- The save that makes Ctrl+S ready also shows whether the objects arrived. If they did not, the
+  banner offers to put them on again, or to open the panel with them, unlocked, as before. The
+  Drawing row keeps *Put them on* after a sync's news has replaced that offer, and a save checks
+  that they arrived the second time.
+- Neither helper stays in the panel's picture.
+
+**Just the drawing** syncs too: the drawing becomes the panel's background, and its objects stay
+as they are.
+
+Measured in the stub host with `2349_Maskin.ai` and six objects:
+
+- **From the card.** The file opened in 2.8 s and the question showed at 2.9 s; after **Add**,
+  the six placeholders were on *Layer 4* by 4.7 s. A drag on the background moved nothing. One
+  placeholder dragged 100 × 50 px moved its object by 146, 73 at the sync; the other five stayed
+  where they were, to the pixel.
+- **A traced panel.** It opened at 2.5 s with its objects on *IWMAC-objekter*, and Ctrl+S was
+  ready at 11.4 s. The sync after a drag moved one object; the frame and the anchor were in the
+  save.
+- **Open plant .ai… after that.** The `.ai` opened and Enter added the objects. The sync from it
+  changed nothing: the moved placeholder came along where it was.
+- **Just the drawing.** The sync held all six objects, and said why.
+- **A paste that does not arrive** (blocked in the stub). The save that made Ctrl+S ready showed
+  it; the sync held all six objects. *Put them on* in the Drawing row put them on, the check
+  found them, and the next sync left all six where they were.
+
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
 off. An object placed by a sync is known again at the next one too: moved, resized or deleted
@@ -1313,8 +1385,8 @@ and Ref came off with its dark pill. Compared with the original picture, only th
 places differ much; elsewhere the redrawn vectors differ by 1.2 on average (out of 765). A
 second edit put the three frames left back into their placeholders.
 
-Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Open plant
-.ai…** in the banner reads another file's. The Designer's own objects arrive there too, as
+Your components from Illustrator arrive in VectorCraft's **Libraries** panel; once **Open
+plant .ai…** has opened another file, the components row offers to read its own (v1.55.0). The Designer's own objects arrive there too, as
 **IWMAC-objekter** (v1.40.0), and have a menu of their own in the bar, **IWMAC** (v1.41.0,
 below). See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcrafts-libraries-since-v1370).
 The banner sits at the drawing's top left. It folds into a one-line tab 20 seconds after the
