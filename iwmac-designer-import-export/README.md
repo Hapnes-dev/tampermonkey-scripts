@@ -901,7 +901,8 @@ start downloads the editor (about 20 MB). After that the browser has it cached.
 
 Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Components
 from .ai…** in the banner reads another file's. The Designer's own objects arrive there too, as
-**IWMAC-objekter** (v1.40.0, below). See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcrafts-libraries-since-v1370).
+**IWMAC-objekter** (v1.40.0), and have a menu of their own in the bar, **IWMAC** (v1.41.0,
+below). See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcrafts-libraries-since-v1370).
 The banner sits at the drawing's top left. It folds into a one-line tab 20 seconds after the
 panel opens, and again 12 seconds after each message. A click on its title folds or unfolds
 it, and after that it stays as you left it.
@@ -994,7 +995,8 @@ its palette size, grouped by role (Headers, Labels, Values, Values with connecto
 The search field finds them by id: `fan`, `value_only`, `alarm`. A placeholder is a light,
 dashed box named `IWMAC <obj_id>`, with a short text where one fits.
 
-1. Drag one onto the drawing, where the object goes. Resize it if the object should be bigger.
+1. Drag one onto the drawing, where the object goes, or place it from the **IWMAC** menu
+   (below). Resize it if the object should be bigger.
 2. A label, header or tag shows a text of its own. Write it over *Label*, *Header* or *Tag*
    with the Type tool. On any other object, a text written over the default one becomes its
    tag text: JV401 on a fan.
@@ -1018,16 +1020,33 @@ placeholders, so the next edit opens what is left, as layers and paths. A hidden
 stays as it is and becomes nothing. Keep each placeholder a group with its name: the name is
 what makes it one.
 
-Why a library and not the **Object** menu: VectorCraft's menus take only plug-ins built for
-the app, and the hosted build stays unmodified. Nothing is kept on GitHub either. The library
-is made from the script's catalogue each time the editor opens, so it always matches the
-script.
+Nothing is kept on GitHub. The library and the menu are made from the script's catalogue each
+time the editor opens, so they always match the script.
 
 Measured in the hosted build: a fan, a value and a label were dragged from the library, and
 the fan's text was written over. The saved SVG named them, as in
 `<g id="IWMAC_V3_58px_fan_left_nrm" data-name="IWMAC V3_58px_fan_left_nrm">`. They became three
 objects at the placeholders' positions and sizes, the fan with its text as tag text. Saved
 again with the value moved, the other two were skipped.
+
+**The IWMAC menu (v1.41.0).** VectorCraft draws its own menus on its canvas, and they take
+nothing from outside: an item in the **Object** menu would mean changing the app, and the
+hosted build stays unmodified. So the objects have a menu of their own in the same bar,
+**IWMAC**, after *Help*, drawn in VectorCraft's own style.
+- Each role opens a submenu of its objects, with a preview, the description and the size.
+- The search field at the top finds objects by id, description or role: `fan`, `value tag 45`.
+  **Enter** takes the first one found.
+- Choose one, then click where it goes on the drawing. It lands centred there as one group
+  named `IWMAC <obj_id>`, selected, as one dragged from Libraries.
+- Hold **Shift** while clicking to place more of the same. **Esc** stops, and so does a click
+  off the drawing, which places nothing.
+- What is typed in the search stays out of VectorCraft's shortcuts, and the keyboard is
+  VectorCraft's again once something is placed.
+
+Measured in the hosted build: a fan found by the search, two values placed with Shift held, and
+a label from its submenu. The save named them `IWMAC_V3_58px_fan_left_nrm`,
+`IWMAC_number_v3_value_only`, `IWMAC_number_v3_value_only-2` and
+`IWMAC_number_v3_label_11px_norm`, and they became four objects where they were clicked.
 
 When a VectorCraft tab was closed with unsaved changes, the next one asks to *Recover
 Documents*: choose *Discard* unless you want them back.
@@ -1067,8 +1086,8 @@ VectorCraft's colours but carries none of those marks. VectorCraft calls itself 
 
 The kit's `tests/test-vectorcraft-bridge.js` holds the SVG the Designer sends, the sizing,
 the merge, the PNG chunk, the component library as a `.vclibrary`, the script header and the
-sidebar. It also holds the IWMAC objects: the library, the names, and the placeholders taken out
-and made into objects.
+sidebar. It also holds the IWMAC objects: the library, the names, the placeholders taken out
+and made into objects, and the menu's placeholder files and search.
 
 ## AI-generated panels (Copilot)
 

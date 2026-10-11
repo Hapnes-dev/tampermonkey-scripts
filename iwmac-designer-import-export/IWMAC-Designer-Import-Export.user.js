@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.40.0
+// @version      1.41.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.40.0';
+var IWDIE_VERSION = '1.41.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6409,30 +6409,58 @@ function iwdieVcObjectCaption(o) {
   return (whole.length >= (room - 1) * 0.6 ? whole : trim(cut)) + '…';
 }
 
-/** The placeholders as library items: a light box at the palette size, dashed in the blue the
- *  hidden layer of panel objects uses, with its text where one fits. */
+/** One catalogue object's placeholder as a library item: a light box at the palette size, dashed
+ *  in the blue the hidden layer of panel objects uses, with its text where one fits. */
+function iwdieVcObjectItem(o) {
+  var shapes = [{ t: 'd', d: 'M0 0 L' + o.w + ' 0 L' + o.w + ' ' + o.h + ' L0 ' + o.h + ' Z', rule: '',
+    st: { stroke: '#4f80ff', fill: '#eaf1ff', sw: 1, dash: false, arrow: false, da: [3, 2], op: 0.8 } }];
+  var caption = iwdieVcObjectCaption(o), size = iwdieVcObjectTextSize(o);
+  if (caption) {
+    shapes.push({ t: 'text', x: 3, y: Math.round((o.h + size * 0.7) / 2 * 100) / 100, text: caption, size: size,
+      st: { stroke: null, fill: '#2f5fbf', sw: 0, dash: false, arrow: false } });
+  }
+  return { name: IWDIE_VC_OBJ_PREFIX + o.id, layer: IWDIE_VC_OBJ_ROLES[o.role] || o.role, w: o.w, h: o.h, shapes: shapes };
+}
+
+/** The placeholders of the whole catalogue as library items, in its order. */
 function iwdieVcObjectItems() {
-  return iwdieVcObjectCatalog().map(function (o) {
-    var shapes = [{ t: 'd', d: 'M0 0 L' + o.w + ' 0 L' + o.w + ' ' + o.h + ' L0 ' + o.h + ' Z', rule: '',
-      st: { stroke: '#4f80ff', fill: '#eaf1ff', sw: 1, dash: false, arrow: false, da: [3, 2], op: 0.8 } }];
-    var caption = iwdieVcObjectCaption(o), size = iwdieVcObjectTextSize(o);
-    if (caption) {
-      shapes.push({ t: 'text', x: 3, y: Math.round((o.h + size * 0.7) / 2 * 100) / 100, text: caption, size: size,
-        st: { stroke: null, fill: '#2f5fbf', sw: 0, dash: false, arrow: false } });
-    }
-    return { name: IWDIE_VC_OBJ_PREFIX + o.id, layer: IWDIE_VC_OBJ_ROLES[o.role] || o.role, w: o.w, h: o.h, shapes: shapes };
+  return iwdieVcObjectCatalog().map(iwdieVcObjectItem);
+}
+
+/** One placeholder as an SVG file (v1.41.0), to be dropped on the drawing: VectorCraft places a
+ *  dropped SVG centred on the drop point, as one group named after the file. Its text is in
+ *  Source Sans 3, a font VectorCraft carries. */
+function iwdieVcObjectSvg(o) {
+  var it = iwdieVcObjectItem(o), f = iwdieDrawFmt;
+  var parts = it.shapes.map(function (s) {
+    if (s.t !== 'text') return iwdieDrawShapeSvg(s);
+    return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Source Sans 3" font-size="' + f(s.size) + '" fill="' + s.st.fill + '">' +
+      iwdieDrawEsc(s.text) + '</text>';
+  });
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="' + it.w + '" height="' + it.h + '" viewBox="0 0 ' + it.w + ' ' + it.h + '">' +
+    parts.join('') + '</svg>';
+}
+
+/** The catalogue's objects whose id, description or role holds every word of `query`, in the
+ *  catalogue's order (v1.41.0, the IWMAC menu's search). */
+function iwdieVcObjectSearch(query) {
+  var words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  return iwdieVcObjectCatalog().filter(function (o) {
+    var hay = (o.id + ' ' + o.desc + ' ' + o.role + ' ' + (IWDIE_VC_OBJ_ROLES[o.role] || '')).toLowerCase();
+    return words.every(function (w) { return hay.indexOf(w) >= 0; });
   });
 }
 
 /** The catalogue id a placeholder's name stands for - "IWMAC number_v3_value_only", or the id
  *  VectorCraft's SVG gives it: "IWMAC_number_v3_value_only", "-2" added for the second - or
- *  null for a name that is no placeholder. */
+ *  null for a name that is no placeholder. A file's extension, which a dropped file's name
+ *  brings, is no part of it. */
 function iwdieVcObjectId(name) {
   var m = /^IWMAC[ _]+(\S+)$/.exec(String(name || '').trim());
   if (!m) return null;
   var known = iwdieVcObjectIndex();
   if (known[m[1]]) return m[1];
-  var bare = m[1].replace(/-\d+$/, '');
+  var bare = m[1].replace(/-\d+$/, '').replace(/\.(svg|vectorcraft)$/i, '');
   return known[bare] ? bare : null;
 }
 
@@ -7606,13 +7634,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** Drop a file on the app, as one dragged from the desktop. On the drawing (`at` 'center') a
      *  fresh app opens a document as a document, and an open one places what it is given; on the
-     *  menu bar ('menu') a library file goes to Libraries, document or not. */
+     *  menu bar ('menu') a library file goes to Libraries, document or not. At a point of the
+     *  page (`at` {x, y}, v1.41.0), an open document places it centred there. */
     function vcDropFile(data, name, type, at) {
       var canvas = document.getElementById('vectorcraft_canvas');
       if (!canvas) throw new Error('the editor is not there');
-      var r = canvas.getBoundingClientRect(), dt = new W.DataTransfer();
+      var r = canvas.getBoundingClientRect(), dt = new W.DataTransfer(), point = at && typeof at === 'object';
       dt.items.add(new W.File([data], name, { type: type }));
-      var x = r.left + r.width / 2, y = at === 'menu' ? r.top + 12 : r.top + r.height / 2;
+      var x = point ? at.x : r.left + r.width / 2, y = point ? at.y : at === 'menu' ? r.top + 12 : r.top + r.height / 2;
       ['dragenter', 'dragover', 'drop'].forEach(function (t) {
         canvas.dispatchEvent(new W.DragEvent(t, { clientX: x, clientY: y, bubbles: true, cancelable: true, dataTransfer: dt }));
       });
@@ -7691,6 +7720,219 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }).then(null, function (e) { say('The components could not be added: ' + iwdieEscHtml(String((e && e.message) || e)), true); });
     }
 
+    /* ---------- the IWMAC menu (v1.41.0) ----------
+       VectorCraft draws its menus itself, on its canvas, and they take nothing from outside. So the
+       IWMAC objects have a menu of their own in the same bar, after Help: the roles, each with a
+       submenu of its objects, and a search. An object chosen there is placed where the next click
+       on the drawing lands, as a file dropped there: VectorCraft places a dropped SVG centred on the
+       drop point, as one group named after the file - "IWMAC <obj_id>", which makes it a
+       placeholder, as one dragged from Libraries. */
+    /** The IWMAC menu on the editor's page; `say(html, bad)` hears what went wrong. */
+    function vcObjectMenu(say) {
+      if (document.getElementById('iwdie-vcm')) return;
+      var esc2 = iwdieEscHtml, byId = iwdieVcObjectIndex(), roles = [], byRole = {};
+      iwdieVcObjectCatalog().forEach(function (o) {
+        if (!byRole[o.role]) { byRole[o.role] = []; roles.push(o.role); }
+        byRole[o.role].push(o);
+      });
+      var font = '"Source Sans 3","Segoe UI",Roboto,Arial,sans-serif';
+      var css = [
+        // the title in VectorCraft's bar, after Help, as its own titles are: 13 px, the bar's text colour, the hover fill
+        '.iwdie-vcm{position:fixed;left:419px;top:4px;height:24px;padding:0 6px;box-sizing:border-box;border-radius:3px;z-index:2147483646;',
+        '  font:400 13px/24px ' + font + ';color:#d1d1d1;cursor:default;-webkit-user-select:none;user-select:none}',
+        '.iwdie-vcm:hover,.iwdie-vcm.iwdie-on{background:#606060;color:#ffffff}',
+        // its menus as VectorCraft's: the panel colour, a 1 px border, 6 px corners and margin, the popup shadow
+        '.iwdie-vcm-m{position:fixed;z-index:2147483646;min-width:230px;max-height:calc(100vh - 40px);overflow-y:auto;padding:6px;box-sizing:border-box;',
+        '  background:#535353;border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);',
+        '  font:400 13px/1.326 ' + font + ';color:#d1d1d1;-webkit-user-select:none;user-select:none}',
+        '.iwdie-vcm-i{display:flex;align-items:center;gap:8px;height:24px;padding:0 6px;border-radius:3px;white-space:nowrap;cursor:default}',
+        '.iwdie-vcm-i:hover,.iwdie-vcm-i.iwdie-on{background:#606060;color:#ffffff}',
+        '.iwdie-vcm-l{flex:1}',
+        '.iwdie-vcm-k{color:#b0b0b0;font-size:11.5px}',
+        '.iwdie-vcm-i:hover .iwdie-vcm-k,.iwdie-vcm-i.iwdie-on .iwdie-vcm-k{color:#e4e4e4}',
+        '.iwdie-vcm-p{flex:none;width:30px;height:18px;display:flex;align-items:center;justify-content:center}',
+        '.iwdie-vcm-h{padding:2px 6px 4px;color:#b0b0b0;font-size:11px;line-height:1.4}',
+        '.iwdie-vcm-x{height:1px;background:#4b4b4b;margin:5px 0}',
+        '.iwdie-vcm-s{display:block;width:100%;height:26px;box-sizing:border-box;margin:0 0 6px;padding:0 7px;background:#454545;border:1px solid #5f5f5f;',
+        '  border-radius:2px;color:#ffffff;font:400 12.5px ' + font + ';outline:none}',
+        '.iwdie-vcm-s:focus{border-color:#378ef0}',
+        '.iwdie-vcm-s::placeholder{color:#b0b0b0}',
+        '.iwdie-vcm-n{padding:4px 6px;color:#b0b0b0}',
+        // while one is being placed: a note by the pointer
+        '.iwdie-vcm-t{position:fixed;z-index:2147483647;pointer-events:none;padding:4px 8px;background:#535353;border:1px solid #383838;border-radius:6px;',
+        '  box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12px ' + font + ';color:#d1d1d1;white-space:nowrap}',
+        '.iwdie-vcm-t b{color:#ffffff;font-weight:600}'
+      ].join('\n');
+      var st = document.createElement('style');
+      st.id = 'iwdie-vcm-style';
+      st.textContent = css;
+      (document.head || document.documentElement).appendChild(st);
+      var title = document.createElement('div');
+      title.id = 'iwdie-vcm';
+      title.className = 'iwdie-vcm';
+      title.textContent = 'IWMAC';
+      title.title = 'The IWMAC Designer’s objects, to place on the drawing';
+      document.body.appendChild(title);
+
+      var menu = null, sub = null, pending = null, placing = null, tag = null, downAt = null, swallow = false, pointer = { x: 0, y: 0 };
+      // a box in the object's proportions, as the placeholder looks
+      var preview = function (o) {
+        var k = Math.min(28 / o.w, 16 / o.h), w = Math.max(3, Math.round(o.w * k)), h = Math.max(3, Math.round(o.h * k));
+        return '<svg width="' + w + '" height="' + h + '"><rect x="0.5" y="0.5" width="' + (w - 1) + '" height="' + (h - 1) +
+          '" fill="#eaf1ff" stroke="#4f80ff" stroke-width="1" stroke-dasharray="2 1.5"/></svg>';
+      };
+      var objectRow = function (o) {
+        return '<div class="iwdie-vcm-i" data-id="' + esc2(o.id) + '" title="' + esc2(IWDIE_VC_OBJ_PREFIX + o.id) + '"><span class="iwdie-vcm-p">' + preview(o) + '</span>' +
+          '<span class="iwdie-vcm-l">' + esc2(o.desc || o.id) + '</span><span class="iwdie-vcm-k">' + o.w + ' × ' + o.h + '</span></div>';
+      };
+      var roleRow = function (r) {
+        return '<div class="iwdie-vcm-i" data-role="' + esc2(r) + '"><span class="iwdie-vcm-l">' + esc2(IWDIE_VC_OBJ_ROLES[r] || r) + '</span>' +
+          '<span class="iwdie-vcm-k">' + byRole[r].length + '</span><span class="iwdie-vcm-k">▸</span></div>';
+      };
+      var mine = function (t) { return !!(t && t.closest && t.closest('.iwdie-vcm,.iwdie-vcm-m,.iwdie-vcb')); };
+      // the drawing, as far as the page can tell: clear of the tool bar, the dock, the bars above and below
+      var inDrawing = function (x, y) {
+        var c = document.getElementById('vectorcraft_canvas'), r = c && c.getBoundingClientRect();
+        return !!r && x > r.left + 52 && x < r.right - 345 && y > r.top + 72 && y < r.bottom - 56;
+      };
+      var closeSub = function () {
+        if (sub) { sub.parentNode.removeChild(sub); sub = null; }
+        if (menu) Array.prototype.forEach.call(menu.querySelectorAll('.iwdie-vcm-i.iwdie-on'), function (r) { r.classList.remove('iwdie-on'); });
+      };
+      // the keyboard back to VectorCraft, which hears keys only while its canvas has the focus
+      var refocus = function () {
+        var c = document.getElementById('vectorcraft_canvas');
+        try { if (c && document.activeElement !== c) c.focus({ preventScroll: true }); } catch (e) {}
+      };
+      var close = function () {
+        clearTimeout(pending);
+        closeSub();
+        var had = !!menu && (menu.contains(document.activeElement) || document.activeElement === document.body);
+        if (menu) { menu.parentNode.removeChild(menu); menu = null; }
+        title.classList.remove('iwdie-on');
+        if (had) refocus();
+      };
+      var stop = function () {
+        placing = null; downAt = null;
+        if (tag) { tag.parentNode.removeChild(tag); tag = null; }
+      };
+      var follow = function () {
+        if (tag) { tag.style.left = (pointer.x + 16) + 'px'; tag.style.top = (pointer.y + 18) + 'px'; }
+      };
+      var choose = function (o) {
+        close();
+        stop();
+        placing = o;
+        tag = document.createElement('div');
+        tag.className = 'iwdie-vcm-t';
+        tag.innerHTML = '<b>' + esc2(o.desc || o.id) + '</b> ' + o.w + ' × ' + o.h + ' - click where it goes · Shift+click for more · Esc stops';
+        document.body.appendChild(tag);
+        follow();
+      };
+      var place = function (o, at) {
+        try { vcDropFile(iwdieVcObjectSvg(o), IWDIE_VC_OBJ_PREFIX + o.id, 'image/svg+xml', at); }
+        catch (e) { say('<b>' + esc2(o.desc || o.id) + '</b> could not be placed: ' + esc2(String((e && e.message) || e)), true); }
+        refocus();
+      };
+      var rowOf = function (e) { return e.target && e.target.closest ? e.target.closest('.iwdie-vcm-i') : null; };
+      var openSub = function (role, row) {
+        if (sub && sub.getAttribute('data-role') === role) return;
+        closeSub();
+        sub = document.createElement('div');
+        sub.className = 'iwdie-vcm-m';
+        sub.setAttribute('data-role', role);
+        sub.innerHTML = '<div class="iwdie-vcm-h">' + esc2(IWDIE_VC_OBJ_ROLES[role] || role) + '</div>' + byRole[role].map(objectRow).join('');
+        document.body.appendChild(sub);
+        var mr = menu.getBoundingClientRect(), rr = row.getBoundingClientRect();
+        sub.style.left = (mr.right - 2) + 'px';
+        sub.style.top = Math.max(4, Math.min(rr.top - 7, window.innerHeight - sub.offsetHeight - 4)) + 'px';
+        row.classList.add('iwdie-on');
+        sub.addEventListener('mouseover', function () { clearTimeout(pending); });
+        sub.addEventListener('click', function (e) { var r = rowOf(e); if (r && byId[r.getAttribute('data-id')]) choose(byId[r.getAttribute('data-id')]); });
+      };
+      var open = function () {
+        stop();
+        menu = document.createElement('div');
+        menu.className = 'iwdie-vcm-m';
+        menu.innerHTML = '<input class="iwdie-vcm-s" type="text" placeholder="Search: fan, value, alarm…" spellcheck="false" autocomplete="off">' +
+          '<div class="iwdie-vcm-list"></div><div class="iwdie-vcm-x"></div>' +
+          '<div class="iwdie-vcm-h">Choose one, then click where it goes on the drawing.<br>Saved back, each becomes that object in the panel.</div>';
+        var r = title.getBoundingClientRect();
+        menu.style.left = r.left + 'px';
+        menu.style.top = (r.bottom + 3) + 'px';
+        document.body.appendChild(menu);
+        title.classList.add('iwdie-on');
+        var input = menu.querySelector('.iwdie-vcm-s'), list = menu.querySelector('.iwdie-vcm-list');
+        var fill = function () {
+          var q = input.value.trim(), hits = q ? iwdieVcObjectSearch(q) : null;
+          closeSub();
+          list.innerHTML = !hits ? roles.map(roleRow).join('') : hits.length ? hits.map(objectRow).join('') : '<div class="iwdie-vcm-n">No IWMAC object matches.</div>';
+        };
+        fill();
+        // what is typed here is the search's, not VectorCraft's shortcuts'
+        ['keydown', 'keyup', 'keypress', 'input', 'paste', 'copy', 'cut'].forEach(function (t) {
+          input.addEventListener(t, function (e) { e.stopPropagation(); });
+        });
+        input.addEventListener('input', fill);
+        input.addEventListener('keydown', function (e) {
+          if (e.key !== 'Enter') return;
+          var first = list.querySelector('[data-id]');
+          if (first) choose(byId[first.getAttribute('data-id')]);
+        });
+        menu.addEventListener('mouseover', function (e) {
+          var row = rowOf(e);
+          if (!row) return;
+          clearTimeout(pending);
+          // with a submenu open, a moment's grace: the pointer may only be crossing this row on its way there
+          pending = setTimeout(function () {
+            if (!menu) return;
+            if (row.getAttribute('data-role')) openSub(row.getAttribute('data-role'), row); else closeSub();
+          }, sub ? 150 : 0);
+        });
+        menu.addEventListener('click', function (e) {
+          var row = rowOf(e);
+          if (!row) return;
+          if (row.getAttribute('data-role')) openSub(row.getAttribute('data-role'), row);
+          else if (byId[row.getAttribute('data-id')]) choose(byId[row.getAttribute('data-id')]);
+        });
+        setTimeout(function () { try { input.focus(); } catch (e) {} }, 0);
+      };
+      title.addEventListener('pointerdown', function (e) { e.preventDefault(); });
+      title.addEventListener('click', function () { if (menu) close(); else open(); });
+
+      window.addEventListener('pointermove', function (e) { pointer = { x: e.clientX, y: e.clientY }; follow(); }, true);
+      // Placing: the press on the drawing is this script's, not VectorCraft's - all of the click is
+      // kept from it - and the object is dropped where the press was. Anywhere else it stops.
+      ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick'].forEach(function (type) {
+        window.addEventListener(type, function (e) {
+          if (type === 'pointerdown') {
+            if (menu && !mine(e.target)) close();
+            swallow = false;
+            if (!placing || mine(e.target)) return;
+            if (e.button !== 0 || !inDrawing(e.clientX, e.clientY)) { stop(); return; }
+            swallow = true;
+            downAt = { x: e.clientX, y: e.clientY };
+          }
+          if (!swallow) return;
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (type === 'pointerup' && placing && downAt) {
+            var o = placing, at = downAt;
+            downAt = null;
+            if (!e.shiftKey) stop();
+            place(o, at);
+          }
+          if (type === 'click') swallow = false;
+        }, true);
+      });
+      window.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape' || (!placing && !menu)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (placing) stop(); else close();
+      }, true);
+    }
+
     function vcAppSide() {
       if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') return;
       var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null;
@@ -7719,7 +7961,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         o.className = 'iwdie-vcb-o' + (bad ? ' iwdie-vcb-e' : '');
         o.innerHTML = 'IWMAC objects: ' + html;
       };
-      objLine(iwdieN(objItems.length, 'kind', 'kinds') + ' - in Libraries as “' + esc2(IWDIE_VC_OBJ_LIBRARY) + '” once the editor has started.');
+      objLine(iwdieN(objItems.length, 'kind', 'kinds') + ' - in the <b>IWMAC</b> menu up top, and in Libraries, once the editor has started.');
       var input = document.createElement('input');
       input.type = 'file';
       input.accept = '.ai,.pdf,application/pdf,application/postscript,application/illustrator';
@@ -7867,6 +8109,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         try { vcDropFile(job.svg, job.name || 'panel.svg', 'image/svg+xml', 'center'); }
         catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
         ui.later(20000);
+        try { vcObjectMenu(note); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
         (libText ? libText.then(function (text) {
           return pause(1200).then(function () {
             vcDropFile(text, 'Komponenter.vclibrary', 'application/json', 'menu');
@@ -7877,8 +8120,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return objText.then(function (text) {
             return pause(1200).then(function () {
               vcDropFile(text, 'IWMAC-objekter.vclibrary', 'application/json', 'menu');
-              objLine('<b>' + iwdieN(objItems.length, 'kind', 'kinds') + '</b> in <b>Libraries</b>, as “' + esc2(IWDIE_VC_OBJ_LIBRARY) + '”: ' +
-                'drag one where it goes, size it, write its text (JV401) over the one it has. Saved back, each becomes that object in the panel.');
+              objLine('<b>' + iwdieN(objItems.length, 'kind', 'kinds') + '</b>: the <b>IWMAC</b> menu up top - choose one, click where it goes - or ' +
+                '<b>Libraries</b>, “' + esc2(IWDIE_VC_OBJ_LIBRARY) + '”. Size it, write its text (JV401) over the one it has. Saved back, each becomes that object in the panel.');
             });
           }).then(null, failed(objLine, 'The IWMAC objects'));
         });
@@ -7976,8 +8219,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           tone: 'good', title: 'Opening in VectorCraft',
           lines: [what + ' - in a new tab.',
             'Save there with Ctrl+S → Format SVG → OK → tick Preserve Editing Capabilities → OK: the picture comes straight back to this background.',
-            'Its Libraries panel has the Designer’s own objects as “' + IWDIE_VC_OBJ_LIBRARY + '”: placed and saved back, each becomes that object here. ' +
-              'Your components from Illustrator are there too, once read.'],
+            'The Designer’s own objects are in its IWMAC menu, after Help, and in its Libraries panel: placed and saved back, each becomes that object here. ' +
+              'Your components from Illustrator are in Libraries too, once read.'],
           footer: 'Nothing leaves the browser. The first start downloads the editor (about 20 MB); after that it is cached.'
         });
       }).then(null, function (e) {
@@ -9763,6 +10006,9 @@ if (typeof module !== 'undefined' && module.exports) {
     vcObjectCatalog: iwdieVcObjectCatalog,
     vcObjectCaption: iwdieVcObjectCaption,
     vcObjectItems: iwdieVcObjectItems,
+    vcObjectItem: iwdieVcObjectItem,
+    vcObjectSvg: iwdieVcObjectSvg,
+    vcObjectSearch: iwdieVcObjectSearch,
     vcObjectId: iwdieVcObjectId,
     vcDesignerObjects: iwdieVcDesignerObjects,
     vcTakePlaceholders: iwdieVcTakePlaceholders,
