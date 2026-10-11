@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.34.0
+// @version      1.34.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.34.0';
+var IWDIE_VERSION = '1.34.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6281,6 +6281,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-draw-lib{position:fixed;left:8px;top:120px;bottom:8px;width:284px;z-index:2147483647;background:#fff;border:1px solid #c9d1d9;border-radius:8px;',
       '  box-shadow:0 6px 24px rgba(0,0,0,.3);display:flex;flex-direction:column;font:12.5px/1.4 Roboto,Arial,sans-serif;color:#222;box-sizing:border-box}',
       '.iwdie-draw-lib[hidden]{display:none}',
+      '.iwdie-draw-lib.iwdie-drop{box-shadow:0 0 0 3px #2f6fb2,0 6px 24px rgba(0,0,0,.3);background:#eef4fa}',
       '.iwdie-draw-lib-head{display:flex;align-items:center;gap:6px;padding:8px 8px 4px 10px}',
       '.iwdie-draw-lib-head b{flex:0 0 auto}',
       '.iwdie-draw-lib-count{flex:1 1 auto;color:#5a6570;font-size:12px}',
@@ -8222,6 +8223,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         doc.addEventListener('pointercancel', function (ev) { drawPointerUp(proxy(ev)); });
         doc.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
         doc.addEventListener('wheel', drawForwardWheel, { passive: true });
+        doc.addEventListener('dragover', function (ev) { if (drawHasFiles(ev)) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; } });
+        doc.addEventListener('drop', function (ev) {
+          if (!drawHasFiles(ev)) return;
+          ev.preventDefault();
+          var f = ev.dataTransfer.files && ev.dataTransfer.files[0];
+          if (f && draw) { drawLibToggle(true); drawLibImport(f); }
+        });
         win.addEventListener('mouseout', function (ev) {
           if (!ev.relatedTarget && draw && draw.live && draw.live.kind === 'stamp') { draw.live = null; drawRenderLive(); }
         });
@@ -8352,7 +8360,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '<div class="iwdie-draw-lib" hidden>',
         '  <div class="iwdie-draw-lib-head"><b>Library</b><span class="iwdie-draw-lib-count"></span>' +
         '<button data-lib="close" title="Close the library">×</button></div>',
-        '  <div class="iwdie-draw-lib-tools"><button data-lib="import" title="Read the objects placed around the artboard of an Illustrator file">Import .ai…</button>' +
+        '  <div class="iwdie-draw-lib-tools"><button data-lib="import" title="Read the objects placed around the artboard of an Illustrator file - or drop the file on this panel">Import .ai…</button>' +
         '<input type="search" data-lib="search" placeholder="Search" spellcheck="false"></div>',
         '  <div class="iwdie-draw-lib-status"></div>',
         '  <div class="iwdie-draw-lib-list"></div>',
@@ -8431,6 +8439,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (f) drawLibImport(f);
       });
       lib.querySelector('[data-lib="search"]').addEventListener('input', function (ev) { drawLibRender(ev.target.value); });
+      // A dropped .ai imports like Import .ai… does (v1.34.1). It is also the way in when a
+      // remote driver attached to the tab - a test harness - takes the file picker over.
+      lib.addEventListener('dragover', function (ev) {
+        if (!draw || !drawHasFiles(ev)) return;
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = 'copy';
+        lib.classList.add('iwdie-drop');
+      });
+      lib.addEventListener('dragleave', function (ev) { if (!ev.relatedTarget || !lib.contains(ev.relatedTarget)) lib.classList.remove('iwdie-drop'); });
+      lib.addEventListener('drop', function (ev) {
+        lib.classList.remove('iwdie-drop');
+        var f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+        if (!f || !draw) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        drawLibImport(f);
+      });
+      // a file let go over the shade or the bar must not replace the Designer with itself
+      ['dragover', 'drop'].forEach(function (t) {
+        ui.addEventListener(t, function (ev) { if (drawHasFiles(ev)) ev.preventDefault(); });
+      });
       ti.addEventListener('blur', function () { if (draw && draw.textEdit) drawCommitText(); });
     }
 
@@ -9427,8 +9456,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var lib = drawLibLoad(), list = d.lib.querySelector('.iwdie-draw-lib-list');
       d.lib.querySelector('.iwdie-draw-lib-count').textContent = lib ? iwdieN(lib.items.length, 'component', 'components') : '';
       if (!lib) {
-        list.innerHTML = '<div class="iwdie-draw-lib-empty">Import an Illustrator file (.ai) and the objects placed around its artboard become components here. ' +
-          'Click one, then click the drawing to place it.<br><br>The file stays on this computer; the components are kept in this browser.</div>';
+        list.innerHTML = '<div class="iwdie-draw-lib-empty">Import an Illustrator file (.ai) - or drop it on this panel - and the objects placed around its artboard ' +
+          'become components here. Click one, then click the drawing to place it.<br><br>The file stays on this computer; the components are kept in this browser.</div>';
         return;
       }
       var q = String(query || '').trim().toLowerCase(), groups = [], byName = {};
@@ -9496,6 +9525,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // a component keeps its library name, which the .ai export hands on to Illustrator
       if (one && one.t === 'group' && !one.name && s.item.name) one = { t: 'group', name: s.item.name, items: one.items };
       drawAdd(one || { t: 'group', name: s.item.name, items: shapes });
+    }
+
+    /** Whether a drag carries files (not text or a link from the page). */
+    function drawHasFiles(ev) {
+      var types = ev && ev.dataTransfer && ev.dataTransfer.types;
+      if (!types) return false;
+      for (var i = 0; i < types.length; i++) if (types[i] === 'Files') return true;
+      return false;
     }
 
     function drawNextFrame() {

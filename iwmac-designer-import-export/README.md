@@ -243,6 +243,12 @@ object lying wholly outside its artboard becomes a component there. Components a
 their Illustrator layer and carry their Illustrator name where they have one, their size where
 they do not.
 
+Since v1.34.1 a `.ai` dropped on the library panel imports the same way, and so does one dropped
+on the canvas (the panel opens for it). That is also the way in when a remote driver attached
+to the tab takes the file picker over. Playwright MCP does this: while it is connected, *Import
+.ai…* opens a picker only it can see. A file dropped anywhere else while Draw is open is caught,
+so it can no longer replace the Designer in the tab.
+
 Click a component, and every click on the drawing places it, centred where you click and on
 the grid when the grid is on. Esc or V stops. A placed component is a group: it moves and
 resizes as one and keeps its own colours. **Ungroup** (Ctrl+Shift+G) turns it back into its
