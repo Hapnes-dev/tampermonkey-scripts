@@ -1,6 +1,6 @@
 # IWMAC Designer Import/Export
 
-Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four stacked buttons — **Export JSON**, **Insert JSON…**, **Edit in VectorCraft…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, the background artwork can be edited as vectors in a browser editor, and it can be handed to Adobe Illustrator for editing. The designer itself has no way to do any of these; this script adds them.
+Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with five stacked buttons — **Export JSON**, **Insert JSON…**, **Edit in VectorCraft…**, **Open plant folder**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, the background artwork can be edited as vectors in a browser editor, the plant's folder opened in Explorer, and it can be handed to Adobe Illustrator for editing. The designer itself has no way to do any of these; this script adds them.
 
 Runs on `http(s)://legacy.iwmac.local/iwmac_designer_v4/?plant_id=<id>` ("IWMAC Designer V5"). Since v1.35.0 it also runs on the hosted vector editor, `https://hapnes-dev.github.io/iwmac-vector/app/`, for [Edit in VectorCraft](#edit-in-vectorcraft-v1350); Tampermonkey asks once to allow that, and Tampermonkey's storage, when it updates.
 
@@ -184,8 +184,8 @@ components of `2349_Maskin.ai` the file is about 3.5 MB and takes about a second
 Libraries in VectorCraft's web version last for that tab only, so every *Edit in VectorCraft…*
 brings them again. Nothing is uploaded.
 
-**Plant .ai…** (since v1.49.0; *Components from .ai…* before, *Import .ai…* until v1.39.0), in
-the banner of the editor's tab, reads a `.ai` file - see *One button for the panel's .ai* below.
+**Open plant .ai…** (since v1.50.0; *Plant .ai…* in v1.49.0, *Components from .ai…* before,
+*Import .ai…* until v1.39.0), in the banner of the editor's tab, reads a `.ai` file - see *One button for the panel's .ai* below.
 Every visible object
 lying wholly outside its artboard becomes a component. The new set replaces the one kept, and
 goes into Libraries at once.
@@ -842,7 +842,7 @@ system.
 
 ## Background → Illustrator (v1.3.0)
 
-The third button exports the **current panel's background image as a file Adobe Illustrator edits directly**. (The host hard-codes the manager sidebar to 900px; the script relaxes `#manager_div` to fit its content so the extra button never causes a sidebar scrollbar while the buttons stay the host's standard size. v1.3.3 capped that growth to the viewport, which turned out to clip the fieldset's bottom edge on shorter windows — since v1.5.2 there is no cap and `overflow` is forced visible. Since v1.5.4 a measured **compact mode** kicks in only when the column wouldn't fit the window — fieldset gaps 8→4px and slimmer paddings reclaim ~68px with the buttons untouched at 28px; tall windows keep the host's stock spacing, with hysteresis so the mode never flaps. And v1.5.5 found the *actual* constant clipper: the host also hard-codes the sidebar's parent `#master_wrapper` to 900px with `overflow:hidden`, which cut the last ~18px of the fieldset at **any** window size — it now grows with content exactly like `#manager_div`.)
+**Background → Illustrator**, the last button, exports the **current panel's background image as a file Adobe Illustrator edits directly**. (The host hard-codes the manager sidebar to 900px; the script relaxes `#manager_div` to fit its content so the extra button never causes a sidebar scrollbar while the buttons stay the host's standard size. v1.3.3 capped that growth to the viewport, which turned out to clip the fieldset's bottom edge on shorter windows — since v1.5.2 there is no cap and `overflow` is forced visible. Since v1.5.4 a measured **compact mode** kicks in only when the column wouldn't fit the window — fieldset gaps 8→4px and slimmer paddings reclaim ~68px with the buttons untouched at 28px; tall windows keep the host's stock spacing, with hysteresis so the mode never flaps. And v1.5.5 found the *actual* constant clipper: the host also hard-codes the sidebar's parent `#master_wrapper` to 900px with `overflow:hidden`, which cut the last ~18px of the fieldset at **any** window size — it now grows with content exactly like `#manager_div`.)
 
 - **PNG/JPG background** → **Export Background** (v1.34.0) offers three deliveries, because **pixels contain no vectors**. It is drawn in VectorCraft's style (see below): one choice among cards, the chosen one's options under it, then Cancel and a blue Export. Enter exports, Esc cancels, and a double-click on a card exports that one.
   - **Illustrator document (.ai)** (v1.34.0; it replaces the v1.3.0 pixel-exact .ai). This is a real Illustrator document with layers, written as Illustrator's own editing data:
@@ -1087,36 +1087,72 @@ moving the background in VectorCraft shows no black.
 **One button for the panel's .ai, and the plant's folder (v1.49.0).** The editor's banner had
 three buttons: *Ready for Image Trace*, *Background from .ai…* and *Components from .ai…*. Both
 .ai buttons asked for the same file, the panel's own Illustrator file (`2349_Maskin.ai`). Now
-there is one, **Plant .ai…**. One file does both: its components go to Libraries, replacing
-those kept, and its artboard opens in a new tab as vectors, to paste in place as the
-background. The sharpened copy for Image Trace is a link under the rest.
+there is one, **Open plant .ai…** (*Plant .ai…* in v1.49.0). One file does both: its components
+go to Libraries, replacing those kept, and its artboard opens in a new tab as vectors, to paste
+in place as the background. The sharpened copy for Image Trace is a link beside it, *Image Trace
+copy*.
 
 And the file need not be looked for. Every plant has a folder of its own on the plants' share,
 its name beginning with the plant's number (*2349 …*). Chrome lets an https page read a folder
 the user picks (the File System Access API), so in the editor's tab:
-- **Connect the plants' folder…**, once: pick the folder that holds every plant's own folder.
+- **Connect…** (*Connect the plants' folder…* in v1.49.0), once: pick the folder that holds
+  every plant's own folder.
   It is kept in the editor site's storage; the browser asks again once a session (**Allow
   reading …**).
-- The plant's own folder is found in it by the plant's number, and shown in the banner with its
-  `.ai` files (three folders deep). The names of the plants' folders are kept for half a day, so
-  that is quick after the first time; **Read again** reads them now.
-- **Plant .ai…** then takes the panel's file by itself: the one named after the panel - the
+- The plant's own folder is found in it by the plant's number - since v1.50.0 also in the
+  grouping folder whose number range holds it, as the share keeps them - and shown in the banner
+  with its `.ai` files (three folders deep). The names of the plants' folders are kept for half a
+  day, so that is quick after the first time; a plant not among them has them read again.
+- **Open plant .ai…** then reads the plant's `.ai` files again and takes the panel's by itself: the one named after the panel - the
   words of its name, so *2313_Ventilasjon.ai* for *360.002 Ventilasjon* - that is not in an old
   or archived folder or named as a copy. When that is not clear, it lists the plant's `.ai`
   files, newest first, with **Another file…** under them. Without a connected folder, it asks
   for the file as before.
-- **Give the path of the plants' folder…** (once) lets **Copy its path** copy the plant
-  folder's full path for Explorer's address bar. A browser cannot see a picked folder's path,
-  so it is given by hand.
+- In v1.49.0, **Give the path of the plants' folder…** let **Copy its path** copy the plant
+  folder's full path for Explorer's address bar, as a browser cannot see a picked folder's path.
+  Since v1.50.0 the folder's name in the banner opens it in Explorer instead (below).
 
-Nothing about the share is in the script: its name and folders come from what is picked, and
-the path only as given. The Designer's own page cannot do this (it is http, and Chrome lets only
+Nothing about the share is in the script: its name and folders come from what is picked. The Designer's own page cannot do this (it is http, and Chrome lets only
 an https page read folders), so it lives in the editor's tab. Measured in the stub host with a
 plants' folder made in the editor site's own file system (`2313 Test anlegg` with
 `Tegninger/2313_Ventilasjon.ai` and an archived copy, beside two other plants'): the banner showed
 *2313 Test anlegg · 2 .ai files*, and **Plant .ai…** took `2313_Ventilasjon.ai` by itself. Its
 386 components went to Libraries in 12 pages, and its artboard opened as a document. Not yet
 tried on the real share.
+
+**A banner that reads at a glance, and the plant's folder in Explorer (v1.50.0).** The banner
+had grown into paragraphs. Now it says what to do in one line, *Ctrl+S → Enter syncs the drawing
+to the Designer*, and then has a row for each thing there is:
+
+| Row | Says | On hover |
+|---|---|---|
+| Plant folder | the plant's folder by name - a link that opens it in Explorer - and its `.ai` files | where it lies in the plants' folder |
+| Components | *386 in Libraries (12 pages)* | what the components are, and how to use Libraries' pages |
+| IWMAC objects | *72 in the IWMAC menu* | how to place one, and what a sync does with it |
+
+Under them are **Open plant .ai…** and the link *Image Trace copy*, then the news, kept short:
+*✓ Ready to sync*, *Sending…*, *✓ Synced 18:56 · 1 placed · 2 changed · 1 removed* (the name of
+the PNG uploaded on hover), and anything that went wrong, a line each, in red.
+
+**Explorer** comes from Anleggsmappe, the team's plant-folder tool, which registers links of
+the form `anlegg://<plant number>`: such a link opens that plant's folder, found from the number
+alone. The folder's name in the banner is one (*Open in Explorer* before the plants' folder is
+connected), and so is **Open plant folder** on the Designer's sidebar. The script passes the
+plant's number on and knows nothing else of the share. Followed by the page itself, such a link
+fires the page's `beforeunload`, so the Designer's or VectorCraft's *Leave site?* could ask,
+though the page stays; it is followed in a hidden frame instead. Measured in Chromium:
+`beforeunload` fired at every click from the page, and at none from the frame, while the link
+was still launched. The browser asks once whether to open such links: tick **Always allow**.
+Without Anleggsmappe's links on the PC, nothing happens.
+
+On the share, plant folders lie in grouping folders named by number range (`2300-2349`,
+`6800-6849 SWE`), and v1.49.0 looked only directly in the plants' folder, so it found none
+there. Now it also looks in the ranges that hold the plant's number. Up to three folders of one
+number are read: the first is shown, the others counted (*+1*, named on hover), and their `.ai`
+files are offered together. Measured in the stub host on a plants' folder laid out like the
+share, whose folder names had been kept from before its grouping folders existed: they were read
+again; *2300-2349 › 2313 COOP EXTRA Sveio* was found, with a second folder of that number in
+*2300-2349 SWE*; and **Open plant .ai…** took `2313_Ventilasjon.ai` by itself.
 
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
@@ -1134,8 +1170,8 @@ and Ref came off with its dark pill. Compared with the original picture, only th
 places differ much; elsewhere the redrawn vectors differ by 1.2 on average (out of 765). A
 second edit put the three frames left back into their placeholders.
 
-Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Components
-from .ai…** in the banner reads another file's. The Designer's own objects arrive there too, as
+Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Open plant
+.ai…** in the banner reads another file's. The Designer's own objects arrive there too, as
 **IWMAC-objekter** (v1.40.0), and have a menu of their own in the bar, **IWMAC** (v1.41.0,
 below). See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcrafts-libraries-since-v1370).
 The banner sits at the drawing's top left. It folds into a one-line tab 20 seconds after the
@@ -1146,12 +1182,12 @@ it, and after that it stays as you left it.
 Designer**; **Enter** takes it. The drawing goes to the Designer tab the edit started from,
 which draws it at panel size and makes it the background through the host's own
 `iw_set_base_image`. **Save a file…**, the other choice, is VectorCraft's own Save As, to
-Downloads. The banner then reports one of these:
+Downloads. The banner then reports one of these (shorter since v1.50.0):
 
-- *Received by the Designer - updating the panel…*;
-- *✓ The panel's background was updated at 09:44*, with the number of IWMAC objects placed
-  (v1.40.0) and the name the PNG was uploaded under (v1.42.0);
-- *Not applied:* and the reason.
+- *Updating the panel…*;
+- *✓ Synced 09:44*, with how many IWMAC objects were placed, changed and removed, and on hover
+  the name the PNG was uploaded under (v1.42.0);
+- *Not synced:* and the reason.
 
 Keep editing and sync as often as you like. The panel itself is not saved until you use the
 Designer's own Save.
@@ -1162,7 +1198,7 @@ VectorCraft offers no way in other than its own Save, so the sync uses it:
 - **Ctrl+S is made ready when the panel opens (v1.46.0).** VectorCraft's first save of a
   document is its Save As, so the script answers that once, right after the panel and the
   libraries are in, while the tab is in front. That save stays in the tab and goes nowhere.
-  The banner then says *Ready*. Every sync after that is VectorCraft's own Save, without a
+  The banner then says *✓ Ready to sync*. Every sync after that is VectorCraft's own Save, without a
   dialog: Ctrl+S, Enter, and the Designer has it, measured at 0.2 seconds. While it is being
   made ready (about 3 seconds), keys typed are held back from VectorCraft's dialog.
 - When it could not be made ready, the first sync answers the Save As instead, as you would by
@@ -1217,8 +1253,9 @@ anti-aliased edges become slivers. Measured on a Maskin panel (1400 × 750):
 | enlarged 3×, VectorCraft's Automatic palette | 99,298 paths: it no longer sees flat art |
 | **enlarged 3× and set to the picture's own 12 flat colours, 16 Colors** | **the right colours, the labels whole, 6,155 paths** |
 
-*A copy with the picture sharpened* (a link in the banner of the editor's tab since v1.49.0;
-the button **Ready for Image Trace** before) makes that last kind:
+*Image Trace copy* (a link in the banner of the editor's tab, so named since v1.50.0: *A copy
+with the picture sharpened* in v1.49.0, the button **Ready for Image Trace** before) makes that
+last kind:
 - It enlarges the picture three times (less for a big one: at most 12 million pixels).
 - It sets every pixel to the picture's own flat colours. Those are its exact colours that
   cover at least 0.02 % of it, with near-twins merged. The in-between shades of anti-aliased
@@ -1245,7 +1282,7 @@ or draw only what is to change.
 
 **The panel's own .ai as its background (v1.39.0).** Maskin artwork is drawn in Illustrator.
 When the panel's `.ai` is at hand, it is the exact vector version of the picture, and lighter
-than any trace. **Plant .ai…** (**Background from .ai…** before v1.49.0), in the banner, opens it
+than any trace. **Open plant .ai…** (**Plant .ai…** in v1.49.0, **Background from .ai…** before), in the banner, opens it
 in the same VectorCraft as a document of its own. VectorCraft reads its artboard as vectors, with the text as outlines.
 Then:
 1. In that tab, **Ctrl+A** and **Ctrl+C**.
