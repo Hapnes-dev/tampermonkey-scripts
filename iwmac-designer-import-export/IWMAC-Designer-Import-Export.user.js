@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.46.0
+// @version      1.46.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.46.0';
+var IWDIE_VERSION = '1.46.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6776,11 +6776,12 @@ function iwdieVcAddPanelObjects(svg, objects, looks) {
  *  it was, `at`) changes that object when it was moved, resized or given another text (by more than
  *  a pixel); every other placeholder becomes a new object (iwdieVcDesignerObjects). The objects
  *  sent as placeholders (`sent`: their names) whose placeholder came back as none are left on the
- *  panel, and named. `existing`: the panel's objects now.
- *  -> {moves: [{name, obj_id, x, y, w, h, text, was: {x, y, w, h, text}}], fresh: [found...], same, missing: [name...]} */
+ *  panel, and named. A placeholder of an object no longer on the panel (v1.46.1) places nothing.
+ *  `existing`: the panel's objects now.
+ *  -> {moves: [{name, obj_id, x, y, w, h, text, was: {x, y, w, h, text}}], fresh: [found...], same, missing: [name...], orphans: [found...]} */
 function iwdieVcObjectChanges(found, existing, sent) {
   var have = (existing || []).filter(function (e) { return e && typeof e === 'object' && e.name; });
-  var taken = {}, moves = [], fresh = [], same = 0;
+  var taken = {}, claimed = {}, moves = [], fresh = [], same = 0, unmatched = [], orphans = [];
   var near = function (a, b) { var n = parseFloat(a); return isFinite(n) && Math.abs(n - b) <= 1; };
   var known = iwdieVcObjectIndex();
   (found || []).forEach(function (f) {
@@ -6791,8 +6792,9 @@ function iwdieVcObjectChanges(found, existing, sent) {
         return !taken[c.name] && c.obj_id === f.id && near(c.posLeft, f.at.x) && near(c.posTop, f.at.y) && near(c.posWidth, f.at.w) && near(c.posHeight, f.at.h);
       })[0];
     }
-    if (!e) { fresh.push(f); return; }
+    if (!e) { unmatched.push(f); return; }
     taken[e.name] = 1;
+    claimed[f.ref] = 1;
     var x = Math.round(f.x), y = Math.round(f.y), w = Math.max(1, Math.round(f.w)), h = Math.max(1, Math.round(f.h));
     var o = known[f.id], was = iwdieVcTagOf(e), text = String(f.text || '').replace(/\s+/g, ' ').trim();
     // a text it cannot have, or the one a placeholder without the object's picture says, is no change
@@ -6803,8 +6805,11 @@ function iwdieVcObjectChanges(found, existing, sent) {
     moves.push({ name: e.name, obj_id: e.obj_id, x: x, y: y, w: w, h: h, text: text,
       was: { x: parseFloat(e.posLeft), y: parseFloat(e.posTop), w: parseFloat(e.posWidth), h: parseFloat(e.posHeight), text: was } });
   });
+  // one whose object another placeholder took is a copy, a new object; one whose object is gone
+  // from the panel (v1.46.1) places nothing - it would bring back what was deleted there
+  unmatched.forEach(function (f) { if (claimed[f.ref]) fresh.push(f); else orphans.push(f); });
   var missing = (sent || []).filter(function (n) { return !taken[n] && have.some(function (c) { return c.name === n; }); });
-  return { moves: moves, fresh: fresh, same: same, missing: missing };
+  return { moves: moves, fresh: fresh, same: same, missing: missing, orphans: orphans };
 }
 
 /* ===================== Sync to IWMAC Designer (v1.42.0) =====================
@@ -7297,7 +7302,8 @@ function iwdieVcMix(p, c, o) {
 }
 
 /** The pills of a picture: each plain area that, with what it holds (a text), fills a pill - round
- *  ends, at most 4 % off - 6 to 42 px high and longer than high. Each is read along lines out of its
+ *  ends, at most 4 % off - its fill 14 to 42 px high and 28 px long or more, and what it holds no more
+ *  than 40 % of it (v1.46.1: letters with round sides that touch, "OD", "ap", fill a small pill too). Each is read along lines out of its
  *  edge (four across the top and bottom, three out of each round end), pixel by pixel as a mix of
  *  its fill, a ring and what lies beyond: the ring's colour is the `palette` one ([r, g, b]) that
  *  mixed gives the pixels seen (a thin ring covers no pixel whole), and each side's edges are the
@@ -7330,7 +7336,7 @@ function iwdieVcFindPills(pic, W, H, palette) {
     a.x0 = cols.a; a.x1 = cols.b;
     var bw = a.x1 - a.x0 + 1, bh = a.y1 - a.y0 + 1, n = 0;
     for (y = a.y0; y <= a.y1; y++) for (x = a.x0; x <= a.x1; x++) if (A.label[y * W + x] === id) n++;
-    if (bh < 6 || bh > 42 || bw < bh * 1.15 || bw > 600 || n < bw * bh * 0.45) return;
+    if (bh < 14 || bh > 42 || bw < 28 || bw < bh * 1.15 || bw > 600 || n < bw * bh * 0.5) return;
     // the area and what it holds: whatever in its box cannot reach the box's edge without crossing it
     var inside = new Uint8Array(bw * bh), outside = new Uint8Array(bw * bh), stack = [];
     for (y = 0; y < bh; y++) for (x = 0; x < bw; x++) if (A.label[(a.y0 + y) * W + a.x0 + x] === id) inside[y * bw + x] = 1;
@@ -7345,13 +7351,13 @@ function iwdieVcFindPills(pic, W, H, palette) {
       stack.push(x - 1, y, x + 1, y, x, y - 1, x, y + 1);
     }
     // a pill of this box, its edge half a pixel out (the area's own edge pixels are mixed)
-    var r = (bh + 1) / 2, cy = a.y0 + bh / 2, sx0 = a.x0 - 0.5 + r, sx1 = a.x1 + 1.5 - r, off = 0, total = 0;
+    var r = (bh + 1) / 2, cy = a.y0 + bh / 2, sx0 = a.x0 - 0.5 + r, sx1 = a.x1 + 1.5 - r, off = 0, total = 0, held = 0;
     for (y = 0; y < bh; y++) for (x = 0; x < bw; x++) {
       var qx = a.x0 + x + 0.5, qy = a.y0 + y + 0.5, ex = qx < sx0 ? sx0 - qx : qx > sx1 ? qx - sx1 : 0, ey = qy - cy;
       var d = Math.sqrt(ex * ex + ey * ey), filled = !outside[y * bw + x];
-      if (d < r - 1.2) { total++; if (!filled) off++; } else if (d > r + 0.2 && filled) off++;
+      if (d < r - 1.2) { total++; if (!filled) off++; else if (!inside[y * bw + x]) held++; } else if (d > r + 0.2 && filled) off++;
     }
-    if (!total || off > total * 0.04) return;
+    if (!total || off > total * 0.04 || held > total * 0.4) return;
     var F = [a.r, a.g, a.b], my = a.y0 + (bh >> 1), rr = bh / 2;
     var line = function (x0, y0, dx, dy) {
       if (A.label[y0 * W + x0] !== id) return null;
@@ -7520,6 +7526,21 @@ function iwdieVcPillName(p, looks) {
     if (!top || votes[l.name] > votes[top]) top = l.name;
   });
   return top || 'Pille';
+}
+
+/** How much of a box ({x, y, w, h}) the panel's objects cover, 0 to 1 (v1.46.1). What lies under
+ *  one of them stays in the picture: the Designer shows the object over it, and drawn again as
+ *  vectors it would peek out round the object's edge. */
+function iwdieVcCovered(box, objects) {
+  var area = box.w * box.h, sum = 0;
+  if (!(area > 0)) return 0;
+  (objects || []).forEach(function (ob) {
+    var x = parseFloat(ob && ob.posLeft), y = parseFloat(ob && ob.posTop), w = parseFloat(ob && ob.posWidth), h = parseFloat(ob && ob.posHeight);
+    if (!isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0)) return;
+    var ix = Math.max(0, Math.min(box.x + box.w, x + w) - Math.max(box.x, x)), iy = Math.max(0, Math.min(box.y + box.h, y + h) - Math.max(box.y, y));
+    sum += ix * iy;
+  });
+  return Math.min(1, sum / area);
 }
 
 /** "#rrggbb" for [r, g, b]. */
@@ -9750,7 +9771,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
           var picture = base ? c.toDataURL('image/png') : null, lib = base ? libLoad() : null;
           // the kept components looked for in the picture (v1.44.0): those found become vectors of their own
-          return (lib ? vcRecognize(c, lib, tab) : Promise.resolve(null)).then(function (got) {
+          return (lib ? vcRecognize(c, lib, tab, info.objects) : Promise.resolve(null)).then(function (got) {
+            // nothing to make vectors of but what the objects cover: the picture as it is
+            if (got && !got.cleaned) got = null;
             info.recognized = got;
             return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: got ? got.cleaned : picture, original: got ? picture : null,
               components: got ? got.components : null, pipes: got ? got.pipes : null, shapes: shapes, objects: info.objects, looks: info.looks,
@@ -9788,6 +9811,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           lines: (got ? ['Found in the picture in ' + got.seconds + ' s: ' + [got.count ? iwdieN(got.count, 'component', 'components') + ' of your library (' + got.summary + ')' : '',
             got.pills ? iwdieN(got.pills, 'pill', 'pills') : '', got.pipes.length ? iwdieN(got.pipes.length, 'pipe', 'pipes') : ''].filter(Boolean).join(', ') +
             '. Each is a vector of its own - components and pills on the layer Komponenter, pipes on Rør - to move, resize, recolour or replace. ' +
+            (got.under ? got.under + ' more, under the panel’s own objects, stayed in the picture as they were: the Designer shows the objects over them. ' : '') +
             'The picture as it was is on the hidden layer Bakgrunn (original).'] : [])
             .concat([what + ' - in a new tab.',
             'Press Ctrl+S there and choose Sync to IWMAC Designer: the picture comes straight back to this background, and its PNG goes to the plant’s pictures. ' +
@@ -10235,11 +10259,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** What of the panel's picture (`canvas`, at panel size) can be vectors (v1.44.0, v1.45.0): the
      *  kept library's components found in it, each with only the shapes the picture shows; then its
-     *  pills, and its pipes in the library's colours. Each is taken out of the picture. The editor's
-     *  tab shows how far it is, and may skip it.
+     *  pills, and its pipes in the library's colours. Each is taken out of the picture - but what the
+     *  panel's `objects` cover stays in it (v1.46.1). The editor's tab shows how far it is, and may
+     *  skip it.
      *  -> Promise<null | {cleaned: data URL, components: [...] (pills among them, kind 'pill'),
      *  pipes: [...], count, pills, summary, seconds}> */
-    function vcRecognize(canvas, lib, tab) {
+    function vcRecognize(canvas, lib, tab, objects) {
       var paper = vcPaper(tab), W2 = canvas.width, H2 = canvas.height, t0 = Date.now();
       var items = lib.items, names = iwdieVcComponentNames(items), job = null;
       paper.onSkip(function () { if (job) job.stop(); });
@@ -10258,9 +10283,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           templates.forEach(function (t) { byK[t.k] = t; });
           found.forEach(function (m) { if (ks.indexOf(m.k) < 0) ks.push(m.k); });
           return vcShapeLayers(items, ks).then(function (layers) {
-            var bg = iwdieVcComponentIndex(pic, W2, H2).bg, cleaned = new Uint8ClampedArray(pic), holes = [], comps = [], count = {}, pill = {};
+            var bg = iwdieVcComponentIndex(pic, W2, H2).bg, cleaned = new Uint8ClampedArray(pic), holes = [], comps = [], count = {}, pill = {}, under = 0;
             found.forEach(function (m) {
               var t = byK[m.k], it = items[m.k];
+              // under one of the panel's objects: as it is in the picture, under the object's placeholder
+              if (iwdieVcCovered(m, objects) >= 0.5) { under++; return; }
               // a pill of the library is measured as a pill (below) instead: so it looks exactly as it did, without a stub it does not have
               if (pill[m.k] === undefined) pill[m.k] = iwdieVcIsPill(t, bg.map(Math.round));
               if (pill[m.k]) return;
@@ -10283,7 +10310,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             iwdieVcErase(cleaned, W2, H2, holes);
             // the pills, then the pipes, on what is left
             var palette = iwdieVcPalette(items);
-            var pills = iwdieVcFindPills(cleaned, W2, H2, palette);
+            var pills = iwdieVcFindPills(cleaned, W2, H2, palette).filter(function (p) {
+              var out = iwdieVcCovered(p.outer, objects) < 0.5;
+              if (!out) under++;
+              return out;
+            });
             iwdieVcErasePills(cleaned, W2, H2, pills);
             var lines = iwdieVcFindLines(cleaned, W2, H2, bg.map(Math.round), iwdieVcPipeColours(palette));
             iwdieVcEraseMask(cleaned, W2, H2, lines.mask);
@@ -10293,7 +10324,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               p.name = iwdieVcPillName(p, looks);
               if (p.text) p.textHref = vcPng(p.text.rgba, p.text.w, p.text.h);
             });
-            if (!comps.length && !pills.length && !lines.lines.length) return null;
+            if (!comps.length && !pills.length && !lines.lines.length) return under ? { cleaned: null, components: [], pipes: [], count: 0, pills: 0, under: under, summary: '',
+              seconds: Math.round((Date.now() - t0) / 100) / 10 } : null;
             var c = document.createElement('canvas');
             c.width = W2; c.height = H2;
             var g = c.getContext('2d'), img = g.createImageData(W2, H2);
@@ -10301,7 +10333,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             g.putImageData(img, 0, 0);
             var summary = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 5)
               .map(function (nm) { return nm + (count[nm] > 1 ? ' ×' + count[nm] : ''); }).join(', ');
-            return { cleaned: c.toDataURL('image/png'), components: comps.concat(pills), pipes: lines.lines, count: comps.length, pills: pills.length,
+            return { cleaned: c.toDataURL('image/png'), components: comps.concat(pills), pipes: lines.lines, count: comps.length, pills: pills.length, under: under,
               summary: summary, seconds: Math.round((Date.now() - t0) / 100) / 10 };
           });
         });
@@ -10376,6 +10408,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (mv.moved) lines.push(iwdieN(mv.moved, 'IWMAC object', 'IWMAC objects') + ' of the panel moved, resized or relabelled as in VectorCraft' +
           (ch.same ? '; ' + ch.same + ' as they were' : '') + '.');
         if (mv.error) lines.push('Not changed: ' + mv.error + '.');
+        if (ch.orphans.length) lines.push(iwdieN(ch.orphans.length, 'placeholder', 'placeholders') + ' stood for objects no longer on the panel, so nothing was placed for ' +
+          (ch.orphans.length === 1 ? 'it' : 'them') + '.');
         if (ch.missing.length) lines.push(iwdieN(ch.missing.length, 'object', 'objects') + ' of the panel had no placeholder in the save any more (' +
           ch.missing.slice(0, 6).join(', ') + (ch.missing.length > 6 ? ', …' : '') + '): left on the panel - delete them here if they should go.');
         if (ph.skipped) lines.push(iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.');
@@ -12042,6 +12076,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcIsPill: iwdieVcIsPill,
     vcPillSvg: iwdieVcPillSvg,
     vcHex: iwdieVcHex,
+    vcCovered: iwdieVcCovered,
     vcPalette: iwdieVcPalette,
     vcPipeColours: iwdieVcPipeColours,
     vcFindLines: iwdieVcFindLines,

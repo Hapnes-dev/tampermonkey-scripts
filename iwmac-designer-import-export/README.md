@@ -958,6 +958,19 @@ the oil separator and some valves. So do the texts beside things, the dotted lin
 and the arrows. The colours must match too: a library read from a file without its colour
 profile may find nothing. Without kept components, the panel opens as before.
 
+**After the first live sync (v1.46.1).** Two things in it looked wrong in the Designer:
+- **Dark blots over labels** ("Run C●●", "Vhp ●●", "Li● consum●"). Letters with round sides
+  that touch, such as "OD", "ap" or "er", fill a small pill, so they were taken for dark pills
+  and drawn over the text. A pill's fill must now be 14 px high or more and 28 px long; a
+  label's letters are 11 px at most. Text inside may fill no more than 40 % of it. On Thomas's
+  screenshot the old rules found 11 such blots, the new ones none, and on the Maskin picture
+  all 58 real pills are still found.
+- **Dark rims round values.** A pill or component under one of the panel's own objects was
+  drawn again as vectors, a little off, and peeked out round the object. What the panel's
+  objects cover (half or more of it) now stays in the picture as it was: the Designer shows
+  the object over it, and in VectorCraft its placeholder lies on top. The message says how
+  many stayed.
+
 Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Components
 from .ai…** in the banner reads another file's. The Designer's own objects arrive there too, as
 **IWMAC-objekter** (v1.40.0), and have a menu of their own in the bar, **IWMAC** (v1.41.0,
@@ -1136,6 +1149,8 @@ VectorCraft keeps through a save. A sync then changes that object instead of pla
   the catalogue.
 - If the panel's objects were renamed meanwhile, as deleting one in the Designer renames
   them, the object is found by its kind and where it was.
+- A placeholder whose object is no longer on the panel places nothing, and the toast says so
+  (v1.46.1). Placing it would bring back what was deleted in the Designer.
 
 Their pictures are the Designer's own: for every kind on the panel, not only the catalogue's
 72, the script takes the Designer's render definition and picture from `/iw_icons/`, as for
