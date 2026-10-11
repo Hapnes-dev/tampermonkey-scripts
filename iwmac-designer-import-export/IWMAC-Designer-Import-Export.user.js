@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.33.0
+// @version      1.34.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -25,7 +25,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.33.0';
+var IWDIE_VERSION = '1.34.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -5283,7 +5283,9 @@ function iwdieAiText(s) {
 /** An object's name as people wrote it: Illustrator's unique ids turn spaces
  *  into underscores and number duplicates as _2_, _3_. */
 function iwdieAiName(id) {
-  return String(id || '').replace(/_\d+_$/, '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+  return String(id || '').replace(/_\d+_$/, '')
+    .replace(/_x([0-9A-Fa-f]{1,6})_/g, function (m, h) { var c = parseInt(h, 16); return c > 0 && c < 0x110000 ? String.fromCharCode(c > 0xFFFF ? 0xFFFD : c) : ''; })
+    .replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 /** Where each PDF object starts, by number - the last definition wins, as in an
@@ -5609,6 +5611,486 @@ function iwdieAiLibrary(parsed, color, maxSize) {
   return { items: lib, hidden: hidden };
 }
 
+/* ===================== Illustrator export (v1.34.0): a real .ai =====================
+   A plain PDF does not give Illustrator layers: measured in Illustrator itself,
+   optional content groups land in one "Layer 1" with hidden layers shown, every
+   filled and stroked shape splits in two, and an SVG's top-level groups stay
+   groups. Illustrator builds its layers only from its own editing data, the
+   AIPrivateData that every .ai carries next to its PDF page - the data the
+   library already reads. So the export writes that data: the PostScript-like
+   art program, zlib-compressed after "%AI12_CompressedData" (Illustrator
+   refuses it uncompressed), split into 64 KB blocks on the page's
+   /PieceInfo /Illustrator /Private, with a plain PDF page beside it for every
+   other viewer.
+
+   What was measured to land right (Illustrator, 2026-10-11): layers with lock,
+   visibility and print flags; named groups; paths with fill and stroke as one
+   object; compound paths with their holes; opacity; dashes, caps and joins; an
+   embedded picture with its alpha channel; point text in Arial (opened as
+   legacy text that Illustrator updates on request); everything exactly on the
+   artboard. Coordinates are the panel's with y negated: the artboard's top
+   left is 0, 0, and %AI3_TemplateBox must be W/2, H/2 - Illustrator shifts the
+   art by the difference. */
+
+/** A number as the art program writes it: at most three decimals, never -0. */
+function iwdieAiNum(v) {
+  var n = Math.round(Number(v) * 1000) / 1000;
+  return (n === 0 || !isFinite(n)) ? '0' : String(n);
+}
+
+/** Text as one PostScript string literal in Latin-1, escaped. */
+function iwdieAiLatin1Text(s) {
+  var map = { '→': '->', '←': '<-', '–': '-', '—': '-', '‘': "'", '’': "'", '“': '"', '”': '"', '•': '*', '…': '...', '€': 'EUR' };
+  var out = '';
+  String(s == null ? '' : s).replace(/[\r\n\t]+/g, ' ').split('').forEach(function (ch) {
+    var c = ch.charCodeAt(0);
+    if (map[ch]) out += map[ch];
+    else if (c < 32) return;
+    else if (c > 255) out += '?';
+    else if (ch === '(' || ch === ')' || ch === '\\') out += '\\' + ch;
+    else out += ch;
+  });
+  return out;
+}
+
+/** A name as Illustrator writes names: UTF-8 bytes in a PostScript string. */
+function iwdieAiUtf8Text(s) {
+  var t = String(s == null ? '' : s).replace(/[\r\n\t]+/g, ' ');
+  try { t = unescape(encodeURIComponent(t)); } catch (e) {}
+  return t.replace(/[()\\]/g, function (c) { return '\\' + c; });
+}
+
+/** A name in Illustrator's own unique-id form (its SVG id scheme): spaces become
+ *  "_", letters, digits, "_", "." and "-" stay, anything else in ASCII becomes
+ *  _xHH_, and the rest goes in as UTF-8 bytes - which is how Illustrator writes Rør.
+ *  A leading digit, "." or "-" is encoded too, as XML ids cannot start with one. */
+function iwdieAiXmlId(name) {
+  var s = String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, 120), out = '';
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i), c = s.charCodeAt(i);
+    if (ch === ' ') out += '_';
+    else if (c > 127) out += ch;
+    else if (/[A-Za-z0-9_.\-]/.test(ch) && !(i === 0 && /[0-9.\-]/.test(ch))) out += ch;
+    else out += '_x' + c.toString(16).toUpperCase() + '_';
+  }
+  try { out = unescape(encodeURIComponent(out)); } catch (e) {}
+  return out;
+}
+
+/** Every XMLUID made unique, the way Illustrator numbers a repeated name: Name, Name_2_,
+ *  Name_3_. Illustrator refuses a file in which two objects share one. */
+function iwdieAiUniqueIds(lines) {
+  var used = {}, re = /^%_\/XMLUID : \((.*)\) ; \(AI10_ArtUID\) ,$/;
+  return lines.map(function (line) {
+    var m = re.exec(line);
+    if (!m) return line;
+    var id = m[1], n = 1;
+    while (used[id]) id = m[1] + '_' + (++n) + '_';
+    used[id] = 1;
+    return '%_/XMLUID : (' + id + ') ; (AI10_ArtUID) ,';
+  });
+}
+
+/** fill or stroke colour: "c m y k r g b Xa" (XA for the stroke) - RGB with its CMYK beside it. */
+function iwdieAiColour(hex, stroke) {
+  var c = iwdieDrawColor(hex);
+  if (!c) return null;
+  if (c.length === 4) c = '#' + c.charAt(1) + c.charAt(1) + c.charAt(2) + c.charAt(2) + c.charAt(3) + c.charAt(3);
+  var r = parseInt(c.substr(1, 2), 16) / 255, g = parseInt(c.substr(3, 2), 16) / 255, b = parseInt(c.substr(5, 2), 16) / 255;
+  var k = 1 - Math.max(r, g, b), d = 1 - k;
+  var cmy = d > 0 ? [(1 - r - k) / d, (1 - g - k) / d, (1 - b - k) / d] : [0, 0, 0];
+  return cmy.concat([k, r, g, b]).map(iwdieAiNum).join(' ') + (stroke ? ' XA' : ' Xa');
+}
+
+var IWDIE_AI_CAPS = { butt: 0, round: 1, square: 2 };
+var IWDIE_AI_JOINS = { miter: 0, round: 1, bevel: 2 };
+
+/** The paint state an object starts with. */
+function iwdieAiStyleLines(st, text) {
+  st = st || {};
+  var out = ['0 A', '0 Xw', '0 O', '0 R'];
+  var fill = iwdieAiColour(st.fill, false), stroke = text ? null : iwdieAiColour(st.stroke, true);
+  if (fill) out.push(fill);
+  if (stroke) out.push(stroke);
+  var op = (typeof st.op === 'number' && st.op >= 0 && st.op < 1) ? st.op : 1;
+  out.push('0 ' + iwdieAiNum(op) + ' 0 0 0 Xy');
+  if (!text) {
+    var sw = Math.max(0, Number(st.sw) || 0), dash = [];
+    if (Array.isArray(st.da) && st.da.length) dash = st.da.length % 2 ? st.da.concat(st.da) : st.da;
+    else if (st.dash && sw > 0) dash = [sw * 4, sw * 3];
+    out.push((IWDIE_AI_CAPS[st.cap] || 0) + ' J ' + (IWDIE_AI_JOINS[st.join] || 0) + ' j ' + iwdieAiNum(sw || 1) + ' w 10 M [' +
+      dash.map(iwdieAiNum).join(' ') + ']0 d');
+  }
+  out.push('0 XR');
+  return out;
+}
+
+/** The operator that ends a path: what it paints, and whether it closes. */
+function iwdieAiPaintOp(st, closed) {
+  st = st || {};
+  var fill = !!iwdieDrawColor(st.fill), stroke = !!(iwdieDrawColor(st.stroke) && Number(st.sw) > 0);
+  if (fill && stroke) return closed ? 'b' : 'B';
+  if (fill) return closed ? 'f' : 'F';
+  if (stroke) return closed ? 's' : 'S';
+  return closed ? 'n' : 'N';
+}
+
+/** The lines that name the object written just before them. */
+function iwdieAiNameLines(name) {
+  var id = iwdieAiXmlId(name);
+  return id ? ['%_/ArtDictionary :', '%_/XMLUID : (' + id + ') ; (AI10_ArtUID) ,', '%_;', '%_'] : [];
+}
+
+/* Panel coordinates (y down) to art coordinates (y up, artboard top at 0). */
+function iwdieAiPt(x, y) { return iwdieAiNum(x) + ' ' + iwdieAiNum(-y); }
+
+/** One subpath as segment lines; `segs` are [cmd, …numbers] with absolute M/L/C. A closed
+ *  subpath repeats its first point, as Illustrator writes it - left out, the last anchor is lost. */
+function iwdieAiSubpathLines(segs, closed) {
+  var out = [], first = null, last = null;
+  segs.forEach(function (s) {
+    if (s[0] === 'M') { first = [s[1], s[2]]; last = first; out.push(iwdieAiPt(s[1], s[2]) + ' m'); }
+    else if (s[0] === 'L') { last = [s[1], s[2]]; out.push(iwdieAiPt(s[1], s[2]) + ' L'); }
+    else if (s[0] === 'C') { last = [s[5], s[6]]; out.push(iwdieAiPt(s[1], s[2]) + ' ' + iwdieAiPt(s[3], s[4]) + ' ' + iwdieAiPt(s[5], s[6]) + ' C'); }
+  });
+  if (closed && first && last && (Math.abs(first[0] - last[0]) > 1e-6 || Math.abs(first[1] - last[1]) > 1e-6)) out.push(iwdieAiPt(first[0], first[1]) + ' L');
+  return out;
+}
+
+/** A Draw shape's outline as subpaths of [cmd, …] segments, with whether each closes. */
+function iwdieAiShapeSubpaths(s) {
+  var K = 0.5522847498;
+  if (s.t === 'rect') {
+    var x = s.x, y = s.y, w = s.w, h = s.h, r = Math.max(0, Math.min(Number(s.rx) || 0, w / 2, h / 2)), k = r * K;
+    if (!(r > 0)) return [{ segs: [['M', x, y], ['L', x + w, y], ['L', x + w, y + h], ['L', x, y + h]], closed: true }];
+    return [{ closed: true, segs: [
+      ['M', x + r, y], ['L', x + w - r, y], ['C', x + w - r + k, y, x + w, y + r - k, x + w, y + r],
+      ['L', x + w, y + h - r], ['C', x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h],
+      ['L', x + r, y + h], ['C', x + r - k, y + h, x, y + h - r + k, x, y + h - r],
+      ['L', x, y + r], ['C', x, y + r - k, x + r - k, y, x + r, y]] }];
+  }
+  if (s.t === 'ellipse') {
+    var cx = s.cx, cy = s.cy, rx = s.rx, ry = s.ry;
+    return [{ closed: true, segs: [
+      ['M', cx + rx, cy], ['C', cx + rx, cy + ry * K, cx + rx * K, cy + ry, cx, cy + ry],
+      ['C', cx - rx * K, cy + ry, cx - rx, cy + ry * K, cx - rx, cy],
+      ['C', cx - rx, cy - ry * K, cx - rx * K, cy - ry, cx, cy - ry],
+      ['C', cx + rx * K, cy - ry, cx + rx, cy - ry * K, cx + rx, cy]] }];
+  }
+  if (s.t === 'line') {
+    return [{ closed: !!s.closed, segs: s.pts.map(function (p, i) { return [i ? 'L' : 'M', p[0], p[1]]; }) }];
+  }
+  if (s.t === 'path') {
+    var n = s.nodes, segs = [['M', n[0].x, n[0].y]];
+    var seg = function (a, b) {
+      var straight = a.ox === a.x && a.oy === a.y && b.ix === b.x && b.iy === b.y;
+      segs.push(straight ? ['L', b.x, b.y] : ['C', a.ox, a.oy, b.ix, b.iy, b.x, b.y]);
+    };
+    for (var i = 1; i < n.length; i++) seg(n[i - 1], n[i]);
+    if (s.closed) seg(n[n.length - 1], n[0]);
+    return [{ closed: !!s.closed, segs: segs }];
+  }
+  if (s.t === 'd') {
+    var toks = String(s.d).match(/[MLCZ]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [], subs = [], cur = null, at = 0;
+    var num = function () { return parseFloat(toks[at++]); };
+    while (at < toks.length) {
+      var c = toks[at++];
+      if (c === 'M') { cur = { closed: false, segs: [['M', num(), num()]] }; subs.push(cur); }
+      else if (c === 'L' && cur) cur.segs.push(['L', num(), num()]);
+      else if (c === 'C' && cur) cur.segs.push(['C', num(), num(), num(), num(), num(), num()]);
+      else if (c === 'Z' && cur) cur.closed = true;
+    }
+    return subs;
+  }
+  return [];
+}
+
+/** An arrowhead at the end of an open line or path, the way Draw's marker draws it. */
+function iwdieAiArrowLines(s) {
+  var st = s.st || {}, sw = Number(st.sw) || 0, col = iwdieDrawColor(st.stroke);
+  if (!st.arrow || !col || !(sw > 0) || s.closed) return [];
+  var subs = iwdieAiShapeSubpaths(s), segs = subs.length ? subs[subs.length - 1].segs : [];
+  if (segs.length < 2) return [];
+  var last = segs[segs.length - 1], end = last[0] === 'C' ? [last[5], last[6]] : [last[1], last[2]];
+  var prevSeg = segs[segs.length - 2], from = last[0] === 'C' ? [last[3], last[4]] : (prevSeg[0] === 'C' ? [prevSeg[5], prevSeg[6]] : [prevSeg[1], prevSeg[2]]);
+  var dx = end[0] - from[0], dy = end[1] - from[1], len = Math.sqrt(dx * dx + dy * dy);
+  if (!(len > 0)) return [];
+  dx /= len; dy /= len;
+  var tip = [end[0] + dx * sw, end[1] + dy * sw], base = [end[0] - dx * 4 * sw, end[1] - dy * 4 * sw], px = -dy * 2.5 * sw, py = dx * 2.5 * sw;
+  return iwdieAiStyleLines({ fill: col, op: st.op }).concat([
+    iwdieAiPt(base[0] + px, base[1] + py) + ' m', iwdieAiPt(tip[0], tip[1]) + ' L', iwdieAiPt(base[0] - px, base[1] - py) + ' L',
+    iwdieAiPt(base[0] + px, base[1] + py) + ' L', 'f']);
+}
+
+/** Point text, written in the legacy form Illustrator still reads (and updates on request). */
+function iwdieAiTextLines(s, name) {
+  var st = s.st || {};
+  return iwdieAiStyleLines({ fill: st.fill || '#000000', op: st.op }, true).concat([
+    '0 To', '1 0 0 1 ' + iwdieAiPt(s.x, s.y) + ' 0 Tp', 'TP', '0 Tr',
+    '/_ArialMT ' + iwdieAiNum(s.size || 13) + ' Tf',
+    '0 Ts 100 Tz 0 Tt 1 TA 0 0 5 TC 100 100 200 TW 0 0 0 Ti 0 Ta 0 Tq 0 0 Tl 0 Tc 0 Tw',
+    '(' + iwdieAiLatin1Text(s.text) + ') Tx', '(\\r) TX', 'TO'
+  ], iwdieAiNameLines(name));
+}
+
+/** A Draw shape as art lines. Groups keep their name; a shape with an arrow becomes a group of two. */
+function iwdieAiShapeLines(s, name) {
+  if (!s || typeof s !== 'object') return [];
+  if (s.t === 'group') {
+    var inner = [];
+    (s.items || []).forEach(function (c) { inner = inner.concat(iwdieAiShapeLines(c)); });
+    return inner.length ? ['0 A', '0 Xw', 'u'].concat(inner, ['U'], iwdieAiNameLines(name || s.name)) : [];
+  }
+  if (s.t === 'text') return iwdieAiTextLines(s, name);
+  var subs = iwdieAiShapeSubpaths(s);
+  if (!subs.length) return [];
+  var st = s.st || {}, evenodd = s.rule === 'evenodd', out;
+  if (subs.length === 1) {
+    out = iwdieAiStyleLines(st).concat(evenodd ? ['1 XR'] : [], iwdieAiSubpathLines(subs[0].segs, subs[0].closed), [iwdieAiPaintOp(st, subs[0].closed)]);
+  } else {
+    // several subpaths are one compound path, so holes stay holes
+    out = ['0 A', '0 Xw', '*u'].concat(iwdieAiStyleLines(st));
+    subs.forEach(function (sp) {
+      out = out.concat([evenodd ? '1 XR' : '0 XR'], iwdieAiSubpathLines(sp.segs, sp.closed), [iwdieAiPaintOp(st, sp.closed)]);
+    });
+    out.push('*U');
+  }
+  var arrow = iwdieAiArrowLines(s);
+  if (arrow.length) return ['0 A', '0 Xw', 'u'].concat(out, arrow, ['U'], iwdieAiNameLines(name));
+  return out.concat(iwdieAiNameLines(name));
+}
+
+/** Illustrator's layer colours, by index. */
+var IWDIE_AI_LAYER_COLOURS = [[79, 128, 255], [255, 79, 79], [79, 255, 79], [79, 79, 255], [255, 255, 79], [255, 79, 255], [79, 255, 255]];
+
+/** A layer: `Lb` carries visible, preview, unlocked, printing, dimmed, …, colour. */
+function iwdieAiLayerLines(layer, index) {
+  var ci = index % IWDIE_AI_LAYER_COLOURS.length, rgb = IWDIE_AI_LAYER_COLOURS[ci];
+  var lb = [layer.visible === false ? 0 : 1, 1, layer.locked ? 0 : 1, layer.print === false ? 0 : 1, layer.dimmed ? 1 : 0, 0, 1, ci,
+    rgb[0], rgb[1], rgb[2], 0, 50, 0].join(' ') + ' Lb';
+  return ['%AI5_BeginLayer', lb, '(' + iwdieAiUtf8Text(layer.name) + ') Ln', '0 A', '0 Xw'].concat(layer.lines || [], ['LB', '%AI5_EndLayer--']);
+}
+
+/** An embedded picture: RGBA pixels (top row first) drawn over the rectangle x, y, w, h of
+ *  the panel. Illustrator reads the rows bottom-up with this matrix, and wants the alpha bytes
+ *  after all the colour samples and a bare LF after XI. Returns the text before and after
+ *  the samples and the samples themselves. */
+function iwdieAiRasterParts(rgba, pw, ph, x, y, w, h, name) {
+  var n = pw * ph, data = new Uint8Array(n * 4), o = 0, a = n * 3, row, col, i;
+  for (row = ph - 1; row >= 0; row--) {
+    for (col = 0; col < pw; col++) {
+      i = (row * pw + col) * 4;
+      data[o++] = rgba[i]; data[o++] = rgba[i + 1]; data[o++] = rgba[i + 2];
+      data[a++] = rgba[i + 3];
+    }
+  }
+  var m = '[ ' + [w / pw, 0, 0, -h / ph, x, -(y + h)].map(iwdieAiNum).join(' ') + ' ]';
+  return {
+    head: ['0 A', '0 Xw', '0 1 0 0 0 Xy', '%AI5_File:', '%AI5_BeginRaster', '() 1 XG', '/DeviceRGB XN', m + ' ' + pw + ' ' + ph + ' 0 Xh',
+      m + ' 0 0 ' + pw + ' ' + ph + ' ' + pw + ' ' + ph + ' 8 3 1 17 1 0 4 4 0 0', '%%BeginData: ' + (n * 3 + 4)],
+    data: data,
+    tail: ['%%EndData', 'XH', '%AI5_EndRaster', 'N'].concat(iwdieAiNameLines(name))
+  };
+}
+
+/** The header comments: also stored on their own as AIMetaData. */
+function iwdieAiHeaderLines(o) {
+  var W = o.width, H = o.height, d = o.date || new Date();
+  var p2 = function (v) { return (v < 10 ? '0' : '') + v; };
+  var hh = d.getHours() % 12 || 12;
+  return [
+    '%!PS-Adobe-3.0 ',
+    '%%Creator: Adobe Illustrator(R) 24.0',
+    '%%AI8_CreatorVersion: 24.0.0',
+    '%%For: (' + iwdieAiLatin1Text(o.author || 'IWMAC Designer Import/Export') + ') ()',
+    '%%Title: (' + iwdieAiLatin1Text(o.title || 'background.ai') + ')',
+    '%%CreationDate: ' + p2(d.getMonth() + 1) + '/' + p2(d.getDate()) + '/' + d.getFullYear() + ' ' + hh + ':' + p2(d.getMinutes()) + ' ' + (d.getHours() < 12 ? 'AM' : 'PM'),
+    '%%Canvassize: 16383',
+    '%%BoundingBox: 0 ' + (-H) + ' ' + W + ' 0',
+    '%%HiResBoundingBox: 0 ' + (-H) + ' ' + W + ' 0',
+    '%%DocumentProcessColors: Cyan Magenta Yellow Black',
+    '%AI5_FileFormat 14.0',
+    '%AI12_BuildNumber: 1',
+    '%AI3_ColorUsage: Color',
+    '%AI7_ImageSettings: 0',
+    '%%RGBProcessColor: 0 0 0 ([Registration])',
+    '%AI3_Cropmarks: 0 ' + (-H) + ' ' + W + ' 0',
+    '%AI3_TemplateBox: ' + iwdieAiNum(W / 2) + ' ' + iwdieAiNum(H / 2) + ' ' + iwdieAiNum(W / 2) + ' ' + iwdieAiNum(H / 2),
+    '%AI3_TileBox: 0 ' + (-H) + ' ' + W + ' 0',
+    '%AI3_DocumentPreview: None',
+    '%AI5_ArtSize: 14400 14400',
+    '%AI5_RulerUnits: 6',
+    '%AI9_ColorModel: 1',
+    '%AI5_ArtFlags: 0 0 0 1 0 0 1 0 0',
+    '%AI5_TargetResolution: 800',
+    '%AI5_NumLayers: ' + (o.layers || []).length,
+    '%%EndComments'
+  ];
+}
+
+/** The whole editing-data program: header, setup with the artboard, the layers (bottom first),
+ *  trailer. A layer may carry one picture ({raster: iwdieAiRasterParts(…)}) under its lines. */
+function iwdieAiProgram(o) {
+  var W = o.width, H = o.height;
+  var setup = ['%%BeginProlog', '%%EndProlog', '%%BeginSetup',
+    '%AI9_BeginDocumentData', '%_/Document :', '%_/Dictionary :', '%_/Array :', '%_/Dictionary :',
+    '%_' + iwdieAiNum(8191.5 - W / 2) + ' ' + iwdieAiNum(8191.5 - H / 2) + ' /RealPoint', '%_ (RulerOrigin) ,',
+    '%_(' + iwdieAiLatin1Text(o.artboardName || 'Artboard 1') + ') /UnicodeString (Name) ,', '%_1 /Real (PAR) ,',
+    '%_' + W + ' ' + (-H) + ' /RealPointRelToROrigin', '%_ (PositionPoint2) ,',
+    '%_0 0 /RealPointRelToROrigin', '%_ (PositionPoint1) ,',
+    '%_1 /Bool (IsArtboardSelected) ,', '%_0 /Bool (IsArtboardDefaultName) ,',
+    '%_; ,', '%_; (ArtboardArray) ,', '%_; /NotRecorded ,', '%_;', '%AI9_EndDocumentData', '%%EndSetup'];
+  var chunks = [], text = iwdieAiHeaderLines(o).concat(setup), used = [];
+  var flush = function (lines) { if (lines.length) { chunks.push(lines); used.push(lines); } };
+  (o.layers || []).forEach(function (layer, i) {
+    var L = iwdieAiLayerLines(layer, i);
+    if (layer.raster) {
+      // the picture goes last in its layer, over the layer's own lines (the canvas plate)
+      var at = L.lastIndexOf('LB'), r = layer.raster;
+      flush(text.concat(L.slice(0, at), r.head));
+      chunks.push('XI\n');
+      chunks.push(r.data);
+      text = r.tail.concat(L.slice(at));
+    } else {
+      text = text.concat(L);
+    }
+  });
+  flush(text.concat(['%%PageTrailer', 'gsave annotatepage grestore showpage', '%%Trailer', '%%EOF']));
+  // names are made unique across the whole document, then the text is joined
+  var all = [];
+  used.forEach(function (lines) { all = all.concat(lines); });
+  all = iwdieAiUniqueIds(all);
+  var k2 = 0;
+  chunks = chunks.map(function (c) {
+    if (typeof c !== 'object' || c instanceof Uint8Array) return c;
+    var part = all.slice(k2, k2 + c.length);
+    k2 += c.length;
+    return part.join('\r\n') + '\r\n';
+  });
+  var total = 0;
+  chunks.forEach(function (c) { total += c.length; });
+  var out = new Uint8Array(total), pos = 0;
+  chunks.forEach(function (c) {
+    if (typeof c === 'string') { for (var k = 0; k < c.length; k++) out[pos++] = c.charCodeAt(k) & 255; }
+    else { out.set(c, pos); pos += c.length; }
+  });
+  return out;
+}
+
+/** The .ai file: a one-page PDF whose page shows `preview` (a JPEG or Flate RGB picture of the
+ *  whole artboard, for every viewer that is not Illustrator), carrying the editing data
+ *  `privateData` (header + "%AI12_CompressedData" + the zlib-compressed program) in 64 KB blocks. */
+function iwdieAiPdf(o) {
+  var W = Math.max(1, Math.round(o.width)), H = Math.max(1, Math.round(o.height));
+  var enc = function (s) { var u = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 255; return u; };
+  var parts = [], pos = 0, offs = [], objs = [];
+  var push = function (u8) { parts.push(u8); pos += u8.length; };
+  var d = o.date || new Date(), p2 = function (v) { return (v < 10 ? '0' : '') + v; };
+  var stamp = 'D:' + d.getUTCFullYear() + p2(d.getUTCMonth() + 1) + p2(d.getUTCDate()) + p2(d.getUTCHours()) + p2(d.getUTCMinutes()) + p2(d.getUTCSeconds()) + 'Z';
+  var priv = o.privateData, blocks = [], BLOCK = 65536;
+  for (var b = 0; b < priv.length; b += BLOCK) blocks.push(priv.subarray(b, Math.min(priv.length, b + BLOCK)));
+  if (!blocks.length) blocks.push(new Uint8Array(0));
+  var meta = enc(o.meta || '');
+  var pv = o.preview, content = enc('q\n' + W + ' 0 0 ' + H + ' 0 0 cm\n/Im0 Do\nQ\n');
+  // object numbers: 1 catalog, 2 pages, 3 page, 4 contents, 5 image, 6 info, 7 Illustrator, 8 Private, 9 AIMetaData, 10.. blocks
+  var privKeys = blocks.map(function (x, i) { return '/AIPrivateData' + (i + 1) + ' ' + (10 + i) + ' 0 R'; }).join(' ');
+  objs[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objs[2] = '<< /Type /Pages /Kids [3 0 R] /Count 1 >>';
+  objs[3] = '<< /Type /Page /Parent 2 0 R /ArtBox [0 0 ' + W + ' ' + H + '] /BleedBox [0 0 ' + W + ' ' + H + '] /CropBox [0 0 ' + W + ' ' + H + '] ' +
+    '/MediaBox [0 0 ' + W + ' ' + H + '] /TrimBox [0 0 ' + W + ' ' + H + '] /LastModified (' + stamp + ') /PieceInfo << /Illustrator 7 0 R >> ' +
+    '/Resources << /XObject << /Im0 5 0 R >> /ProcSet [/PDF /ImageC] >> /Contents 4 0 R >>';
+  objs[4] = { dict: '<< /Length ' + content.length + ' >>', data: content };
+  objs[5] = { dict: '<< /Type /XObject /Subtype /Image /Width ' + pv.width + ' /Height ' + pv.height + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /' +
+    (pv.filter === 'DCTDecode' ? 'DCTDecode' : 'FlateDecode') + ' /Length ' + pv.data.length + ' >>', data: pv.data };
+  objs[6] = '<< /Title (' + iwdieAiLatin1Text(o.title || 'background') + ') /Creator (IWMAC Designer Import/Export' + (o.version ? ' ' + o.version : '') +
+    ') /Producer (IWMAC Designer Import/Export) /CreationDate (' + stamp + ') >>';
+  objs[7] = '<< /LastModified (' + stamp + ') /Private 8 0 R >>';
+  objs[8] = '<< /AIMetaData 9 0 R ' + privKeys + ' /ContainerVersion 11 /CreatorVersion 24 /NumBlock ' + blocks.length + ' /RoundtripStreamType 1 /RoundtripVersion 17 >>';
+  objs[9] = { dict: '<< /Length ' + meta.length + ' >>', data: meta };
+  blocks.forEach(function (blk, i) { objs[10 + i] = { dict: '<< /Length ' + blk.length + ' >>', data: blk }; });
+  push(enc('%PDF-1.6\n%âãÏÓ\n'));
+  for (var n = 1; n < objs.length; n++) {
+    offs[n] = pos;
+    var ob = objs[n];
+    if (typeof ob === 'string') push(enc(n + ' 0 obj\n' + ob + '\nendobj\n'));
+    else { push(enc(n + ' 0 obj\n' + ob.dict + '\nstream\n')); push(ob.data); push(enc('\nendstream\nendobj\n')); }
+  }
+  var xrefAt = pos, pad = function (v) { var s = String(v); while (s.length < 10) s = '0' + s; return s; };
+  var xref = 'xref\n0 ' + objs.length + '\n0000000000 65535 f \n';
+  for (var k = 1; k < objs.length; k++) xref += pad(offs[k]) + ' 00000 n \n';
+  push(enc(xref + 'trailer\n<< /Size ' + objs.length + ' /Root 1 0 R /Info 6 0 R >>\nstartxref\n' + xrefAt + '\n%%EOF\n'));
+  var out = new Uint8Array(pos), at = 0;
+  parts.forEach(function (p) { out.set(p, at); at += p.length; });
+  return out;
+}
+
+/** The private data block: the header, the marker, then the zlib-compressed program. */
+function iwdieAiPrivateData(meta, compressed) {
+  var head = meta + '%AI12_CompressedData', out = new Uint8Array(head.length + compressed.length);
+  for (var i = 0; i < head.length; i++) out[i] = head.charCodeAt(i) & 255;
+  out.set(compressed, head.length);
+  return out;
+}
+
+/** The panel's objects as a reference layer: each one's box and its label, where the live
+ *  values will sit over the background. */
+function iwdieAiObjectLines(objects) {
+  var out = [];
+  (objects || []).forEach(function (o) {
+    var x = parseFloat(o.posLeft), y = parseFloat(o.posTop), w = parseFloat(o.posWidth), h = parseFloat(o.posHeight);
+    if (!isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0)) return;
+    var label = (o.tag_text && String(o.tag_text).trim()) || (o.alias_text && String(o.alias_text).trim()) || String(o.obj_id || 'object');
+    var box = iwdieAiShapeLines({ t: 'rect', x: x, y: y, w: w, h: h, rx: 0, st: { stroke: '#4f80ff', fill: null, sw: 0.75, da: [3, 2] } });
+    var txt = iwdieAiShapeLines({ t: 'text', x: x, y: y - 2, text: label.slice(0, 60), size: 7, st: { fill: '#4f80ff' } });
+    out = out.concat(['0 A', '0 Xw', 'u'], box, txt, ['U'], iwdieAiNameLines(label));
+  });
+  return out;
+}
+
+/** ImageTracer's path data (M, L, Q, Z, absolute) as Draw path data: the quadratic
+ *  curves raised to cubics, which is all Illustrator's art program draws. */
+function iwdieAiQuadToCubic(d) {
+  var toks = String(d == null ? '' : d).match(/[MLQZ]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/gi) || [], out = [], i = 0, cx = 0, cy = 0, sx = 0, sy = 0;
+  var n = function () { return parseFloat(toks[i++]); }, f = function (v) { return String(Math.round(v * 100) / 100); };
+  while (i < toks.length) {
+    var c = String(toks[i++]).toUpperCase();
+    if (c === 'M') { cx = sx = n(); cy = sy = n(); out.push('M' + f(cx) + ' ' + f(cy)); }
+    else if (c === 'L') { cx = n(); cy = n(); out.push('L' + f(cx) + ' ' + f(cy)); }
+    else if (c === 'Q') {
+      var qx = n(), qy = n(), x = n(), y = n();
+      out.push('C' + f(cx + 2 / 3 * (qx - cx)) + ' ' + f(cy + 2 / 3 * (qy - cy)) + ' ' + f(x + 2 / 3 * (qx - x)) + ' ' + f(y + 2 / 3 * (qy - y)) + ' ' + f(x) + ' ' + f(y));
+      cx = x; cy = y;
+    } else if (c === 'Z') { out.push('Z'); cx = sx; cy = sy; }
+    else return null;
+  }
+  return out.length ? out.join(' ') : null;
+}
+
+/** The tidied trace (iwdieTidyTraceSvg) as Draw shapes for the .ai: its named groups stay
+ *  groups, every path becomes path data. The canvas plate is left out - the picture's
+ *  layer has its own. */
+function iwdieAiTraceShapes(svg) {
+  var s = String(svg == null ? '' : svg), re = /<g\b([^>]*)>|<\/g>|<path\b([^>]*?)\/?>/g, m;
+  var root = { items: [] }, stack = [root];
+  var close = function () {
+    var g = stack.pop();
+    if (g.items.length) stack[stack.length - 1].items.push({ t: 'group', name: g.name, items: g.items });
+  };
+  while ((m = re.exec(s))) {
+    if (m[0].charAt(1) === '/') { if (stack.length > 1) close(); continue; }
+    if (m[0].indexOf('<g') === 0) {
+      var idm = /\bid="([^"]*)"/.exec(m[1] || '');
+      stack.push({ name: idm ? iwdieAiName(idm[1]) : '', items: [] });
+      continue;
+    }
+    var attrs = m[2] || '', fm = /\bfill="([^"]*)"/.exec(attrs), dm = /\bd="([^"]*)"/.exec(attrs);
+    var d = dm ? iwdieAiQuadToCubic(dm[1]) : null;
+    if (d) stack[stack.length - 1].items.push({ t: 'd', d: d, rule: '', st: { fill: fm ? fm[1] : '#000000', stroke: null, sw: 0 } });
+  }
+  while (stack.length > 1) close();
+  return iwdieDrawShapes(root.items);
+}
+
 /* ===================== browser body ===================== */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   (function () {
@@ -5755,6 +6237,46 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-draw-layer .iwdie-draw-hit{stroke-opacity:0;fill:none;pointer-events:stroke}',
       '.iwdie-draw-layer .iwdie-draw-hitbox{fill:#000;fill-opacity:0;stroke:none;pointer-events:all}',
       '.iwdie-draw-layer.iwdie-tool-stamp{cursor:copy}',
+      /* Export Background (v1.34.0), in VectorCraft's Medium Dark: its tokens as custom
+         properties, so other dialogs can follow. Flat panel, 1 px border, radius 6, choice
+         cards with a 2 px accent ring, one blue pill for the one action. */
+      '.iwdie-vc{--vc-panel:#535353;--vc-panel-darker:#424242;--vc-input:#454545;--vc-border:#383838;--vc-divider:#4b4b4b;--vc-text:#d1d1d1;',
+      '  --vc-text-strong:#ffffff;--vc-text-dim:#b0b0b0;--vc-text-disabled:#7a7a7a;--vc-hover:#606060;--vc-button-border:#747474;--vc-accent:#378ef0;',
+      '  --vc-accent-strong:#1473e6;--vc-font:"Source Sans 3","Source Sans Pro","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}',
+      '.iwdie-vc-back{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.12)}',
+      '.iwdie-vc-dlg{position:fixed;left:50%;top:calc(50% - 40px);transform:translate(-50%,-50%);z-index:2147483647;width:460px;max-width:calc(100vw - 60px);',
+      '  max-height:calc(100vh - 40px);overflow:auto;padding:22px;box-sizing:border-box;background:var(--vc-panel);border:1px solid var(--vc-border);border-radius:6px;',
+      '  box-shadow:0 8px 14px rgba(0,0,0,.55);font:400 13px/1.326 var(--vc-font);color:var(--vc-text);text-align:left}',
+      '.iwdie-vc-dlg h2{margin:0 0 4px;font:600 16px/1.326 var(--vc-font);color:var(--vc-text);border:0;padding:0;background:none}',
+      '.iwdie-vc-sub{margin:0 0 14px;font-size:11.5px;color:var(--vc-text-dim)}',
+      '.iwdie-vc-sub b{color:var(--vc-text);font-weight:600}',
+      '.iwdie-vc-cards{display:grid;gap:8px}',
+      '.iwdie-vc-card{display:grid;grid-template-columns:13px 1fr;column-gap:8px;align-items:start;padding:8px 12px;background:var(--vc-panel-darker);border-radius:6px;transition:background 80ms}',
+      '.iwdie-vc-card:hover,.iwdie-vc-card.iwdie-on{background:var(--vc-hover)}',
+      '.iwdie-vc-card.iwdie-on{box-shadow:inset 0 0 0 2px var(--vc-accent)}',
+      '.iwdie-vc-card.iwdie-off{opacity:.45;pointer-events:none}',
+      '.iwdie-vc-dlg input[type=radio],.iwdie-vc-dlg input[type=checkbox]{-webkit-appearance:none;appearance:none;width:13px;height:13px;margin:2px 0 0;flex:0 0 13px;',
+      '  border:1px solid var(--vc-button-border);background:var(--vc-input);box-sizing:border-box}',
+      '.iwdie-vc-dlg input[type=radio]{border-radius:50%}',
+      '.iwdie-vc-dlg input[type=checkbox]{border-radius:2px}',
+      '.iwdie-vc-dlg input[type=radio]:checked{background:radial-gradient(#fff 2.5px,transparent 3px),var(--vc-accent-strong);border-color:var(--vc-accent-strong)}',
+      '.iwdie-vc-dlg input[type=checkbox]:checked{background:var(--vc-accent-strong) url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 13 13%27%3E%3Cpath d=%27M3 6.6l2.4 2.4L10 4.2%27 fill=%27none%27 stroke=%27%23fff%27 stroke-width=%271.6%27/%3E%3C/svg%3E") center/13px 13px no-repeat;border-color:var(--vc-accent-strong)}',
+      '.iwdie-vc-dlg input:disabled{opacity:.5}',
+      '.iwdie-vc-t{font:600 12.5px var(--vc-font);color:var(--vc-text-strong)}',
+      '.iwdie-vc-d{margin-top:2px;font-size:11.5px;color:var(--vc-text-dim)}',
+      '.iwdie-vc-opts{margin-top:7px;display:none}',
+      '.iwdie-vc-card.iwdie-on .iwdie-vc-opts{display:block}',
+      '.iwdie-vc-opt{display:flex;align-items:flex-start;gap:7px;margin:5px 0 0;font-size:12.5px;color:var(--vc-text);font-weight:400}',
+      '.iwdie-vc-opt small{color:var(--vc-text-dim);font-size:11.5px}',
+      '.iwdie-vc-opt.iwdie-off{color:var(--vc-text-disabled)}',
+      '.iwdie-vc-hint{margin-top:12px;font-size:11.5px;color:var(--vc-text-dim)}',
+      '.iwdie-vc-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}',
+      '.iwdie-vc-pill{height:28px;min-width:72px;padding:0 16px;border:0;border-radius:14px;font:600 12.5px var(--vc-font);cursor:default;transition:background 80ms}',
+      '.iwdie-vc-primary{background:var(--vc-accent-strong);color:#fff}',
+      '.iwdie-vc-primary:hover{background:var(--vc-accent)}',
+      '.iwdie-vc-secondary{background:transparent;color:var(--vc-text);box-shadow:inset 0 0 0 1.5px var(--vc-text-dim)}',
+      '.iwdie-vc-secondary:hover{background:var(--vc-hover)}',
+      '.iwdie-vc-pill:focus-visible,.iwdie-vc-card:focus-visible{outline:1px solid var(--vc-accent);outline-offset:1px}',
       /* The library (v1.33.0): components from an Illustrator file, down the left. */
       '.iwdie-draw-lib{position:fixed;left:8px;top:120px;bottom:8px;width:284px;z-index:2147483647;background:#fff;border:1px solid #c9d1d9;border-radius:8px;',
       '  box-shadow:0 6px 24px rgba(0,0,0,.3);display:flex;flex-direction:column;font:12.5px/1.4 Roboto,Arial,sans-serif;color:#222;box-sizing:border-box}',
@@ -6548,55 +7070,216 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       img.onerror = function () { toast('Could not load the background image (' + String(url).slice(0, 80) + '…)', true); };
       img.src = url;
       };
-      if (!IWDIE_TRACER) { startRasterExport(false); return; }
-      openAiChooser(panel, startRasterExport, saveVerbatim);
+      openExportDialog(url, plant, panel, {
+        svg: IWDIE_TRACER ? function () { startRasterExport(true); } : null,
+        raw: saveVerbatim
+      });
     }
 
-    /* ---------- Background → Illustrator chooser (v1.6.0) ---------- */
-    var aiChooserOverlay = null;
+    /* ---------- Export Background (v1.34.0) ----------
+       What used to be three blue buttons is one choice and one Export, in
+       VectorCraft's style: choice cards, the options of the chosen one under it,
+       Cancel and the blue pill at the bottom right, Enter and Esc. The .ai is a
+       real Illustrator document now - see iwdieAiProgram. */
+    var exportDialog = null;
 
-    function closeAiChooser() {
-      if (aiChooserOverlay) { aiChooserOverlay.remove(); aiChooserOverlay = null; }
-      document.removeEventListener('keydown', onAiChooserKeydown, true);
+    function closeExportDialog() {
+      if (exportDialog) { exportDialog.back.remove(); exportDialog.dlg.remove(); exportDialog = null; }
+      document.removeEventListener('keydown', onExportDialogKeydown, true);
     }
 
-    function onAiChooserKeydown(ev) {
-      if (ev.key === 'Escape') { closeAiChooser(); ev.stopPropagation(); }
+    function onExportDialogKeydown(ev) {
+      if (!exportDialog) return;
+      if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); closeExportDialog(); }
+      else if (ev.key === 'Enter' && !(ev.target && ev.target.tagName === 'BUTTON')) { ev.preventDefault(); ev.stopPropagation(); exportDialog.go(); }
     }
 
-    function openAiChooser(panelName, start, saveAsIs) {
-      closeAiChooser();
-      var escd = String(panelName == null ? '' : panelName).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-      aiChooserOverlay = document.createElement('div');
-      aiChooserOverlay.className = 'iwdie-overlay';
-      var panel = document.createElement('div');
-      panel.className = 'iwdie-panel';
-      panel.innerHTML = [
-        '<button class="iwdie-x" id="iwdie_ai_x" title="Close (Esc)">×</button>',
-        '<h3>Background → Illustrator</h3>',
-        '<div>The background of <b>' + escd + '</b> is a pixel image (PNG/JPG). Pixels contain no vectors, so choose how Illustrator should get it:</div>',
-        '<div class="iwdie-choice">',
-        '  <button class="iwdie-btn" id="iwdie_ai_svg">Save as .SVG — vector trace</button>',
-        '  <div>Auto-traced to <b>editable vector shapes</b> in the drawing’s own colours — pipes, pills and symbols come out clean. Small text becomes rough outlines; retype labels in Illustrator. Traces in the background: drawings take ~1–2 s, photos can take minutes (the browser stays usable, the file downloads when done). Open with <i>File → Open</i>.</div>',
-        '</div>',
-        '<div class="iwdie-choice">',
-        '  <button class="iwdie-btn" id="iwdie_ai_pix">Save as .AI — pixels on artboard</button>',
-        '  <div>The original image, <b>lossless and pixel-exact</b>, placed 1:1 on an artboard (1 px = 1 pt). Ideal as a reference or tracing layer under new artwork — zooming shows pixels, nothing is vector-editable.</div>',
-        '</div>',
-        '<div class="iwdie-choice">',
-        '  <button class="iwdie-btn iwdie-secondary" id="iwdie_ai_raw">Save the picture as-is — .PNG / .JPG</button>',
-        '  <div>The picture as the designer shows it: opaque pixels stay <b>byte-for-byte</b>; transparent holes are filled with the canvas background colour (so they do not come out black). This is the one to hand an AI (Copilot, Claude) when you want it to look at the panel and propose where the links go — an .ai or a trace only makes that harder to read.</div>',
-        '</div>',
-        '<div class="iwdie-hint">Tip: if the drawing’s Illustrator source (.ai) exists in your archive, editing that beats any trace.</div>'
-      ].join('\n');
-      aiChooserOverlay.appendChild(panel);
-      document.body.appendChild(aiChooserOverlay);
-      document.addEventListener('keydown', onAiChooserKeydown, true);
-      aiChooserOverlay.addEventListener('mousedown', function (ev) { if (ev.target === aiChooserOverlay) closeAiChooser(); });
-      panel.querySelector('#iwdie_ai_x').addEventListener('click', closeAiChooser);
-      panel.querySelector('#iwdie_ai_svg').addEventListener('click', function () { closeAiChooser(); start(true); });
-      panel.querySelector('#iwdie_ai_pix').addEventListener('click', function () { closeAiChooser(); start(false); });
-      panel.querySelector('#iwdie_ai_raw').addEventListener('click', function () { closeAiChooser(); if (saveAsIs) saveAsIs(); });
+    /** The panel's size as the canvas shows it. */
+    function exportPanelSize() {
+      var mi = document.getElementById('main_image'), w = 0, h = 0;
+      try { w = parseInt(W.$(mi).css('width'), 10); h = parseInt(W.$(mi).css('height'), 10); } catch (e) {}
+      if (!(w > 0) && mi) w = mi.clientWidth;
+      if (!(h > 0) && mi) h = mi.clientHeight;
+      return { w: w > 0 ? w : 1400, h: h > 0 ? h : 750 };
+    }
+
+    /** The panel's objects, quietly: the reference layer is a nice-to-have, never a reason to fail. */
+    function exportPanelObjects() {
+      try {
+        W.obj_data = []; W.container_data = []; W.container_items = [];
+        var imgName = '';
+        try { imgName = W.$('#main_image').attr('main_image') || ''; } catch (e) {}
+        var doc = W.getPanelDataFromDOM(currentPlantId(), currentPanelName(), imgName, W.get_user_name());
+        return (doc && Array.isArray(doc.single_objects)) ? doc.single_objects.filter(function (o) { return o && typeof o === 'object' && o.posLeft !== undefined; }) : [];
+      } catch (e) { return []; }
+    }
+
+    function openExportDialog(url, plant, panelName, deliver) {
+      closeExportDialog();
+      var esc2 = iwdieEscHtml, size = exportPanelSize(), objects = exportPanelObjects();
+      fetchBackgroundBytes(url).then(null, function () { return null; }).then(function (bg) {
+        var found = (bg && iwdieSniffMime(bg.bytes) === 'image/png') ? iwdieDrawExtract(bg.bytes) : null;
+        var nShapes = found ? found.drawing.shapes.length : 0;
+        var back = document.createElement('div');
+        back.className = 'iwdie-vc iwdie-vc-back';
+        var dlg = document.createElement('div');
+        dlg.className = 'iwdie-vc iwdie-vc-dlg';
+        dlg.setAttribute('role', 'dialog');
+        dlg.setAttribute('aria-label', 'Export Background');
+        var card = function (value, title, desc, opts, on, off) {
+          return '<div class="iwdie-vc-card' + (on ? ' iwdie-on' : '') + (off ? ' iwdie-off' : '') + '" data-fmt="' + value + '">' +
+            '<input type="radio" name="iwdie_vc_fmt" value="' + value + '"' + (on ? ' checked' : '') + (off ? ' disabled' : '') + '>' +
+            '<div><div class="iwdie-vc-t">' + title + '</div><div class="iwdie-vc-d">' + desc + '</div>' + (opts ? '<div class="iwdie-vc-opts">' + opts + '</div>' : '') + '</div></div>';
+        };
+        var opt = function (key, label, note, checked, disabled) {
+          return '<label class="iwdie-vc-opt' + (disabled ? ' iwdie-off' : '') + '"><input type="checkbox" data-opt="' + key + '"' + (checked ? ' checked' : '') + (disabled ? ' disabled' : '') + '>' +
+            '<span>' + label + (note ? ' <small>' + note + '</small>' : '') + '</span></label>';
+        };
+        var sub = ['<b>' + esc2(panelName || 'This panel') + '</b>', size.w + ' × ' + size.h + ' px'];
+        if (nShapes) sub.push('a drawing of ' + iwdieN(nShapes, 'shape', 'shapes'));
+        if (objects.length) sub.push(iwdieN(objects.length, 'object', 'objects'));
+        dlg.innerHTML = [
+          '<h2>Export Background</h2>',
+          '<div class="iwdie-vc-sub">' + sub.join(' · ') + '</div>',
+          '<div class="iwdie-vc-cards" role="radiogroup">',
+          card('ai', 'Illustrator document (.ai)',
+            'Opens in Illustrator with layers: the picture locked at the bottom, the drawing as editable shapes on top, the panel’s objects on a hidden reference layer.',
+            opt('drawing', 'Drawing as editable shapes', nShapes ? '(' + iwdieN(nShapes, 'shape', 'shapes') + ')' : '(this background has none)', !!nShapes, !nShapes) +
+            opt('objects', 'Panel objects, on a hidden layer', objects.length ? '(' + objects.length + ')' : '(none found)', !!objects.length, !objects.length) +
+            opt('trace', 'Vector trace of the picture, on a hidden layer', IWDIE_TRACER ? '(seconds to minutes)' : '(not available here)', false, !IWDIE_TRACER),
+            true, false),
+          card('svg', 'SVG — vector trace',
+            'The picture traced to editable shapes in its own colours, grouped and named by what they are. Small text becomes outlines; retype it in Illustrator.',
+            '', false, !deliver.svg),
+          card('raw', 'Picture as-is (.PNG / .JPG)',
+            'Byte for byte as the designer shows it, transparent holes filled with the canvas colour. The one to hand an AI that should look at the panel.',
+            '', false, false),
+          '</div>',
+          '<div class="iwdie-vc-hint">If the drawing’s own Illustrator file (.ai) is in your archive, editing that beats any export.</div>',
+          '<div class="iwdie-vc-foot"><button class="iwdie-vc-pill iwdie-vc-secondary" data-act="cancel">Cancel</button>' +
+          '<button class="iwdie-vc-pill iwdie-vc-primary" data-act="export">Export</button></div>'
+        ].join('');
+        document.body.appendChild(back);
+        document.body.appendChild(dlg);
+        var choose = function (value) {
+          Array.prototype.forEach.call(dlg.querySelectorAll('.iwdie-vc-card'), function (c) {
+            var on = c.getAttribute('data-fmt') === value;
+            c.classList.toggle('iwdie-on', on);
+            c.querySelector('input[type=radio]').checked = on;
+          });
+        };
+        var go = function () {
+          var picked = dlg.querySelector('input[name=iwdie_vc_fmt]:checked'), fmt = picked ? picked.value : 'ai';
+          var flag = function (k) { var el = dlg.querySelector('[data-opt="' + k + '"]'); return !!(el && el.checked && !el.disabled); };
+          var opts = { drawing: flag('drawing'), objects: flag('objects'), trace: flag('trace') };
+          closeExportDialog();
+          if (fmt === 'svg' && deliver.svg) deliver.svg();
+          else if (fmt === 'raw') deliver.raw();
+          else exportIllustratorDocument({ url: url, bg: bg, found: found, objects: objects, size: size, plant: plant, panel: panelName }, opts);
+        };
+        dlg.addEventListener('click', function (ev) {
+          var act = ev.target.closest ? ev.target.closest('[data-act]') : null;
+          if (act) { if (act.getAttribute('data-act') === 'export') go(); else closeExportDialog(); return; }
+          if (ev.target.closest && ev.target.closest('.iwdie-vc-opts')) return;
+          var c = ev.target.closest ? ev.target.closest('.iwdie-vc-card') : null;
+          if (c && !c.classList.contains('iwdie-off')) choose(c.getAttribute('data-fmt'));
+        });
+        dlg.addEventListener('dblclick', function (ev) {
+          var c = ev.target.closest ? ev.target.closest('.iwdie-vc-card') : null;
+          if (c && !c.classList.contains('iwdie-off') && !(ev.target.closest && ev.target.closest('.iwdie-vc-opts'))) { choose(c.getAttribute('data-fmt')); go(); }
+        });
+        back.addEventListener('mousedown', closeExportDialog);
+        document.addEventListener('keydown', onExportDialogKeydown, true);
+        exportDialog = { back: back, dlg: dlg, go: go };
+        try { dlg.querySelector('[data-act="export"]').focus(); } catch (e) {}
+      });
+    }
+
+    /** A picture drawn onto a panel-sized canvas the way the canvas shows it: its CSS size,
+     *  position and repeat, over `fill` when one is given. -> Promise<canvas> */
+    function exportPaint(bytes, mime, size, fill) {
+      var mi = document.getElementById('main_image'), cs = mi ? getComputedStyle(mi) : null;
+      var place = { size: cs ? cs.backgroundSize : 'auto', pos: cs ? cs.backgroundPosition : '0% 0%', repeat: cs ? cs.backgroundRepeat : 'no-repeat' };
+      var c = document.createElement('canvas');
+      c.width = size.w; c.height = size.h;
+      var ctx = c.getContext('2d');
+      if (fill) { ctx.fillStyle = fill; ctx.fillRect(0, 0, size.w, size.h); }
+      if (!bytes) return Promise.resolve(c);
+      return drawLoadImage('data:' + (mime || 'image/png') + ';base64,' + iwdieBytesToBase64(bytes)).then(function (img) {
+        drawPlaceBase(ctx, img, { w: size.w, h: size.h, place: place });
+        return c;
+      });
+    }
+
+    /** The picture as the tracer wants it, traced in the worker (or, without one, here). -> Promise<tidied svg> */
+    function exportTrace(canvas, size, fill) {
+      return drawLoadImage(canvas.toDataURL('image/png')).then(function (img) {
+        var got = buildTraceSource(img, size.w, size.h, fill);
+        if (!got) throw new Error('the picture’s pixels could not be read for tracing');
+        var prog = openTraceProgress('Tracing the picture for the .ai');
+        var job = traceInWorker(got.data, iwdieTraceOptionsIllustrator(got.scale), IWDIE_TRACE_PALETTE_COLORS, prog.step);
+        prog.onCancel(job.cancel);
+        return job.promise.then(null, function (e) {
+          if (!e || e.kind !== 'no-worker') throw e;
+          var again = buildTraceSource(img, size.w, size.h, fill), illu = iwdieTraceOptionsIllustrator(again.scale);
+          var pal = iwdieBuildPalette(again.data, IWDIE_TRACE_PALETTE_COLORS);
+          if (pal) illu.pal = pal;
+          got = again;
+          return IWDIE_TRACER.imagedataToSVG(again.data, illu);
+        }).then(function (svg) {
+          prog.close();
+          return iwdieTidyTraceSvg(svg, got.scale, size.w, size.h);
+        }, function (e) { prog.close(); throw e; });
+      });
+    }
+
+    /** The .ai: the picture under the drawing on a locked layer, the drawing's shapes as
+     *  Illustrator objects, the panel's objects and (on request) a trace on hidden layers -
+     *  Illustrator's own editing data inside a PDF whose page shows the panel as it looks. */
+    function exportIllustratorDocument(info, opts) {
+      var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea';
+      var name = iwdieBuildBackgroundFilename(info.plant, info.panel, 'ai');
+      var base = info.found ? info.found.base : (info.bg ? { mime: info.bg.mime, bytes: info.bg.bytes } : null);
+      var shapes = (opts.drawing && info.found) ? info.found.drawing.shapes : [];
+      var objects = opts.objects ? info.objects : [];
+      var t0 = Date.now(), traceShapes = [];
+      toast('Writing the Illustrator document…', false, 4000);
+      exportPaint(base && base.bytes, base && base.mime, size, null).then(function (picCanvas) {
+        var job = opts.trace ? exportTrace(picCanvas, size, fill).then(function (svg) { traceShapes = iwdieAiTraceShapes(svg); }) : Promise.resolve();
+        return job.then(function () { return picCanvas; });
+      }).then(function (picCanvas) {
+        var rgba = base ? picCanvas.getContext('2d').getImageData(0, 0, size.w, size.h).data : null;
+        var lines = function (list) { var out = []; list.forEach(function (sh) { out = out.concat(iwdieAiShapeLines(sh)); }); return out; };
+        var layers = [{
+          name: 'Bakgrunn', locked: true,
+          lines: iwdieAiShapeLines({ t: 'rect', x: 0, y: 0, w: size.w, h: size.h, rx: 0, st: { fill: '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join(''), stroke: null, sw: 0 } }, 'Lerret'),
+          raster: rgba ? iwdieAiRasterParts(rgba, size.w, size.h, 0, 0, size.w, size.h, 'Bakgrunnsbilde') : null
+        }];
+        if (traceShapes.length) layers.push({ name: 'Sporing', visible: false, lines: lines(traceShapes) });
+        layers.push({ name: 'Tegning', lines: lines(shapes) });
+        if (objects.length) layers.push({ name: 'Panelobjekter', visible: false, print: false, lines: iwdieAiObjectLines(objects) });
+        var doc = { width: size.w, height: size.h, title: name, layers: layers, artboardName: info.panel || 'Panel' };
+        var header = iwdieAiHeaderLines(doc).join('\r\n') + '\r\n';
+        var program = iwdieAiProgram(doc);
+        // what other viewers see: the panel as the canvas shows it, drawing included
+        return Promise.all([deflateBytes(program), exportPaint(info.bg && info.bg.bytes, info.bg && info.bg.mime, size, fill)]).then(function (r) {
+          var jpeg = iwdieParseDataUrl(r[1].toDataURL('image/jpeg', 0.9));
+          var pdf = iwdieAiPdf({
+            width: size.w, height: size.h, meta: header, privateData: iwdieAiPrivateData(header, r[0]),
+            preview: { width: size.w, height: size.h, filter: 'DCTDecode', data: jpeg.bytes }, title: name, version: IWDIE_VERSION
+          });
+          downloadBytes(pdf, name, 'application/pdf');
+          var bits = ['Bakgrunn (' + (rgba ? 'the picture, locked' : 'no picture') + ')'];
+          if (traceShapes.length) bits.push('Sporing (' + iwdieN(traceShapes.length, 'traced object', 'traced objects') + ', hidden)');
+          bits.push('Tegning (' + (shapes.length ? iwdieN(shapes.length, 'shape', 'shapes') : 'empty, to draw on') + ')');
+          if (objects.length) bits.push('Panelobjekter (' + objects.length + ', hidden)');
+          hostOk('Illustrator document saved in ' + Math.max(1, Math.round((Date.now() - t0) / 100) / 10) + ' s → ' + name + ' (' + Math.round(pdf.length / 1024) + ' kB). Layers: ' +
+            bits.join(', ') + '. Illustrator asks to update the text the first time - choose Update.');
+        });
+      }).then(null, function (e) {
+        if (e && e.kind === 'cancelled') { toast('Export cancelled - nothing was saved.'); return; }
+        toast('The Illustrator document could not be written: ' + ((e && e.message) || e), true, 10000);
+      });
     }
 
     /* ---------- import modal ---------- */
@@ -8809,7 +9492,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!s) return;
       var at = drawStampAt(p);
       var shapes = s.item.shapes.map(function (x) { return iwdieDrawMap(x, 1, at.x, 1, at.y); });
-      drawAdd(shapes.length === 1 ? shapes[0] : { t: 'group', name: s.item.name, items: shapes });
+      var one = shapes.length === 1 ? shapes[0] : null;
+      // a component keeps its library name, which the .ai export hands on to Illustrator
+      if (one && one.t === 'group' && !one.name && s.item.name) one = { t: 'group', name: s.item.name, items: one.items };
+      drawAdd(one || { t: 'group', name: s.item.name, items: shapes });
     }
 
     function drawNextFrame() {
@@ -9496,6 +10182,23 @@ if (typeof module !== 'undefined' && module.exports) {
     aiParse: iwdieAiParse,
     aiPathD: iwdieAiPathD,
     aiLibrary: iwdieAiLibrary,
+    aiNum: iwdieAiNum,
+    aiLatin1Text: iwdieAiLatin1Text,
+    aiUtf8Text: iwdieAiUtf8Text,
+    aiXmlId: iwdieAiXmlId,
+    aiUniqueIds: iwdieAiUniqueIds,
+    aiColour: iwdieAiColour,
+    aiShapeLines: iwdieAiShapeLines,
+    aiShapeSubpaths: iwdieAiShapeSubpaths,
+    aiLayerLines: iwdieAiLayerLines,
+    aiRasterParts: iwdieAiRasterParts,
+    aiHeaderLines: iwdieAiHeaderLines,
+    aiProgram: iwdieAiProgram,
+    aiPdf: iwdieAiPdf,
+    aiPrivateData: iwdieAiPrivateData,
+    aiObjectLines: iwdieAiObjectLines,
+    aiQuadToCubic: iwdieAiQuadToCubic,
+    aiTraceShapes: iwdieAiTraceShapes,
     pngChunks: iwdiePngChunks,
     pngCrc32: iwdiePngCrc32,
     sniffMime: iwdieSniffMime,
