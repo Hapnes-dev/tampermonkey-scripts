@@ -2,7 +2,7 @@
 
 Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four stacked buttons — **Export JSON**, **Insert JSON…**, **Draw background…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, the background artwork can be drawn on the canvas itself, and it can be handed to Adobe Illustrator for editing. The designer itself has no way to do any of these; this script adds them.
 
-Runs on `http(s)://legacy.iwmac.local/iwmac_designer_v4/?plant_id=<id>` ("IWMAC Designer V5").
+Runs on `http(s)://legacy.iwmac.local/iwmac_designer_v4/?plant_id=<id>` ("IWMAC Designer V5"). Since v1.35.0 it also runs on the hosted vector editor, `https://hapnes-dev.github.io/iwmac-vector/app/`, for [Edit in VectorCraft](#edit-in-vectorcraft-v1350); Tampermonkey asks once to allow that, and Tampermonkey's storage, when it updates.
 
 ## Install
 
@@ -310,6 +310,7 @@ cleaning.
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
 | Drawing background artwork | *Draw background…* draws on the canvas between the background and the objects; Done applies one PNG through `iw_set_base_image`, carrying the editable drawing inside it (v1.32.0) |
 | Editing the background in Illustrator | *Background → Illustrator* writes a real .ai: the picture on a locked layer, the drawing as Illustrator objects, the panel's objects on a hidden reference layer (v1.34.0) |
+| Editing the background in the browser | *Background → Illustrator* → **Edit in VectorCraft** opens the panel in an open-source vector editor in a new tab; saving there updates the background, and the next edit reopens the same document (v1.35.0) |
 | Components from Illustrator | *▦ Library* in Draw mode reads the objects around a `.ai` file's artboard and places them as groups (v1.33.0) |
 | Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green when every object and container arrived and red when any did not, and says how many (since v1.31.1 the file's own warnings are listed but never colour it) |
 | Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
@@ -911,7 +912,7 @@ system.
 
 The third button exports the **current panel's background image as a file Adobe Illustrator edits directly**. (The host hard-codes the manager sidebar to 900px; the script relaxes `#manager_div` to fit its content so the extra button never causes a sidebar scrollbar while the buttons stay the host's standard size. v1.3.3 capped that growth to the viewport, which turned out to clip the fieldset's bottom edge on shorter windows — since v1.5.2 there is no cap and `overflow` is forced visible. Since v1.5.4 a measured **compact mode** kicks in only when the column wouldn't fit the window — fieldset gaps 8→4px and slimmer paddings reclaim ~68px with the buttons untouched at 28px; tall windows keep the host's stock spacing, with hysteresis so the mode never flaps. And v1.5.5 found the *actual* constant clipper: the host also hard-codes the sidebar's parent `#master_wrapper` to 900px with `overflow:hidden`, which cut the last ~18px of the fieldset at **any** window size — it now grows with content exactly like `#manager_div`.)
 
-- **PNG/JPG background** → **Export Background** (v1.34.0) offers three deliveries, because **pixels contain no vectors**. It is drawn in VectorCraft's style (see below): one choice among cards, the chosen one's options under it, then Cancel and a blue Export. Enter exports, Esc cancels, and a double-click on a card exports that one.
+- **PNG/JPG background** → **Export Background** (v1.34.0) offers four deliveries, because **pixels contain no vectors**. It is drawn in VectorCraft's style (see below): one choice among cards, the chosen one's options under it, then Cancel and a blue Export. Enter exports, Esc cancels, and a double-click on a card exports that one.
   - **Illustrator document (.ai)** (v1.34.0; it replaces the v1.3.0 pixel-exact .ai). This is a real Illustrator document with layers, written as Illustrator's own editing data:
     - **Bakgrunn**, locked: the canvas colour and the picture, pixel-exact at panel size (1 px = 1 pt). When the background carries a Draw drawing, this is the picture *under* the drawing, so nothing shows twice.
     - **Tegning**: the Draw drawing (v1.32.0) as Illustrator objects. Paths keep their fill and stroke as one object. Boxes keep their rounded corners. Pipes keep their dashes, caps, joins and arrowheads. Labels become point text in Arial, and opacity is kept. Groups keep their names, library components (v1.33.0) included. With no drawing the layer is empty, ready to draw on.
@@ -928,6 +929,7 @@ The third button exports the **current panel's background image as a file Adobe 
     - a closed path repeating its first point;
     - the picture's rows bottom-up, with the alpha bytes after the colour;
     - no two objects sharing an id: one repeat and Illustrator refuses the whole file.
+  - **Edit in VectorCraft** (v1.35.0): the same layers, opened in a vector editor in a new browser tab, and the saved result taken straight back as the background. See [Edit in VectorCraft](#edit-in-vectorcraft-v1350) below.
   - **SVG — vector trace** (v1.4.0): the image is auto-traced to an **`.svg` of editable vector shapes** (vendored [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs), public domain — the script stays one self-contained file). Shapes, pills and pipe runs come out clean **in the drawing's own colours** (v1.5.1: the palette is built from the image's exact colours with a guaranteed slot for saturated ones — before that, flat schematics traced to grey because thin coloured lines never won a sampled palette slot); **small text becomes rough outlines** — retype labels in Illustrator (that limitation is inherent to tracing, Illustrator's own Image Trace included). Since v1.4.1 the trace runs **in a Web Worker**, so the browser stays fully responsive even on photo backgrounds that take minutes (measured: main thread answers in ~4 ms while tracing; ~1–2 s total for a 1400×750 schematic, ≈7–16 k paths depending on colours). The worker is built by lifting the tracer's own constructor source — no second copy of the library, and a main-thread fallback covers browsers that cannot start a worker at all (since v1.29.0 that is the *only* case it covers: a failure inside the worker is reported, not retried on the main thread, and a progress panel with a Cancel shows the stage the worker is at).
   - **Save the picture as-is** (v1.11.0, flatten v1.16.2): opaque pixels stay **byte-for-byte**; transparent holes are filled with `#main_image`'s CSS background-color so the file matches the designer (a transparent PNG otherwise renders those holes black in viewers). Same file the empty-canvas export path produces. This is what an AI asked to look at the panel and propose link positions actually wants; a trace or a PDF only makes the drawing harder for it to read.
 - **SVG background** (e.g. an AI-authored `image_svg` one) → the **`.svg` itself**, because it is already vector and Illustrator opens `.svg` natively (*File → Open*) with full editability — wrapping it in a PDF would rasterize exactly what you want to edit. The toast says so.
@@ -941,6 +943,84 @@ Designer's own `V3_designer.css` ends in `, span`, so every span on the page is 
 14 px, weight 500. The dialog's spans now take the dialog's text colour, and the library
 panel and the style row are pinned against the same rule. The stub host page carries that
 rule now, so a test sees what the live page shows.
+
+## Edit in VectorCraft (v1.35.0)
+
+[VectorCraft](https://github.com/storytold/vectorcraft) is an open-source vector editor
+modelled on Illustrator, written in Rust (MIT OR Apache-2.0, by the ArtCraft team and the
+VectorCraft contributors). Its official web build runs entirely in the browser
+(WebAssembly, drawing with WebGPU or WebGL2). An unmodified copy of that build is hosted at
+**<https://hapnes-dev.github.io/iwmac-vector/app/>** (repository
+[Hapnes-dev/iwmac-vector](https://github.com/Hapnes-dev/iwmac-vector)). This script bridges
+the Designer and that page, so a background can be edited as vectors without leaving the
+browser.
+
+**Opening.** *Background → Illustrator* → **Edit in VectorCraft** → *Export*. A new tab opens
+the panel as a document with three layers:
+
+- **Bakgrunn**: the canvas colour and the picture, at panel size.
+- **Tegning**: the Draw drawing (v1.32.0) as editable shapes; empty when there is none.
+- **Panelobjekter**, hidden: every object on the panel as a dashed box with its label.
+  Turn it on to see where the live values will sit.
+
+The first start downloads the editor (about 20 MB). After that the browser has it cached.
+
+**Sending it back.** In VectorCraft, press **Ctrl+S** → Format **SVG** → OK → tick
+**Preserve Editing Capabilities** → OK. A banner in the editor's tab repeats this. The SVG
+does not go to Downloads. It goes to the Designer tab, which draws it at panel size and makes
+it the background through the host's own `iw_set_base_image`. The banner then reports one
+of these:
+
+- *Received by the Designer - updating the panel…*;
+- *✓ The panel's background was updated at 09:44*;
+- *Not applied:* and the reason.
+
+Keep editing and save as often as you like. Nothing is stored on the server until you use
+the Designer's own Save.
+
+**The next edit.** The PNG keeps the saved SVG, with VectorCraft's own document inside it,
+in a private chunk (`iwVc`) that viewers skip. *Edit in VectorCraft* on that background
+reopens exactly that document, with its layers and editable shapes, not a flattened picture.
+Suppose you draw over it in the Designer with *Draw background…*. That drawing then goes
+along as a layer of its own, *Tegning (Designer)*. Without *Preserve Editing Capabilities*
+the next edit starts from the picture instead, and both tabs say so.
+
+**What it refuses, and why:**
+
+- **The wrong panel.** The Designer changes panels without reloading the page. A save that
+  arrives while another panel is open is refused, in both tabs. Open the panel again, then
+  save again in VectorCraft.
+- **Draw is open.** A save that arrives then is refused. Close Draw first.
+- **No Designer tab answers within 8 seconds.** The tab may have been closed, reloaded or
+  discarded by the browser. The SVG then goes to **Downloads**, so no work is lost. Open
+  *Edit in VectorCraft* again from the Designer to send work back.
+- **SVG Compressed** goes to Downloads, and the banner says to choose **SVG**.
+
+**How it works.** The script runs on both pages: Tampermonkey asks once to allow the new
+`@match` for the editor's page, and the storage permissions (`GM_setValue`, `GM_getValue`,
+`GM_deleteValue`, `GM_addValueChangeListener`). The flow:
+
+1. The Designer writes the job (the SVG, the panel and the plant) to Tampermonkey's own
+   storage. It then opens the editor at `…/app/#job=<id>`.
+2. On the editor's page the script drops that SVG on the canvas, as you would by hand.
+3. When the editor saves, the script catches the SVG and answers the Designer through the
+   same storage.
+4. The Designer acknowledges each save.
+
+The hosted files stay exactly as released. The script only adds the banner and catches the
+save while the page runs. Nothing leaves the browser: the editor is a static page, and the
+panel goes from tab to tab through Tampermonkey's storage.
+
+**The hosted copy.** It is VectorCraft's official web build 0.9.0, byte for byte, with its
+licences and notices. To move to a newer release, run the repository's *Update VectorCraft*
+workflow with the release tag.
+
+The ArtCraft name and marks belong to the ArtCraft team and are not open source. They appear
+only inside that unmodified build, as its brand terms allow. This script's own dialog follows
+VectorCraft's colours but carries none of those marks. VectorCraft calls itself alpha.
+
+The kit's `tests/test-vectorcraft-bridge.js` holds the SVG the Designer sends, the sizing,
+the merge, the PNG chunk and the script header.
 
 ## AI-generated panels (Copilot)
 

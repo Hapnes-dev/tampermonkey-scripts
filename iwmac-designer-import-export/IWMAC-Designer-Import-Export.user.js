@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.34.2
+// @version      1.35.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -10,10 +10,15 @@
 // @downloadURL  https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/iwmac-designer-import-export/IWMAC-Designer-Import-Export.user.js
 // @match        http://legacy.iwmac.local/iwmac_designer_v4/*
 // @match        https://legacy.iwmac.local/iwmac_designer_v4/*
+// @match        https://hapnes-dev.github.io/iwmac-vector/app/*
 // @run-at       document-idle
 // @noframes
 // @grant        unsafeWindow
 // @grant        GM_addStyle
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_addValueChangeListener
 // ==/UserScript==
 
 /*
@@ -25,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.34.2';
+var IWDIE_VERSION = '1.35.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6091,12 +6096,127 @@ function iwdieAiTraceShapes(svg) {
   return iwdieDrawShapes(root.items);
 }
 
+
+/* ===================== Edit in VectorCraft (v1.35.0): the pure part =====================
+   VectorCraft (an open-source Illustrator in Rust, MIT OR Apache-2.0) runs as an
+   unmodified official web build on https://hapnes-dev.github.io/iwmac-vector/app/. This
+   script runs on both pages. The Designer hands the panel over as an SVG with
+   layers; the editor's page drops it in and catches the SVG saved there; Tampermonkey's
+   storage carries both ways. The SVG comes back with VectorCraft's own document inside
+   it (Preserve Editing Capabilities) and is kept in the background PNG, so the next edit
+   reopens exactly that document. */
+
+/** Where the editor lives. */
+var IWDIE_VC_URL = 'https://hapnes-dev.github.io/iwmac-vector/app/';
+/** Private PNG chunk with the VectorCraft SVG: ancillary, private, safe to copy. */
+var IWDIE_VC_CHUNK = 'iwVc';
+
+/** The panel as an SVG VectorCraft opens with layers: Bakgrunn (the canvas colour and the
+ *  picture), Tegning (Draw's shapes) and, hidden, Panelobjekter (each object's box and label). */
+function iwdieVcSvg(o) {
+  var W = Math.max(1, Math.round(o.width)), H = Math.max(1, Math.round(o.height)), esc = iwdieDrawEsc, f = iwdieDrawFmt;
+  var shapes = Array.isArray(o.shapes) ? o.shapes : [], objects = Array.isArray(o.objects) ? o.objects : [];
+  var out = ['<?xml version="1.0" encoding="UTF-8"?>',
+    '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">'];
+  if (o.title) out.push('  <title>' + esc(o.title) + '</title>');
+  var defs = iwdieDrawDefsSvg(shapes);
+  if (defs) out.push('  <defs>' + defs + '</defs>');
+  out.push('  <g id="Bakgrunn" data-name="Bakgrunn">');
+  var plate = iwdieDrawColor(o.plate);
+  if (plate) out.push('    <rect width="' + W + '" height="' + H + '" fill="' + plate + '"/>');
+  if (o.picture && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+\/=]+$/.test(o.picture)) {
+    out.push('    <image width="' + W + '" height="' + H + '" preserveAspectRatio="none" xlink:href="' + o.picture + '"/>');
+  }
+  out.push('  </g>');
+  out.push('  <g id="Tegning" data-name="Tegning">');
+  shapes.forEach(function (sh) { out.push('    ' + iwdieDrawShapeSvg(sh)); });
+  out.push('  </g>');
+  if (objects.length) {
+    out.push('  <g id="Panelobjekter" data-name="Panelobjekter" display="none">');
+    objects.forEach(function (ob) {
+      var x = parseFloat(ob.posLeft), y = parseFloat(ob.posTop), w = parseFloat(ob.posWidth), h = parseFloat(ob.posHeight);
+      if (!isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0)) return;
+      var label = (ob.tag_text && String(ob.tag_text).trim()) || (ob.alias_text && String(ob.alias_text).trim()) || String(ob.obj_id || 'object');
+      out.push('    <g data-name="' + esc(label.slice(0, 60)) + '"><rect x="' + f(x) + '" y="' + f(y) + '" width="' + f(w) + '" height="' + f(h) +
+        '" fill="none" stroke="#4f80ff" stroke-width="0.75" stroke-dasharray="3 2"/><text x="' + f(x) + '" y="' + f(y - 2) +
+        '" font-family="Arial" font-size="7" fill="#4f80ff">' + esc(label.slice(0, 60)) + '</text></g>');
+    });
+    out.push('  </g>');
+  }
+  out.push('</svg>');
+  return out.join('\n') + '\n';
+}
+
+/** The width and height an SVG declares: its own, else its viewBox's; null when it has neither. */
+function iwdieVcSize(svg) {
+  var m = /<svg\b[^>]*>/i.exec(String(svg || ''));
+  if (!m) return null;
+  var num = function (a) { var r = new RegExp('\\s' + a + '\\s*=\\s*"\\s*([\\d.]+)(px)?\\s*"').exec(m[0]); return r ? parseFloat(r[1]) : null; };
+  var vb = /\sviewBox\s*=\s*"\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)\s*"/.exec(m[0]);
+  var w = num('width'), h = num('height');
+  if (!(w > 0) && vb) w = parseFloat(vb[1]);
+  if (!(h > 0) && vb) h = parseFloat(vb[2]);
+  return (w > 0 && h > 0) ? { w: w, h: h } : null;
+}
+
+/** The SVG with an explicit size on its root, so a browser draws it at that size. */
+function iwdieVcSized(svg, w, h) {
+  var s = String(svg || ''), m = /<svg\b[^>]*>/i.exec(s);
+  if (!m) return null;
+  var tag = m[0].replace(/\s(width|height)\s*=\s*"[^"]*"/g, '').replace(/^<svg\b/i, '<svg width="' + Math.round(w) + '" height="' + Math.round(h) + '"');
+  return s.slice(0, m.index) + tag + s.slice(m.index + m[0].length);
+}
+
+/** A VectorCraft SVG with Draw's shapes added as a layer of their own, for a drawing made in
+ *  the Designer over a background that came from VectorCraft. VectorCraft then reads the
+ *  visible art (its stored document no longer matches), layers and all. */
+function iwdieVcMergeShapes(svg, shapes) {
+  var s = String(svg || ''), at = s.lastIndexOf('</svg>');
+  if (at < 0 || !shapes || !shapes.length) return s;
+  var defs = iwdieDrawDefsSvg(shapes);
+  var layer = '<g id="Tegning_Designer" data-name="Tegning (Designer)">' + (defs ? '<defs>' + defs + '</defs>' : '') +
+    shapes.map(function (sh) { return iwdieDrawShapeSvg(sh); }).join('') + '</g>\n';
+  return s.slice(0, at) + layer + s.slice(at);
+}
+
+/** The PNG with a VectorCraft document stored in it. The picture is that document's
+ *  rendering now, so an older copy and any Draw drawing (and the picture it was drawn on)
+ *  go; viewers skip the chunk. */
+function iwdieVcEmbed(png, svg) {
+  var chunks = iwdiePngChunks(png);
+  if (!chunks) throw new Error('the picture to embed in is not a PNG');
+  var keep = chunks.filter(function (c) {
+    if (c.type === IWDIE_VC_CHUNK || c.type === IWDIE_DRAW_BASE_CHUNK) return false;
+    if (c.type === 'iTXt') { var t = iwdiePngReadITxt(c.data); if (t && t.keyword === IWDIE_DRAW_KEYWORD) return false; }
+    return true;
+  });
+  var end = keep.pop();
+  keep.push({ type: IWDIE_VC_CHUNK, data: iwdieUtf8Encode(String(svg)) });
+  keep.push(end);
+  return iwdiePngBuild(keep);
+}
+
+/** The VectorCraft SVG a PNG carries, or null. */
+function iwdieVcExtract(png) {
+  var chunks = iwdiePngChunks(png);
+  if (!chunks) return null;
+  for (var i = 0; i < chunks.length; i++) {
+    if (chunks[i].type === IWDIE_VC_CHUNK && chunks[i].data.length) {
+      var t = iwdieUtf8Decode(chunks[i].data);
+      return /<svg\b/i.test(t) ? t : null;
+    }
+  }
+  return null;
+}
+
 /* ===================== browser body ===================== */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   (function () {
     var W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
     if (W.__IWDIE_LOADED) return;
     W.__IWDIE_LOADED = true;
+    // On the VectorCraft page (v1.35.0) only the bridge runs; the Designer part does not belong there.
+    if (location.hostname === 'hapnes-dev.github.io' || document.getElementById('vectorcraft_canvas')) { vcAppSide(); return; }
 
     /* ---------- styles ---------- */
     var CSS = [
@@ -7080,6 +7200,248 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+
+    /* ---------- Edit in VectorCraft (v1.35.0): the editor's side ----------
+       Runs on the VectorCraft page when it was opened for a job: drops the panel's SVG
+       on the canvas once the app has started, shows how to save, and catches the SVG the
+       app saves - a blob download - to hand it back through Tampermonkey's storage instead. */
+    function vcAppSide() {
+      if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') return;
+      var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null;
+      try { job = GM_getValue('iwdie.vc.job', null); } catch (e) { job = null; }
+      if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') return;
+      var css = [
+        '.iwdie-vcb{position:fixed;right:16px;bottom:64px;z-index:2147483647;width:330px;padding:12px 30px 12px 14px;box-sizing:border-box;background:#424242;',
+        '  border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#d1d1d1}',
+        '.iwdie-vcb b{color:#ffffff;font-weight:600}',
+        '.iwdie-vcb .iwdie-vcb-t{font-weight:600;color:#ffffff;margin-bottom:4px}',
+        '.iwdie-vcb .iwdie-vcb-s{margin-top:6px;color:#8fd19e}',
+        '.iwdie-vcb .iwdie-vcb-e{margin-top:6px;color:#ff9f9f}',
+        '.iwdie-vcb button{position:absolute;top:6px;right:6px;width:20px;height:20px;border:0;background:transparent;color:#b0b0b0;font:16px/20px Arial,sans-serif;cursor:default;padding:0}',
+        '.iwdie-vcb button:hover{color:#ffffff}'
+      ].join('\n');
+      try { GM_addStyle(css); } catch (e) { var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st); }
+      var esc2 = iwdieEscHtml, banner = document.createElement('div');
+      banner.className = 'iwdie-vcb';
+      banner.innerHTML = '<button title="Hide">×</button><div class="iwdie-vcb-t">IWMAC Designer · ' + esc2(job.panel || 'panel') +
+        (job.plant ? ' (plant ' + esc2(job.plant) + ')' : '') + '</div>' +
+        '<div>To send it back: <b>Ctrl+S</b> → Format <b>SVG</b> → OK → tick <b>Preserve Editing Capabilities</b> → OK. ' +
+        'The panel’s background updates; keep editing and save again for more.</div><div class="iwdie-vcb-n"></div>';
+      document.body.appendChild(banner);
+      banner.querySelector('button').addEventListener('click', function () { banner.style.display = 'none'; });
+      var note = function (html, bad) {
+        var n = banner.querySelector('.iwdie-vcb-n');
+        n.className = 'iwdie-vcb-n ' + (bad ? 'iwdie-vcb-e' : 'iwdie-vcb-s');
+        n.innerHTML = html;
+        banner.style.display = '';
+      };
+      // what the app saves arrives as a blob download: keep the blobs, and send an SVG back instead of downloading it
+      var blobs = {}, make = W.URL.createObjectURL, revoke = W.URL.revokeObjectURL, click = W.HTMLAnchorElement.prototype.click;
+      var hhmm = function () { var d = new Date(), p = function (v) { return (v < 10 ? '0' : '') + v; }; return p(d.getHours()) + ':' + p(d.getMinutes()); };
+      var download = function (blob, name) {
+        var u = make.call(W.URL, blob), a2 = document.createElement('a');
+        a2.href = u; a2.download = name;
+        document.body.appendChild(a2);
+        click.call(a2);
+        a2.remove();
+        setTimeout(function () { try { revoke.call(W.URL, u); } catch (e) {} }, 60000);
+      };
+      // The Designer answers every save: 'received' once it starts on it, then 'applied', 'refused'
+      // or 'failed'. No answer means no Designer tab is listening any more (closed, reloaded,
+      // discarded): the save then goes to Downloads instead, so no work is lost.
+      var pending = null, canAck = typeof GM_addValueChangeListener === 'function' && typeof GM_deleteValue === 'function';
+      if (canAck) {
+        GM_addValueChangeListener('iwdie.vc.ack.' + job.id, function (key, old, val) {
+          if (!val || !val.state || !pending) return;
+          if (val.state === 'received') {
+            if (pending.timer) { clearTimeout(pending.timer); pending.timer = null; }
+            note('Received by the Designer - updating the panel…');
+            return;
+          }
+          var was = pending;
+          pending = null;
+          if (was.timer) clearTimeout(was.timer);
+          try { GM_deleteValue(key); } catch (e) {}
+          if (val.state === 'applied') {
+            note('✓ The panel’s background was updated at ' + hhmm() + (was.editing ? '.' :
+              ' - saved without <b>Preserve Editing Capabilities</b>, so the next edit starts from the picture, not this document.'));
+          } else {
+            note('Not applied: ' + esc2(String(val.msg || val.state)), true);
+          }
+        });
+      }
+      W.URL.createObjectURL = function (obj) {
+        var url = make.call(W.URL, obj);
+        try { if (obj && typeof obj.size === 'number' && typeof obj.slice === 'function') blobs[url] = obj; } catch (e) {}
+        return url;
+      };
+      W.URL.revokeObjectURL = function (url) {
+        delete blobs[url];
+        return revoke.call(W.URL, url);
+      };
+      W.HTMLAnchorElement.prototype.click = function () {
+        var a = this, b = a && a.download ? blobs[a.href] : null;
+        if (b && /\.svg$/i.test(a.download)) {
+          var name = String(a.download), key = 'iwdie.vc.result.' + job.id;
+          b.text().then(function (text) {
+            if (!/<svg\b/i.test(text)) throw new Error('the saved file is not an SVG');
+            var editing = /vectorcraft:document/.test(text);
+            if (pending && pending.timer) clearTimeout(pending.timer);
+            var mine = pending = { editing: editing, timer: null };
+            GM_setValue(key, { svg: text, name: name, at: Date.now(), editing: editing });
+            if (!canAck) {
+              pending = null;
+              note('✓ Sent to the panel at ' + hhmm() + '.');
+              return;
+            }
+            note('Sending to the Designer…');
+            mine.timer = setTimeout(function () {
+              if (pending !== mine) return;
+              pending = null;
+              try { GM_deleteValue(key); } catch (e) {}
+              download(b, name);
+              note('No Designer tab answered - the panel was closed or reloaded - so the SVG went to <b>Downloads</b> instead. ' +
+                'Open <b>Edit in VectorCraft</b> from the Designer again to send work back.', true);
+            }, 8000);
+          }).then(null, function (e) { note('Not sent: ' + esc2(String((e && e.message) || e)), true); });
+          return undefined;
+        }
+        if (b && /\.svgz$/i.test(a.download)) note('Saved as SVG Compressed, which goes to Downloads - choose <b>SVG</b> to send it to the panel.', true);
+        return click.apply(this, arguments);
+      };
+      // drop the panel in once the app is up; a fresh app has no document, so it opens as one
+      var tries = 0;
+      var waitAndDrop = function () {
+        var canvas = document.getElementById('vectorcraft_canvas');
+        if (!canvas || document.getElementById('vectorcraft_loading')) {
+          if (++tries > 240) { note('The editor did not start - reload this tab.', true); return; }
+          setTimeout(waitAndDrop, 250);
+          return;
+        }
+        setTimeout(function () {
+          try {
+            var r = canvas.getBoundingClientRect(), dt = new W.DataTransfer();
+            dt.items.add(new W.File([job.svg], job.name || 'panel.svg', { type: 'image/svg+xml' }));
+            ['dragenter', 'dragover', 'drop'].forEach(function (t) {
+              canvas.dispatchEvent(new W.DragEvent(t, { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true, dataTransfer: dt }));
+            });
+          } catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); }
+        }, 1500);
+      };
+      waitAndDrop();
+    }
+
+    /* ---------- Edit in VectorCraft (v1.35.0): the Designer's side ---------- */
+    /** Open the panel in VectorCraft: the document it came from when the background has one,
+     *  else an SVG of the picture, the drawing and the panel's objects. */
+    function vcStartEdit(info) {
+      if (typeof GM_setValue !== 'function' || typeof GM_addValueChangeListener !== 'function') {
+        toast('This needs Tampermonkey’s storage (GM_setValue) - update Tampermonkey and the script.', true, 8000);
+        return;
+      }
+      var tab = W.open('about:blank', '_blank');          // opened now, inside the click, or the browser blocks it
+      try { if (tab) tab.opener = null; } catch (e) {}    // the editor's page gets no handle on this one
+      var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea';
+      var png = info.bg && iwdieSniffMime(info.bg.bytes) === 'image/png' ? info.bg.bytes : null;
+      var vc = png ? iwdieVcExtract(png) : null;
+      if (!vc && info.found && info.found.base && iwdieSniffMime(info.found.base.bytes) === 'image/png') vc = iwdieVcExtract(info.found.base.bytes);
+      var shapes = info.found ? info.found.drawing.shapes : [];
+      var base = info.found ? info.found.base : (info.bg ? { mime: info.bg.mime, bytes: info.bg.bytes } : null);
+      var build = vc
+        ? Promise.resolve(shapes.length ? iwdieVcMergeShapes(vc, shapes) : vc)
+        : exportPaint(base && base.bytes, base && base.mime, size, null).then(function (c) {
+          var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
+          return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: base ? c.toDataURL('image/png') : null, shapes: shapes, objects: info.objects,
+            title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
+        });
+      build.then(function (svg) {
+        var id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        var safe = String(info.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
+        var job = { id: id, svg: svg, name: 'iwmac-' + (info.plant || 'plant') + '-' + safe + '.svg', panel: info.panel || '', plant: info.plant || '', at: Date.now(), version: IWDIE_VERSION };
+        GM_setValue('iwdie.vc.job', job);
+        GM_addValueChangeListener('iwdie.vc.result.' + id, function (key, old, val) {
+          if (!val || !val.svg) return;
+          try { GM_deleteValue(key); } catch (e) {}
+          // the editor's tab waits for this answer, and saves to Downloads when none comes
+          vcApplyResult(val, info, function (state, msg) {
+            try { GM_setValue('iwdie.vc.ack.' + id, { state: state, msg: msg || '', at: Date.now() }); } catch (e) {}
+          });
+        });
+        var url = IWDIE_VC_URL + '#job=' + id;
+        if (tab && !tab.closed) tab.location.href = url; else tab = W.open(url, '_blank');
+        if (!tab) { toast('The browser blocked the new tab - allow pop-ups for this page, then try again.', true, 10000); return; }
+        outcomeToast({
+          tone: 'good', title: 'Opening in VectorCraft',
+          lines: [(vc ? 'The VectorCraft document behind this background' + (shapes.length ? ', with the Designer drawing on its own layer,' : '') : 'The picture, ' +
+            (shapes.length ? 'the drawing (' + iwdieN(shapes.length, 'shape', 'shapes') + ')' : 'an empty drawing layer') + ' and the panel’s objects (hidden)') + ' - in a new tab.',
+            'Save there with Ctrl+S → Format SVG → OK → tick Preserve Editing Capabilities → OK: the picture comes straight back to this background.'],
+          footer: 'Nothing leaves the browser. The first start downloads the editor (about 20 MB); after that it is cached.'
+        });
+      }).then(null, function (e) {
+        try { if (tab && !tab.closed) tab.close(); } catch (e2) {}
+        toast('VectorCraft could not be opened: ' + ((e && e.message) || e), true, 10000);
+      });
+    }
+
+    /** What VectorCraft saved, as the panel's background: drawn at panel size, with the SVG
+     *  (and VectorCraft's own document inside it) kept in the PNG for the next edit. */
+    function vcApplyResult(val, info, ack) {
+      ack = ack || function () {};
+      var svg = String(val.svg || '');
+      if (!/<svg\b/i.test(svg) || svg.length > 40 * 1024 * 1024) {
+        toast('VectorCraft sent something that is not a usable SVG.', true, 8000);
+        ack('failed', 'The Designer could not use it: it is not a usable SVG.');
+        return;
+      }
+      if (draw) {
+        toast('A VectorCraft save arrived while Draw is open - close Draw, then save again in VectorCraft.', true, 10000);
+        ack('refused', 'Draw is open in the Designer - close it there, then save again.');
+        return;
+      }
+      // the Designer changes panels without reloading, and this listener outlives that
+      var panelNow = currentPanelName(), plantNow = currentPlantId();
+      if ((info.panel && panelNow !== info.panel) || (info.plant && plantNow !== String(info.plant))) {
+        toast('A VectorCraft save for “' + info.panel + '” arrived, but “' + panelNow + '” is open now. Nothing was changed - open “' +
+          info.panel + '” again, then save again in VectorCraft.', true, 12000);
+        ack('refused', 'The Designer has “' + panelNow + '” open now, not “' + info.panel + '”. Open that panel there, then save again.');
+        return;
+      }
+      ack('received');
+      var size = exportPanelSize(), sized = iwdieVcSized(svg, size.w, size.h);
+      var url = URL.createObjectURL(new Blob([sized], { type: 'image/svg+xml' }));
+      drawLoadImage(url).then(function (img) {
+        URL.revokeObjectURL(url);
+        var c = document.createElement('canvas');
+        c.width = size.w; c.height = size.h;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = grabBackgroundFillColor() || '#ffffff';
+        ctx.fillRect(0, 0, size.w, size.h);
+        ctx.drawImage(img, 0, 0, size.w, size.h);
+        return new Promise(function (resolve, reject) {
+          c.toBlob(function (blob) {
+            if (!blob) { reject(new Error('the browser would not encode the PNG')); return; }
+            blob.arrayBuffer().then(function (ab) { resolve(new Uint8Array(ab)); }, reject);
+          }, 'image/png');
+        });
+      }).then(function (pngBytes) {
+        var withDoc = iwdieVcEmbed(pngBytes, svg), mi = document.getElementById('main_image');
+        var dataUrl = 'data:image/png;base64,' + iwdieBytesToBase64(withDoc);
+        W.iw_set_base_image((mi && mi.style.width) || (size.w + 'px'), (mi && mi.style.height) || (size.h + 'px'), dataUrl);
+        try { if (!W.$('#main_image').attr('org_image_name')) W.$('#main_image').attr('org_image_name', 'iwdie-vectorcraft.png'); } catch (e) {}
+        outcomeToast({
+          tone: 'good', title: '✅ Background updated from VectorCraft',
+          lines: [Math.round(withDoc.length / 1024) + ' kB, ' + size.w + ' × ' + size.h + ' px' + (val.editing ? ', with the VectorCraft document inside for the next edit.' :
+            ' - saved without Preserve Editing Capabilities, so the next edit starts from this picture.')],
+          footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.'
+        });
+        ack('applied', Math.round(withDoc.length / 1024) + ' kB');
+      }).then(null, function (e) {
+        try { URL.revokeObjectURL(url); } catch (e2) {}
+        toast('The VectorCraft picture could not be used: ' + ((e && e.message) || e), true, 10000);
+        ack('failed', 'The Designer could not use the picture: ' + ((e && e.message) || e));
+      });
+    }
+
     /* ---------- Export Background (v1.34.0) ----------
        What used to be three blue buttons is one choice and one Export, in
        VectorCraft's style: choice cards, the options of the chosen one under it,
@@ -7152,6 +7514,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             opt('objects', 'Panel objects, on a hidden layer', objects.length ? '(' + objects.length + ')' : '(none found)', !!objects.length, !objects.length) +
             opt('trace', 'Vector trace of the picture, on a hidden layer', IWDIE_TRACER ? '(seconds to minutes)' : '(not available here)', false, !IWDIE_TRACER),
             true, false),
+          card('vc', 'Edit in VectorCraft',
+            'Opens the picture, the drawing and the panel’s objects in VectorCraft - an Illustrator-like editor in the browser - in a new tab. Save there as SVG and the result comes straight back as this background.',
+            '', false, typeof GM_setValue !== 'function'),
           card('svg', 'SVG — vector trace',
             'The picture traced to editable shapes in its own colours, grouped and named by what they are. Small text becomes outlines; retype it in Illustrator.',
             '', false, !deliver.svg),
@@ -7179,6 +7544,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           closeExportDialog();
           if (fmt === 'svg' && deliver.svg) deliver.svg();
           else if (fmt === 'raw') deliver.raw();
+          else if (fmt === 'vc') vcStartEdit({ url: url, bg: bg, found: found, objects: objects, size: size, plant: plant, panel: panelName });
           else exportIllustratorDocument({ url: url, bg: bg, found: found, objects: objects, size: size, plant: plant, panel: panelName }, opts);
         };
         dlg.addEventListener('click', function (ev) {
@@ -10239,6 +10605,14 @@ if (typeof module !== 'undefined' && module.exports) {
     aiObjectLines: iwdieAiObjectLines,
     aiQuadToCubic: iwdieAiQuadToCubic,
     aiTraceShapes: iwdieAiTraceShapes,
+    VC_URL: IWDIE_VC_URL,
+    VC_CHUNK: IWDIE_VC_CHUNK,
+    vcSvg: iwdieVcSvg,
+    vcSize: iwdieVcSize,
+    vcSized: iwdieVcSized,
+    vcMergeShapes: iwdieVcMergeShapes,
+    vcEmbed: iwdieVcEmbed,
+    vcExtract: iwdieVcExtract,
     pngChunks: iwdiePngChunks,
     pngCrc32: iwdiePngCrc32,
     sniffMime: iwdieSniffMime,
