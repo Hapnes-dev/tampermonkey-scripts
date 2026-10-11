@@ -1064,6 +1064,25 @@ each found place shows is checked a few at a time. Measured with the CPU slowed 
 page used to stand still for 4.2 s after the search; now the longest pause is 0.4 s, and the
 editor starts after 4.3 s instead of 7.9 s.
 
+**The black, at last (v1.48.2).** Moving the background in VectorCraft showed black pills
+wherever bubbles had been taken out of the picture. The cause was there from the first reading
+(v1.44.0) on. The panel's picture, `2349_Maskin.png`, has a transparent ground, and the Designer
+shows its own grey (`#main_image`'s background colour) through it. Read on a bare canvas, that
+ground is black, so a pill taken out was filled with "what lies round it", black, and opaque. The
+black stayed hidden under the pill drawn again or the bubble carried, and showed as a dark rim
+wherever that sat a little off, or whole when something moved. The test pictures had a solid
+ground, so it never showed there.
+
+Now the picture is read over the panel's own colour, as the Designer shows it, and what is taken
+out of it is filled with that. Editing a drawing an earlier version made, Enter mends it: its
+picture's pure black is filled in from the picture the drawing came from. The places of the pills
+found there are erased to the real ground, since the drawing has each pill itself, as a vector, a
+piece of the picture or in a placeholder. As in v1.48.1, a drawing whose bubbles were drawn again
+also gets them cut afresh. Measured in the stub host with a copy of the Maskin picture whose ground
+is transparent: read and synced by v1.46.0, its picture was black (0, 0, 0) where the bubbles had
+been; mended by Enter in v1.48.2, and read afresh by v1.48.2, it has the panel's colour there, and
+moving the background in VectorCraft shows no black.
+
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
 off. An object placed by a sync is known again at the next one too: moved, resized or deleted

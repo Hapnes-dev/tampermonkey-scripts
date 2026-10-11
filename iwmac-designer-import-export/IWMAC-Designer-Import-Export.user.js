@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.48.1
+// @version      1.48.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.48.1';
+var IWDIE_VERSION = '1.48.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -7738,6 +7738,20 @@ function iwdieVcPillName(p, looks) {
   return top || 'Pille';
 }
 
+/** The pixels of `pic` that are pure black (all three channels 3 or less) set to those of `from`, of
+ *  the same size (v1.48.2): the black an earlier version left in a drawing's picture where it took pills
+ *  out of a picture whose transparent ground it read as black - filled in from the picture the drawing
+ *  came from, read over the panel's colour. Changes `pic`. -> how many */
+function iwdieVcFillBlack(pic, from) {
+  var n = 0;
+  for (var j = 0; j < pic.length; j += 4) {
+    if (pic[j] > 3 || pic[j + 1] > 3 || pic[j + 2] > 3) continue;
+    pic[j] = from[j]; pic[j + 1] = from[j + 1]; pic[j + 2] = from[j + 2]; pic[j + 3] = from[j + 3];
+    n++;
+  }
+  return n;
+}
+
 /** How much of a box ({x, y, w, h}) the panel's objects cover, 0 to 1 (v1.46.1). What lies under
  *  one of them stays in the picture: the Designer shows the object over it, and drawn again as
  *  vectors it would peek out round the object's edge. */
@@ -10119,19 +10133,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // from again - the one way to be rid of what an earlier version drew again in it
         var orig = doc ? iwdieVcOriginalPicture(doc) : null;
         if (!orig) return doc;
-        var made = iwdieVcMadeBy(doc), older = !made || iwdieVcVersionLess(made, '1.48.0');
-        // drawn before 1.48.0 and before 1.47.0 kept what the objects stand on exactly: the bubbles may be drawn again in it
-        var mend = older && !/\sdata-iwdie-box="/.test(doc);
-        var lines = mend ? ['Its drawing was made by ' + (made ? 'version ' + made : 'a version before 1.48.0') + ' of this script, which drew the pills - the ' +
-          'bubbles under the values - again as vectors, so their rings can look dark and a little off.',
-          'Going on, those under the panel’s objects are taken out, and each value’s bubble is cut afresh from the picture the drawing came from; what you drew ' +
-          'in VectorCraft stays. Starting again reads that picture anew instead, leaving out what was changed in VectorCraft.']
-          : ['Go on with its drawing as it was saved, or read the picture it came from again. Starting again leaves out what was changed in VectorCraft before.'];
+        var made = iwdieVcMadeBy(doc), kept = /\sdata-iwdie-box="/.test(doc);
+        // made before 1.48.2: its picture has black where pills were taken out, if the panel's picture has a
+        // transparent ground; made before 1.47.0 (nothing kept exactly), its bubbles may be drawn again too
+        var mend = !made || iwdieVcVersionLess(made, '1.48.2'), redrawn = mend && !kept;
+        var lines = !mend ? ['Go on with its drawing as it was saved, or read the picture it came from again. Starting again leaves out what was changed in VectorCraft before.']
+          : ['Its drawing was made by ' + (made ? 'version ' + made : 'a version before 1.48.0') + ' of this script, which read a picture with a transparent ground ' +
+            'as black: where it took pills out, black is left under them' + (redrawn ? ', and the pills under the values were drawn again as vectors, their rings dark and a little off.' : '.'),
+            'Going on, that black is filled in from the picture the drawing came from' + (redrawn ? ', the pills drawn again under the panel’s objects are taken out, and each ' +
+              'value’s bubble is cut afresh from that picture' : '') + '; what you drew in VectorCraft stays. Starting again reads that picture anew instead, leaving out ' +
+            'what was changed in VectorCraft.'];
         return vcAsk(tab, 'This background was made in VectorCraft', lines, [
           { key: 'again', label: 'Start again from the picture', main: false },
-          { key: 'go', label: mend ? 'Go on, the bubbles from the picture' : 'Go on with the drawing', main: true }]).then(function (k) {
+          { key: 'go', label: mend ? 'Go on, mended from the picture' : 'Go on with the drawing', main: true }]).then(function (k) {
           if (k === null) { var stop = new Error('the editor’s tab was closed'); stop.cancelled = true; throw stop; }
-          if (k !== 'again' && mend) return vcMend(doc, orig, info.objects, size, libLoad()).then(function (m) { info.mended = m; return m.svg; });
+          if (k !== 'again' && mend) return vcMend(doc, orig, info.objects, size, libLoad(), fill, redrawn).then(function (m) { info.mended = m; return m.svg; });
           if (k !== 'again') return doc;
           var b64 = orig.slice(orig.indexOf(',') + 1), bin = atob(b64), bytes = new Uint8Array(bin.length);
           for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -10152,7 +10168,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
           : vcPaper(tab, [['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']]);
         if (!lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3, 0.9);
-        return exportPaint(base && base.bytes, base && base.mime, size, null).then(function (c) {
+        // over the panel's own colour, as the Designer shows it (v1.48.2): a picture whose ground is
+        // transparent reads black on a bare canvas, and what is taken out of it was filled with that black
+        return exportPaint(base && base.bytes, base && base.mime, size, fill).then(function (c) {
           var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
           var picture = base ? c.toDataURL('image/png') : null;
           // the kept components looked for in the picture (v1.44.0): those found become vectors of their own
@@ -10196,8 +10214,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!tab) { toast('The browser blocked the new tab - allow pop-ups for this page, then try again.', true, 10000); return; }
         var what = vc
           ? 'The VectorCraft document behind this background' + (shapes.length ? ', with the drawing from Draw on a layer of its own,' : '') +
-            (info.mended ? ' (mended: ' + iwdieN(info.mended.removed, 'piece', 'pieces') + ' it drew again under the panel’s objects taken out, ' +
-              iwdieN(info.mended.cut, 'bubble', 'bubbles') + ' cut afresh from the picture it came from)' : '')
+            (info.mended ? ' (mended: ' + info.mended.filled + ' black pixels filled in from the picture it came from' +
+              (info.mended.removed ? ', ' + iwdieN(info.mended.removed, 'piece', 'pieces') + ' it drew again under the panel’s objects taken out' : '') +
+              (info.mended.cut ? ', ' + iwdieN(info.mended.cut, 'bubble', 'bubbles') + ' cut afresh' : '') + ')' : '')
           : info.again ? 'The picture this background was first read from, read again'
           : (base ? 'The picture' : 'An empty ' + size.w + ' × ' + size.h + ' canvas') +
             (shapes.length ? ', the drawing from Draw (' + iwdieN(shapes.length, 'shape', 'shapes') + ')' : '');
@@ -10528,8 +10547,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  bubble its picture still has there; each value that is bare text gets its bubble cut afresh from
      *  `origUrl`, the picture the drawing came from, as a fresh reading cuts it. Under an object the
      *  Designer draws itself nothing is put back. The rest of the drawing stays as it was.
-     *  -> Promise<{svg, unders: {name: [{x, y, w, h, href}]}, removed, cut}> */
-    function vcMend(svg, origUrl, objects, size, lib) {
+     *  v1.48.2: each picture is read over the panel's colour (`fillCss`), as the Designer shows it -
+     *  a transparent ground read bare is black. In the drawing's picture, the black an earlier version
+     *  left where it took pills out is filled in from `origUrl`, and the place of every pill found
+     *  there is erased to the real ground: the drawing has the pill itself, as a vector, a piece of
+     *  the picture or in a placeholder. Only a drawing whose bubbles were drawn again (`redrawn`, not
+     *  one that kept them exactly) gets them cut afresh.
+     *  -> Promise<{svg, unders: {name: [{x, y, w, h, href}]}, removed, cut, filled}> */
+    function vcMend(svg, origUrl, objects, size, lib, fillCss, redrawn) {
       var W2 = Math.round(size.w), H2 = Math.round(size.h), self = {};
       (objects || []).forEach(function (ob) { if (ob && ob.iwdieSelf && ob.name) self[String(ob.name)] = 1; });
       var pixels = function (url) {
@@ -10537,6 +10562,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var c = document.createElement('canvas');
           c.width = W2; c.height = H2;
           var g = c.getContext('2d');
+          if (fillCss) { g.fillStyle = fillCss; g.fillRect(0, 0, W2, H2); }
           g.drawImage(img, 0, 0, W2, H2);
           return g.getImageData(0, 0, W2, H2).data;
         });
@@ -10547,9 +10573,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var M = new Uint8Array(W2 * H2), unders = {}, gone = [], cut = 0;
           (round || []).forEach(function (p) {
             var on = iwdieVcUnderOf(p.outer, objects);
-            if (!on) return;
+            // every pill's place to the ground in the drawing's picture; the drawing has the pill itself
             gone.push(p);
-            if (self[on]) return;
+            if (!on || self[on] || redrawn === false) return;
             iwdieVcPillCells(p, W2, H2, function (x, y) { M[y * W2 + x] = 1; });
             var x0 = Math.max(0, Math.floor(p.outer.x) - 3), y0 = Math.max(0, Math.floor(p.outer.y) - 3);
             var x1 = Math.min(W2 - 1, Math.ceil(p.outer.x + p.outer.w) + 3), y1 = Math.min(H2 - 1, Math.ceil(p.outer.y + p.outer.h) + 3);
@@ -10561,14 +10587,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           });
           // the drawing: its own art under the objects out, and the bubbles its picture still has there
           var doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
-          if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return { svg: svg, unders: unders, removed: 0, cut: cut };
+          if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return { svg: svg, unders: unders, removed: 0, cut: cut, filled: 0 };
           var root = doc.documentElement, layer = null, kids = [], removed = 0;
           Array.prototype.forEach.call(root.childNodes, function (n) {
             if (n.nodeType === 1 && n.tagName.toLowerCase() === 'g' && (n.getAttribute('id') === 'Komponenter' || n.getAttribute('data-name') === 'Komponenter')) layer = n;
           });
           if (layer) Array.prototype.forEach.call(layer.childNodes, function (n) { if (n.nodeType === 1) kids.push(n); });
           var boxes = kids.length ? vcMeasure(doc, kids, size) : [];
-          kids.forEach(function (k, i) {
+          if (redrawn !== false) kids.forEach(function (k, i) {
             var b = boxes[i];
             if (b && !b.hidden && b.w > 0 && b.h > 0 && iwdieVcUnderOf(b, objects)) { k.parentNode.removeChild(k); removed++; }
           });
@@ -10578,14 +10604,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           });
           var image = back ? back.getElementsByTagName('image')[0] : null;
           var href = image ? (image.getAttribute('xlink:href') || image.getAttribute('href') || '') : '';
+          var filled = 0;
           var finish = function () {
             var out = new XMLSerializer().serializeToString(doc);
             if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
-            return { svg: out, unders: unders, removed: removed, cut: cut };
+            return { svg: out, unders: unders, removed: removed, cut: cut, filled: filled };
           };
-          if (!gone.length || !/^data:image\/(png|jpeg);base64,/.test(href)) return finish();
+          if (!/^data:image\/(png|jpeg);base64,/.test(href)) return finish();
           return pixels(href).then(function (bgPic) {
             var copy = new Uint8ClampedArray(bgPic);
+            // the black an earlier version left (pure black, over the panel's colour) from the picture it came from
+            filled = iwdieVcFillBlack(copy, pic);
             iwdieVcErasePills(copy, W2, H2, gone);
             var c = document.createElement('canvas');
             c.width = W2; c.height = H2;
@@ -12869,6 +12898,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcOriginalPicture: iwdieVcOriginalPicture,
     vcMadeBy: iwdieVcMadeBy,
     vcVersionLess: iwdieVcVersionLess,
+    vcFillBlack: iwdieVcFillBlack,
     vcPalette: iwdieVcPalette,
     vcPipeColours: iwdieVcPipeColours,
     vcFindLines: iwdieVcFindLines,
