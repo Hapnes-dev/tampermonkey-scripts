@@ -150,36 +150,53 @@ still read:
 A drawing read from a file is cleaned on the way in: known shapes, numbers, `#rrggbb`
 colours and plain text only. So a hostile PNG cannot put markup into the page.
 
-## Komponenter: components from Illustrator (v1.33.0, in VectorCraft since v1.36.0)
+## Komponenter: components from Illustrator (v1.33.0, in VectorCraft's Libraries since v1.37.0)
 
 The Maskin artwork's Illustrator files keep their components around the artboard: fans,
 pumps, compressors, tanks, valves, alarm and temperature symbols, arrows. VectorCraft's own
 `.ai` reader leaves those out. Measured: `2349_Maskin.ai` opens there with the artboard
-only. So this script reads the components itself and hands them to VectorCraft as a sheet to
-copy from.
+only. So this script reads the components itself and hands them to VectorCraft as one of its
+own libraries.
 
-**Komponenter** sits in the banner of a panel opened with *Edit in VectorCraft…*. It opens
-the components in a VectorCraft tab of their own (`…/app/#lib`):
+**In VectorCraft.** When *Edit in VectorCraft…* opens a panel, the components arrive in
+VectorCraft's **Libraries** panel (the third tab on the right), as *Komponenter -
+2349_Maskin.ai*:
+- Each Illustrator layer they came from is a group of the library, and each component a
+  graphic with its thumbnail.
+- **Search** finds a component by its name. One without a name is called after its layer and
+  number (*Temperatur 12*).
+- **Drag** one onto the drawing, or **double-click** it to put it in the middle. It lands in
+  the selected layer as a group with the component's name, and every path in it can be
+  edited like any other.
 
-- Each Illustrator layer they came from is a layer of the sheet.
-- Each component is a group at its own size, named after its Illustrator name where it has
-  one. VectorCraft's Layers panel shows that name.
-- The names stand under the components, on a layer of their own: *Navn*.
+**How they get there.** VectorCraft keeps reusable art in libraries: a `.vclibrary` file
+(JSON) whose graphics are each a VectorCraft document with a PNG thumbnail. The script
+writes one:
+- Each component becomes a native VectorCraft document (format version 1, as VectorCraft's
+  own example files are written). It has one artboard round the component and one layer,
+  and the component is a group of paths: anchors with their handles, fills, strokes with cap,
+  join and dashes, opacity, the fill rule.
+- The thumbnails, at most 128 px a side, are drawn in the editor's tab.
 
-To use one, select it (click it, or drag around several) and press **Ctrl+C** there. Then
-press **Ctrl+V** in the panel's tab. The component lands in the layer selected there, in the
-middle of the view. Copying between VectorCraft tabs goes through the clipboard as SVG, so a
-pasted component keeps its shapes and colours, but not its name.
+The file is dropped on VectorCraft's menu bar. A library dropped there is imported even with a
+document open, while one dropped on the drawing would be placed as art. For the 386
+components of `2349_Maskin.ai` the file is about 3.5 MB and takes about a second to make.
+Libraries in VectorCraft's web version last for that tab only, so every *Edit in VectorCraft…*
+brings them again. Nothing is uploaded.
 
-**Import .ai…** in the components tab reads a `.ai` file. Every visible object lying wholly
-outside its artboard becomes a component, the new set replaces the old one, and the tab
-reloads with them.
+**Import .ai…**, in the banner of the editor's tab, reads a `.ai` file. Every visible object
+lying wholly outside its artboard becomes a component. The new set replaces the one kept, and
+goes into Libraries at once.
 
 **Where they are kept.** The components live in Tampermonkey's storage (`iwdie.library.v1`,
-about 0.5 MB for these files), where the Designer and the editor's page both reach them.
-Nothing is uploaded. A library imported in Draw (v1.33.0 to v1.35.0) lived in the Designer's
-own `localStorage` (`iwdie.draw.library.v1`). The first *Edit in VectorCraft…* copies it
-over, and the old copy stays where it is.
+about 0.5 MB for these files), where the Designer and the editor's page both reach them. A
+library imported in Draw (v1.33.0 to v1.35.0) lived in the Designer's own `localStorage`
+(`iwdie.draw.library.v1`). The first *Edit in VectorCraft…* copies it over, and the old copy
+stays where it is.
+
+v1.36.0 opened the components as a sheet in a VectorCraft tab of their own, to copy from and
+paste. v1.37.0 replaces that: the Libraries panel keeps names, needs no second tab, and
+places a component where it is dropped.
 
 How the file is read:
 - A PDF-compatible `.ai` carries two copies of the drawing. The PDF page that previews the
@@ -201,8 +218,8 @@ How the file is read:
   those.
 - Text, placed pictures, gradients and clipping are not read.
 
-`2349_Maskin.ai` (Illustrator 2020 or later) gives 386 components in about half a second, on
-a sheet of 1278 × 3816 px. The kit's Maskin template (Illustrator 23) gives 418.
+`2349_Maskin.ai` (Illustrator 2020 or later) gives 386 components in about half a second. The
+kit's Maskin template (Illustrator 23) gives 418.
 
 A stored library is cleaned on the way in, the same way a drawing is:
 - path data: absolute M, L, C and Z only, rebuilt from its numbers;
@@ -211,7 +228,8 @@ A stored library is cleaned on the way in, the same way a drawing is:
 So neither a hostile file nor a doctored storage entry can put markup into the page.
 
 The kit's `tests/test-draw-library.js` holds the reader, the decoder, the colours and the
-cleaning, and `tests/test-vectorcraft-bridge.js` holds the sheet.
+cleaning. `tests/test-vectorcraft-bridge.js` holds the library file and the VectorCraft
+documents in it.
 
 ## What it handles for you
 
@@ -223,7 +241,7 @@ cleaning, and `tests/test-vectorcraft-bridge.js` holds the sheet.
 | Name collisions on insert | Canvas object names renumbered after insert (same policy as the designer's own paste) |
 | Drawing background artwork | **Edit in VectorCraft…** opens the panel in an open-source vector editor in a new tab, with the picture, any drawing and the objects on a hidden layer. Saving there sets the background through `iw_set_base_image`, and the next edit reopens the same document (v1.35.0; on the sidebar since v1.36.0, in place of *Draw background…*) |
 | Editing the background in Illustrator | *Background → Illustrator* writes a real .ai: the picture on a locked layer, the drawing as Illustrator objects, the panel's objects on a hidden reference layer (v1.34.0) |
-| Components from Illustrator | **Komponenter**, in the editor's banner, opens the objects around a `.ai` file's artboard as a sheet to copy from (v1.33.0; in VectorCraft since v1.36.0) |
+| Components from Illustrator | The objects around a `.ai` file's artboard go into VectorCraft's own Libraries panel, to drag onto the drawing (v1.33.0; in VectorCraft's Libraries since v1.37.0) |
 | Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green when every object and container arrived and red when any did not, and says how many (since v1.31.1 the file's own warnings are listed but never colour it) |
 | Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
 | Not-a-panel-file / VV sketch file on **insert** | Blocked with an itemised error panel, canvas untouched |
@@ -880,8 +898,11 @@ A panel without a background opens as an empty canvas of its size. A background 
 be read stops the edit with a message, so it is never replaced by an empty one. The first
 start downloads the editor (about 20 MB). After that the browser has it cached.
 
-The banner in the editor's tab also has **Komponenter**: the components of your Illustrator
-file, in a tab of their own to copy from. See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcraft-since-v1360).
+Your components from Illustrator arrive in VectorCraft's **Libraries** panel; **Import .ai…**
+in the banner reads another file's. See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcrafts-libraries-since-v1370).
+The banner sits at the drawing's top left. It folds into a one-line tab 20 seconds after the
+panel opens, and again 12 seconds after each message. A click on its title folds or unfolds
+it, and after that it stays as you left it.
 
 **Sending it back.** In VectorCraft, press **Ctrl+S** → Format **SVG** → OK → tick
 **Preserve Editing Capabilities** → OK. A banner in the editor's tab repeats this. The SVG
@@ -937,7 +958,8 @@ only inside that unmodified build, as its brand terms allow. This script's own d
 VectorCraft's colours but carries none of those marks. VectorCraft calls itself alpha.
 
 The kit's `tests/test-vectorcraft-bridge.js` holds the SVG the Designer sends, the sizing,
-the merge, the PNG chunk, the component sheet, the script header and the sidebar.
+the merge, the PNG chunk, the component library as a `.vclibrary`, the script header and the
+sidebar.
 
 ## AI-generated panels (Copilot)
 

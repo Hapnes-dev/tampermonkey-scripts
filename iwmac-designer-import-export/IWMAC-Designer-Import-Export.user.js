@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.36.0
+// @version      1.37.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.36.0';
+var IWDIE_VERSION = '1.37.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6065,66 +6065,146 @@ function iwdieVcExtract(png) {
   return null;
 }
 
-/** The component library as a sheet VectorCraft opens (v1.36.0): one layer per Illustrator
- *  layer the components came from, each component a named group at its own size, in rows
- *  under its layer's heading; the headings and names on a layer of their own, Navn, under
- *  the rest, so a selection takes the art without its label. */
-function iwdieVcLibrarySvg(lib) {
-  var items = (lib && Array.isArray(lib.items)) ? lib.items : [], esc = iwdieDrawEsc, f = iwdieDrawFmt;
-  var M = 40, GAP_X = 28, GAP_Y = 22, CAPTION = 14, HEAD = 34;
-  var widest = items.reduce(function (m, it) { return Math.max(m, it.w || 0); }, 0);
-  var rowW = Math.max(1200, Math.ceil(widest));
-  var sections = [], byName = {};
-  items.forEach(function (it) {
-    var key = it.layer || 'Komponenter';
-    if (!byName[key]) { byName[key] = { name: key, items: [] }; sections.push(byName[key]); }
-    byName[key].items.push(it);
-  });
-  // VectorCraft names a layer by its data-name but a group inside one only by its id, so a
-  // named component gets an id made from its name - unique, as ids must be
-  var used = { navn: 1 };
-  sections.forEach(function (sec, n) { used['komponenter-' + (n + 1)] = 1; });
-  var idFor = function (name) {
-    var base = String(name).trim().replace(/[^A-Za-z0-9_.\-À-ɏ]/g, '_');
-    if (!/^[A-Za-z_À-ɏ]/.test(base)) base = '_' + base;
-    var id = base, k = 2;
-    while (used[id]) id = base + '-' + k++;
-    used[id] = 1;
-    return id;
+/* ===================== Komponenter as a VectorCraft library (v1.37.0) =====================
+   VectorCraft keeps reusable art in its Libraries panel. A library is a .vclibrary file (JSON)
+   whose graphics are each a native VectorCraft document with a PNG thumbnail, and a .vclibrary
+   dropped on the app's window is imported as a library. So the component library goes to
+   VectorCraft as one: each component a graphic, each Illustrator layer a group of the library,
+   and a graphic dragged onto the drawing (or double-clicked) lands as a group with its name.
+   The documents are written in format version 1, as VectorCraft's own example files are: one
+   artboard, one layer, the component a group of paths, each path anchors with their handles,
+   its fill and its stroke. */
+
+/** Clean path data - absolute M, L, C and Z, as drawings and components keep it - as
+ *  VectorCraft's subpaths: anchors with their in and out handles. A closing point that repeats
+ *  the first, as Illustrator writes it, is the first anchor. */
+function iwdieVcSubpaths(d) {
+  var t = String(d || '').match(/[MLCZ]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [];
+  var subs = [], cur = null, start = null, i = 0;
+  var num = function (k) { return parseFloat(t[k]); };
+  var pt = function (x, y) { return { x: x, y: y }; };
+  var anchor = function (x, y) { return { p: pt(x, y), in: pt(x, y), out: pt(x, y), kind: 'Corner' }; };
+  var open = function (x, y) { cur = { anchors: [anchor(x, y)], closed: false }; subs.push(cur); start = pt(x, y); };
+  var close = function () {
+    if (!cur) return;
+    var A = cur.anchors, f = A[0], l = A[A.length - 1];
+    if (A.length > 1 && Math.abs(f.p.x - l.p.x) < 0.005 && Math.abs(f.p.y - l.p.y) < 0.005) { f.in = l.in; A.pop(); }
+    cur.closed = true;
+    cur = null;
   };
-  var y = M, right = M, layers = [], names = [], all = [];
-  sections.forEach(function (sec, n) {
-    names.push('    <text x="' + M + '" y="' + f(y + 18) + '" font-family="Arial" font-size="16" font-weight="bold" fill="#33414d">' +
-      esc(sec.name) + ' (' + sec.items.length + ')</text>');
-    y += HEAD;
-    var x = M, rowH = 0, groups = [];
-    sec.items.forEach(function (it) {
-      var w = Math.max(1, it.w || 0), h = Math.max(1, it.h || 0);
-      if (x > M && x + w > M + rowW) { x = M; y += rowH + CAPTION + GAP_Y; rowH = 0; }
-      var shapes = it.shapes.map(function (s) { return iwdieDrawMap(s, 1, x, 1, y); });
-      all.push.apply(all, shapes);
-      groups.push('    <g' + (it.name ? ' id="' + esc(idFor(it.name)) + '" data-name="' + esc(it.name) + '"' : '') + '>' +
-        shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</g>');
-      if (it.name) {
-        names.push('    <text x="' + f(x) + '" y="' + f(y + h + 11) + '" font-family="Arial" font-size="9" fill="#6b7782">' + esc(it.name.slice(0, 40)) + '</text>');
-      }
-      right = Math.max(right, x + w);
-      rowH = Math.max(rowH, h);
-      x += w + GAP_X;
-    });
-    y += rowH + CAPTION + GAP_Y + 12;
-    layers.push('  <g id="komponenter-' + (n + 1) + '" data-name="' + esc(sec.name) + '">\n' + groups.join('\n') + '\n  </g>');
+  while (i < t.length) {
+    var c = t[i++];
+    if (c === 'M') { open(num(i), num(i + 1)); i += 2; }
+    else if (c === 'L') {
+      if (!cur) open(start ? start.x : 0, start ? start.y : 0);
+      cur.anchors.push(anchor(num(i), num(i + 1)));
+      i += 2;
+    } else if (c === 'C') {
+      if (!cur) open(start ? start.x : 0, start ? start.y : 0);
+      cur.anchors[cur.anchors.length - 1].out = pt(num(i), num(i + 1));
+      var a = anchor(num(i + 4), num(i + 5));
+      a.in = pt(num(i + 2), num(i + 3));
+      cur.anchors.push(a);
+      i += 6;
+    } else if (c === 'Z') close();
+  }
+  var ok = function (q) { return isFinite(q.x) && isFinite(q.y); };
+  return subs.filter(function (s) {
+    return s.anchors.length > 1 && s.anchors.every(function (a) { return ok(a.p) && ok(a.in) && ok(a.out); });
   });
-  var W = Math.ceil(Math.max(right + M, 400)), H = Math.ceil(Math.max(y - GAP_Y - 12 + M, 300));
-  var defs = iwdieDrawDefsSvg(all);
-  return ['<?xml version="1.0" encoding="UTF-8"?>',
-    '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">',
-    '  <title>Komponenter' + (lib && lib.file ? ' - ' + esc(String(lib.file)) : '') + '</title>']
-    .concat(defs ? ['  <defs>' + defs + '</defs>'] : [])
-    // the names first, so they sit at the bottom of the Layers panel with the components above them
-    .concat(names.length ? ['  <g id="navn" data-name="Navn">', names.join('\n'), '  </g>'] : [])
-    .concat(layers)
-    .concat(['</svg>']).join('\n') + '\n';
+}
+
+/** A drawing's colour (#rgb or #rrggbb) as VectorCraft's paint; none for none. */
+function iwdieVcPaint(hex) {
+  var c = iwdieDrawColor(hex);
+  if (!c) return { type: 'none' };
+  if (c.length === 4) c = '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3];
+  var ch = function (k) { return Math.round(parseInt(c.substr(k, 2), 16) / 255 * 1e6) / 1e6; };
+  return { type: 'solid', color: { model: 'rgb', r: ch(1), g: ch(3), b: ch(5) } };
+}
+
+/** A shape's style as VectorCraft's appearance: its fill, then its stroke with cap, join and dashes. */
+function iwdieVcAppearance(st) {
+  st = st || {};
+  var items = [];
+  if (st.fill) items.push({ kind: 'fill', paint: iwdieVcPaint(st.fill) });
+  if (st.stroke && st.sw > 0) {
+    var s = { kind: 'stroke', paint: iwdieVcPaint(st.stroke), width: st.sw };
+    if (st.cap === 'round') s.cap = 'Round'; else if (st.cap === 'square') s.cap = 'Square';
+    if (st.join === 'round') s.join = 'Round'; else if (st.join === 'bevel') s.join = 'Bevel';
+    var da = (Array.isArray(st.da) && st.da.length) ? st.da : (st.dash ? [8, 6] : null);
+    if (da) s.dash = { pattern: da, offset: 0, align_corners: false };
+    items.push(s);
+  }
+  return { items: items };
+}
+
+/** A component's shape as a VectorCraft node: a group (with its name) or a path. Components
+ *  are paths and groups; anything else is left out. `ids.next` numbers the nodes. */
+function iwdieVcNode(s, ids) {
+  if (!s) return null;
+  if (s.t === 'group') {
+    var kids = (s.items || []).map(function (c) { return iwdieVcNode(c, ids); }).filter(Boolean);
+    if (!kids.length) return null;
+    var g = { id: ids.next++, kind: { type: 'group', children: kids, clip: false } };
+    if (s.name) g.name = s.name;
+    return g;
+  }
+  if (s.t !== 'd') return null;
+  var subs = iwdieVcSubpaths(s.d);
+  if (!subs.length) return null;
+  var n = { id: ids.next++, appearance: iwdieVcAppearance(s.st), kind: { type: 'path', path: { subpaths: subs }, rule: s.rule === 'evenodd' ? 'EvenOdd' : 'NonZero' } };
+  if (s.st && typeof s.st.op === 'number' && s.st.op < 1) n.opacity = s.st.op;
+  return n;
+}
+
+/** One component as a native VectorCraft document (.vectorcraft, format version 1): an artboard
+ *  round it, one layer, the component a group named as it is. -> JSON text */
+function iwdieVcNativeDoc(item) {
+  var ids = { next: 3 }, name = (item && item.name) || 'Komponent';
+  var kids = ((item && item.shapes) || []).map(function (s) { return iwdieVcNode(s, ids); }).filter(Boolean);
+  var top = { id: ids.next++, name: name, kind: { type: 'group', children: kids, clip: false } };
+  var w = Math.max(0, +item.w || 0), h = Math.max(0, +item.h || 0);
+  return JSON.stringify({
+    format: 'vectorcraft', version: 1, generator: 'IWMAC Designer Import/Export ' + IWDIE_VERSION,
+    document: {
+      version: 1, title: name, units: 'Points', color_mode: 'Rgb',
+      artboards: [{ id: 1, name: name, rect: { x0: -1, y0: -1, x1: w + 1, y1: h + 1 }, show_center_mark: false, show_cross_hairs: false }],
+      layers: [{ id: 2, name: 'Layer 1', kind: { type: 'layer', color: { Preset: 0 }, template: false, printable: true, children: [top] } }],
+      next_id: ids.next, grid: { spacing: 72, subdivisions: 8 }, guides: [], images: {}, graphic_styles: [], swatch_groups: [], swatches: [],
+      symbols: [], raster_effects_ppi: 72
+    },
+    images: {}
+  });
+}
+
+/** The component library as a .vclibrary file: a graphic per component (an unnamed one is
+ *  called after its layer and number), a group per Illustrator layer, in the file's order.
+ *  `thumbs[k]` is component k's PNG thumbnail as base64, or empty. -> JSON text */
+function iwdieVcLibraryFile(lib, thumbs) {
+  var graphics = [], groups = [], byName = {}, count = {};
+  ((lib && lib.items) || []).forEach(function (it, k) {
+    var layer = it.layer || 'Komponenter', id = 'iwdie-' + (k + 1);
+    count[layer] = (count[layer] || 0) + 1;
+    graphics.push({ id: id, name: it.name || (layer + ' ' + count[layer]), width: it.w, height: it.h,
+      data: iwdieBytesToBase64(iwdieUtf8Encode(iwdieVcNativeDoc(it))), thumbnail: (thumbs && thumbs[k]) || '' });
+    if (!byName[layer]) { byName[layer] = { name: layer, items: [] }; groups.push(byName[layer]); }
+    byName[layer].items.push({ kind: 'graphic', item: id });
+  });
+  return JSON.stringify({ name: 'Komponenter' + (lib && lib.file ? ' - ' + lib.file : ''), colors: [], charStyles: [], paraStyles: [],
+    graphics: graphics, groups: groups });
+}
+
+/** A component's thumbnail as SVG, at most `max` px a side (VectorCraft takes up to 256),
+ *  with a little room round it. -> {svg, w, h} */
+function iwdieVcThumbSvg(item, max) {
+  max = max || 128;
+  var pad = 2, w = Math.max(+item.w || 0, 1) + 2 * pad, h = Math.max(+item.h || 0, 1) + 2 * pad;
+  var k = Math.min(4, max / Math.max(w, h)), W = Math.max(1, Math.round(w * k)), H = Math.max(1, Math.round(h * k));
+  var defs = iwdieDrawDefsSvg(item.shapes);
+  return { w: W, h: H, svg: '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H + '" viewBox="' +
+    [-pad, -pad, w, h].map(iwdieDrawFmt).join(' ') + '">' + (defs ? '<defs>' + defs + '</defs>' : '') +
+    item.shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</svg>' };
 }
 
 /* ===================== browser body ===================== */
@@ -7135,21 +7215,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* ---------- Edit in VectorCraft (v1.35.0): the editor's side ----------
-       Runs on the VectorCraft page. Opened for a job (#job=…) it drops the panel's SVG on the
-       canvas once the app has started, shows how to save, and catches the SVG the app saves -
-       a blob download - to hand it back through Tampermonkey's storage instead. Opened for the
-       components (#lib, v1.36.0) it drops the library there, as a sheet to copy from. */
+       Runs on the VectorCraft page opened for a job (#job=…). It drops the panel's SVG on the
+       canvas once the app has started, then the component library into Libraries (v1.37.0),
+       shows how to save, and catches the SVG the app saves - a blob download - to hand it back
+       through Tampermonkey's storage instead. */
     /** The banner on the editor's page: a title, a text, buttons, and a line for news. */
     function vcBanner(titleHtml, bodyHtml, actions) {
       if (!document.getElementById('iwdie-vcb-style')) {
         var css = [
-          '.iwdie-vcb{position:fixed;right:16px;bottom:64px;z-index:2147483647;width:340px;padding:12px 30px 12px 14px;box-sizing:border-box;background:#424242;',
+          // the drawing's top left: clear of the Libraries panel on the right and of the dialogs' buttons
+          '.iwdie-vcb{position:fixed;left:56px;top:76px;z-index:2147483647;width:340px;padding:12px 30px 12px 14px;box-sizing:border-box;background:#424242;',
           '  border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#d1d1d1}',
           '.iwdie-vcb b{color:#ffffff;font-weight:600}',
-          '.iwdie-vcb .iwdie-vcb-t{font-weight:600;color:#ffffff;margin-bottom:4px}',
+          '.iwdie-vcb .iwdie-vcb-t{font-weight:600;color:#ffffff;margin-bottom:4px;cursor:default;user-select:none}',
+          '.iwdie-vcb .iwdie-vcb-t::before{content:"\\25BE";color:#b0b0b0;font-weight:400;margin-right:5px}',
+          // folded: the title alone, a small tab over the drawing's corner
+          '.iwdie-vcb.iwdie-min{width:auto;padding:6px 30px 6px 12px}',
+          '.iwdie-vcb.iwdie-min .iwdie-vcb-t{margin:0;white-space:nowrap}',
+          '.iwdie-vcb.iwdie-min .iwdie-vcb-t::before{content:"\\25B8"}',
+          '.iwdie-vcb.iwdie-min .iwdie-vcb-b,.iwdie-vcb.iwdie-min .iwdie-vcb-a,.iwdie-vcb.iwdie-min .iwdie-vcb-n{display:none}',
           '.iwdie-vcb .iwdie-vcb-s{margin-top:6px;color:#8fd19e}',
+          '.iwdie-vcb .iwdie-vcb-c{margin-top:6px}',
           '.iwdie-vcb .iwdie-vcb-e{margin-top:6px;color:#ff9f9f}',
-          '.iwdie-vcb .iwdie-vcb-x{position:absolute;top:6px;right:6px;width:20px;height:20px;border:0;background:transparent;color:#b0b0b0;font:16px/20px Arial,sans-serif;cursor:default;padding:0}',
+          '.iwdie-vcb .iwdie-vcb-x{position:absolute;top:5px;right:6px;width:20px;height:20px;border:0;background:transparent;color:#b0b0b0;font:16px/20px Arial,sans-serif;cursor:default;padding:0}',
           '.iwdie-vcb .iwdie-vcb-x:hover{color:#ffffff}',
           '.iwdie-vcb .iwdie-vcb-a{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}',
           '.iwdie-vcb .iwdie-vcb-a button{height:24px;padding:0 12px;border:0;border-radius:12px;background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0;',
@@ -7161,14 +7249,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         st.textContent = css;
         (document.head || document.documentElement).appendChild(st);
       }
-      var esc2 = iwdieEscHtml, el = document.createElement('div'), handlers = {};
+      var esc2 = iwdieEscHtml, el = document.createElement('div'), handlers = {}, auto = true, timer = null;
       el.className = 'iwdie-vcb';
-      el.innerHTML = '<button class="iwdie-vcb-x" title="Hide">×</button><div class="iwdie-vcb-t">' + titleHtml + '</div><div class="iwdie-vcb-b">' + bodyHtml + '</div>' +
+      el.innerHTML = '<button class="iwdie-vcb-x" title="Hide">×</button><div class="iwdie-vcb-t" title="Fold or unfold">' + titleHtml + '</div><div class="iwdie-vcb-b">' + bodyHtml + '</div>' +
         ((actions && actions.length) ? '<div class="iwdie-vcb-a">' + actions.map(function (a) {
           return '<button data-act="' + esc2(a.act) + '"' + (a.title ? ' title="' + esc2(a.title) + '"' : '') + '>' + esc2(a.label) + '</button>';
         }).join('') + '</div>' : '') + '<div class="iwdie-vcb-n"></div>';
       document.body.appendChild(el);
+      // it folds by itself a while after it has said something, until it is folded or unfolded by hand
+      var fold = function (on) { el.classList.toggle('iwdie-min', !!on); };
+      var later = function (ms) {
+        if (timer) clearTimeout(timer);
+        timer = auto ? setTimeout(function () { fold(true); }, ms) : null;
+      };
       el.addEventListener('click', function (ev) {
+        if (ev.target && ev.target.closest && ev.target.closest('.iwdie-vcb-t')) {
+          auto = false;
+          if (timer) clearTimeout(timer);
+          fold(!el.classList.contains('iwdie-min'));
+          return;
+        }
         var b = ev.target && ev.target.closest ? ev.target.closest('button') : null;
         if (!b) return;
         if (b.classList.contains('iwdie-vcb-x')) { el.style.display = 'none'; return; }
@@ -7178,56 +7278,122 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return {
         el: el,
         on: function (act, fn) { handlers[act] = fn; },
+        /** Fold after `ms`, unless it has been folded or unfolded by hand. */
+        later: later,
         note: function (html, bad) {
           var n = el.querySelector('.iwdie-vcb-n');
           n.className = 'iwdie-vcb-n ' + (bad ? 'iwdie-vcb-e' : 'iwdie-vcb-s');
           n.innerHTML = html;
           el.style.display = '';
+          fold(false);
+          later(12000);
         }
       };
     }
 
-    /** Drop an SVG on the canvas once the app has started. A fresh app has no document, so
-     *  it opens as one; the first start downloads the editor, which may take a while. */
-    function vcDropWhenReady(svg, name, note) {
+    /** `fn` once the app has started. The first start downloads the editor, which may take a while. */
+    function vcWhenReady(fn, note) {
       var tries = 0;
       var go = function () {
-        var canvas = document.getElementById('vectorcraft_canvas');
-        if (!canvas || document.getElementById('vectorcraft_loading')) {
+        if (!document.getElementById('vectorcraft_canvas') || document.getElementById('vectorcraft_loading')) {
           if (++tries > 720) { note('The editor did not start - reload this tab.', true); return; }
           setTimeout(go, 250);
           return;
         }
-        setTimeout(function () {
-          try {
-            var r = canvas.getBoundingClientRect(), dt = new W.DataTransfer();
-            dt.items.add(new W.File([svg], name, { type: 'image/svg+xml' }));
-            ['dragenter', 'dragover', 'drop'].forEach(function (t) {
-              canvas.dispatchEvent(new W.DragEvent(t, { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true, dataTransfer: dt }));
-            });
-          } catch (e) { note('It could not be opened here: ' + iwdieEscHtml(String((e && e.message) || e)), true); }
-        }, 1500);
+        setTimeout(fn, 1500);
       };
       go();
     }
 
+    /** Drop a file on the app, as one dragged from the desktop. On the drawing (`at` 'center') a
+     *  fresh app opens a document as a document, and an open one places what it is given; on the
+     *  menu bar ('menu') a library file goes to Libraries, document or not. */
+    function vcDropFile(data, name, type, at) {
+      var canvas = document.getElementById('vectorcraft_canvas');
+      if (!canvas) throw new Error('the editor is not there');
+      var r = canvas.getBoundingClientRect(), dt = new W.DataTransfer();
+      dt.items.add(new W.File([data], name, { type: type }));
+      var x = r.left + r.width / 2, y = at === 'menu' ? r.top + 12 : r.top + r.height / 2;
+      ['dragenter', 'dragover', 'drop'].forEach(function (t) {
+        canvas.dispatchEvent(new W.DragEvent(t, { clientX: x, clientY: y, bubbles: true, cancelable: true, dataTransfer: dt }));
+      });
+    }
+
+    /** The component library as a .vclibrary file, its thumbnails drawn here. -> Promise<text> */
+    function vcLibraryText(lib) {
+      var thumbs = [], k = 0;
+      var next = function () {
+        if (k >= lib.items.length) return Promise.resolve(iwdieVcLibraryFile(lib, thumbs));
+        var t = iwdieVcThumbSvg(lib.items[k], 128), img = new Image();
+        return new Promise(function (resolve) {
+          img.onload = function () {
+            try {
+              var c = document.createElement('canvas');
+              c.width = t.w; c.height = t.h;
+              c.getContext('2d').drawImage(img, 0, 0, t.w, t.h);
+              thumbs[k] = c.toDataURL('image/png').split(',')[1] || '';
+            } catch (e) { thumbs[k] = ''; }
+            resolve();
+          };
+          img.onerror = function () { thumbs[k] = ''; resolve(); };
+          img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(t.svg);
+        }).then(function () { k++; return next(); });
+      };
+      return next();
+    }
+
+    /** Put the component library into the running app's Libraries panel; `say(html, bad)` hears
+     *  how it went. */
+    function vcSendLibrary(lib, say) {
+      return vcLibraryText(lib).then(function (text) {
+        vcDropFile(text, 'Komponenter.vclibrary', 'application/json', 'menu');
+        say('<b>' + iwdieN(lib.items.length, 'component', 'components') + '</b> in <b>Libraries</b> (right), as “Komponenter' +
+          (lib.file ? ' - ' + iwdieEscHtml(lib.file) : '') + '”: drag one onto the drawing, or double-click it.');
+      }).then(null, function (e) { say('The components could not be added: ' + iwdieEscHtml(String((e && e.message) || e)), true); });
+    }
+
     function vcAppSide() {
       if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') return;
-      if (/^#lib\b/.test(location.hash || '')) { vcLibrarySide(); return; }
-      var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null, meta = null;
+      var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null;
       try { job = GM_getValue('iwdie.vc.job', null); } catch (e) { job = null; }
       if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') return;
-      try { meta = GM_getValue(IWDIE_LIB_META_KEY, null); } catch (e) { meta = null; }
-      var esc2 = iwdieEscHtml;
+      var esc2 = iwdieEscHtml, lib = libLoad(), busy = false;
       var ui = vcBanner('IWMAC Designer · ' + esc2(job.panel || 'panel') + (job.plant ? ' (plant ' + esc2(job.plant) + ')' : ''),
         'To send it back: <b>Ctrl+S</b> → Format <b>SVG</b> → OK → tick <b>Preserve Editing Capabilities</b> → OK. ' +
-        'The panel’s background updates; keep editing and save again for more.',
-        [{ act: 'lib', label: 'Komponenter' + (meta && meta.count ? ' (' + meta.count + ')' : ''),
-          title: 'The components from your Illustrator file, in a tab of their own: copy there, paste here' }]);
+        'The panel’s background updates; keep editing and save again for more.<div class="iwdie-vcb-c"></div>',
+        [{ act: 'import', label: 'Import .ai…', title: 'Read the components around an Illustrator file’s artboard into Libraries; they replace the ones kept' }]);
       var note = ui.note;
-      ui.on('lib', function () {
-        var t = W.open(IWDIE_VC_URL + '#lib', 'iwdie-vc-lib');
-        if (!t) note('The browser blocked the new tab - allow pop-ups for this page.', true);
+      // what the components line says: where they are, or how to get them
+      var comp = function (html, bad) {
+        var c = ui.el.querySelector('.iwdie-vcb-c');
+        c.className = 'iwdie-vcb-c' + (bad ? ' iwdie-vcb-e' : '');
+        c.innerHTML = 'Komponenter: ' + html;
+      };
+      comp(lib ? iwdieN(lib.items.length, 'component', 'components') + ' from <b>' + esc2(lib.file || 'an Illustrator file') + '</b> - in Libraries once the editor has started.'
+        : 'none yet. <b>Import .ai…</b> reads the objects placed around an Illustrator file’s artboard - where Maskin files keep them - into VectorCraft’s Libraries.');
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.ai,.pdf,application/pdf,application/postscript,application/illustrator';
+      input.style.display = 'none';
+      ui.el.appendChild(input);
+      ui.on('import', function () { if (!busy) input.click(); });
+      input.addEventListener('change', function () {
+        var f = input.files && input.files[0];
+        input.value = '';
+        if (!f || busy) return;
+        busy = true;
+        libRead(f, function (html) { comp(html); }).then(function (got) {
+          if (!got.items.length) {
+            comp('<b>' + esc2(got.file) + '</b> has no objects outside its artboard' + (got.hidden ? ' that are not hidden' : '') + ' - nothing changed.', true);
+            return;
+          }
+          libStore(got);
+          lib = got;
+          return new Promise(function (resolve) { vcWhenReady(resolve, note); }).then(function () { return vcSendLibrary(got, comp); });
+        }).then(function () { busy = false; }, function (e) {
+          busy = false;
+          comp('<b>' + esc2(String(f.name || 'The file')) + '</b> could not be read: ' + esc2(String((e && e.message) || e)) + '.', true);
+        });
       });
       // what the app saves arrives as a blob download: keep the blobs, and send an SVG back instead of downloading it
       var blobs = {}, make = W.URL.createObjectURL, revoke = W.URL.revokeObjectURL, click = W.HTMLAnchorElement.prototype.click;
@@ -7303,51 +7469,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (b && /\.svgz$/i.test(a.download)) note('Saved as SVG Compressed, which goes to Downloads - choose <b>SVG</b> to send it to the panel.', true);
         return click.apply(this, arguments);
       };
-      vcDropWhenReady(job.svg, job.name || 'panel.svg', note);
-    }
-
-    /** The components tab (v1.36.0): the library as a sheet in VectorCraft - one layer per
-     *  Illustrator layer, each component a named group - to copy into the panel's tab, and
-     *  Import .ai… to read another file's components in their place. */
-    function vcLibrarySide() {
-      var esc2 = iwdieEscHtml, lib = libLoad(), busy = false;
-      var when = '';
-      try { when = lib && lib.imported ? ', ' + new Date(lib.imported).toLocaleDateString() : ''; } catch (e) {}
-      var facts = lib ? ['From <b>' + esc2(lib.file || 'an Illustrator file') + '</b>' + esc2(when)] : [];
-      if (lib && lib.hidden) facts.push(iwdieN(lib.hidden, 'hidden object', 'hidden objects') + ' left out, as in Illustrator');
-      if (lib && lib.noArtboard) facts.push('no artboard found, so every object is here');
-      var ui = vcBanner(lib ? 'Komponenter · ' + iwdieN(lib.items.length, 'component', 'components') : 'Komponenter',
-        lib ? facts.join(' · ') + '. Select a component - click it, or drag around several - then <b>Ctrl+C</b> here and <b>Ctrl+V</b> in the panel’s tab: ' +
-          'it lands in the layer selected there, in the middle of the view.'
-          : 'None yet. <b>Import .ai…</b> reads the objects placed around an Illustrator file’s artboard - where Maskin files keep their components. ' +
-          'The file stays on this computer.',
-        [{ act: 'import', label: 'Import .ai…', title: 'Read the components of an Illustrator file; they replace the ones here' }]);
-      var input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.ai,.pdf,application/pdf,application/postscript,application/illustrator';
-      input.style.display = 'none';
-      ui.el.appendChild(input);
-      ui.on('import', function () { if (!busy) input.click(); });
-      input.addEventListener('change', function () {
-        var f = input.files && input.files[0];
-        input.value = '';
-        if (!f || busy) return;
-        busy = true;
-        libRead(f, function (html) { ui.note(html); }).then(function (got) {
-          if (!got.items.length) {
-            busy = false;
-            ui.note('<b>' + esc2(got.file) + '</b> has no objects outside its artboard' + (got.hidden ? ' that are not hidden' : '') + ' - the components are unchanged.', true);
-            return;
-          }
-          libStore(got);
-          ui.note('✓ ' + iwdieN(got.items.length, 'component', 'components') + ' from <b>' + esc2(got.file) + '</b> - opening them…');
-          setTimeout(function () { location.reload(); }, 700);
-        }).then(null, function (e) {
-          busy = false;
-          ui.note('<b>' + esc2(String(f.name || 'The file')) + '</b> could not be read: ' + esc2(String((e && e.message) || e)) + '.', true);
-        });
-      });
-      if (lib) vcDropWhenReady(iwdieVcLibrarySvg(lib), 'komponenter.svg', ui.note);
+      // the panel first, as a fresh app opens it as a document; then the components, through the
+      // menu bar, which sends a library to Libraries even with a document open
+      var libText = lib ? vcLibraryText(lib) : null;
+      vcWhenReady(function () {
+        try { vcDropFile(job.svg, job.name || 'panel.svg', 'image/svg+xml', 'center'); }
+        catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return; }
+        ui.later(20000);
+        if (!libText) return;
+        libText.then(function (text) {
+          setTimeout(function () {
+            try {
+              vcDropFile(text, 'Komponenter.vclibrary', 'application/json', 'menu');
+              comp('<b>' + iwdieN(lib.items.length, 'component', 'components') + '</b> in <b>Libraries</b> (right), as “Komponenter' +
+                (lib.file ? ' - ' + esc2(lib.file) : '') + '”: drag one onto the drawing, or double-click it.');
+            } catch (e) { comp('The components could not be added: ' + esc2(String((e && e.message) || e)), true); }
+          }, 1200);
+        }, function (e) { comp('The components could not be added: ' + esc2(String((e && e.message) || e)), true); });
+      }, note);
     }
 
     /* ---------- Edit in VectorCraft (v1.35.0): the Designer's side ---------- */
@@ -7416,7 +7555,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           tone: 'good', title: 'Opening in VectorCraft',
           lines: [what + ' - in a new tab.',
             'Save there with Ctrl+S → Format SVG → OK → tick Preserve Editing Capabilities → OK: the picture comes straight back to this background.',
-            'Komponenter, in the banner there, opens the components of your Illustrator file to copy from.'],
+            'Your components from Illustrator are in VectorCraft’s Libraries panel there: drag one onto the drawing.'],
           footer: 'Nothing leaves the browser. The first start downloads the editor (about 20 MB); after that it is cached.'
         });
       }).then(null, function (e) {
@@ -9071,7 +9210,12 @@ if (typeof module !== 'undefined' && module.exports) {
     vcMergeShapes: iwdieVcMergeShapes,
     vcEmbed: iwdieVcEmbed,
     vcExtract: iwdieVcExtract,
-    vcLibrarySvg: iwdieVcLibrarySvg,
+    vcSubpaths: iwdieVcSubpaths,
+    vcPaint: iwdieVcPaint,
+    vcAppearance: iwdieVcAppearance,
+    vcNativeDoc: iwdieVcNativeDoc,
+    vcLibraryFile: iwdieVcLibraryFile,
+    vcThumbSvg: iwdieVcThumbSvg,
     pngChunks: iwdiePngChunks,
     pngCrc32: iwdiePngCrc32,
     sniffMime: iwdieSniffMime,
