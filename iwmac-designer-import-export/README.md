@@ -1154,6 +1154,43 @@ share, whose folder names had been kept from before its grouping folders existed
 again; *2300-2349 › 2313 COOP EXTRA Sveio* was found, with a second folder of that number in
 *2300-2349 SWE*; and **Open plant .ai…** took `2313_Ventilasjon.ai` by itself.
 
+**The plant's own .ai before a trace (v1.51.0).** When components are kept, *Edit in
+VectorCraft…* reads the picture for them first (*Looking for them*, *Pills*, *Pipes*). Before it
+starts, the editor's tab now offers the better way: the Illustrator file the picture was drawn
+in, whose artboard is the whole picture as exact vectors. It shows:
+
+- **Plant folder** - *Anlegg › 2300-2349 › 2349 COOP EXTRA Sveio*, a link that opens it in
+  Explorer (*Open in Explorer* while its path is not known yet);
+- **.ai files** - those VectorCraft's tab has seen in it, the panel's own first;
+- a place to drop the `.ai`, dragged from that Explorer window, and **Choose the .ai file…**;
+- **Trace the picture**, to go on as before.
+
+The file chosen there goes to VectorCraft instead of a trace: the panel opens as it is, the
+file's components go to Libraries in place of those kept, and its artboard opens as vectors in a
+tab of its own, to paste in place as the background (Ctrl+A, Ctrl+C in its tab; the layer
+*Bakgrunn* in the panel's tab; Ctrl+Shift+V). The file travels through Tampermonkey's storage, at
+most 40 MB, and leaves it as soon as VectorCraft's tab has it.
+
+The Designer's page cannot read folders, so what the card shows comes from VectorCraft's tab.
+Once the plants' folder is connected there, that tab reads its grouping folders in the
+background, at most every 12 hours, and keeps every plant's folder by number in Tampermonkey's
+storage, with the `.ai` files it has seen in each plant's own. Until then the card links to
+Explorer only.
+
+Measured in the stub host:
+- **The index.** A plants' folder laid out like the share, connected in VectorCraft's tab, gave
+  every plant's folder by number, the plants' folder itself first and then the grouping folders
+  in order, so the card shows the folder the banner shows. With components kept from
+  `2349_Maskin.ai`, *Edit in VectorCraft…* then showed the card with *2300-2349 › 2313 COOP
+  EXTRA Sveio +1* and the three `.ai` files seen, the panel's own first.
+- **Explorer from the card.** The link launched `anlegg://2313`, without a `beforeunload`.
+- **The .ai, chosen or dropped.** `2349_Maskin.ai`, chosen through the file chooser, went to
+  VectorCraft without a trace: 386 components into Libraries, its artboard into a tab of its
+  own, and the file out of Tampermonkey's storage. Dropped on the card, it did the same; a file
+  that is no `.ai` was refused there.
+- **Trace the picture.** It ran the steps as before: 52 places, 7 components, 58 pills and 37
+  pipes, in 3 seconds.
+
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
 off. An object placed by a sync is known again at the next one too: moved, resized or deleted

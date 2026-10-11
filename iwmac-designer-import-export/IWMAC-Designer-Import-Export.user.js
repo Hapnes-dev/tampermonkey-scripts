@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.50.0
+// @version      1.51.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -30,7 +30,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.50.0';
+var IWDIE_VERSION = '1.51.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -4699,6 +4699,14 @@ function iwdieBytesToBase64(u8) {
   return btoa(s);
 }
 
+/** Base64 back to bytes (v1.51.0). */
+function iwdieBase64ToBytes(b64) {
+  if (typeof Buffer !== 'undefined' && Buffer.from) return new Uint8Array(Buffer.from(String(b64 || ''), 'base64'));
+  var bin = atob(String(b64 || '')), out = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
 /** What Draw mode left inside a PNG: {drawing: {w, h, shapes}, base: {mime, bytes} | null},
  *  or null when it left nothing. The shapes come back cleaned. */
 function iwdieDrawExtract(png) {
@@ -6319,6 +6327,36 @@ function iwdieVcPlantUrl(plant) {
   return /^\d{1,6}$/.test(id) ? 'anlegg://' + id : '';
 }
 
+/** Every plant's folder by its number (v1.51.0), from the names in the plants' folder and in each of its
+ *  grouping folders: `entries` [{inside: the grouping folder, or '' for the plants' folder itself, names}].
+ *  -> {number: ['2300-2349/2349 Kiwi', …]}, each list in the order the editor's tab looks: the plants'
+ *  folder itself, then the grouping folders in order, names in order within each - so the first is the
+ *  one its banner shows */
+function iwdieVcPlantIndex(entries) {
+  var out = {};
+  var inside = function (e) { return String((e && e.inside) || ''); };
+  (entries || []).slice().sort(function (a, b) { return inside(a) < inside(b) ? -1 : inside(a) > inside(b) ? 1 : 0; }).forEach(function (e) {
+    (e && e.names || []).slice().sort().forEach(function (n) {
+      var m = /^(\d+)/.exec(String(n || ''));
+      if (!m || iwdieVcPlantRange(n)) return;
+      var id = m[1].replace(/^0+(?=\d)/, '');
+      if (!Object.prototype.hasOwnProperty.call(out, id)) out[id] = [];
+      out[id].push((e.inside ? e.inside + '/' : '') + n);
+    });
+  });
+  return out;
+}
+
+/** Where a plant's folder is, from that index as kept (v1.51.0): {where: 'Anlegg › 2300-2349 › 2349 Kiwi',
+ *  more: how many other folders its number has, all: each of them so} | null */
+function iwdieVcPlantPlace(index, plant) {
+  var id = String(plant || '').replace(/^0+(?=\d)/, '');
+  var list = index && index.plants && /^\d+$/.test(id) && Object.prototype.hasOwnProperty.call(index.plants, id) ? index.plants[id] : null;
+  if (!Array.isArray(list) || !list.length) return null;
+  var all = list.map(function (p) { return [index.root].concat(String(p).split('/')).filter(Boolean).join(' › '); });
+  return { where: all[0], more: all.length - 1, all: all };
+}
+
 /** The .ai files of a plant's folder in the order to offer them (v1.49.0): one named after the panel
  *  first ("2349_Maskin.ai" for Maskin, "2313_Ventilasjon.ai" for 360.002 Ventilasjon: the words of
  *  its name), then one named after the plant; one in an old or archived folder, or named so, later;
@@ -6498,6 +6536,13 @@ var IWDIE_VC_OBJ_LIBRARY = 'IWMAC-objekter';
 /** The plants' folder (v1.49.0): the editor's site's IndexedDB that keeps it, and how long the names
  *  of the plants' folders are kept before they are read again. */
 var IWDIE_PLANTS_DB = 'iwdie-plants', IWDIE_PLANTS_TTL = 12 * 3600e3;
+/** Every plant's folder as the editor's tab last read the plants' folder, and the .ai files it saw in
+ *  each plant's own (v1.51.0): kept in Tampermonkey's storage, for the Designer's tab to show before a
+ *  panel opens - it cannot read folders itself. */
+var IWDIE_PLANTS_INDEX_KEY = 'iwdie.plants.index', IWDIE_PLANTS_AI_KEY = 'iwdie.plants.ai';
+/** The .ai chosen in the Designer's tab instead of a trace (v1.51.0), on its way to the editor's tab
+ *  of its job, and the most it may weigh: it travels through Tampermonkey's storage as base64. */
+var IWDIE_VC_AI_KEY = 'iwdie.vc.ai', IWDIE_VC_AI_MAX = 40 * 1024 * 1024;
 /** What each role of the catalogue is called in the library. */
 var IWDIE_VC_OBJ_ROLES = {
   header: 'Headers', label: 'Labels', value: 'Values', value_conn: 'Values with connector', value_tag: 'Values with tag',
@@ -10010,6 +10055,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return vcPlantsDb('readwrite', function (st) { st.put({ at: Date.now(), names: names }, key); }).then(function () { return names; }, function () { return names; });
           });
         }).then(function (names) {
+          index(names);
           var found = [];
           var add = function (dir, inside, list) {
             iwdieVcPlantFolders(list, job.plant).forEach(function (n) { found.push({ dir: dir, path: inside.concat([n]) }); });
@@ -10035,6 +10081,35 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           });
         }).then(null, function (e) { state = 'failed'; show(String((e && e.message) || e)); });
       };
+      // what the Designer's tab shows before a panel opens here (v1.51.0): every plant's folder - the grouping
+      // folders read in the background, half a day apart - and the .ai files seen in each plant's own
+      var indexing = false;
+      var index = function (names) {
+        var kept = null;
+        try { kept = GM_getValue(IWDIE_PLANTS_INDEX_KEY, null); } catch (e) { kept = null; }
+        if (indexing || (kept && kept.root === root.name && kept.at > Date.now() - IWDIE_PLANTS_TTL)) return;
+        indexing = true;
+        var entries = [{ inside: '', names: names }];
+        names.filter(function (n) { return !!iwdieVcPlantRange(n); }).reduce(function (p, range) {
+          return p.then(function () {
+            return root.getDirectoryHandle(range).then(function (h) { return vcAllOf(h.keys()); })
+              .then(function (subs) { entries.push({ inside: range, names: subs }); }, function () {});
+          });
+        }, Promise.resolve()).then(function () {
+          try { GM_setValue(IWDIE_PLANTS_INDEX_KEY, { at: Date.now(), root: root.name, plants: iwdieVcPlantIndex(entries) }); } catch (e) {}
+          indexing = false;
+        });
+      };
+      var remember = function (got) {
+        var id = String(job.plant || '').replace(/^0+(?=\d)/, ''), all = null;
+        try { all = GM_getValue(IWDIE_PLANTS_AI_KEY, null) || {}; } catch (e) { all = {}; }
+        all[id] = { at: Date.now(), ai: got.slice(0, 40).map(function (f) {
+          return { name: f.name, path: f.path, top: f.at.path[f.at.path.length - 1], modified: f.modified || 0 };
+        }) };
+        // the 300 plants seen last
+        Object.keys(all).sort(function (a, b) { return (all[b].at || 0) - (all[a].at || 0); }).slice(300).forEach(function (k) { delete all[k]; });
+        try { GM_setValue(IWDIE_PLANTS_AI_KEY, all); } catch (e) {}
+      };
       // the .ai files of the plant's folders, three folders deep - read again each time they are offered
       var list = function () {
         var all = [];
@@ -10048,7 +10123,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return Promise.all(all.map(function (f) {
             return f.handle.getFile().then(function (file) { f.modified = file.lastModified; f.size = file.size; return f; }, function () { return f; });
           }));
-        }).then(function (got) { files = got; state = 'found'; show(); return got; });
+        }).then(function (got) { files = got; state = 'found'; show(); remember(got); return got; });
       };
       var permitted = function (ask) {
         var q = ask ? root.requestPermission({ mode: 'read' }) : root.queryPermission({ mode: 'read' });
@@ -10122,6 +10197,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try { job = GM_getValue('iwdie.vc.job', null); } catch (e) { job = null; }
       if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') return;
       var esc2 = iwdieEscHtml, lib = libLoad(), busy = false;
+      // the panel's .ai, chosen in the Designer's tab instead of a trace of its picture (v1.51.0): out of
+      // Tampermonkey's storage at once, and opened once the editor is ready, as Open plant .ai… opens one
+      var given = null;
+      try { given = GM_getValue(IWDIE_VC_AI_KEY, null); } catch (e) { given = null; }
+      if (given && given.job === job.id && typeof given.b64 === 'string') { try { GM_deleteValue(IWDIE_VC_AI_KEY); } catch (e) {} } else given = null;
       var ui = vcBanner('IWMAC · ' + esc2(job.panel || 'panel') + (job.plant ? ' · plant ' + esc2(job.plant) : ''),
         // what to do, then a row for each thing there is (v1.50.0); the how and why of each on hover
         '<div class="iwdie-vcb-h" title="Ctrl+S offers Sync to IWMAC Designer: the panel’s background is updated, its PNG goes to the plant’s pictures, ' +
@@ -10146,7 +10226,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         c.className = 'iwdie-vcb-c' + (bad ? ' iwdie-vcb-e' : '');
         c.innerHTML = html;
       };
-      comp(lib ? '<b>' + lib.items.length + '</b> from ' + esc2(lib.file || 'an Illustrator file') : 'none yet - from the plant’s .ai');
+      comp(given ? 'next, from ' + esc2(given.name) : lib ? '<b>' + lib.items.length + '</b> from ' + esc2(lib.file || 'an Illustrator file') : 'none yet - from the plant’s .ai');
       // the Designer's own objects, as placeholders that become them when saved back (v1.40.0)
       var looks = null;
       try { looks = (GM_getValue(IWDIE_VC_LOOKS_KEY, null) || {}).items || null; } catch (e) { looks = null; }
@@ -10191,8 +10271,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               // on the menu bar a file opens as a document; on the drawing it would be placed as art
               try { vcDropFile(new Uint8Array(ab), name, f.type || 'application/pdf', 'menu'); }
               catch (e) { note(named + ' could not be opened here: ' + esc2(String((e && e.message) || e)), true); resolve(); return; }
-              note('✓ ' + named + ' is open in a new tab, as vectors.<br><span class="iwdie-vcb-q">As the background: <b>Ctrl+A</b>, <b>Ctrl+C</b> there; here, click the layer ' +
-                '<b>Bakgrunn</b>, then <b>Ctrl+Shift+V</b>.</span>', false, true);
+              note('✓ ' + named + ' is open in its own tab here, as vectors.<br><span class="iwdie-vcb-q">As the background: <b>Ctrl+A</b>, <b>Ctrl+C</b> in its tab; ' +
+                'in the panel’s tab, click the layer <b>Bakgrunn</b>, then <b>Ctrl+Shift+V</b>.</span>', false, true);
               resolve();
             }, note);
           });
@@ -10328,7 +10408,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // through the menu bar, which sends a library to Libraries even with a document open: the IWMAC
       // objects, then the components - each in pages that fit Libraries, which does not scroll (v1.47.0)
       var cap = vcLibraryCap();
-      var libText = lib ? vcLibraryPagesText(lib, cap, { suffix: lib.file ? ' - ' + lib.file : '' }) : null;
+      // the components kept, unless the .ai from the Designer's tab brings its own
+      var libText = lib && !given ? vcLibraryPagesText(lib, cap, { suffix: lib.file ? ' - ' + lib.file : '' }) : null;
       var objText = vcLibraryPagesText({ items: objItems }, cap, { prefix: IWDIE_VC_OBJ_LIBRARY + ': ' }, { prefix: 'iwmac-obj-', twins: true });
       var asFiles = vcPageFiles;
       var pause = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
@@ -10369,6 +10450,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }).then(function (ok) {
             note(ok ? '✓ Ready to sync' : 'The first sync answers VectorCraft’s Save As for you.');
           });
+        }).then(function () {
+          // the .ai from the Designer's tab (v1.51.0), once Ctrl+S is ready: it opens in a tab of its own
+          if (given) useAi(new File([iwdieBase64ToBytes(given.b64)], given.name, { type: given.type || 'application/pdf' }), 'chosen in the Designer');
         });
       }, note);
     }
@@ -10497,29 +10581,39 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return iwdieVcAddPanelObjects(shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc, info.objects, info.looks, info.mended ? info.mended.unders : null);
         }
         var lib = base ? libLoad() : null;
-        paper = lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
-          ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
-          : vcPaper(tab, [['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']]);
-        if (!lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3, 0.9);
-        // over the panel's own colour, as the Designer shows it (v1.48.2): a picture whose ground is
-        // transparent reads black on a bare canvas, and what is taken out of it was filled with that black
-        return exportPaint(base && base.bytes, base && base.mime, size, fill).then(function (c) {
-          var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
-          var picture = base ? c.toDataURL('image/png') : null;
-          // the kept components looked for in the picture (v1.44.0): those found become vectors of their own
-          return (lib ? vcRecognize(c, lib, paper, tab, info.objects) : Promise.resolve(null)).then(function (got) {
-            info.recognized = got;
-            if (lib) {
-              paper.noSkip();
-              if (!got) {
-                paper.done(paper.skipped() ? 'skipped' : 'nothing to draw');
-                ['check', 'pills', 'pipes'].forEach(function (k) { paper.none(k); });
+        // the plant's own .ai offered first (v1.51.0): before the picture is read for components, the file it was
+        // drawn in - whose artboard is the picture as exact vectors - with the plant's folder to find it in
+        return (lib ? vcPreferAi(tab, info) : Promise.resolve(null)).then(function (ai) {
+          if (ai === false) { var stop = new Error('the editor’s tab was closed'); stop.cancelled = true; throw stop; }
+          if (ai) { info.ai = ai; lib = null; }
+          paper = lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
+            ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
+            : vcPaper(tab, (ai ? [['ai', 'The plant’s .ai']] : []).concat([['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']]));
+          if (ai) {
+            paper.step('ai', '', 0.05);
+            paper.done(ai.name + ', ' + (Math.round(ai.bytes.length / 104857.6) / 10) + ' MB - opened in VectorCraft; the picture is not traced', 0.1);
+          }
+          if (!lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3, 0.9);
+          // over the panel's own colour, as the Designer shows it (v1.48.2): a picture whose ground is
+          // transparent reads black on a bare canvas, and what is taken out of it was filled with that black
+          return exportPaint(base && base.bytes, base && base.mime, size, fill).then(function (c) {
+            var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
+            var picture = base ? c.toDataURL('image/png') : null;
+            // the kept components looked for in the picture (v1.44.0): those found become vectors of their own
+            return (lib ? vcRecognize(c, lib, paper, tab, info.objects) : Promise.resolve(null)).then(function (got) {
+              info.recognized = got;
+              if (lib) {
+                paper.noSkip();
+                if (!got) {
+                  paper.done(paper.skipped() ? 'skipped' : 'nothing to draw');
+                  ['check', 'pills', 'pipes'].forEach(function (k) { paper.none(k); });
+                }
+                paper.step('build', 'the picture' + (got ? ' without what was found' : '') + (nObj ? ', ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : ''), 0.96, 0.98);
               }
-              paper.step('build', 'the picture' + (got ? ' without what was found' : '') + (nObj ? ', ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : ''), 0.96, 0.98);
-            }
-            return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: got ? got.cleaned : picture, original: got ? picture : null,
-              components: got ? got.components : null, pipes: got ? got.pipes : null, shapes: shapes, objects: info.objects, looks: info.looks,
-              unders: got ? got.unders : null, title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
+              return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: got ? got.cleaned : picture, original: got ? picture : null,
+                components: got ? got.components : null, pipes: got ? got.pipes : null, shapes: shapes, objects: info.objects, looks: info.looks,
+                unders: got ? got.unders : null, title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
+            });
           });
         });
       });
@@ -10527,6 +10621,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
         var safe = String(info.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
         var job = { id: id, svg: svg, name: 'iwmac-' + (info.plant || 'plant') + '-' + safe + '.svg', panel: info.panel || '', plant: info.plant || '', at: Date.now(), version: IWDIE_VERSION };
+        // the .ai chosen instead of a trace (v1.51.0) goes along, in Tampermonkey's storage until the editor's tab takes it;
+        // one slot, as the job's: a job without one clears one an earlier job's tab never took
+        if (info.ai) GM_setValue(IWDIE_VC_AI_KEY, { job: id, name: info.ai.name, type: info.ai.type, b64: iwdieBytesToBase64(info.ai.bytes), at: Date.now() });
+        else { try { GM_deleteValue(IWDIE_VC_AI_KEY); } catch (e) {} }
         GM_setValue('iwdie.vc.job', job);
         if (paper) {
           paper.done((Math.round(svg.length / 104857.6) / 10) + ' MB', 0.98);
@@ -10553,6 +10651,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           : info.again ? 'The picture this background was first read from, read again'
           : (base ? 'The picture' : 'An empty ' + size.w + ' × ' + size.h + ' canvas') +
             (shapes.length ? ', the drawing from Draw (' + iwdieN(shapes.length, 'shape', 'shapes') + ')' : '');
+        if (info.ai) what += ' as it is, with ' + info.ai.name + ' (its components to Libraries, its artboard as vectors in a tab of its own)';
         if (nObj) what += (vc ? ', with ' : ' and ') + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter';
         var got = info.recognized;
         outcomeToast({
@@ -10991,6 +11090,95 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         } catch (e) { finish(main.key); return; }
         // the tab closed meanwhile: nobody to answer, and nothing to open
         watch = setInterval(function () { var gone = true; try { gone = !tab || tab.closed; } catch (e) {} if (gone) finish(null); }, 500);
+      });
+    }
+
+    /** Before the picture is read for components (v1.51.0), in the editor's tab: the plant's own .ai
+     *  offered instead - the file the picture was drawn in, whose artboard is the picture as exact vectors.
+     *  The plant's folder is shown as the editor's tab last read the plants' folder (this page cannot read
+     *  folders), its name a link that opens it in Explorer, with the .ai files seen in it; the file is
+     *  chosen, or dropped from Explorer, here. The link is followed by the tab's own page, not by this
+     *  page's script: the browser launches anlegg:// only for the page that was clicked.
+     *  -> Promise<{name, type, bytes} | null: trace the picture | false: the tab was closed> */
+    function vcPreferAi(tab, info) {
+      return new Promise(function (resolve) {
+        var doc = null, done = false, watch = null;
+        var finish = function (v) { if (done) return; done = true; if (watch) clearInterval(watch); resolve(v); };
+        try { doc = tab && !tab.closed ? tab.document : null; } catch (e) { doc = null; }
+        if (!doc) { finish(false); return; }
+        var esc = iwdieEscHtml, font = '\'Segoe UI\',Roboto,Arial,sans-serif', url = iwdieVcPlantUrl(info.plant);
+        var index = null, seen = null;
+        try { index = GM_getValue(IWDIE_PLANTS_INDEX_KEY, null); seen = GM_getValue(IWDIE_PLANTS_AI_KEY, null); } catch (e) {}
+        var place = iwdieVcPlantPlace(index, info.plant), id = String(info.plant || '').replace(/^0+(?=\d)/, '');
+        var mine = seen && Object.prototype.hasOwnProperty.call(seen, id) && seen[id] && Array.isArray(seen[id].ai) ? seen[id].ai : [];
+        var files = iwdieVcAiChoice(mine, info.panel, info.plant).list.slice(0, 4);
+        var explorer = function (html) {
+          return '<a id="explorer" href="' + url + '" target="iwdie-ext" title="Opens in Explorer, with Anleggsmappe and its anlegg:// links on this PC" ' +
+            'style="color:#78b4ff;text-underline-offset:2px">' + html + '</a>';
+        };
+        var folder = !url ? 'the panel’s plant is not known'
+          : place ? explorer(esc(place.where)) + (place.more ? ' <span title="' + esc(place.all.slice(1).join('\n')) + '">+' + place.more + '</span>' : '')
+          : explorer('Open in Explorer') + ' <span style="color:#9a9a9a;font-size:12px">- its path shows here once VectorCraft has read the plants’ folder</span>';
+        var pill = function (key, label, main) {
+          return '<button id="' + key + '" style="height:30px;padding:0 18px;border:0;border-radius:15px;font:600 12.5px ' + font + ';cursor:pointer;' +
+            (main ? 'background:#378ef0;color:#ffffff' : 'background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0') + '">' + label + '</button>';
+        };
+        try {
+          doc.open();
+          doc.write('<!doctype html><meta charset="utf-8"><title>IWMAC Designer → VectorCraft</title>' +
+            '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#535353;color:#d1d1d1;font:13px/1.5 ' + font + '">' +
+            '<div style="width:560px;padding:22px;box-sizing:border-box;background:#424242;border:1px solid #383838;border-radius:6px;box-shadow:0 8px 14px rgba(0,0,0,.55)">' +
+            '<div style="font-size:16px;font-weight:600;color:#ffffff;margin-bottom:8px">Best result: the plant’s own .ai file</div>' +
+            '<p style="margin:0 0 12px">The picture is about to be traced, to find your components in it. The Illustrator file it was drawn in ' +
+            'has the whole picture as exact vectors - nothing traced, nothing guessed.</p>' +
+            '<div style="display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 12px;margin-bottom:14px">' +
+            '<span style="color:#9a9a9a">Plant folder</span><span id="folder">' + folder + '</span>' +
+            (files.length ? '<span style="color:#9a9a9a">.ai files</span><span id="seen">' + files.map(function (f) {
+              return '<b style="color:#ffffff;font-weight:600">' + esc(f.name) + '</b> <span style="color:#9a9a9a;font-size:12px">' +
+                esc([f.top].concat(f.path || []).filter(Boolean).join(' › ')) + '</span>';
+            }).join('<br>') + '</span>' : '') + '</div>' +
+            '<div id="drop" style="padding:18px;border:1.5px dashed #6a6a6a;border-radius:6px;text-align:center;cursor:pointer">' +
+            'Drag the .ai here from the plant folder, or click to choose it</div>' +
+            '<div id="say" style="margin-top:8px;font-size:12px;color:#9a9a9a">VectorCraft then opens the panel with the file’s components in Libraries, ' +
+            'and its artboard, as vectors, in a tab of its own.</div>' +
+            '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">' + pill('trace', 'Trace the picture', false) +
+            pill('choose', 'Choose the .ai file…', true) + '</div>' +
+            '<input id="file" type="file" accept=".ai,.pdf,.eps,application/pdf,application/postscript,application/illustrator" style="display:none">' +
+            '</div><iframe name="iwdie-ext" style="display:none"></iframe></body>');
+          doc.close();
+        } catch (e) { finish(null); return; }
+        var $ = function (k) { try { return doc.getElementById(k); } catch (e) { return null; } };
+        var say = function (text, bad) { var el = $('say'); if (el) { el.textContent = text; el.style.color = bad ? '#ff9f9f' : '#9a9a9a'; } };
+        var take = function (f) {
+          if (!f || done) return;
+          var name = String(f.name || '');
+          if (!/\.(ai|pdf|eps)$/i.test(name)) { say(name + ' is not an Illustrator file (.ai).', true); return; }
+          if (f.size > IWDIE_VC_AI_MAX) {
+            say(name + ' is too big to pass along (' + Math.round(f.size / 1048576) + ' MB): trace the picture, or open it in VectorCraft with Open plant .ai….', true);
+            return;
+          }
+          say('Reading ' + name + '…');
+          f.arrayBuffer().then(function (ab) { finish({ name: name, type: f.type || 'application/pdf', bytes: new Uint8Array(ab) }); },
+            function (e) { say(name + ' could not be read: ' + String((e && e.message) || e), true); });
+        };
+        var input = $('file'), drop = $('drop');
+        var pick = function () { try { input.click(); } catch (e) {} };
+        input.addEventListener('change', function () { var f = input.files && input.files[0]; input.value = ''; take(f); });
+        $('choose').addEventListener('click', pick);
+        drop.addEventListener('click', pick);
+        $('trace').addEventListener('click', function () { finish(null); });
+        // a file dropped anywhere on the page, so the browser does not open it instead
+        var lit = function (on) { drop.style.borderColor = on ? '#378ef0' : '#6a6a6a'; };
+        doc.addEventListener('dragover', function (e) { e.preventDefault(); lit(true); });
+        doc.addEventListener('dragleave', function () { lit(false); });
+        doc.addEventListener('drop', function (e) { e.preventDefault(); lit(false); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
+        doc.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' && !(e.target && /^(BUTTON|A)$/.test(e.target.tagName))) { e.preventDefault(); pick(); }
+        });
+        var cb = $('choose');
+        if (cb) cb.focus();
+        // the tab closed meanwhile: nobody to answer, and nothing to open
+        watch = setInterval(function () { var gone = true; try { gone = !tab || tab.closed; } catch (e) {} if (gone) finish(false); }, 500);
       });
     }
 
@@ -13237,6 +13425,9 @@ if (typeof module !== 'undefined' && module.exports) {
     vcPlantRange: iwdieVcPlantRange,
     vcPlantRanges: iwdieVcPlantRanges,
     vcPlantUrl: iwdieVcPlantUrl,
+    vcPlantIndex: iwdieVcPlantIndex,
+    vcPlantPlace: iwdieVcPlantPlace,
+    base64ToBytes: iwdieBase64ToBytes,
     vcAiChoice: iwdieVcAiChoice,
     vcPalette: iwdieVcPalette,
     vcPipeColours: iwdieVcPipeColours,
