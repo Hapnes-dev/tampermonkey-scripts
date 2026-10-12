@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.59.0
+// @version      1.60.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.59.0';
+var IWDIE_VERSION = '1.60.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6989,7 +6989,8 @@ function iwdieVcObjectCaption(o) {
  *  - a label: its text, at the label's own size and weight;
  *  - the header: its bar, with its text in white;
  *  - anything else, with the Designer's picture of it: that picture, and its tag text under it
- *    when it has a tag (JV50 on a fan), to be written over;
+ *    when it has a tag (JV50 on a fan), to be written over - or, given `o.tagAt` ({x, y, size,
+ *    color}, v1.60.0), where the Designer writes it, at its size: over a fan, under a value;
  *  - without the picture: the light box of v1.40.0, with what the object is in it. */
 function iwdieVcObjectItem(o) {
   var w = o.w, h = o.h, box = 'M0 0 L' + w + ' 0 L' + w + ' ' + h + ' L0 ' + h + ' Z', shapes = [];
@@ -7006,7 +7007,8 @@ function iwdieVcObjectItem(o) {
   } else if (o.src) {
     shapes.push({ t: 'image', x: 0, y: 0, w: w, h: h, src: o.src, iw: o.iw, ih: o.ih });
     shapes.push(line(null, 0.6));
-    if (o.hasTag && o.tag) shapes.push(text(0, h + 9, o.tag, 8, '#3c4650'));
+    var at = o.tagAt;
+    if (o.hasTag && o.tag) shapes.push(at ? text(at.x, at.y, o.tag, at.size, at.color || '#3c4650') : text(0, h + 9, o.tag, 8, '#3c4650'));
   } else {
     // see-through over the bubble it carries (v1.48.0), else a light box
     shapes.push(o.see ? line(null, 0.6) : line('#eaf1ff', 0.8));
@@ -7206,7 +7208,9 @@ function iwdieVcItemParts(it) {
  *  with which object it is (data-iwdie-ref, -obj, -at). '' for one without a place, a size or an
  *  obj_id. Under the rest, the art the object stands on (v1.47.0, `under`: [{x, y, w, h, href}], a
  *  piece of the picture where it is, in panel pixels; or [{markup, box}], the art a VectorCraft
- *  background kept of it), each marked data-iwdie-under with its box (data-iwdie-fat). */
+ *  background kept of it), each marked data-iwdie-under with its box (data-iwdie-fat). The object's
+ *  own look (v1.60.0, `ob.iwdieLook`: one the Designer paints by CSS, painted at its size) goes before
+ *  its kind's, and its tag text where the Designer writes it (`ob.iwdieTag`). */
 function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
   var x = parseFloat(ob && ob.posLeft), y = parseFloat(ob && ob.posTop), w = parseFloat(ob && ob.posWidth), h = parseFloat(ob && ob.posHeight);
   var id = String((ob && ob.obj_id) || '');
@@ -7214,7 +7218,10 @@ function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
   var known = iwdieVcObjectIndex()[id], tag = iwdieVcTagOf(ob), f = iwdieDrawFmt, esc = iwdieDrawEsc;
   var o = { id: id, w: w, h: h, role: known ? known.role : '', desc: known ? known.desc : id, kind: known ? known.kind : 'picture',
     tag: tag, hasTag: known ? known.hasTag || !!tag : !!tag };
-  if (look && typeof look.src === 'string' && /^data:image\/png;base64,/.test(look.src) && look.iw > 0 && look.ih > 0) { o.src = look.src; o.iw = look.iw; o.ih = look.ih; }
+  var own = ob.iwdieLook, at = ob.iwdieTag, png = function (l) { return l && typeof l.src === 'string' && /^data:image\/png;base64,/.test(l.src) && l.iw > 0 && l.ih > 0; };
+  if (png(own)) look = { src: own.src, iw: own.iw, ih: own.ih, bar: look && look.bar };
+  if (at && [at.x, at.y, at.size].every(isFinite) && at.size > 0) o.tagAt = { x: at.x, y: at.y, size: at.size, color: /^#[0-9a-f]{6}$/i.test(at.color || '') ? at.color : '' };
+  if (png(look)) { o.src = look.src; o.iw = look.iw; o.ih = look.ih; }
   if (look && /^#[0-9a-f]{6}$/i.test(look.bar || '')) o.bar = look.bar;
   // a label's or the header's text is its own; without one it says nothing rather than "Label"
   if ((o.kind === 'label' || o.kind === 'bar') && !tag) o.tag = ' ';
@@ -7235,9 +7242,13 @@ function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
 }
 
 /** The panel's objects as a layer of placeholders, IWMAC-objekter, with `looks` by obj_id and the
- *  art each stands on, `unders` by name (v1.47.0). -> SVG markup, '' when none has a place. */
+ *  art each stands on, `unders` by name (v1.47.0). Stacked as the Designer stacks them (v1.60.0), by
+ *  their zIndex, those alike in the panel's order: a room picture over the values in it hid them.
+ *  -> SVG markup, '' when none has a place. */
 function iwdieVcPanelObjectsLayer(objects, looks, used, unders) {
-  var parts = (objects || []).map(function (ob) {
+  var stacked = (objects || []).map(function (ob, i) { var z = parseFloat(ob && ob.zIndex); return { ob: ob, i: i, z: isFinite(z) ? z : 0 }; })
+    .sort(function (a, b) { return a.z - b.z || a.i - b.i; }).map(function (e) { return e.ob; });
+  var parts = stacked.map(function (ob) {
     return iwdieVcPanelPlaceholderSvg(ob, looks && ob && looks[ob.obj_id], used, unders && ob && Object.prototype.hasOwnProperty.call(unders, ob.name) ? unders[ob.name] : null);
   }).filter(Boolean);
   return parts.length ? '  <g id="IWMAC-objekter" data-name="IWMAC-objekter">\n' + parts.map(function (p) { return '    ' + p; }).join('\n') + '\n  </g>\n' : '';
@@ -8217,6 +8228,53 @@ function iwdieVcPaintsItself(def, st) {
     if (v.length < 4 || v[3] > 0) return true;
   }
   return parseFloat(st.border) > 0 && !!st.style && st.style !== 'none' && st.style !== 'hidden';
+}
+
+/** Where CSS puts the copies of a background picture in a box (v1.60.0), as the Designer paints its pipes, bends and
+ *  coils: `pos`, `size` and `repeat` are the computed background-position ("0% 14px"), background-size ("auto") and
+ *  background-repeat ("repeat-x"); the box is `w` x `h`, the picture `iw` x `ih`. A pipe 1025 px long carries its
+ *  50 px picture 21 times along it; a coil sits 14 px down, once. -> {tw, th, at: [[x, y]…]}: the copies' size and
+ *  each one's top left, only those that reach into the box (at most 4000) */
+function iwdieCssTiles(pos, size, repeat, w, h, iw, ih) {
+  var len = function (v, room) {
+    var m = /^(-?(?:\d+(?:\.\d*)?|\.\d+))(px|%)?$/.exec(String(v || '').trim());
+    return !m ? 0 : m[2] === '%' ? room * parseFloat(m[1]) / 100 : parseFloat(m[1]);
+  };
+  var tw = +iw, th = +ih, sz = String(size || 'auto').trim().split(/\s+/);
+  if (!(tw > 0) || !(th > 0) || !(w > 0) || !(h > 0)) return { tw: 0, th: 0, at: [] };
+  if (sz[0] === 'contain' || sz[0] === 'cover') {
+    var k = sz[0] === 'contain' ? Math.min(w / tw, h / th) : Math.max(w / tw, h / th);
+    tw *= k; th *= k;
+  } else {
+    var sw = sz[0] && sz[0] !== 'auto' ? len(sz[0], w) : 0, sh = sz[1] && sz[1] !== 'auto' ? len(sz[1], h) : 0;
+    if (sw > 0 && sh > 0) { tw = sw; th = sh; }
+    else if (sw > 0) { th = th * sw / tw; tw = sw; }
+    else if (sh > 0) { tw = tw * sh / th; th = sh; }
+  }
+  var p = String(pos || '0% 0%').trim().split(/\s+/), x0 = len(p[0], w - tw), y0 = len(p.length > 1 ? p[1] : '50%', h - th);
+  var r = String(repeat || 'repeat').trim().split(/\s+/);
+  var rx = r[0] === 'repeat-x' || (r[0] !== 'repeat-y' && r[0] !== 'no-repeat'), ry = r[0] === 'repeat-y' || (r[0] !== 'repeat-x' && (r.length > 1 ? r[1] : r[0]) !== 'no-repeat');
+  var along = function (start, step, room, rep) {
+    if (!rep) return start < room && start + step > 0 ? [start] : [];
+    var out = [];
+    for (var v = start - Math.ceil(start / step) * step; v < room && out.length < 4000; v += step) if (v + step > 0) out.push(v);
+    return out;
+  };
+  var xs = along(x0, tw, w, rx), ys = along(y0, th, h, ry), at = [];
+  for (var j = 0; j < ys.length && at.length < 4000; j++) for (var i = 0; i < xs.length && at.length < 4000; i++) at.push([xs[i], ys[j]]);
+  return { tw: tw, th: th, at: at };
+}
+
+/** A CSS colour as #rrggbb (v1.60.0): rgb()/rgba() turned, #rgb widened; '' for one that is not, or see-through. */
+function iwdieCssHex(c) {
+  var s = String(c || '').trim(), m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?\s*\)$/i.exec(s);
+  if (m) {
+    if (m[4] !== undefined && parseFloat(m[4]) === 0) return '';
+    return '#' + [m[1], m[2], m[3]].map(function (v) { var n = Math.max(0, Math.min(255, Math.round(+v))); return (n < 16 ? '0' : '') + n.toString(16); }).join('');
+  }
+  if (/^#[0-9a-f]{6}$/i.test(s)) return s.toLowerCase();
+  if (/^#[0-9a-f]{3}$/i.test(s)) return ('#' + s.charAt(1) + s.charAt(1) + s.charAt(2) + s.charAt(2) + s.charAt(3) + s.charAt(3)).toLowerCase();
+  return '';
 }
 
 /** The picture a VectorCraft background was first read from (v1.48.0): the image on its hidden layer
@@ -11232,7 +11290,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var kinds = [];
       info.objects.forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (/^[\w.-]+$/.test(k) && kinds.indexOf(k) < 0) kinds.push(k); });
       info.sent = iwdieVcPanelSent(info.objects);
-      var looked = vcObjectLooks(kinds).then(function (l) { info.looks = l; return l; }, function () { return null; });
+      // and each object as the Designer shows it (v1.60.0): those its CSS paints at their own size, tags where it writes them
+      var painted = vcPaintObjects(info.objects).then(null, function () {});
+      var looked = vcObjectLooks(kinds).then(function (l) { info.looks = l; return painted.then(function () { return l; }); }, function () { return painted.then(function () { return null; }); });
       // a background that cannot be read must not become an empty one in the editor
       (url ? fetchBackgroundBytes(url) : Promise.resolve(null)).then(function (bg) {
         return looked.then(function () { return bg; });
@@ -11691,18 +11751,116 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** The pictures CSS names, loaded once each (v1.60.0). -> Promise<HTMLImageElement> */
+    var vcCssPics = {};
+    function vcCssPic(url) {
+      if (!vcCssPics[url]) {
+        vcCssPics[url] = fetch(url, { credentials: 'same-origin' }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.blob();
+        }).then(function (blob) {
+          var u = URL.createObjectURL(blob);
+          return loadPicture(u).then(function (img) { URL.revokeObjectURL(u); return img; }, function (e) { URL.revokeObjectURL(u); throw e; });
+        });
+        vcCssPics[url].then(null, function () { delete vcCssPics[url]; });
+      }
+      return vcCssPics[url];
+    }
+
+    /** An object of render definition `def` as the Designer shows it at `w` x `h` (v1.60.0): an element of its classes,
+     *  laid out out of sight. `paint`: what its CSS paints - its background colour, its background picture placed and
+     *  repeated as its style says (iwdieCssTiles), its border and rounding - as a PNG, or null with nothing painted (bare
+     *  text). Given its tag text `tag`, where the tag's own class writes it: {x, y (the baseline), size, color}.
+     *  -> Promise<{look: {src, iw, ih, mean} | null, tag: {x, y, size, color} | null}> */
+    function vcPaintCss(def, w, h, tag, paint) {
+      var el = document.createElement('div'), t = null, st = null, at = null;
+      el.className = String(def.classname || '') + ' iw_css_ctrl_common';
+      el.style.cssText = 'position:absolute;left:-30000px;top:0;width:' + w + 'px;height:' + h + 'px';
+      if (tag && def.tag_text_classname) {
+        t = document.createElement('div');
+        t.className = String(def.tag_text_classname);
+        t.textContent = tag;
+        el.appendChild(t);
+      }
+      (document.body || document.documentElement).appendChild(el);
+      try {
+        var s = getComputedStyle(el), style = s.borderTopStyle;
+        st = { image: s.backgroundImage, colour: iwdieCssHex(s.backgroundColor), pos: s.backgroundPosition, size: s.backgroundSize, repeat: s.backgroundRepeat,
+          bw: style !== 'none' && style !== 'hidden' ? parseFloat(s.borderTopWidth) || 0 : 0, bc: s.borderTopColor, radius: parseFloat(s.borderTopLeftRadius) || 0 };
+        if (t && t.firstChild) {
+          var r0 = el.getBoundingClientRect(), range = document.createRange(), ts = getComputedStyle(t), size = parseFloat(ts.fontSize) || 11;
+          range.selectNodeContents(t);
+          var r = range.getBoundingClientRect(), r2 = function (v) { return Math.round(v * 100) / 100; };
+          if (r.width > 0 || r.height > 0) at = { x: r2(r.left - r0.left), y: r2(r.top - r0.top + (r.height + size * 0.7) / 2), size: size, color: iwdieCssHex(ts.color) };
+        }
+      } finally { if (el.parentNode) el.parentNode.removeChild(el); }
+      var url = paint ? (/url\(\s*["']?([^"')]+)["']?\s*\)/.exec(st.image || '') || [])[1] || '' : '';
+      if (!paint || (!url && !st.colour && !(st.bw > 0))) return Promise.resolve({ look: null, tag: at });
+      return (url ? vcCssPic(url) : Promise.resolve(null)).then(function (img) {
+        var c = document.createElement('canvas'), g;
+        c.width = w; c.height = h;
+        g = c.getContext('2d');
+        var rr = Math.min(st.radius, w / 2, h / 2), b = st.bw;
+        var outline = function (inset) {
+          var x0 = inset, y0 = inset, x1 = w - inset, y1 = h - inset, k = Math.max(0, rr - inset);
+          g.beginPath();
+          g.moveTo(x0 + k, y0);
+          g.arcTo(x1, y0, x1, y1, k); g.arcTo(x1, y1, x0, y1, k); g.arcTo(x0, y1, x0, y0, k); g.arcTo(x0, y0, x1, y0, k);
+          g.closePath();
+        };
+        g.save();
+        if (rr > 0) { outline(0); g.clip(); }
+        if (st.colour) { g.fillStyle = st.colour; g.fillRect(0, 0, w, h); }
+        if (img) {
+          var tiles = iwdieCssTiles(st.pos, st.size, st.repeat, w - 2 * b, h - 2 * b, img.naturalWidth || img.width, img.naturalHeight || img.height);
+          tiles.at.forEach(function (p) { g.drawImage(img, b + p[0], b + p[1], tiles.tw, tiles.th); });
+        }
+        g.restore();
+        if (b > 0) { g.strokeStyle = st.bc; g.lineWidth = b; outline(b / 2); g.stroke(); }
+        var d = g.getImageData(0, 0, w, h).data, sum = [0, 0, 0], n = 0;
+        for (var i = 0; i < d.length; i += 16) if (d[i + 3] > 200) { sum[0] += d[i]; sum[1] += d[i + 1]; sum[2] += d[i + 2]; n++; }
+        var mean = n ? iwdieCssHex('rgb(' + sum.map(function (v) { return Math.round(v / n); }).join(',') + ')') : '';
+        return { look: { src: c.toDataURL('image/png'), iw: w, ih: h, mean: mean }, tag: at };
+      });
+    }
+
+    /** The panel's objects as the Designer shows them (v1.60.0): each one its CSS paints - its render definition has no
+     *  picture of its own: pipes, bends, coils, rooms, value boxes - painted at its own size (`iwdieLook`), a pipe as long
+     *  as it is with its picture repeated along it; and, for each with a tag text, where it writes that (`iwdieTag`).
+     *  Panel 360.001 of plant 10251 is drawn with 123 of them on a blank picture. -> Promise */
+    function vcPaintObjects(objects) {
+      var ctl = W.controls || {}, done = {};
+      return Promise.all((objects || []).map(function (ob) {
+        var def = null;
+        try { def = ob && ob.obj_id ? ctl[ob.obj_id] : null; } catch (e) { def = null; }
+        var w = Math.round(parseFloat(ob && ob.posWidth)), h = Math.round(parseFloat(ob && ob.posHeight)), tag = iwdieVcTagOf(ob);
+        if (!def || !(w > 0) || !(h > 0) || w * h > 4e6) return null;
+        var paint = !def.file && !!def.classname;
+        if (!paint && !tag) return null;
+        var key = ob.obj_id + '|' + w + '|' + h + '|' + tag;
+        if (!done[key]) done[key] = vcPaintCss(def, w, h, tag, paint).then(null, function () { return null; });
+        return done[key].then(function (p) {
+          if (p && p.look) ob.iwdieLook = { src: p.look.src, iw: p.look.iw, ih: p.look.ih };
+          if (p && p.tag) ob.iwdieTag = p.tag;
+        });
+      }));
+    }
+
     /** Each IWMAC object's size as the Designer draws it - its live render definition, `controls` -
      *  and its picture from /iw_icons/, as PNG, left in Tampermonkey's storage for the editor's page:
-     *  the catalogue's, and (v1.46.0) the kinds in `extra`, the panel's own. Kept a week; what they
-     *  lack is fetched and added. -> Promise<looks> */
+     *  the catalogue's, and (v1.46.0) the kinds in `extra`, the panel's own. One its CSS paints is
+     *  painted as that does (v1.60.0, vcPaintCss), its class's picture before the catalogue's. Kept a
+     *  week; what they lack, or failed to get, is fetched and added. -> Promise<looks> */
     function vcObjectLooks(extra) {
       var cat = iwdieVcObjectCatalog(), kept = null, known = iwdieVcObjectIndex(), want = cat.map(function (o) { return o.id; });
       (extra || []).forEach(function (id) { if (want.indexOf(id) < 0) want.push(id); });
       try { kept = GM_getValue(IWDIE_VC_LOOKS_KEY, null); } catch (e) { kept = null; }
-      var fresh = !!(kept && kept.items && kept.at > Date.now() - 7 * 864e5);
-      if (fresh && want.every(function (id) { return kept.items[id]; })) return Promise.resolve(kept.items);
+      // those kept before 1.60.0 have the CSS-painted kinds scaled from the catalogue's pictures
+      var fresh = !!(kept && kept.v === 2 && kept.items && kept.at > Date.now() - 7 * 864e5);
+      var have = function (id) { return kept.items[id] && !kept.items[id].failed; };
+      if (fresh && want.every(have)) return Promise.resolve(kept.items);
       var ctl = W.controls || {}, items = {};
-      if (fresh) Object.keys(kept.items).forEach(function (id) { items[id] = kept.items[id]; });
+      if (fresh) Object.keys(kept.items).forEach(function (id) { if (have(id)) items[id] = kept.items[id]; });
       return Promise.all(want.filter(function (id) { return !items[id]; }).map(function (id) {
         var o = known[id] || { id: id, w: 0, h: 0, pic: '' }, live = null, w = o.w, h = o.h, pic = o.pic;
         try { live = ctl[id]; } catch (e) { live = null; }
@@ -11713,13 +11871,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (typeof live.file === 'string' && live.file) pic = live.file;
         }
         var look = items[id] = { w: w, h: h };
-        if (!pic) return null;
-        return vcIconPng(vcDesignerUrl('../iw_icons/' + pic)).then(function (p) {
-          look.src = p.url; look.iw = p.w; look.ih = p.h;
-          if (p.mean) look.bar = p.mean;
-        }, function () {});
+        var fromPic = function () {
+          if (!pic) return null;
+          return vcIconPng(vcDesignerUrl('../iw_icons/' + pic)).then(function (p) {
+            look.src = p.url; look.iw = p.w; look.ih = p.h;
+            if (p.mean) look.bar = p.mean;
+          }, function () { look.failed = true; });
+        };
+        if (!live || live.file || !live.classname || !(w >= 1 && h >= 1)) return fromPic();
+        return vcPaintCss(live, Math.round(w), Math.round(h), '', true).then(function (p) {
+          if (!p || !p.look) return fromPic();
+          look.src = p.look.src; look.iw = p.look.iw; look.ih = p.look.ih;
+          if (p.look.mean) look.bar = p.look.mean;
+        }, fromPic);
       })).then(function () {
-        try { GM_setValue(IWDIE_VC_LOOKS_KEY, { at: fresh ? kept.at : Date.now(), items: items }); } catch (e) {}
+        try { GM_setValue(IWDIE_VC_LOOKS_KEY, { v: 2, at: fresh ? kept.at : Date.now(), items: items }); } catch (e) {}
         return items;
       });
     }
@@ -14453,6 +14619,8 @@ if (typeof module !== 'undefined' && module.exports) {
     vcStripHelpers: iwdieVcStripHelpers,
     vcLiftObjects: iwdieVcLiftObjects,
     vcAroundBoard: iwdieVcAroundBoard,
+    cssTiles: iwdieCssTiles,
+    cssHex: iwdieCssHex,
     vcEmbed: iwdieVcEmbed,
     vcExtract: iwdieVcExtract,
     vcSubpaths: iwdieVcSubpaths,

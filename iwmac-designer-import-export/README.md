@@ -1672,6 +1672,30 @@ object, at the size the Designer draws it.
   storage for a week. Without them, a placeholder is the light box of v1.40.0.
 - The IWMAC menu shows the same pictures.
 
+**As the Designer paints them, stacked as it stacks them (v1.60.0).** Thomas opened panel
+360.001 of plant 10251 in VectorCraft and found objects missing. Its picture is blank
+(`00-blank-sidebar-1400x750`): the drawing is its 123 objects. For 70 of them, of 34 kinds, the
+render definition has no picture of its own, and the Designer paints them by their CSS class.
+- **What went wrong.** A pipe's class repeats its 50 px picture along it (`repeat-x`), a coil's
+  picture sits 14 px down, and a value box has a colour, a border and round corners. Instead,
+  the catalogue's picture was squeezed into the box: a 1025 px pipe showed as one short piece
+  in its middle. Bends, which the catalogue lacks, came as empty boxes named `number_v3_…`.
+- **Painted as its class paints it.** Each such object is now painted at its own size. An
+  element of its classes is laid out out of sight, and its background colour, its picture
+  (placed and repeated as the CSS says), its border and rounding go into a PNG. The IWMAC
+  menu's pictures of such kinds are painted the same way, from the class's own picture rather
+  than the catalogue's.
+- **Tags.** The tag text goes where the Designer writes it, at its size: JV501 over its fan,
+  RT502 °C over its value box.
+- **Stacking.** The placeholders are stacked by their zIndex. The room of 360.001 (z 40) came
+  after RT600's value (z 110) and label (z 1100) in the panel's list, and was laid over them.
+- **The kept looks** in Tampermonkey's storage are made anew once. A picture that failed to load
+  is fetched again next time, instead of being kept missing for a week.
+
+Measured on the live Designer, read-only, with 360.001's objects from its API: 70 objects
+painted in 0.5 s and 54 tags placed, in a 192 kB layer. Drawn, it matches the Designer's own
+view of the panel, pipes, bends, coils, rotor and room included.
+
 The Designer takes each placeholder out of the picture and places that object on the panel,
 at the placeholder's position and size. It uses the Designer's own loader, as Insert does. The
 objects arrive unlinked. Their stacking order is that of the panel's own objects of the same
