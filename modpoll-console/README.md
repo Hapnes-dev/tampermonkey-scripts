@@ -256,6 +256,12 @@ rebuilt.
 
   `__modpoll.comPorts(true)` reads them again.
 
+  **A list with no `subtract_one` counts from one (1.64.1).** That is
+  modbusgen's default, and its own writer leaves a default out, so every list it
+  exports from 1-based numbers arrives without the key. The console read an
+  absent key as false, and Verify list read each point of such a list one
+  register too high. Only a written `false` now means protocol addresses.
+
   While Run polls, the log reads as modpoll's does when it keeps polling on its
   own (1.62.4). modpoll's configuration block and the hairline show once, on the
   first pass. Every pass after that adds only its polling line and its answer:

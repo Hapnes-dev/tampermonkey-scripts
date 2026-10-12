@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.64.0
+// @version      1.64.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -58,7 +58,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.64.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.64.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -4526,7 +4526,13 @@
     function parsePointList(json) {
         const doc = typeof json === 'string' ? JSON.parse(json) : json;
         if (!doc || !Array.isArray(doc.points)) throw new Error('Not a modbusgen project: no points array');
-        const subtractOne = !!(doc.options && doc.options.subtract_one);
+        // modbusgen's default is true, and its own writer leaves a default out, so a
+        // list it wrote from 1-based numbers carries no subtract_one at all. Until
+        // 1.64.1 an absent key read as false here, and every point of such a list was
+        // verified one register too high. Only a written false means protocol
+        // addresses; anything else is read as modbusgen reads it.
+        const written = doc.options ? doc.options.subtract_one : undefined;
+        const subtractOne = written === undefined || written === null ? true : !!written;
         const points = doc.points.map((p, index) => {
             let decoded = decodeDatatype(p.datatype);
             const scale = scaleFactorOf(p.scale);

@@ -301,6 +301,14 @@ const check = (name, ok, got) => {
         { datatype: 'A_Input_U32_W', addr: 400, text: 'Akt.börv.TF (3x0400)', scale: 'x0.01', decimals: 2 },
         { datatype: 'I_Input_U16_N', addr: 969, text: 'an unsigned word above 32767' },
     ] });
+    // modbusgen's writer leaves subtract_one out when it is true, its default (1.64.1).
+    const bare = [{ datatype: 'I_Hold_U16_N', addr: 5, text: 'a point' }];
+    check('a list with no subtract_one counts from one, as modbusgen reads it: addr 5 is protocol 4',
+        parsePointList({ points: bare }).subtractOne === true, JSON.stringify(parsePointList({ points: bare }).subtractOne));
+    check('... as does one whose options leave it out',
+        parsePointList({ options: { proper_case_states: false }, points: bare }).subtractOne === true, '');
+    check('... and only a written false makes the addresses protocol addresses',
+        parsePointList({ options: { subtract_one: false }, points: bare }).subtractOne === false, '');
     const v = await verifyPointList(list, { mode: 'tcp', host: '192.168.1.40', port: 502, slave: 1 });
     const row = addr => v.rows.find(r => r.point.addr === addr);
     check('a verification reads every point as 16-bit words, never with modpoll\'s own 32-bit formats',
