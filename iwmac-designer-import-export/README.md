@@ -248,7 +248,8 @@ documents in it.
 | Editing the background in Illustrator | *Background → Illustrator* writes a real .ai: the picture on a locked layer, the drawing as Illustrator objects, the panel's objects on a hidden reference layer (v1.34.0) |
 | Components from Illustrator | The objects around a `.ai` file's artboard go into VectorCraft's own Libraries panel, to drag onto the drawing (v1.33.0; in VectorCraft's Libraries since v1.37.0). Those drawn in the panel's picture are found there and opened as editable groups (v1.44.0) |
 | Did everything go in? | Since v1.31.0 the canvas is counted after every insert with the host's own serializer; the toast is green when every object and container arrived and red when any did not, and says how many (since v1.31.1 the file's own warnings are listed but never colour it) |
-| Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI |
+| Empty canvas on **export** | Not an error since v1.11.0 — the background picture is downloaded as-is plus a background-only envelope, so an unlinked *Oversikt* can still be handed to an AI. With no picture either, the plant's overview alone (v1.62.0), to draw a new panel from |
+| Plant data for an AI agent | Every export carries `overview` (v1.62.0): the plant's units, the parameter rows of the units the panel shows, its tagged signals, the panel's links checked against them, and the picture's layout and style - for an agent that draws or links an overview picture |
 | Not-a-panel-file / VV sketch file on **insert** | Blocked with an itemised error panel, canvas untouched |
 | Server writes | Never — export reads the DOM, insert only renders; saving stays 100 % in the host's own buttons |
 | Bookkeeping | Host's own `UpdateObjectWorker` runs after insert, exactly like the designer's paste |
@@ -275,6 +276,10 @@ documents in it.
     // v1.22.0 — facts derived from the panel: object types and how often they
     // occur, linking counts, units referenced, z-index values, extent
   },
+  "overview": {
+    // v1.62.0 — the plant behind the panel, for an agent: units, parameter rows,
+    // tagged signals, links checked, the picture's layout and style. See below.
+  },
   "background_embedded": true,
   "background": {
     // v1.17.0 — what the image_data blob is, without opening it
@@ -297,6 +302,67 @@ documents in it.
 ```
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
+
+### The plant behind the panel, for an agent that draws overview pictures (v1.62.0)
+
+Thomas asked for the export to help his Copilot agent generate IWMAC overview pictures with
+the new VectorCraft: one file, the existing format extended rather than a new one, readable
+and exact for an AI, and backward compatible. Export JSON now adds one top-level key,
+`overview`, between `summary` and the picture. Insert ignores it, the format version stays 1,
+and every file Insert took before it takes now.
+
+- **What it holds.** The plant as the Designer has it at export time, as tables
+  `{cols, rows}`, one row per line:
+  - `units`: every unit (controller) the Designer lists, with how many of the panel's
+    objects it has, its tagged signals and how many of its rows are in the file.
+  - `parameters`: every row of the three linked units with the most objects, and of every
+    unit ticked in the Parameter Selector's UNITS list, up to 4000. They are read as the
+    selector reads them (`designer_site/iw_load_plant.php`, read-only). In each unit the
+    groups the panel shows come first, and groups of alarms alone last.
+  - `signals`: the rows the plant has tagged with a standard meaning ("Compressor
+    Running", "Fan Relay"), with each one's measure and tag.
+  - `bindings`: each linked object read against its unit's rows. It is `ok`, or the
+    alias differs, the row is in another unit, it is not in the unit, or the unit is not
+    on the plant.
+  - `picture` and `style`: where the picture has its panels, pipes, pills, figures and
+    texts, and its colours, pipe widths, pills and text, measured by the vectorizer of
+    v1.61.0. A drawing kept in the picture gives its texts with their words.
+  - `parts`: the kinds of object the panel uses, with their usual size and z, and the
+    component library kept in this browser.
+  - `read_me` comes first. It says how to read the block, and how to link: copy a row's
+    ids whole, never build one.
+- **An empty canvas** with no picture now exports the plant's overview alone, to draw a
+  new panel from, instead of nothing.
+- **Insert checks the links against the plant.** After the check, it fetches the rows
+  of the units a file for this plant names and reads each link against them. These are
+  warnings, listed object by object:
+  - a `driver_id` that is invented;
+  - one that belongs to another unit;
+  - a unit the plant lacks;
+  - an `alias_text` other than the row's.
+
+  The glance grid says "N of M match the plant". *Copy report for the AI* now names the
+  objects under each finding, so the agent fixes exactly those.
+- **An agent's drawing opens in VectorCraft as vectors.** A background set from
+  `panel.image_svg` used to reach VectorCraft as a picture of itself. Now it opens as the
+  SVG it is: its top-level groups become layers (Bakgrunn, Rør, Former and Tekst, as the
+  guide asks), nothing is locked, and the panel's objects sit on top as placeholders.
+  Ctrl+S makes it the panel's picture and keeps the vectors in it for the next edit.
+
+The Copilot kit's new `OVERVIEW-PICTURE-GUIDE.md` (task T19) tells the agent how to use it:
+the documentation gives the topology, the overview's rows the links, the plant's style the
+drawing, and the layer contract the shape VectorCraft opens.
+
+Measured live on plant 2349's Maskin panel (read-only):
+- The overview took 2.9 s and is 163 kB; 126 kB of it are the pack controller's 1615 rows.
+- All 56 links matched a row.
+- The pipes came out in the house's circuit colours, and the tags as 11 px Roboto
+  `#3c505e`.
+
+In the stub host, an agent's file with a four-layer drawing and three links (one right, one
+with another alias, one invented) read "1 of 3 match the plant". It opened in VectorCraft as
+its four layers with the objects unlocked, and synced back. Not yet run in Tampermonkey on
+the live Designer.
 
 ### Green if it went in, red if it did not (v1.31.1)
 

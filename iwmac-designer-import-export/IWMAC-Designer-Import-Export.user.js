@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.61.0
+// @version      1.62.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.61.0';
+var IWDIE_VERSION = '1.62.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -266,6 +266,7 @@ function iwdieFileLayout() {
     { key: 'panel_height', type: 'string or null', required: 'no', set_by: 'exporter or agent', meaning: 'Copy of panel.panel_height for readers; keep the two equal.' },
     { key: 'counts', type: 'object', required: 'recommended', set_by: 'exporter or agent', meaning: '{single_objects, containers, graphics}: the lengths of the three arrays in panel. Recompute after adding or removing anything; the importer warns when they disagree.' },
     { key: 'summary', type: 'object', required: 'no', set_by: 'exporter', meaning: 'Facts derived from this panel at export time (object types, linking, units, z-index values, extent). Read it to orient; drop it or recompute it when you return a changed file, because a stale summary misleads the next reader.' },
+    { key: 'overview', type: 'object', required: 'no', set_by: 'exporter', meaning: 'The plant behind the panel at export time (v1.62.0), for drawing or linking an overview picture: its units, the rows of their parameters, the tagged signals, this panel\'s links checked against them, and the picture\'s layout and style, as tables {cols, rows}. Read overview.read_me first; its rows are the plant parameter source. The importer ignores it; leave it out of a file you return.' },
     { key: 'background_embedded', type: 'boolean', required: 'no', set_by: 'exporter or agent', meaning: 'true when image_data carries the background picture.' },
     { key: 'background', type: 'object or null', required: 'no', set_by: 'exporter', meaning: 'What the image_data blob is (field, mime, width, height, bytes, source_name) so it never has to be opened.' },
     { key: 'panel', type: 'object', required: 'yes', set_by: 'exporter or agent', meaning: 'The panel document itself, the only part the importer draws. See schema.panel.' },
@@ -558,6 +559,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       'counts.* -> the lengths of panel.single_objects, panel.containers and panel.graphics.',
       'background, image_data, panel.converted, panel.org_image_name -> one background picture; every object position is measured against its pixels (background.width x background.height, normally the canvas size).',
       'image_svg_trace -> derived from image_data; reading material only, never rendered.',
+      'overview.parameters, overview.signals -> rows of the plant parameter source, read from the Designer at export time; overview.bindings -> each linked object read against them.',
       'sub_page_* objects -> driver_id holds the numeric id of the panel they navigate to, not a parameter.',
       'top-level panel_name, panel_width, panel_height, source_plant_id -> copies of panel.panel_name, panel.panel_width, panel.panel_height, panel.plant_id for readers.'
     ],
@@ -715,10 +717,12 @@ function iwdieBuildEnvelope(doc, meta) {
       containers: (doc.containers || []).length,
       graphics: (doc.graphics || []).length
     },
-    summary: summary,
-    background_embedded: doc.converted === 'true' && !!bg,
-    background: bg ? iwdieBackgroundInfo(bg, doc.org_image_name) : null
+    summary: summary
   };
+  // the plant behind the panel (v1.62.0), when the exporter read it: after the summary, before the picture and the panel
+  if (meta.overview && typeof meta.overview === 'object') env.overview = meta.overview;
+  env.background_embedded = doc.converted === 'true' && !!bg;
+  env.background = bg ? iwdieBackgroundInfo(bg, doc.org_image_name) : null;
   env.panel = panel;
   if (bg) env.image_data = bg;        // big payloads last, for human readers
   if (trace) { env.image_svg_trace = trace; iwdieNoteTraceInAiGuide(env); }
@@ -730,6 +734,15 @@ function iwdieBuildEnvelope(doc, meta) {
  * written before 1.17.0 keep image_data and image_svg_trace in the panel and
  * are returned untouched, which is what makes every older file still import.
  */
+/** An array of plain values (v1.62.0) - a table's row, or a short list - that fits on a line. */
+function iwdieIsFlatArray(value) {
+  if (!Array.isArray(value)) return false;
+  for (var i = 0; i < value.length; i++) {
+    if (value[i] !== null && typeof value[i] === 'object') return false;
+  }
+  return true;
+}
+
 /** An object with no nested object or array — one that fits on a line. */
 function iwdieIsFlatObject(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -763,9 +776,11 @@ function iwdieStringifyEnvelope(value, indent) {
     if (node === null || typeof node !== 'object') return JSON.stringify(node);
     if (Array.isArray(node)) {
       if (!node.length) return '[]';
+      // a short list of plain values on one line, and a table's rows (v1.62.0: the overview's {cols, rows}) one per line
+      if (iwdieIsFlatArray(node) && JSON.stringify(node).length <= 120) return JSON.stringify(node);
       var oneLine = true;
       for (i = 0; i < node.length; i++) {
-        if (!iwdieIsFlatObject(node[i])) { oneLine = false; break; }
+        if (!iwdieIsFlatObject(node[i]) && !iwdieIsFlatArray(node[i])) { oneLine = false; break; }
       }
       parts = [];
       for (i = 0; i < node.length; i++) {
@@ -1057,7 +1072,7 @@ var IWDIE_QUICK_START = [
   '4. Which object a parameter row wants: signal_to_object. Where it goes: layout. Which rows belong on a panel at all: parameter_selection.',
   '5. The picture is artwork (panel.image_svg, drawn to drawing_style) or the plant\'s own background; fans, filters, dampers, coils, pumps, values and alarms are objects on top of it.',
   '6. tag_text is what the operator reads (caption_conventions); alias_text is the signal, and the key a linker matches.',
-  '7. Link only by copying driver_id and unit_id from one row of the plant parameter source; otherwise leave driver_id "driver_id" and linked "false".',
+  '7. Link only by copying driver_id, unit_id and alias_text from one row of the plant parameter source - overview.parameters or overview.signals in an export, or the parameter export; otherwise leave driver_id "driver_id" and linked "false".',
   '8. zIndex bands: 5 ducts and headers, 40 equipment, 110 values, 375 bells, LEDs and pumps, 1100 labels.',
   '9. Run self_check before returning; Insert runs the same checks and shows the report before anything touches the canvas.',
   '10. Grow examples.starter_ventilation rather than starting from an empty array.'
@@ -1068,7 +1083,8 @@ var IWDIE_READ_ORDER_BY_TASK = {
   to_understand_a_panel: ['counts', 'summary.roles', 'summary.layout', 'background', 'panel.single_objects', 'artwork or structure when present'],
   to_modify_a_panel: ['when_modifying', 'when_adding_objects', 'schema.object_entry', 'linking', 'self_check'],
   to_create_a_panel: ['quick_start', 'parameter_selection', 'signal_to_object', 'layout', 'drawing_style', 'caption_conventions', 'object_catalogue', 'examples.starter_ventilation', 'self_check'],
-  to_link_or_relink: ['linking', 'summary.linking', 'summary.units_referenced']
+  to_link_or_relink: ['linking', 'overview.bindings', 'overview.parameters', 'summary.linking', 'summary.units_referenced'],
+  to_draw_an_overview_picture: ['overview.read_me', 'overview.picture', 'overview.style', 'overview.parts', 'overview.units', 'overview.signals', 'overview.parameters', 'drawing_style', 'layout', 'self_check']
 };
 
 /** What production writes in tag_text, by role. Read off real panels, not invented. */
@@ -1329,6 +1345,12 @@ function iwdieCheckFile(text, opts) {
   out.warnings = out.warnings.concat(iwdieCheckEnvelopeCounts(res.meta, res.doc));
   if (res.doc && typeof res.doc.image_svg === 'string' && res.doc.image_svg) {
     out.errors = out.errors.concat(iwdieValidateSvg(res.doc.image_svg));
+    // v1.62.0: a drawing of another size than the panel is stretched to it, while the objects stay where the panel puts them
+    var vb = /<svg\b[^>]*?\sviewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(res.doc.image_svg);
+    var pw = parseInt(res.doc.panel_width, 10), ph = parseInt(res.doc.panel_height, 10);
+    if (vb && pw && ph && (Math.abs(parseFloat(vb[1]) - pw) > 0.5 || Math.abs(parseFloat(vb[2]) - ph) > 0.5)) {
+      out.warnings.push('image_svg is drawn ' + vb[1] + ' x ' + vb[2] + ' (its viewBox) for a ' + pw + ' x ' + ph + ' panel: it is stretched to fit, while the objects stay where the panel puts them.');
+    }
   }
   if (!out.errors.length) out.warnings = out.warnings.concat(iwdieCheckPanelGeometry(res.doc, out.notes, out.details));
 
@@ -1485,7 +1507,7 @@ function iwdieCheckReportHtml(result, fileName) {
       cell('Panel', ov.panel || '—') +
       cell('Plant', plant) +
       cell('Contents', iwdieCountPhrase(ov.objects, ov.containers, ov.graphics)) +
-      cell('Linked', ov.linked + ' linked · ' + ov.unlinked + ' unlinked') +
+      cell('Linked', ov.linked + ' linked · ' + ov.unlinked + ' unlinked' + (ov.verified ? ' · ' + ov.verified.ok + ' of ' + ov.verified.checked + ' match the plant' : '')) +
       cell('Background', ov.background) +
       cell('Made by', ov.generator || '—') + '</div>';
   }
@@ -1636,8 +1658,14 @@ function iwdieCheckReportText(result, fileName) {
   if (result.errors.length) { L.push(''); L.push('Errors (fix these first):'); result.errors.forEach(function (x) { L.push('- ' + x); }); }
   var d = result.diagnosis;
   if (d && d.headline) { L.push(''); L.push('Diagnosis: ' + d.headline); (d.facts || []).forEach(function (x) { L.push('- ' + x); }); }
-  if (result.warnings.length) { L.push(''); L.push('Warnings:'); result.warnings.forEach(function (x) { L.push('- ' + x); }); }
-  if (notes.length) { L.push(''); L.push('Notes (for information - nothing to fix):'); notes.forEach(function (x) { L.push('- ' + x); }); }
+  // each finding with what it is about (v1.62.0): the objects the dialog folds under it, for the agent to fix those
+  var items = function (x) {
+    var d = result.details && result.details[x], list = d && Array.isArray(d.items) ? d.items : [];
+    list.slice(0, 30).forEach(function (it) { L.push('    ' + it); });
+    if (list.length > 30) L.push('    ... and ' + (list.length - 30) + ' more');
+  };
+  if (result.warnings.length) { L.push(''); L.push('Warnings:'); result.warnings.forEach(function (x) { L.push('- ' + x); items(x); }); }
+  if (notes.length) { L.push(''); L.push('Notes (for information - nothing to fix):'); notes.forEach(function (x) { L.push('- ' + x); items(x); }); }
   L.push('');
   L.push('Return the complete corrected .json file; keep every object you were not asked to change byte for byte.');
   return L.join('\n');
@@ -1762,6 +1790,7 @@ var IWDIE_COMMON_MISTAKES = [
 
 var IWDIE_DRAWING_STYLE = {
   canvas: '1400 x 750. Leave x 1145-1400 for the settings column, and keep the drawing left of it.',
+  layers: 'Top-level groups, each a layer when the panel is edited in VectorCraft: <g id="Bakgrunn" data-name="Bakgrunn"> (ground, panels), <g id="Ror" data-name="Rør"> (pipes, ducts), Former (equipment, boxes), Tekst (fixed text). An export\'s overview.style has this plant\'s own colours, pipe widths, pills and text.',
   duct: 'Not a solid bar: a WHITE casing 16 wide with round caps, and a 2 wide coloured core on the same centre line. Draw both from one path so they stay together.',
   duct_colours: { avtrekk: '#F3C96A', tilluft: '#F79E7A', uteluft: '#B0E0EF' },
   zone_box: 'Rounded rectangle, fill #CDD2D7, white border 5 wide, rx 16. One per zone at the end of the runs.',
@@ -8517,6 +8546,463 @@ function iwdieVcLineSvg(L, used) {
     '" fill="none" stroke="' + iwdieVcHex(L.colour) + '" stroke-width="' + f(L.width) + '" stroke-linejoin="miter" stroke-linecap="butt"/>';
 }
 
+/* ===================== Overview for an agent (v1.62.0) =====================
+ * An export's `overview`: the plant behind the panel, for an agent that draws an overview picture - or links one - from
+ * the export and the documentation it is given. The units, the rows of their parameters as the Designer's parameter
+ * selector reads them, the signals the plant has tagged with a standard meaning, the panel's bindings checked against
+ * those rows, and the picture's layout and style, measured. The browser gathers it (ovGather); these lay it out, as
+ * small tables that read in one pass and parse as they are, and check an inserted file's bindings against the plant.
+ */
+
+/** Rows of parameters (all units together) and tagged signals an export carries at most. A unit's rows go in whole or
+ *  not at all, past the first; one left out is named, for the reader to ask for it. */
+var IWDIE_OV_MAX_ROWS = 4000;
+var IWDIE_OV_MAX_SIGNALS = 1500;
+/** Units linked on the panel whose rows go in: those with the most objects. A panel of many units - a store's map, its
+ *  cases - is read by their tagged signals and its links' check instead; a unit ticked in the Parameter Selector always
+ *  goes in. */
+var IWDIE_OV_MAX_UNITS = 3;
+
+/** What an overview is and how to read it: its first key, so a reader meets it before the tables. */
+var IWDIE_OV_READ_ME = [
+  'The plant behind this panel, read from the IWMAC Designer at export time, for drawing or linking an overview picture together with the documentation you were given (drawings, equipment and point lists).',
+  'Tables are {cols, rows}: each row holds its values in the order of cols. Boxes are x, y, width, height in panel pixels from the top left corner.',
+  'units: every unit (controller) of the plant. parameters: every row of the units named in it, by group - the plant\'s own parameter source. signals: the rows the plant has tagged with a standard meaning (signal; its measure and link_tag are in signals.kinds). For a unit whose rows are not here, tick it in the UNITS list of the Parameter Selector (Actions > Open Paramselector Popup) and export again.',
+  'Link an object by copying unit_id, alias_text, sub_group and driver_id from one of those rows; never build or edit one. bindings shows how this panel\'s objects are linked, each checked against the rows: ok, alias differs, in unit ..., not in unit, unit not on plant.',
+  'picture: where this panel\'s picture has its panels, pipes, pills, figures and texts. style: its colours, pipes, pills and text, measured from it. parts: the objects it uses, and the component library kept in this browser. Use them to place things, and to keep a new picture in the same style.',
+  'A new picture goes in panel.image_svg: an <svg> of the panel\'s size whose top-level groups are the layers Bakgrunn, Rør, Former and Tekst - the ground and its panels, the pipes, the equipment drawn, the fixed text. Values, setpoints, alarms, pumps, fans and valves are panel objects over it, not drawing. Insert sets the SVG as the background, and Edit in VectorCraft opens it as vectors, layer by layer, to finish by hand.',
+  'Insert ignores this block: leave it out of a file you return.'
+];
+
+/** Text of an XML element, its entities decoded, exactly as it is - a trailing space is part of an alias. */
+function iwdieOvXmlText(s) {
+  return String(s == null ? '' : s).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, function (m, e) {
+    var k = e.toLowerCase();
+    if (k === 'amp') return '&';
+    if (k === 'lt') return '<';
+    if (k === 'gt') return '>';
+    if (k === 'quot') return '"';
+    if (k === 'apos') return '\'';
+    var n = k.charAt(1) === 'x' ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10);
+    return isFinite(n) && n > 0 && n < 0x10000 ? String.fromCharCode(n) : m;
+  });
+}
+
+/** A unit's parameters as the Designer's parameter selector loads them - designer_site/iw_load_plant.php, the XML its
+ *  unitsClickHandler reads: one row per <data>. -> [{group, alias_text, rw, type, application, eng_unit, driver_id}] */
+function iwdieOvParseRows(xml) {
+  var out = [], re = /<data>([\s\S]*?)<\/data>/g, m;
+  var field = function (body, name) {
+    var f = new RegExp('<' + name + '>([\\s\\S]*?)</' + name + '>').exec(body);
+    return f ? iwdieOvXmlText(f[1]) : '';
+  };
+  while ((m = re.exec(String(xml || '')))) {
+    var d = field(m[1], 'driver_id');
+    if (!d) continue;
+    out.push({ group: field(m[1], 'group_name'), alias_text: field(m[1], 'alias_text'), rw: field(m[1], 'rw'), type: field(m[1], 'parameter_type'),
+      application: field(m[1], 'application'), eng_unit: field(m[1], 'eng_unit').replace(/&deg;/g, '°'), driver_id: d });
+  }
+  return out;
+}
+
+/** Whether an object is bound to a parameter: a driver_id "<plant>_<DRIVER>_..." (a navigation button carries a panel id). */
+function iwdieOvBound(o) {
+  return !!o && typeof o === 'object' && /^\d+_/.test(String(o.driver_id == null ? '' : o.driver_id));
+}
+
+/** Every object of a panel document, with where it is on the canvas: a container's items placed by the container.
+ *  -> [{o, x, y}] */
+function iwdieOvObjects(doc) {
+  var out = [], isObj = function (o) { return o != null && typeof o === 'object' && !Array.isArray(o); };
+  (doc && Array.isArray(doc.single_objects) ? doc.single_objects : []).forEach(function (o) {
+    if (isObj(o)) out.push({ o: o, x: parseInt(o.posLeft, 10) || 0, y: parseInt(o.posTop, 10) || 0 });
+  });
+  (doc && Array.isArray(doc.containers) ? doc.containers : []).forEach(function (c) {
+    if (!isObj(c) || !Array.isArray(c.items)) return;
+    var cl = parseInt(c.left, 10) || 0, ct = parseInt(c.top, 10) || 0;
+    c.items.forEach(function (o) {
+      if (isObj(o)) out.push({ o: o, x: cl + (parseInt(o.posLeft, 10) || 0), y: ct + (parseInt(o.posTop, 10) || 0) });
+    });
+  });
+  return out;
+}
+
+/** The middle value of the numbers in `list`, null with none. */
+function iwdieOvMedian(list) {
+  var a = (list || []).filter(function (v) { return typeof v === 'number' && isFinite(v); }).sort(function (p, q) { return p - q; });
+  if (!a.length) return null;
+  var m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+/** The value seen most often among `list`'s, '' with none. */
+function iwdieOvMost(list) {
+  var n = {}, best = '', bn = 0;
+  (list || []).forEach(function (v) {
+    var k = String(v);
+    n[k] = (n[k] || 0) + 1;
+    if (n[k] > bn) { bn = n[k]; best = k; }
+  });
+  return best;
+}
+
+/**
+ * The overview block of an export (v1.62.0). Pure: the browser gathers `src`, this lays it out.
+ *
+ * src = {
+ *   plantId, panelName, size: {w, h}, canvasColour: '#rrggbb',
+ *   units: the Designer's own list, yourplantUnits - [{unit_id, unit_name, iw_order_no, driver_type, regulator_type,
+ *          status, params: [{driver, alias_text, iw_param_tag, iw_param_name, sub_group}]}] - params being the rows it
+ *          has tagged,
+ *   tags: the Designer's iw_param_tagsArr - [{iw_link_name, default_link_name, measure_type}],
+ *   rows: {unit_id: iwdieOvParseRows(...)} for the units fetched; scope: {unit_id: 'on the panel' | 'picked'};
+ *   failed: [unit_id...] whose rows could not be read,
+ *   picture: {source: 'traced' | 'vectorcraft' | 'svg', outline: iwdieVzTrace's outline, texts: [[x, y, w, h, size,
+ *            colour, text]] | null, layers: [[name, shapes]] | null} | null,
+ *   kinds: {obj_id: {w, h, can_link, has_tag}} from the render definitions, tagStyle: {size, colour, font, weight} | null,
+ *   library: {file, items: [{name, layer}]} | null
+ * }
+ * The small parts come first and the long tables last, so a reader cut short still has the parts that say most.
+ */
+function iwdieBuildOverview(doc, src) {
+  src = src || {};
+  var str = function (v) { return v == null ? '' : String(v); };
+  var has = function (o, k) { return Object.prototype.hasOwnProperty.call(o, k); };
+  var all = iwdieOvObjects(doc);
+  var units = Array.isArray(src.units) ? src.units.filter(function (u) { return u && u.unit_id != null; }) : [];
+  var rowsOf = src.rows || {}, scope = src.scope || {};
+  var size = src.size || { w: parseInt(doc && doc.panel_width, 10) || 0, h: parseInt(doc && doc.panel_height, 10) || 0 };
+  var unitName = {};
+  units.forEach(function (u) { unitName[str(u.unit_id)] = str(u.unit_name); });
+
+  // the objects bound, by unit
+  var onPanel = {}, bound = 0;
+  all.forEach(function (p) {
+    if (!iwdieOvBound(p.o)) return;
+    var u = str(p.o.unit_id);
+    onPanel[u] = (onPanel[u] || 0) + 1;
+    bound++;
+  });
+
+  // every row fetched, by its driver_id; and the groups the panel's objects show, by unit
+  var where = {}, shown = {};
+  Object.keys(rowsOf).forEach(function (u) {
+    (rowsOf[u] || []).forEach(function (r) { if (r && r.driver_id && !has(where, r.driver_id)) where[r.driver_id] = { unit: u, row: r }; });
+  });
+  all.forEach(function (p) {
+    var hit = iwdieOvBound(p.o) && has(where, str(p.o.driver_id)) ? where[str(p.o.driver_id)] : null;
+    if (!hit || hit.unit !== str(p.o.unit_id)) return;
+    var g = str(hit.row.group) || '(no group)', s1 = shown[hit.unit] = shown[hit.unit] || {};
+    s1[g] = (s1[g] || 0) + 1;
+  });
+
+  // the units whose rows go in, in order - those on the panel (with the most objects first), then those picked - each
+  // whole while they fit; in each, the groups the panel shows first and the groups of alarms alone last
+  var order = Object.keys(scope).filter(function (u) { return Array.isArray(rowsOf[u]); }).sort(function (a, b) {
+    var pa = scope[a] === 'on the panel' ? 0 : 1, pb = scope[b] === 'on the panel' ? 0 : 1;
+    return pa - pb || (onPanel[b] || 0) - (onPanel[a] || 0) || (a < b ? -1 : a > b ? 1 : 0);
+  });
+  var inFile = {}, total = 0, leftOut = [], paramUnits = [], linkedIn = 0;
+  order.forEach(function (u) {
+    var rows = rowsOf[u];
+    if (scope[u] === 'on the panel' && linkedIn >= IWDIE_OV_MAX_UNITS) { leftOut.push(u); return; }
+    if (total && total + rows.length > IWDIE_OV_MAX_ROWS) { leftOut.push(u); return; }
+    if (scope[u] === 'on the panel') linkedIn++;
+    var take = rows.slice(0, IWDIE_OV_MAX_ROWS), groups = {}, gOrder = [], alarms = {}, pos = {}, sh = shown[u] || {};
+    take.forEach(function (r) {
+      var g = str(r.group) || '(no group)';
+      if (!has(groups, g)) { groups[g] = []; pos[g] = gOrder.length; gOrder.push(g); alarms[g] = true; }
+      groups[g].push([str(r.alias_text), str(r.rw), str(r.type), str(r.eng_unit), str(r.driver_id)]);
+      if (str(r.type) !== 'alarm') alarms[g] = false;
+    });
+    gOrder.sort(function (a, b) { return (sh[b] || 0) - (sh[a] || 0) || (alarms[a] ? 1 : 0) - (alarms[b] ? 1 : 0) || pos[a] - pos[b]; });
+    var sorted = {};
+    gOrder.forEach(function (g) { sorted[g] = groups[g]; });
+    total += take.length;
+    inFile[u] = take.length;
+    var block = { unit_id: u, name: unitName[u] || '', why: scope[u], rows: take.length };
+    if (take.length < rows.length) block.of = rows.length;
+    block.groups = sorted;
+    paramUnits.push(block);
+  });
+
+  // the tagged signals - the plant's own names for what a row is, "Compressor Running" - of the units in scope, or of
+  // every unit when none is
+  var measure = {};
+  (Array.isArray(src.tags) ? src.tags : []).forEach(function (t) { if (t && t.iw_link_name) measure[str(t.iw_link_name)] = str(t.measure_type); });
+  var anyScope = Object.keys(scope).length > 0, kinds = [], kindIx = {}, sigRows = [], sigLeft = 0, sigAll = 0;
+  units.forEach(function (u) {
+    var id = str(u.unit_id);
+    (Array.isArray(u.params) ? u.params : []).forEach(function (p) {
+      if (!p || !p.driver) return;
+      sigAll++;
+      if (anyScope && !has(scope, id)) return;
+      if (sigRows.length >= IWDIE_OV_MAX_SIGNALS) { sigLeft++; return; }
+      var tag = str(p.iw_param_tag);
+      if (!has(kindIx, tag)) { kindIx[tag] = kinds.length; kinds.push([str(p.iw_param_name) || tag, measure[tag] || '', tag]); }
+      sigRows.push([id, tag, str(p.alias_text), str(p.sub_group), str(p.driver)]);
+    });
+  });
+  // a name two tags share is told apart by its tag
+  var named = {};
+  kinds.forEach(function (k) { named[k[0]] = (named[k[0]] || 0) + 1; });
+  kinds.forEach(function (k) { if (named[k[0]] > 1) k[0] = k[0] + ' (' + k[2] + ')'; });
+  sigRows.forEach(function (r) { r[1] = kinds[kindIx[r[1]]][0]; });
+
+  // each bound object read against its unit's rows: what it shows, and whether the plant still has it
+  var known = {};
+  units.forEach(function (u) { known[str(u.unit_id)] = 1; });
+  var bindRows = [];
+  all.forEach(function (p) {
+    var o = p.o;
+    if (!iwdieOvBound(o)) return;
+    var u = str(o.unit_id), hit = has(where, str(o.driver_id)) ? where[str(o.driver_id)] : null, row = hit && hit.unit === u ? hit.row : null, check;
+    if (row) check = row.alias_text === str(o.alias_text) ? 'ok' : 'alias differs: ' + row.alias_text;
+    else if (hit) check = 'in unit ' + hit.unit;
+    else if (units.length && !known[u]) check = 'unit not on plant';
+    else if (Array.isArray(rowsOf[u])) check = 'not in unit';
+    else check = 'not checked';
+    var r2 = row || (hit && hit.row);
+    bindRows.push([str(o.name), str(o.obj_id), p.x, p.y, str(o.tag_text).trim(), u, str(o.alias_text), r2 ? str(r2.group) : '', r2 ? str(r2.type) : '', check]);
+  });
+
+  // the picture: where its parts are, and the style they share
+  var pic = src.picture && src.picture.outline ? src.picture : null, picture = null, style = null;
+  if (pic) {
+    var ol = pic.outline, area = function (r) { return r[2] * r[3]; };
+    var figs = (ol.figures || []).filter(function (f) { return area(f) >= 36; }).sort(function (a, b) { return area(b) - area(a); });
+    var texts = Array.isArray(pic.texts) && pic.texts.length ? pic.texts : null;
+    picture = {
+      source: str(pic.source) || 'traced',
+      how: pic.source === 'traced' || !pic.source
+        ? 'Measured from the picture\'s pixels: its colours, the pills, the pipes, the large panels, each figure and each run of letters as boxes. Text is located, not read; the words an operator reads are the objects\' tag_text.'
+        : 'Read from the drawing the picture was made from, and measured from its pixels: texts with their words, the rest as for a traced picture.',
+      panels: { cols: ['x', 'y', 'w', 'h', 'colour'], rows: (ol.panels || []).slice(0, 80) },
+      pipes: { cols: ['colour', 'width', 'points'], rows: (ol.pipes || []).slice(0, 200) },
+      pills: { cols: ['x', 'y', 'w', 'h', 'fill', 'ring', 'ring_width'], rows: (ol.pills || []).slice(0, 200) },
+      figures: { cols: ['x', 'y', 'w', 'h', 'colour', 'shapes'], rows: figs.slice(0, 150) },
+      texts: texts ? { cols: ['x', 'y', 'w', 'h', 'size', 'colour', 'text'], rows: texts.slice(0, 400) }
+        : { cols: ['x', 'y', 'w', 'h', 'colour', 'letters'], rows: (ol.words || []).slice(0, 400) }
+    };
+    if (Array.isArray(pic.layers) && pic.layers.length) picture.layers = { cols: ['name', 'shapes'], rows: pic.layers.slice(0, 40) };
+    var left = (ol.figures || []).length - picture.figures.rows.length + Math.max(0, (ol.pipes || []).length - 200) + Math.max(0, (ol.pills || []).length - 200);
+    if (left > 0) picture.left_out = left + ' of the smallest figures or past the caps (200 pipes, 200 pills, 150 figures, 400 texts)';
+
+    // style: what the picture's own parts have in common
+    var totalPx = 0;
+    (ol.palette || []).forEach(function (c) { totalPx += c[1] || 0; });
+    var pipeBy = {}, pipeOrder = [];
+    (ol.pipes || []).forEach(function (p) {
+      var pts = str(p[2]).split(' ').map(function (q) { return q.split(',').map(Number); }), len = 0;
+      for (var i = 1; i < pts.length; i++) len += Math.sqrt(Math.pow(pts[i][0] - pts[i - 1][0], 2) + Math.pow(pts[i][1] - pts[i - 1][1], 2));
+      if (!has(pipeBy, p[0])) { pipeBy[p[0]] = { n: 0, w: [], len: 0 }; pipeOrder.push(p[0]); }
+      pipeBy[p[0]].n++;
+      pipeBy[p[0]].w.push(p[1]);
+      pipeBy[p[0]].len += len;
+    });
+    var pillBy = {}, pillOrder = [];
+    (ol.pills || []).forEach(function (p) {
+      var k = p[4] + ' ' + p[5];
+      if (!has(pillBy, k)) { pillBy[k] = { fill: p[4], ring: p[5], n: 0, rw: [], h: [] }; pillOrder.push(k); }
+      pillBy[k].n++;
+      pillBy[k].rw.push(p[6]);
+      pillBy[k].h.push(p[3]);
+    });
+    var wordH = [], wordC = [];
+    if (texts) texts.forEach(function (t) { wordH.push(Number(t[4]) || t[3]); wordC.push(t[5]); });
+    else (ol.words || []).forEach(function (w) { wordH.push(w[3]); wordC.push(w[4]); });
+    style = {
+      canvas_colour: str(src.canvasColour) || null,
+      ground: (ol.palette && ol.palette[0]) ? ol.palette[0][0] : null,
+      colours: { cols: ['colour', 'percent'], rows: (ol.palette || []).slice(0, 12).map(function (c) { return [c[0], totalPx ? Math.round(c[1] / totalPx * 1000) / 10 : 0]; }) },
+      pipes: { cols: ['colour', 'count', 'width', 'length'], rows: pipeOrder.sort(function (a, b) { return pipeBy[b].len - pipeBy[a].len; }).map(function (k) {
+        return [k, pipeBy[k].n, iwdieOvMedian(pipeBy[k].w), Math.round(pipeBy[k].len)];
+      }) },
+      pills: { cols: ['fill', 'ring', 'ring_width', 'height', 'count'], rows: pillOrder.sort(function (a, b) { return pillBy[b].n - pillBy[a].n; }).map(function (k) {
+        var q = pillBy[k];
+        return [q.fill, q.ring, iwdieOvMedian(q.rw), iwdieOvMedian(q.h), q.n];
+      }) },
+      text: { size: texts ? iwdieOvMedian(wordH) : null, letter_height: texts ? null : iwdieOvMedian(wordH), colour: iwdieOvMost(wordC) || null }
+    };
+  }
+  if (src.tagStyle || src.canvasColour) {
+    style = style || { canvas_colour: str(src.canvasColour) || null };
+    if (src.tagStyle) style.object_tags = src.tagStyle;
+  }
+
+  // the parts the panel is made of: its kinds of object, as it uses them, and the kept component library
+  var kindBy = {}, kindOrder = [];
+  all.forEach(function (p) {
+    var id = str(p.o.obj_id);
+    if (!id) return;
+    if (!has(kindBy, id)) { kindBy[id] = { n: 0, size: [], z: [], tags: 0, bound: 0 }; kindOrder.push(id); }
+    var k = kindBy[id];
+    k.n++;
+    k.size.push((parseInt(p.o.posWidth, 10) || 0) + 'x' + (parseInt(p.o.posHeight, 10) || 0));
+    k.z.push(str(p.o.zIndex));
+    if (str(p.o.tag_text).trim()) k.tags++;
+    if (iwdieOvBound(p.o)) k.bound++;
+  });
+  var defs = src.kinds || {};
+  var parts = {
+    objects: { cols: ['obj_id', 'role', 'count', 'size', 'z', 'with_tag_text', 'linked', 'can_link'],
+      rows: kindOrder.sort(function (a, b) { return kindBy[b].n - kindBy[a].n; }).map(function (id) {
+        var k = kindBy[id], d = has(defs, id) ? defs[id] : null;
+        return [id, iwdieRoleOf(id), k.n, iwdieOvMost(k.size), iwdieOvMost(k.z), k.tags, k.bound, d ? !!d.can_link : null];
+      }) }
+  };
+  var lib = src.library && Array.isArray(src.library.items) && src.library.items.length ? src.library : null;
+  if (lib) {
+    var byLayer = {}, layerOrder = [], namedItems = [];
+    lib.items.forEach(function (it) {
+      var L = str(it.layer) || '(no layer)';
+      if (!has(byLayer, L)) { byLayer[L] = 0; layerOrder.push(L); }
+      byLayer[L]++;
+      if (str(it.name).trim() && namedItems.indexOf(str(it.name).trim()) < 0) namedItems.push(str(it.name).trim());
+    });
+    parts.components = { file: str(lib.file), count: lib.items.length, layers: layerOrder.map(function (L) { return [L, byLayer[L]]; }),
+      named: namedItems.slice(0, 40),
+      note: 'Kept in this browser from the plant\'s .ai. VectorCraft offers them under Libraries; a drawing cannot point at them, so draw with plain shapes and leave the components to be dragged in by hand.' };
+  }
+
+  var nTagged = 0;
+  units.forEach(function (u) { nTagged += Array.isArray(u.params) ? u.params.length : 0; });
+  var out = {
+    read_me: IWDIE_OV_READ_ME,
+    plant: {
+      plant_id: str(src.plantId || (doc && doc.plant_id)) || null,
+      panel_name: str(src.panelName || (doc && doc.panel_name)) || null,
+      canvas: [Math.round(size.w) || null, Math.round(size.h) || null],
+      units: units.length,
+      tagged_signals: nTagged,
+      objects: all.length,
+      linked_objects: bound,
+      units_with_rows: paramUnits.map(function (b) { return b.unit_id; })
+    },
+    units: { cols: ['unit_id', 'name', 'model', 'driver', 'regulator', 'status', 'objects', 'signals', 'rows'],
+      rows: units.map(function (u) {
+        var id = str(u.unit_id);
+        return [id, str(u.unit_name), str(u.iw_order_no), str(u.driver_type), str(u.regulator_type), str(u.status), onPanel[id] || 0,
+          Array.isArray(u.params) ? u.params.length : 0, has(inFile, id) ? inFile[id] : null];
+      }) },
+    bindings: { cols: ['object', 'obj_id', 'x', 'y', 'tag_text', 'unit_id', 'alias_text', 'group', 'type', 'check'], rows: bindRows },
+    style: style,
+    parts: parts,
+    picture: picture,
+    signals: { cols: ['unit_id', 'signal', 'alias_text', 'sub_group', 'driver_id'], rows: sigRows,
+      kinds: { cols: ['signal', 'measure', 'link_tag'], rows: kinds } },
+    parameters: { cols: ['alias_text', 'rw', 'type', 'eng_unit', 'driver_id'],
+      order: 'In each unit, the groups this panel\'s objects show come first, then the rest as the plant lists them, and groups of alarms alone last.',
+      units: paramUnits }
+  };
+  if (!units.length) out.plant.note = 'The Designer listed no units for this plant, so units, signals and the bindings\' check are empty.';
+  if (sigLeft) out.signals.left_out = sigLeft + ' tagged rows past the first ' + IWDIE_OV_MAX_SIGNALS;
+  else if (anyScope && sigAll > sigRows.length) out.signals.note = 'Only the units in parameters; units lists how many signals every unit has.';
+  if (leftOut.length) {
+    out.parameters.left_out = leftOut.map(function (u) { return u + ' ' + (unitName[u] || '') + ' (' + rowsOf[u].length + ' rows)'; });
+    out.parameters.why_left_out = 'Rows go in for the ' + IWDIE_OV_MAX_UNITS + ' linked units with the most objects and every unit ticked in the Parameter Selector, ' +
+      IWDIE_OV_MAX_ROWS + ' rows at most; signals and bindings still cover the rest. Tick a unit to have its rows.';
+  }
+  if (Array.isArray(src.failed) && src.failed.length) out.parameters.not_read = src.failed.slice();
+  if (!paramUnits.length) out.parameters.note = 'No unit is linked on this panel or ticked in the Parameter Selector, so no unit\'s rows are here; signals holds every unit\'s tagged rows instead.';
+  if (!picture) delete out.picture;
+  if (!style) delete out.style;
+  return out;
+}
+
+/** "the plant: 61 units, 1615 parameter rows, 635 signals" - what an export's overview carries, for its toast. */
+function iwdieOvNote(ov) {
+  if (!ov || !ov.plant) return '';
+  var rows = 0;
+  ((ov.parameters && ov.parameters.units) || []).forEach(function (b) { rows += b.rows || 0; });
+  var sig = ov.signals && ov.signals.rows ? ov.signals.rows.length : 0;
+  return 'the plant: ' + iwdieN(ov.plant.units || 0, 'unit', 'units') + (rows ? ', ' + iwdieN(rows, 'parameter row', 'parameter rows') : '') +
+    (sig ? ', ' + iwdieN(sig, 'signal', 'signals') : '') + (ov.picture ? ', the picture\'s layout and style' : '');
+}
+
+/**
+ * Insert's check of a file's bindings against the plant it goes into (v1.62.0). Each object of `doc` bound to a
+ * parameter is read against `plant` - {units: {unit_id: name}, the units the Designer lists; rows: {unit_id:
+ * iwdieOvParseRows(...)}, those of the units the file names; failed: [unit_id...] whose rows could not be read}. Listed,
+ * as the check's other findings are: a unit the plant lacks, a driver_id its unit does not have (or another unit has),
+ * an alias_text other than its row's. Pure; the dialog fetches the rows. -> {checked, ok, skipped, warnings, notes, details}
+ */
+function iwdieCheckBindings(doc, plant) {
+  plant = plant || {};
+  var units = plant.units || {}, rows = plant.rows || {}, failed = plant.failed || [];
+  var has = function (o, k) { return Object.prototype.hasOwnProperty.call(o, k); };
+  var where = {};
+  Object.keys(rows).forEach(function (u) {
+    (rows[u] || []).forEach(function (r) { if (r && r.driver_id && !has(where, r.driver_id)) where[r.driver_id] = { unit: u, row: r }; });
+  });
+  var noUnit = [], notFound = [], other = [], alias = [], ok = 0, checked = 0, skipped = 0;
+  iwdieOvObjects(doc).forEach(function (p, k) {
+    var o = p.o;
+    if (!iwdieOvBound(o)) return;
+    var u = String(o.unit_id == null ? '' : o.unit_id), d = String(o.driver_id);
+    var what = String(o.name || 'object ' + k) + ' (' + String(o.alias_text || o.tag_text || o.obj_id || '').trim() + ')';
+    if (!has(units, u)) { noUnit.push(what + ': unit "' + u + '"'); checked++; return; }
+    if (!Array.isArray(rows[u])) { skipped++; return; }
+    checked++;
+    var hit = has(where, d) ? where[d] : null;
+    if (!hit) { notFound.push(what + ': ' + d); return; }
+    if (hit.unit !== u) { other.push(what + ': ' + d + ' is a row of unit ' + hit.unit + ', not of ' + u); return; }
+    if (String(hit.row.alias_text) !== String(o.alias_text == null ? '' : o.alias_text)) {
+      alias.push(what + ': its row says "' + hit.row.alias_text + '"');
+      return;
+    }
+    ok++;
+  });
+  var out = { checked: checked, ok: ok, skipped: skipped, warnings: [], notes: [], details: {} };
+  var say = function (list, msg, lead, why, items) { list.push(msg); out.details[msg] = { lead: lead, why: why, items: items }; };
+  if (noUnit.length) say(out.warnings, noUnit.length + ' object(s) linked to a unit this plant does not have.',
+    iwdieN(noUnit.length, 'object is linked to a unit', 'objects are linked to units') + ' this plant does not have', 'they read nothing here', noUnit);
+  if (notFound.length) say(out.warnings, notFound.length + ' object(s) carry a driver_id their unit does not have.',
+    iwdieN(notFound.length, 'object carries a driver_id', 'objects carry driver_ids') + ' its unit does not have', 'it looks linked and reads nothing - copy driver_id from a row of the plant', notFound);
+  if (other.length) say(out.warnings, other.length + ' object(s) carry the driver_id of another unit.',
+    iwdieN(other.length, 'object carries the driver_id', 'objects carry the driver_ids') + ' of another unit', 'unit_id and driver_id must come from the same row', other);
+  if (alias.length) say(out.warnings, alias.length + ' object(s) have an alias_text other than their row\'s.',
+    iwdieN(alias.length, 'object has an alias_text', 'objects have alias_texts') + ' other than the plant\'s row', 'it may show another signal than its text says - copy alias_text from the row', alias);
+  if (failed.length) say(out.notes, 'The rows of ' + failed.length + ' unit(s) could not be read.',
+    'The rows of ' + iwdieN(failed.length, 'unit', 'units') + ' could not be read', 'their objects were not checked', failed.slice());
+  if (checked && ok === checked) out.notes.push(checked === 1 ? 'The link matches a row of the plant.' : 'All ' + checked + ' links match a row of the plant.');
+  return out;
+}
+
+/** A check result (iwdieCheckFile) with the plant's findings on the bindings added, its verdict as they make it. */
+function iwdieMergeBindingCheck(result, b, plantId) {
+  if (!result || !b) return result;
+  result.warnings = (result.warnings || []).concat(b.warnings || []);
+  result.notes = (result.notes || []).concat(b.notes || []);
+  result.details = result.details || {};
+  Object.keys(b.details || {}).forEach(function (k) { result.details[k] = b.details[k]; });
+  (result.facts = result.facts || []).push('Links checked against plant ' + plantId + ': ' + b.ok + ' of ' + b.checked + ' match its rows' +
+    (b.skipped ? ', ' + b.skipped + ' not checked' : '') + '.');
+  if (result.overview) result.overview.verified = { ok: b.ok, checked: b.checked };
+  result.verdict = result.errors && result.errors.length ? 'refused' : result.warnings.length ? 'warnings' : 'clean';
+  return result;
+}
+
+/** An SVG given as a panel's drawing (v1.62.0: an agent's panel.image_svg, which Insert sets as the background) as a
+ *  VectorCraft job takes it: its root sized to the panel - width and height set, its viewBox kept, or made from them -
+ *  and nothing in it that runs. null when it is no SVG. */
+function iwdieVcAuthored(svg, size) {
+  var s = String(svg || '').replace(/^\uFEFF/, '').trim(), at = s.search(/<svg\b/i);
+  if (at < 0 || !/<\/svg>\s*$/i.test(s)) return null;
+  s = s.slice(at).replace(/<script\b[\s\S]*?<\/script\s*>/gi, '').replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*')/gi, '');
+  var open = /<svg\b[^>]*>/i.exec(s);
+  if (!open) return null;
+  var tag = open[0], w = Math.round(size && size.w || 0), h = Math.round(size && size.h || 0);
+  var num = function (name) { var m = new RegExp('\\s' + name + '\\s*=\\s*["\']\\s*([\\d.]+)(%?)').exec(tag); return m && !m[2] ? parseFloat(m[1]) : 0; };
+  if (!/\sviewBox\s*=/i.test(tag)) {
+    var vw = num('width') || w, vh = num('height') || h;
+    if (vw && vh) tag = tag.replace(/<svg\b/i, '<svg viewBox="0 0 ' + vw + ' ' + vh + '"');
+  }
+  if (w && h) tag = tag.replace(/\s(width|height)\s*=\s*("[^"]*"|'[^']*')/gi, '').replace(/<svg\b/i, '<svg width="' + w + '" height="' + h + '"');
+  if (!/\sxmlns\s*=/i.test(tag)) tag = tag.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+  return s.slice(0, open.index) + tag + s.slice(open.index + open[0].length);
+}
+
 /* ===================== Vectorize image (v1.61.0) =====================
    A panel's picture, where no .ai of it is to be had, turned into vectors that VectorCraft edits as shapes:
    - its flat colours read from it (iwdieVzPalette), and each pixel read as one of them, or as a blend of two
@@ -9433,10 +9919,35 @@ function iwdieVzTrace(pic, W, H, opts, say) {
     return '<path d="' + Ln.pts.map(function (p, k) { return (k ? 'L' : 'M') + f2(p[0]) + ' ' + f2(p[1]); }).join(' ') + '" fill="none" stroke="' + hex(Ln.colour) +
       '" stroke-width="' + f2(Ln.width) + '" stroke-linejoin="miter" stroke-linecap="butt"/>';
   });
+  // what the picture holds, as small tables (v1.62.0, `opts.outline`): for a reader that wants to know where things are
+  // and in which colours, not to draw them - its colours with their pixels, the pills, the pipes, the large panels, each
+  // figure and each word as boxes, in whole pixels
+  var outline;
+  if (opts.outline) {
+    var R = function (v) { return Math.round(v); };
+    var box = function (list) {
+      var b = [Infinity, Infinity, -Infinity, -Infinity];
+      list.forEach(function (q) { b[0] = Math.min(b[0], q.box[0]); b[1] = Math.min(b[1], q.box[1]); b[2] = Math.max(b[2], q.box[2]); b[3] = Math.max(b[3], q.box[3]); });
+      return [R(b[0]), R(b[1]), R(b[2] - b[0]), R(b[3] - b[1])];
+    };
+    outline = {
+      palette: cols.map(function (c5) { return [hex(c5), c5[3] || 0]; }),
+      pills: pills.map(function (pl) {
+        return [R(pl.x), R(pl.y), R(pl.w), R(pl.h), hex(pl.fill), pl.stroke && pl.sw > 0 ? hex(pl.stroke) : '', Math.round((pl.sw || 0) * 10) / 10];
+      }),
+      pipes: lines.map(function (Ln) {
+        return [hex(Ln.colour), Math.round(Ln.width * 10) / 10, Ln.pts.map(function (p) { return R(p[0]) + ',' + R(p[1]); }).join(' ')];
+      }),
+      panels: shapes.filter(function (s5) { return s5.layer === 0 && s5 !== shapes[0] && s5.svg; }).map(function (s5) { return box([s5]).concat([hex(cols[s5.c])]); }),
+      figures: figures.map(function (t) { var list = byTop.get(t); return box(list).concat([hex(cols[t.c]), list.length]); }),
+      words: order.map(function (r) { var list = words.get(r); return box(list).concat([hex(cols[list[0].c]), list.length]); })
+    };
+  }
   say({ phase: 'done' });
   return {
     layers: LAYERS.map(function (name, k) { return { name: name, svg: out[k].join('\n') }; }).filter(function (l) { return l.svg; }),
     colours: cols.length, pipes: lines.length, pills: pills.length, shapes: fitted, letters: nLetters, words: order.length, nodes: nodes, ms: Date.now() - t0,
+    outline: outline,
     debug: opts.debug ? shapes : undefined
   };
 }
@@ -9852,11 +10363,239 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /* ---------- the export's overview (v1.62.0) ----------
+       The plant behind the panel, for an agent: read here, laid out by iwdieBuildOverview. Each part is read as well as it
+       can be; one that cannot is left out, and the export goes on without it. */
+
+    /** `p`, or a rejection after `ms`. */
+    function ovTimeout(p, ms) {
+      return new Promise(function (resolve, reject) {
+        var t = setTimeout(function () { reject(new Error('no answer in ' + Math.round(ms / 1000) + ' s')); }, ms);
+        p.then(function (v) { clearTimeout(t); resolve(v); }, function (e) { clearTimeout(t); reject(e); });
+      });
+    }
+
+    /** A unit's parameter rows as the parameter selector loads them when the unit is clicked: the same read-only request
+     *  (designer_site/iw_load_plant.php), its XML read in the encoding it declares. Kept for a minute. -> Promise<rows> */
+    var ovRowsKept = {};
+    function ovUnitRows(unitId) {
+      var key = String(unitId), kept = ovRowsKept[key];
+      if (kept && Date.now() - kept.at < 60000) return kept.p;
+      var cust = W.cust_id != null && W.cust_id !== '' ? W.cust_id : currentPlantId();
+      var url = './designer_site/iw_load_plant.php?regulator_name=' + encodeURIComponent(key) + '&cust_id=' + encodeURIComponent(cust) +
+        '&aliastext=&param_alle=false&param_alarmer=false&param_boolean=false&param_integer=false&param_float=false&rw_alle=false&rw_read=false&rw_readwrite=false';
+      var p = ovTimeout(fetch(url, { credentials: 'same-origin' }), 20000).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.arrayBuffer();
+      }).then(function (ab) {
+        var u8 = new Uint8Array(ab), head = '', text;
+        for (var i = 0; i < Math.min(u8.length, 200); i++) head += String.fromCharCode(u8[i]);
+        var enc = (/encoding=["']([\w-]+)["']/i.exec(head) || [])[1] || 'windows-1252';
+        try { text = new TextDecoder(enc).decode(u8); } catch (e) { text = new TextDecoder('windows-1252').decode(u8); }
+        return iwdieOvParseRows(text);
+      });
+      ovRowsKept[key] = { at: Date.now(), p: p };
+      p.then(null, function () { delete ovRowsKept[key]; });
+      return p;
+    }
+
+    /** The rows of the units given, four at a time. -> Promise<{rows: {unit_id: rows}, failed: [unit_id...]}> */
+    function ovRowsFor(ids) {
+      var out = { rows: {}, failed: [] }, queue = ids.slice(), workers = [];
+      var next = function () {
+        if (!queue.length) return Promise.resolve();
+        var u = queue.shift();
+        return ovUnitRows(u).then(function (rows) { out.rows[u] = rows; }, function () { out.failed.push(u); }).then(next);
+      };
+      for (var k = 0; k < Math.min(4, ids.length); k++) workers.push(next());
+      return Promise.all(workers).then(function () { return out; });
+    }
+
+    /** The units whose rows an export carries: those the panel's objects are linked to, and those ticked in the UNITS list
+     *  of the Parameter Selector. -> {unit_id: 'on the panel' | 'picked'} */
+    function ovScope(doc) {
+      var scope = {};
+      iwdieOvObjects(doc).forEach(function (p) {
+        if (iwdieOvBound(p.o) && p.o.unit_id != null && String(p.o.unit_id) !== '') scope[String(p.o.unit_id)] = 'on the panel';
+      });
+      try {
+        var ug = W.w2ui && W.w2ui.unitgrid;
+        var sel = ug && typeof ug.getSelection === 'function' ? ug.getSelection() : [];
+        (sel || []).forEach(function (rid) {
+          var rec = ug.get(rid);
+          if (rec && rec.unit_id != null && !scope[String(rec.unit_id)]) scope[String(rec.unit_id)] = 'picked';
+        });
+      } catch (e) {}
+      return scope;
+    }
+
+    /** What the render definitions say of the panel's kinds of object. -> {obj_id: {w, h, can_link, has_tag}} */
+    function ovKinds(doc) {
+      var out = {}, defs = W.controls || {};
+      iwdieOvObjects(doc).forEach(function (p) {
+        var id = String(p.o.obj_id || ''), d = id && Object.prototype.hasOwnProperty.call(defs, id) ? defs[id] : null;
+        if (!d || out[id]) return;
+        out[id] = { w: parseFloat(d.width) || null, h: parseFloat(d.height) || null, can_link: !!d.canLink, has_tag: !!d.hasTag };
+      });
+      return out;
+    }
+
+    /** How the Designer writes the tag text of the panel's objects: the first of its kinds with a tag, laid out out of
+     *  sight as vcPaintCss does. -> {size, colour, font, weight} | null */
+    function ovTagStyle(doc) {
+      var defs = W.controls || {}, def = null;
+      iwdieOvObjects(doc).some(function (p) {
+        var d = defs[String(p.o.obj_id || '')];
+        if (d && d.tag_text_classname) { def = d; return true; }
+        return false;
+      });
+      if (!def) return null;
+      var el = document.createElement('div'), t = document.createElement('div');
+      el.className = String(def.classname || '') + ' iw_css_ctrl_common';
+      el.style.cssText = 'position:absolute;left:-30000px;top:0;width:60px;height:24px';
+      t.className = String(def.tag_text_classname);
+      t.textContent = 'RT52 °C';
+      el.appendChild(t);
+      (document.body || document.documentElement).appendChild(el);
+      try {
+        var cs = getComputedStyle(t);
+        return { size: Math.round((parseFloat(cs.fontSize) || 0) * 10) / 10, colour: iwdieCssHex(cs.color) || null,
+          font: String(cs.fontFamily || '').split(',')[0].replace(/["']/g, '').trim() || null, weight: String(cs.fontWeight || '') || null };
+      } finally { if (el.parentNode) el.parentNode.removeChild(el); }
+    }
+
+    /** The texts of a drawing - a VectorCraft document kept in the picture, or an SVG background - with their words, and
+     *  its layers: the drawing laid out at the panel's size in a frame out of sight (its styles stay in there), nothing
+     *  in it that runs or loads. -> {texts: [[x, y, w, h, size, colour, text]], layers: [[name, shapes]]} */
+    function ovSvgTexts(svgText, size) {
+      var parsed = new DOMParser().parseFromString(String(svgText || ''), 'image/svg+xml');
+      if (!parsed || !parsed.documentElement || parsed.getElementsByTagName('parsererror').length) return { texts: null, layers: null };
+      var frame = document.createElement('iframe');
+      frame.style.cssText = 'position:fixed;left:-30000px;top:0;width:' + Math.round(size.w) + 'px;height:' + Math.round(size.h) + 'px;border:0;visibility:hidden';
+      (document.body || document.documentElement).appendChild(frame);
+      try {
+        var fd = frame.contentDocument;
+        fd.open();
+        fd.write('<!doctype html><html><head></head><body style="margin:0"></body></html>');
+        fd.close();
+        var root = fd.importNode(parsed.documentElement, true);
+        Array.prototype.slice.call(root.querySelectorAll('script,foreignObject,image,iframe,audio,video')).forEach(function (el) {
+          if (el.parentNode) el.parentNode.removeChild(el);
+        });
+        Array.prototype.slice.call(root.querySelectorAll('*')).concat([root]).forEach(function (el) {
+          Array.prototype.slice.call(el.attributes).forEach(function (a) {
+            var n = a.name.toLowerCase();
+            if (n.indexOf('on') === 0 || (/(^|:)href$/.test(n) && a.value.charAt(0) !== '#')) el.removeAttribute(a.name);
+          });
+        });
+        root.setAttribute('width', String(Math.round(size.w)));
+        root.setAttribute('height', String(Math.round(size.h)));
+        fd.body.appendChild(root);
+        var win = frame.contentWindow, texts = [], layers = [];
+        var hidden = function (el) {
+          for (var a = el; a && a.nodeType === 1; a = a.parentNode) if (a.getAttribute('display') === 'none' || win.getComputedStyle(a).display === 'none') return true;
+          return false;
+        };
+        Array.prototype.slice.call(root.querySelectorAll('text')).forEach(function (t) {
+          if (texts.length >= 600) return;
+          var words = String(t.textContent || '').replace(/\s+/g, ' ').trim();
+          if (!words || hidden(t)) return;
+          var b, m;
+          try { b = t.getBBox(); m = t.getCTM(); } catch (e) { return; }
+          if (!b || !m || !(b.width > 0 && b.height > 0)) return;
+          var xs = [], ys = [];
+          [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]].forEach(function (p) {
+            xs.push(m.a * p[0] + m.c * p[1] + m.e);
+            ys.push(m.b * p[0] + m.d * p[1] + m.f);
+          });
+          var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys), cs = win.getComputedStyle(t);
+          var scale = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)) || 1;
+          texts.push([Math.round(x0), Math.round(y0), Math.round(Math.max.apply(null, xs) - x0), Math.round(Math.max.apply(null, ys) - y0),
+            Math.round((parseFloat(cs.fontSize) || 0) * scale * 10) / 10, iwdieCssHex(cs.fill) || '', words.slice(0, 120)]);
+        });
+        Array.prototype.slice.call(root.children).forEach(function (g) {
+          if (String(g.tagName).toLowerCase() !== 'g') return;
+          layers.push([g.getAttribute('data-name') || g.getAttribute('id') || '(unnamed)', g.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon,text,use').length]);
+        });
+        return { texts: texts, layers: layers };
+      } finally {
+        if (frame.parentNode) frame.parentNode.removeChild(frame);
+      }
+    }
+
+    /** The picture's layout and style: what iwdieVzTrace finds in its pixels (off this page), and the texts of the drawing
+     *  it was made from, when it keeps one. -> Promise<{source, outline, texts, layers} | null> */
+    function ovPicture(url, size, fill) {
+      if (!url) return Promise.resolve(null);
+      return fetchBackgroundBytes(url).then(function (bg) {
+        var mime = iwdieSniffMime(bg.bytes);
+        var drawn = mime === 'image/svg+xml' ? Promise.resolve(iwdieUtf8Decode(bg.bytes)) : vcDocumentOf(bg.bytes);
+        return drawn.then(null, function () { return null; }).then(function (svg) {
+          var got = null;
+          if (svg) { try { got = ovSvgTexts(svg, size); } catch (e) { got = null; } }
+          return exportPaint(bg.bytes, mime !== 'application/octet-stream' ? mime : bg.mime, size, fill).then(function (c) {
+            var data = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+            return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, c.width, c.height, { outline: true }], function () {});
+          }).then(function (vz) {
+            if (!vz || !vz.outline) return null;
+            return { source: svg ? (mime === 'image/svg+xml' ? 'svg' : 'vectorcraft') : 'traced', outline: vz.outline,
+              texts: got && got.texts && got.texts.length ? got.texts : null, layers: got && got.layers && got.layers.length ? got.layers : null };
+          });
+        });
+      });
+    }
+
+    /** All an overview is made of, read here: the units the Designer lists and the rows of those in scope, the picture,
+     *  the kinds of object, how tags are written, the kept components. -> Promise<src for iwdieBuildOverview> */
+    function ovGather(doc, url) {
+      var units = Array.isArray(W.yourplantUnits) ? W.yourplantUnits : [], known = {};
+      units.forEach(function (u) { if (u && u.unit_id != null) known[String(u.unit_id)] = 1; });
+      var scope = ovScope(doc), ids = Object.keys(scope).filter(function (u) { return !units.length || known[u]; });
+      var size = exportPanelSize(), fill = grabBackgroundFillColor();
+      var src = { plantId: currentPlantId(), panelName: currentPanelName(), size: size, canvasColour: iwdieCssHex(fill) || null, units: units,
+        tags: Array.isArray(W.iw_param_tagsArr) ? W.iw_param_tagsArr : [], scope: {}, rows: {}, failed: [], picture: null };
+      ids.forEach(function (u) { src.scope[u] = scope[u]; });
+      try { src.kinds = ovKinds(doc); } catch (e) {}
+      try { src.tagStyle = ovTagStyle(doc); } catch (e) {}
+      try { var lib = libLoad(); if (lib && lib.items && lib.items.length) src.library = lib; } catch (e) {}
+      var rows = ovRowsFor(ids).then(function (got) { src.rows = got.rows; src.failed = got.failed; }, function () {});
+      var pic = ovTimeout(ovPicture(url, size, fill), 60000).then(function (p) { src.picture = p; }, function () { src.picture = null; });
+      return Promise.all([rows, pic]).then(function () { return src; });
+    }
+
+    /** The overview of the panel as it is now, or null when it could not be made. */
+    function ovBuild(doc, url) {
+      return ovGather(doc, url).then(function (src) { return iwdieBuildOverview(doc, src); }).then(null, function () { return null; });
+    }
+
+    /** Insert's check, then the plant's own word on the file's links (v1.62.0): each object bound to a parameter read
+     *  against the rows of its unit, fetched as the parameter selector fetches them. Only for a file for this plant -
+     *  one for another is offered a new prefix first. -> Promise<true when it added to `result`> */
+    function ovCheckPlant(result) {
+      if (!result || !result.doc || result.verdict === 'refused') return Promise.resolve(false);
+      var units = Array.isArray(W.yourplantUnits) ? W.yourplantUnits : [];
+      if (!units.length) return Promise.resolve(false);
+      var here = String(currentPlantId() || ''), objs = iwdieOvObjects(result.doc).filter(function (p) { return iwdieOvBound(p.o); });
+      if (!here || !objs.length || objs.some(function (p) { return String(p.o.driver_id).split('_')[0] !== here; })) return Promise.resolve(false);
+      var names = {}, ids = {};
+      units.forEach(function (u) { if (u && u.unit_id != null) names[String(u.unit_id)] = String(u.unit_name || ''); });
+      objs.forEach(function (p) { var u = String(p.o.unit_id == null ? '' : p.o.unit_id); if (Object.prototype.hasOwnProperty.call(names, u)) ids[u] = 1; });
+      return ovRowsFor(Object.keys(ids)).then(function (got) {
+        iwdieMergeBindingCheck(result, iwdieCheckBindings(result.doc, { units: names, rows: got.rows, failed: got.failed }), here);
+        return true;
+      }, function () { return false; });
+    }
+
     /* ---------- export ---------- */
     function buildEnvelopeAsync(allowEmpty) {
       var doc = collectCurrentDoc(allowEmpty);
       if (!doc) return Promise.resolve(null);
-      return embedBackground(doc).then(function (d) { return iwdieBuildEnvelope(d); });
+      var url = grabBackgroundUrl();
+      // the plant behind the panel, for an agent (v1.62.0), read while the background is embedded
+      toast('Reading the plant’s units and parameters, and the picture’s layout, for the export…', false, 4000);
+      return Promise.all([embedBackground(doc), ovBuild(doc, url)]).then(function (r) {
+        return iwdieBuildEnvelope(r[0], r[1] ? { overview: r[1] } : {});
+      });
     }
 
     /* shared tracer options, tuned for the flat schematic style
@@ -9992,7 +10731,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       a.click();
       a.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-      if (!quiet) hostOk('Exported ' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + traceNote + ' → ' + name);
+      if (!quiet) hostOk('Exported ' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + traceNote +
+        (env.overview ? ' + ' + iwdieOvNote(env.overview) : '') + ' → ' + name);
       return name;
     }
 
@@ -10008,6 +10748,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var url = grabBackgroundUrl();
       var plant = env.source_plant_id, panel = env.panel_name;
       if (!url) {
+        // no objects and no picture (v1.62.0): the plant's overview alone, to draw a new panel from
+        if (env.overview) {
+          var only = downloadEnvelope(env, '', true);
+          hostOk('The canvas is empty and has no picture, so the export holds ' + iwdieOvNote(env.overview) + ' → ' + only +
+            '. Give it to the agent with the drawings and lists to draw this panel from.');
+          return;
+        }
         toast('Nothing to export — the canvas has no objects and no background picture.\n' +
           'Load a panel first (Retrieve → Load).', true, 8000);
         return;
@@ -11835,8 +12582,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var lifted = null;
       var openPanel = function () {
         var name = job.name || 'panel.svg';
-        // a picture made vectors (v1.61.0) is there to be edited: opened as it is, nothing locked
-        try { lifted = syncer && !job.vector ? iwdieVcLiftObjects(job.svg, null, { under: true }) : null; } catch (e) { lifted = null; }
+        // a picture made vectors (v1.61.0), or a drawing given as SVG (v1.62.0), is there to be edited: opened as it is, nothing locked
+        try { lifted = syncer && !job.vector && !job.authored ? iwdieVcLiftObjects(job.svg, null, { under: true }) : null; } catch (e) { lifted = null; }
         try { vcDropFile(lifted ? lifted.base : job.svg, name, 'image/svg+xml', title && title !== 'VectorCraft' ? 'menu' : 'center'); }
         catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return Promise.resolve(null); }
         if (!lifted) {
@@ -11846,6 +12593,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             note('✓ The panel’s picture, vectorized: its shapes on the layers Bakgrunn, Rør, Former and Tekst, each figure and each word a group, ' +
               'nothing locked - click one to edit it.<br><span class="iwdie-vcb-q"><b>Ctrl+S</b> syncs. The picture as it was is on the hidden layer ' +
               'Bakgrunn (original).</span>', false, true);
+          } else if (job.authored) {
+            // a drawing given as SVG (v1.62.0): an agent's, set as the background by Insert
+            note('✓ The panel’s drawing, as its SVG: its groups as layers - Bakgrunn, Rør, Former and Tekst, as it names them - and the panel’s ' +
+              'IWMAC objects over them, nothing locked - click a shape to edit it.<br><span class="iwdie-vcb-q"><b>Ctrl+S</b> syncs: the drawing ' +
+              'becomes the panel’s picture, and is kept in it for the next edit.</span>', false, true);
           }
           return Promise.resolve({ panel: true, count: 0, pasted: false });
         }
@@ -12289,6 +13041,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var build = vcDocumentOf(info.bg && info.bg.bytes).then(function (doc) {
         return doc || (info.found && info.found.base ? vcDocumentOf(info.found.base.bytes) : null);
       }).then(function (doc) {
+        // a drawing given as SVG (v1.62.0): an agent's panel.image_svg, which Insert set as the background - opened as the
+        // vectors it is, its groups VectorCraft's layers, nothing locked
+        if (!doc && info.bg && iwdieSniffMime(info.bg.bytes) === 'image/svg+xml') {
+          var given = iwdieVcAuthored(iwdieUtf8Decode(info.bg.bytes), size);
+          if (given) { info.authored = true; return given; }
+        }
+        return doc;
+      }).then(function (doc) {
         // a background from VectorCraft (v1.48.0): go on with its drawing, or read the picture it came
         // from again - the one way to be rid of what an earlier version drew again in it
         var orig = doc ? iwdieVcOriginalPicture(doc) : null;
@@ -12319,7 +13079,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // the panel's objects on top, as placeholders that know which object they are (v1.46.0)
         if (doc) {
           vc = true;
-          paper = vcPaper(tab, [['build', 'The VectorCraft document behind the background'], ['open', 'Opening VectorCraft']]);
+          paper = vcPaper(tab, [['build', info.authored ? 'The panel’s drawing, as its SVG' : 'The VectorCraft document behind the background'], ['open', 'Opening VectorCraft']]);
           paper.step('build', nObj ? 'with ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : '', 0.3, 0.9);
           return iwdieVcAddPanelObjects(shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc, info.objects, info.looks, info.mended ? info.mended.unders : null);
         }
@@ -12381,7 +13141,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
         var safe = String(info.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
         var job = { id: id, svg: svg, name: 'iwmac-' + (info.plant || 'plant') + '-' + safe + '.svg', panel: info.panel || '', plant: info.plant || '', at: Date.now(), version: IWDIE_VERSION,
-          vector: !!info.vector };
+          vector: !!info.vector, authored: !!info.authored };
         // the .ai chosen instead of a trace (v1.51.0) goes along, in Tampermonkey's storage until the editor's tab takes it;
         // one slot, as the job's: a job without one clears one an earlier job's tab never took
         if (info.ai) GM_setValue(IWDIE_VC_AI_KEY, { job: id, name: info.ai.name, type: info.ai.type, b64: iwdieBytesToBase64(info.ai.bytes), at: Date.now() });
@@ -12424,6 +13184,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           vz.letters ? iwdieN(vz.letters, 'letter', 'letters') + ' in ' + iwdieN(vz.words, 'word', 'words') : ''].filter(Boolean).join(', ') +
           ', on the layers Bakgrunn, Rør, Former and Tekst - unlocked, to edit; the picture as it was on the hidden layer Bakgrunn (original)' +
           (nObj ? '. The ' + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter, over the rest' : '');
+        if (info.authored) what = 'The panel’s drawing, given as SVG, as the vectors it is: its groups as VectorCraft’s layers, nothing locked, to edit' +
+          (nObj ? '; the ' + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter, over the rest' : '');
         outcomeToast({
           tone: 'good', title: 'Opening in VectorCraft',
           lines: (got ? ['Found in the picture in ' + got.seconds + ' s: ' + [got.count ? iwdieN(got.count, 'component', 'components') + ' of your library (' + got.summary + ')' : '',
@@ -14409,9 +15171,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       fr.readAsText(file);
     }
 
+    var stageSeq = 0;
     function stageImportText(text, name) {
       stagedText = text; stagedName = name || 'the file';
-      renderCheckReport(iwdieCheckFile(text, { plantId: currentPlantId() }));
+      var result = iwdieCheckFile(text, { plantId: currentPlantId() }), seq = ++stageSeq;
+      renderCheckReport(result);
+      // the plant's own word on the file's links (v1.62.0): the report again with it, while it is still the one shown
+      ovCheckPlant(result).then(function (added) {
+        var rv = importOverlay ? importOverlay.querySelector('#iwdie_review') : null;
+        if (added && seq === stageSeq && stagedText === text && rv && rv.style.display !== 'none') renderCheckReport(result);
+      });
     }
 
     /* The source form and the review take turns in the one dialog (v1.31.0):
@@ -15656,6 +16425,20 @@ if (typeof module !== 'undefined' && module.exports) {
     vzSample: iwdieVzSample,
     vzTrace: iwdieVzTrace,
     vzWorkerDeps: iwdieVzWorkerDeps,
+    OV_MAX_ROWS: IWDIE_OV_MAX_ROWS,
+    OV_MAX_SIGNALS: IWDIE_OV_MAX_SIGNALS,
+    OV_MAX_UNITS: IWDIE_OV_MAX_UNITS,
+    OV_READ_ME: IWDIE_OV_READ_ME,
+    ovParseRows: iwdieOvParseRows,
+    ovObjects: iwdieOvObjects,
+    ovBound: iwdieOvBound,
+    ovMedian: iwdieOvMedian,
+    buildOverview: iwdieBuildOverview,
+    ovNote: iwdieOvNote,
+    checkBindings: iwdieCheckBindings,
+    mergeBindingCheck: iwdieMergeBindingCheck,
+    vcAuthored: iwdieVcAuthored,
+    isFlatArray: iwdieIsFlatArray,
     cssHex: iwdieCssHex,
     vcEmbed: iwdieVcEmbed,
     vcExtract: iwdieVcExtract,
