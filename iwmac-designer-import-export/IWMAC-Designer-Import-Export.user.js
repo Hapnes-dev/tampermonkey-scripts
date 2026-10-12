@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.64.1
+// @version      1.64.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.64.1';
+var IWDIE_VERSION = '1.64.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9022,7 +9022,35 @@ function iwdieCbCheck(items, size, opts) {
       if (why) add('warning', 'CB-B01', why, [it.cid]);
     }
   });
+  // flow arrows (v1.64.2): each on a pipe that runs its way - unless a pipe with a curve might be under it
+  iwdieCbStrayArrows(items).forEach(function (s) {
+    add('warning', 'CB-F01', s.symbol + ' at (' + Math.round(s.box.x) + ', ' + Math.round(s.box.y) + ') is not on a pipe running its way: an arrow shows a pipe\'s flow', [s.cid]);
+  });
   return out;
+}
+
+/** The flow arrows (Pil, PilLiten, PilSikksakk) of a drawing that lie on no pipe running their way (v1.64.2): an arrow
+ *  longer across than down points along a horizontal run, else along a vertical one, its centre within `tol` px (3) of
+ *  the run and of its span. One near a pipe whose runs are not known (a curve) is let be. -> [item] */
+function iwdieCbStrayArrows(items, tol) {
+  tol = tol === undefined ? 3 : tol;
+  var runs = [], unknown = [];
+  items.forEach(function (it) {
+    if (it.kind !== 'pipe') return;
+    if (!it.pts) { unknown.push(it.box); return; }
+    for (var k = 1; k < it.pts.length; k++) runs.push([it.pts[k - 1], it.pts[k]]);
+  });
+  return items.filter(function (s) {
+    if (s.kind !== 'symbol' || !/^(Pil|PilLiten|PilSikksakk)$/.test(s.symbol || '')) return false;
+    var cx = s.box.x + s.box.w / 2, cy = s.box.y + s.box.h / 2, across = s.box.w >= s.box.h;
+    var on = runs.some(function (r) {
+      var a = r[0], b = r[1];
+      if (across) return Math.abs(a[1] - b[1]) < 0.5 && Math.abs(cy - a[1]) <= tol && cx >= Math.min(a[0], b[0]) - tol && cx <= Math.max(a[0], b[0]) + tol;
+      return Math.abs(a[0] - b[0]) < 0.5 && Math.abs(cx - a[0]) <= tol && cy >= Math.min(a[1], b[1]) - tol && cy <= Math.max(a[1], b[1]) + tol;
+    });
+    if (on) return false;
+    return !unknown.some(function (u) { return cx >= u.x - tol && cx <= u.x + u.w + tol && cy >= u.y - tol && cy <= u.y + u.h + tol; });
+  });
 }
 
 /** The sizes the kept library draws each house symbol at (v1.64.0), turned members turned back, exact to the hundredth;
@@ -9071,6 +9099,8 @@ function iwdieCbTurn(deg, flip) {
  *    object   {obj_id, at, w?, h?, bind?, text?, ref?}                 an IWMAC object, as its placeholder
  *    value    {bind?, at, dark?, obj_id?, label?, ref?}                a value on its pill: the Maskin way
  *    pill     {at, dark?, ref?}                                        an empty 40 x 20 pill
+ *    box      {for: target, pad?} | {at, w, h}, rx?, fill?, stroke?, width?, layer?, ref?   an empty box: an object's
+ *             anchor at its size (Former), or a panel in the information column (layer Bakgrunn) (v1.64.2)
  *    pipe     {points | d, circuit?, colour?, width?, ref?}            a pipe, orthogonal runs
  *    connect  {from, to, circuit?, colour?, width?, ref?}              a pipe routed between two ports
  *    text     {text, at, size?, colour?, anchor?, ref?}                fixed text
@@ -9295,6 +9325,23 @@ function iwdieCbPlan(ops, scene, ctx) {
         });
         break;
       }
+      case 'box': {
+        // an empty box (v1.64.2): under a strip, an alarm, an enable or an LED its anchor, at the object's own box; or, in
+        // Bakgrunn, a panel of the information column, as 2349's: light inside, a grey ring
+        var forT = o['for'] ? thing(o['for']) : null;
+        if (o['for'] && !forT) { fail(i, 'box for: needs a {cid} or a {ref} on the drawing'); break; }
+        var pad = +o.pad || 0, inBg = /^bakgrunn$/i.test(String(o.layer || ''));
+        var bw = forT ? forT.box.w + 2 * pad : +o.w, bh = forT ? forT.box.h + 2 * pad : +o.h;
+        if (!(bw > 0 && bh > 0)) { fail(i, 'a box needs w and h, or for: the object it is the anchor of'); break; }
+        var bb = forT ? { x: r1(forT.box.x - pad), y: r1(forT.box.y - pad), w: Math.round(bw * 100) / 100, h: Math.round(bh * 100) / 100 } : place(o.at, bw, bh, i);
+        if (!bb) break;
+        steps.push({ 'do': 'add', kind: 'box', box: bb, layer: inBg ? 'Bakgrunn' : 'Former', rx: o.rx === undefined ? (inBg ? 2 : 4) : +o.rx,
+          fill: o.fill || (inBg ? '#e7ebee' : '#ffffff'), stroke: o.stroke === undefined ? (inBg ? '#9ea6af' : '#6a7d88') : String(o.stroke || ''),
+          width: o.width === undefined ? 1 : +o.width, ref: o.ref, op: i });
+        if (!forT && !inBg) boxes.push(bb);
+        keep(o.ref, { box: bb });
+        break;
+      }
       default: fail(i, 'no op "' + o.op + '"');
     }
   });
@@ -9415,6 +9462,10 @@ function iwdieCbMarkup(s, cid, looks, used) {
     return '<rect x="' + f(s.box.x) + '" y="' + f(s.box.y) + '" width="' + f(s.box.w) + '" height="' + f(s.box.h) + '" rx="10"' +
       (s.dark ? ' fill="#6b7e87"' : ' fill="#ffffff" stroke="#6a7d88" stroke-width="1"') + c + '/>';
   }
+  if (s.kind === 'box') {
+    return '<rect x="' + f(s.box.x) + '" y="' + f(s.box.y) + '" width="' + f(s.box.w) + '" height="' + f(s.box.h) + '" rx="' + f(s.rx) + '" fill="' + esc(s.fill) + '"' +
+      (s.stroke ? ' stroke="' + esc(s.stroke) + '" stroke-width="' + f(s.width) + '"' : '') + c + '/>';
+  }
   if (s.kind === 'pipe') {
     return '<path d="' + iwdieCbPathD(s.pts) + '" fill="none" stroke="' + esc(s.colour) + '" stroke-width="' + f(s.width) + '"' + c + '/>';
   }
@@ -9427,7 +9478,7 @@ function iwdieCbMarkup(s, cid, looks, used) {
 
 /** Where each kind of step goes (v1.64.0): the layer by its name. */
 function iwdieCbLayerOf(s) {
-  return s.kind === 'object' ? 'IWMAC-objekter' : s.kind === 'pipe' ? 'Rør' : s.kind === 'text' ? 'Tekst' : 'Former';
+  return s.kind === 'object' ? 'IWMAC-objekter' : s.kind === 'pipe' ? 'Rør' : s.kind === 'text' ? 'Tekst' : s.kind === 'box' && s.layer ? s.layer : 'Former';
 }
 
 /** What the page tells the bridge about itself when it attaches (v1.64.0): the job, the panel's size, the symbols the
@@ -18611,6 +18662,7 @@ if (typeof module !== 'undefined' && module.exports) {
     cbCircuit: iwdieCbCircuit,
     cbCircuitOfColour: iwdieCbCircuitOfColour,
     cbPortsOf: iwdieCbPortsOf,
+    cbStrayArrows: iwdieCbStrayArrows,
     cbPorts: iwdieCbPorts,
     cbRoute: iwdieCbRoute,
     cbPathD: iwdieCbPathD,

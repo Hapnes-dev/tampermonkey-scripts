@@ -2159,6 +2159,19 @@ an undo — 1.5 s of tab time in all. A second tab took Claude over, the first w
 taking it back for 20 s, and its button brought Claude back. The kit's
 `tests/test-claude-bridge.js` holds the pure part and the server.
 
+**A box, and arrows on their pipes (v1.64.2).** Drawing a basic Maskin through the bridge showed two
+gaps. Claude could not draw the empty box the house puts under a strip, an alarm, an enable or an
+LED, nor a panel in the information column. And the check let an arrow stand where no pipe ran.
+
+- **`box`.** `{op: 'box', for: {ref | cid}}` draws an object's anchor at the object's own box, with
+  `pad` to grow it: white, with the pills' grey ring. `{op: 'box', at, w, h, layer: 'Bakgrunn'}`
+  draws a panel of the information column: light inside, with a grey ring, as 2349's are measured.
+  `rx`, `fill`, `stroke` and `width` set it otherwise; `stroke: ''` draws no ring.
+- **CB-F01.** The check names each flow arrow (`Pil`, `PilLiten`, `PilSikksakk`) whose centre is not
+  within 3 px of a pipe running its way. An arrow wider than tall needs a horizontal run, a taller one
+  a vertical run. An arrow beside a pipe whose runs are not known, a curve, is let be.
+- The kit's validator makes the same check on an agent's answer (`OP-F01`).
+
 ## AI-generated panels (Copilot)
 
 Insert JSON also takes **AI-authored** files — generate a panel from a P&ID or system description and insert it, then link the objects by hand. The authoring kit lives in the private `tampermonkey-scripts-documents` repository.
