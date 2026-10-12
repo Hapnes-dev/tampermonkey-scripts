@@ -303,6 +303,41 @@ documents in it.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### The guide agrees with the Copilot kit (v1.62.1)
+
+A deep pass over the Copilot agent's knowledge kit against this script found the file's
+own `ai_guide` contradicting the kit in places an agent reads first, all of them written
+for Ventilasjon and applied to every type:
+
+- **Artwork by type.** It told an agent to draw a Ventilasjon picture into `image_svg`
+  when the plant had none, and shipped `examples.starter_ventilation`, an authored duct
+  drawing. Every production Ventilasjon panel in the kit's evidence sits on the blank
+  sidebar with its ducts, fans, dampers and coils as objects. The guide now authors
+  `image_svg` only for a type that has artwork (Maskin, Oversikt, Energi) and never for
+  Ventilasjon, curve, list or room-control panels. The starter is gone: 5.4 kB less
+  guide.
+- **z-bands per type.** `quick_start` listed the Ventilasjon bands as if universal. On
+  Maskin the values are 1100, the inverse of Ventilasjon's 110; Oversikt uses 110 and 375.
+  The guide now says to copy the band of the same role from the file, and names each
+  type's.
+- **What is drawing and what is an object.** "Fans, valves and every label are objects"
+  and "no dark fills" were Ventilasjon rules; a Maskin picture draws fan circles, valve
+  symbols, fixed text and dark setpoint pills. The rule is now "whatever shows or sets a
+  signal is an object", in `drawing_style`, the overview's `read_me` and the Insert fix
+  prompt.
+- **Smaller corrections.**
+  - Unlinking keeps `alias_text`, the key an object is relinked by.
+  - `image_svg_trace` is kept or dropped by type.
+  - The canvas follows the plant's other panels.
+  - A BACnet alias is translated per plant, so relink by the point token.
+  - An alias on two rows is ambiguous.
+  - The settings column's measured positions.
+  - The self-check's x 1145 rule applies only where there is a settings column.
+
+The kit itself got the matching update: task T19's guide per panel type, the export's
+`overview` as a parameter source in its tools and validators, a T19 validator, and the
+agent's instruction field.
+
 ### The plant behind the panel, for an agent that draws overview pictures (v1.62.0)
 
 Thomas asked for the export to help his Copilot agent generate IWMAC overview pictures with
@@ -659,6 +694,8 @@ background; the viewBox is read.
 `examples.starter_ventilation` is a complete, correct file — two duct runs, exchanger
 and zone in `image_svg`, eleven unlinked objects at the measured positions, every id
 from the catalogue — that passes the importer and the geometry checks as it stands.
+*(Removed in 1.62.1: production Ventilasjon panels sit on the blank sidebar with their
+ducts as objects, never on authored artwork; see below.)*
 `quick_start` (ten lines) opens the guide, `read_order_by_task` says which sections
 matter for reading, modifying, creating or linking, `caption_conventions` records what
 production writes in `tag_text` (including the non-breaking space it uses to nudge a

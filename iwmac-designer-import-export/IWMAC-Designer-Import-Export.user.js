@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.62.0
+// @version      1.62.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.62.0';
+var IWDIE_VERSION = '1.62.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -249,7 +249,7 @@ var IWDIE_PANEL_SCHEMA = [
   { field: 'containers', type: 'array of containers', required: 'yes', meaning: 'Grouped objects (table rows, room cards). [] on most panels. See schema.container.', example: '[]' },
   { field: 'graphics', type: 'array', required: 'yes', meaning: 'Opaque host graphics records. Preserve verbatim; never author one; [] on almost every panel.', example: '[]' },
   { field: 'converted', type: 'string', required: 'no', allowed: '"true"', meaning: 'Present as "true" when a background picture is embedded in image_data.', example: 'true' },
-  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'AI-authored background artwork: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert converts it into image_data, and Export writes it back when the panel still carries it, so the drawing survives the round trip as editable vector. Author one when the plant has no background picture for this panel; never as a replacement for a supplied raster, which is copied verbatim. See drawing_style for how the house draws ducts, zones and the exchanger.', example: '<svg viewBox="0 0 1400 750" ...>' }
+  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'AI-authored background artwork: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert converts it into image_data, and Export writes it back when the panel still carries it, so the drawing survives the round trip as editable vector. Author one only for a type that has artwork (Maskin, Oversikt, Energi) when the plant has none; never on Ventilasjon, curve, list or room-control panels, and never as a replacement for a supplied picture, which is copied verbatim. See drawing_style for how the house draws ducts, zones and the exchanger.', example: '<svg viewBox="0 0 1400 750" ...>' }
 ];
 
 /** One row per top-level key of the export file, in file order. */
@@ -270,7 +270,7 @@ function iwdieFileLayout() {
     { key: 'background_embedded', type: 'boolean', required: 'no', set_by: 'exporter or agent', meaning: 'true when image_data carries the background picture.' },
     { key: 'background', type: 'object or null', required: 'no', set_by: 'exporter', meaning: 'What the image_data blob is (field, mime, width, height, bytes, source_name) so it never has to be opened.' },
     { key: 'panel', type: 'object', required: 'yes', set_by: 'exporter or agent', meaning: 'The panel document itself, the only part the importer draws. See schema.panel.' },
-    { key: 'image_data', type: 'string (data URL)', required: 'no', set_by: 'exporter or agent', meaning: 'The background picture as base64, one very long line, deliberately last. Copy it byte-for-byte or omit it; never retype, re-encode or edit it. Older exports carry it inside panel instead; both places are read.' },
+    { key: 'image_data', type: 'string (data URL)', required: 'no', set_by: 'exporter or agent', meaning: 'The background picture as base64, one very long line, deliberately last. Copy it byte-for-byte; omit it only from a new file with no picture to keep. Never retype, re-encode or edit it. Older exports carry it inside panel instead; both places are read.' },
     { key: 'image_svg_trace', type: 'string (SVG markup)', required: 'no', set_by: 'exporter', meaning: 'A coarse vector trace of the background, for reading where things are (see structure). Input only: the importer discards it. Never copy it into image_svg.' },
     { key: 'change_log', type: 'array', required: 'no', set_by: 'agent', meaning: 'Optional. When you modify a file you may append entries {when, by, change} here. It is the only sanctioned place for notes; the importer ignores it.' }
   ];
@@ -535,7 +535,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
     how_to_use: {
       reading: 'Read counts, then summary.roles for what the panel shows and summary.layout for where its sections, value bands and duct runs are, then background for the picture and the object arrays. Every object entry has the same 17 fields (schema.object_entry). The fields that differ between objects describe the panel; the ones listed in constant_fields do not.',
       modifying: 'Change only what the request names, inside panel.single_objects[] and panel.containers[]. Copy every untouched object byte-for-byte, keep array order, recompute counts, keep ai_guide as it is, drop or recompute summary, and return the complete file as a .json attachment. Rules: when_modifying and when_adding_objects.',
-      creating: 'Read quick_start. Decide which rows belong on the panel (parameter_selection), pick each row\'s object (signal_to_object) and its place (layout), draw the picture to drawing_style, caption to caption_conventions, and grow examples.starter_ventilation rather than an empty array. Link from the plant parameter source (linking), run self_check, answer with raw JSON only.'
+      creating: 'Read quick_start. Clone a real export of the type when you have one. Otherwise decide which rows belong on the panel (parameter_selection), pick each row\'s object (signal_to_object) and its place (layout), caption to caption_conventions, and draw a picture to drawing_style only where the type has artwork. Link from the plant parameter source (linking; overview.parameters in an export), run self_check. The file is raw JSON with no fences; the report goes in your chat answer.'
     },
     read_order: readOrder,
     read_order_by_task: IWDIE_READ_ORDER_BY_TASK,
@@ -597,7 +597,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
         'Match a row by unit (Unit name), parameter description (Alias text) and object role: readings to value boxes, states to LEDs and alarms, writable rows to setpoint objects.',
         'linked "true" with a driver_id is only structurally linked. Only a row in the plant\'s own parameter source proves the binding; a familiar suffix or a matching prefix proves nothing.',
         'A parameter you cannot find stays unlinked: keep the object, give it an alias_text that says what it should show, and report the gap in your answer rather than inside the file.',
-        'Relinking a panel on another plant is done by alias_text against that plant\'s parameter source; the prefix rewrite alone does not make ids resolve.'
+        'Relinking a panel on another plant is done by alias_text against that plant\'s parameter source where the alias is the controller\'s own name (Danfoss packs, Modbus lists); where aliases are translated per plant (BACnet) match the point token of element_id instead. The prefix rewrite alone does not make ids resolve, and an alias on two rows is ambiguous: never take the first.'
       ]
     },
     z_index: {
@@ -608,10 +608,10 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
     when_modifying: [
       'Every object you were not asked to change stays byte-for-byte identical: same 17 fields, same values, same JSON types (object zIndex "110" is a string, container zIndex 4 is a number), same whitespace inside strings, same array position.',
       'Placement and linking are different jobs. A move changes posLeft/posTop only; a resize changes posWidth/posHeight only; a link changes driver_id, unit_id, alias_text and linked only. Do one unless the request asks for both.',
-      'Delete an object by removing its whole entry; never blank its fields. "Remove the parameter" means clear driver_id, unit_id, unit_ref and alias_text and keep the object with its geometry.',
+      'Delete an object by removing its whole entry; never blank its fields. "Remove the parameter" or "unlink" means clear driver_id, unit_id, unit_ref and link_tag and keep the object, its geometry and its alias_text: the alias is the key the object is relinked by.',
       'Do not renumber, sort, deduplicate or reorder objects: array order is creation order and, where zIndex is "default", stacking order.',
       'Do not normalise text: a single-space tag_text, a null tag_text, "new text", "undefined", double spaces, odd encodings and trailing punctuation are real values that round-trip through the Designer.',
-      'Leave image_data, panel.converted, org_image_name, background, image_svg_trace, containers and graphics alone unless the request is about them. A replaced background whose pixel size differs invalidates every stored coordinate.',
+      'Leave image_data, panel.converted, org_image_name, background, containers and graphics alone unless the request is about them. image_svg_trace is reading material the importer deletes: Ventilasjon and list panels keep it in a patched file, Maskin, Oversikt and room-control panels drop it, a new file never has it. A replaced background whose pixel size differs invalidates every stored coordinate.',
       'Recompute counts after adding or removing anything, and keep the top-level panel_name, panel_width and panel_height equal to panel.*.',
       'Keys outside this schema are dropped by the Designer on the next export, so never store information in new keys; use change_log for notes.'
     ],
@@ -625,10 +625,10 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
     ],
     when_creating: [
       'Start from what the plant has: the unit list and parameter list (the userscript\'s parameter export, columns in linking.parameter_source_columns) or the order and equipment list. One panel usually shows one unit or system ("360.001 Ventilasjon"). Each reading to display becomes one value object, each state one LED, alarm or state object, each caption one label object, each group one header object.',
-      'Copy the geometry of a real export of the same panel type when you have one: positions, sizes, zIndex and object vocabulary, with only the plant-specific content replaced. With no export to copy, build from layout (where things go, in measured pixels), signal_to_object (which object a parameter row wants) and parameter_selection (which rows belong on a panel at all) - and say in your answer that the geometry is derived, not cloned.',
+      'Copy the geometry of a real export of the same panel type when you have one - the one supplied, else a reference export from your knowledge base: positions, sizes, zIndex and object vocabulary, with only the plant-specific content replaced. With none to copy, build from layout (where things go, in measured pixels), signal_to_object (which object a parameter row wants) and parameter_selection (which rows belong on a panel at all) - and say in your answer that the geometry is derived, not cloned.',
       'Set panel.plant_id and source_plant_id to the target plant number when the file is for one plant, or "" for a reusable template; set generator and panel.saved_by to your agent name.',
       'Link from the parameter source when it is supplied (linking); otherwise leave every object unlinked with a descriptive alias_text and say so in your answer.',
-      'A production panel sits on a drawing. Copy the plant\'s own background when it has one — Maskin, Oversikt, curve and most Ventilasjon panels do, and that raster is copied verbatim, never redrawn. When the plant has none, author one in image_svg to the house construction in drawing_style: ducts, the rotary exchanger and the zone boxes belong in the artwork, while fans, filters, dampers, coils, pumps, values and alarms stay objects, because only an object can show a signal.',
+      'A production panel sits on a drawing. Copy the plant\'s own background when it has one, byte for byte; never redraw it. Author image_svg only for a type that has artwork (Maskin, Oversikt, Energi) when the plant has none, to the construction in drawing_style and overview.style. A Ventilasjon panel sits on the blank sidebar and its ducts, dampers, coils and fans are objects: never author image_svg for it, nor for a curve, list or room-control panel.',
       'Leave containers and graphics as [] unless the panel type is container-built (list panels, room-control tables); then clone the container structure from a reference export.'
     ],
     object_catalogue: IWDIE_OBJECT_CATALOGUE,
@@ -655,7 +655,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       'Never invent an obj_id, driver_id, unit_id, unit_ref, plant_id, navigation target or coordinate. An invented id looks linked and reads nothing.',
       'A parameter you cannot resolve stays unlinked: driver_id "driver_id" and linked "false" on a new object, the original binding untouched on an existing one; alias_text says what it should show.',
       'Unknown size or position: copy from an object of the same obj_id in this file or a reference export; if none exists, say the value is unverified.',
-      'Unknown panel size: "1400px" by "750px" is the standard canvas.',
+      'Unknown panel size: the size of the plant\'s other panels, or of the panel this file came from; "1400px" by "750px" only when there is nothing to match.',
       'Open questions, assumptions and gaps go in your chat answer or in change_log, never in new keys inside panel or on an object.',
       'If you cannot read a knowledge file or the parameter source, say so and stop; do not substitute a document you wrote yourself.'
     ],
@@ -663,8 +663,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       unlinked_new_object: iwdieExampleUnlinkedObject(),
       linked_object: iwdieExampleLinkedObject(doc),
       container: iwdieExampleContainer(),
-      minimal_file: iwdieExampleMinimalFile(),
-      starter_ventilation: iwdieExampleStarterVentilation()
+      minimal_file: iwdieExampleMinimalFile()
     },
     object_fields: IWDIE_OBJECT_FIELDS,
     constant_fields: constantFields || null,
@@ -860,7 +859,7 @@ function iwdieNoteArtworkInAiGuide(env, svg) {
     shapes: iwdieCountSvgShapes(svg),
     what: 'The background of this panel is authored vector artwork, returned verbatim — the same markup that drew it, not a trace of the pixels.',
     use: 'Edit it as SVG when the drawing must change: move a duct, add a branch, resize a zone box. Keep the viewBox and the panel size. Insert re-applies it, so the drawing stays editable for the next round.',
-    also: 'image_data holds the same artwork as a data URL and stays the rendered background. Move an object only together with the part of the drawing it sits on.'
+    also: 'image_data holds the same artwork as a data URL; when you edit image_svg, Insert draws the edited markup and ignores that image_data. Move an object only together with the part of the drawing it sits on.'
   };
   return env;
 }
@@ -948,7 +947,7 @@ var IWDIE_OBJECT_FIELDS = ['obj_id', 'name', 'id', 'posWidth', 'posHeight', 'pos
  */
 var IWDIE_OBJECT_CATALOGUE = {
   how_to_use: 'Pick ids from here; never invent one. Text goes in tag_text and the signal in alias_text, except on equipment, where tag_text is the short name (JV401) and alias_text the description. signal_to_object says which id a given parameter row wants.',
-  sizes: 'The size after each id is the palette default. Production stretches headers, banners and duct pieces to the run they cover and leaves symbols at their own size - number_v3_header_grey75 is 60x25 in the palette and 250x20 on every panel that uses it. When this file already has an object in the role you are adding, copy its size.',
+  sizes: 'The size after each id is the palette default. Production stretches headers, banners and duct pieces to the run they cover and leaves symbols at their own size - number_v3_header_grey75 is 60x25 in the palette and 250x20 on every panel that uses it. When this file already has an object in the role you are adding, copy its size. The three V3_akpc_* state strips are placed 81 x 21, not at their 80 x 80 palette size.',
   uses: 'uses counts that id across the 22 compiled production panels. A high count is the house habit for the role; uses=0 means legal but rare, and most of those are ventilation pieces that only appear on duct drawings.',
   by_role: {
     header: [
@@ -1068,21 +1067,21 @@ var IWDIE_OBJECT_CATALOGUE = {
 var IWDIE_QUICK_START = [
   '1. One JSON object: format "iwmac-designer-panel", version 1, counts, panel{plant_id, panel_name, panel_width "1400px", panel_height "750px", single_objects[], containers[], graphics[]}.',
   '2. Every object has the same 17 fields (schema.object_entry); a new unlinked one uses linking.unlinked_new_object.',
-  '3. obj_id only from object_catalogue; never invent one.',
+  '3. obj_id only from object_catalogue or copied from an object of a supplied export; never invent one.',
   '4. Which object a parameter row wants: signal_to_object. Where it goes: layout. Which rows belong on a panel at all: parameter_selection.',
-  '5. The picture is artwork (panel.image_svg, drawn to drawing_style) or the plant\'s own background; fans, filters, dampers, coils, pumps, values and alarms are objects on top of it.',
+  '5. The picture is the plant\'s own background, copied byte for byte. Author panel.image_svg only on a type that has artwork (Maskin, Oversikt, Energi) when the plant has none; never on Ventilasjon (its ducts are objects on the blank sidebar), curve, list or room-control panels. Whatever shows a signal is an object over the picture.',
   '6. tag_text is what the operator reads (caption_conventions); alias_text is the signal, and the key a linker matches.',
   '7. Link only by copying driver_id, unit_id and alias_text from one row of the plant parameter source - overview.parameters or overview.signals in an export, or the parameter export; otherwise leave driver_id "driver_id" and linked "false".',
-  '8. zIndex bands: 5 ducts and headers, 40 equipment, 110 values, 375 bells, LEDs and pumps, 1100 labels.',
+  '8. zIndex: copy the band of the same role from this file. Ventilasjon uses 5 ducts and headers, 40 equipment, 110 values, 375 bells, LEDs and pumps, 1100 labels; Maskin puts its values at 1100; Oversikt uses 110 for values and 375 for its symbols. Never carry bands across panel types.',
   '9. Run self_check before returning; Insert runs the same checks and shows the report before anything touches the canvas.',
-  '10. Grow examples.starter_ventilation rather than starting from an empty array.'
+  '10. Clone a real export of the same panel type (the one supplied, else a reference export); compose from layout only when there is none, and say so.'
 ];
 
 /** Which parts of this file matter for which job, so 45 kB of guide is not read for a one-line edit. */
 var IWDIE_READ_ORDER_BY_TASK = {
   to_understand_a_panel: ['counts', 'summary.roles', 'summary.layout', 'background', 'panel.single_objects', 'artwork or structure when present'],
   to_modify_a_panel: ['when_modifying', 'when_adding_objects', 'schema.object_entry', 'linking', 'self_check'],
-  to_create_a_panel: ['quick_start', 'parameter_selection', 'signal_to_object', 'layout', 'drawing_style', 'caption_conventions', 'object_catalogue', 'examples.starter_ventilation', 'self_check'],
+  to_create_a_panel: ['quick_start', 'parameter_selection', 'signal_to_object', 'layout', 'drawing_style', 'caption_conventions', 'object_catalogue', 'self_check'],
   to_link_or_relink: ['linking', 'overview.bindings', 'overview.parameters', 'summary.linking', 'summary.units_referenced'],
   to_draw_an_overview_picture: ['overview.read_me', 'overview.picture', 'overview.style', 'overview.parts', 'overview.units', 'overview.signals', 'overview.parameters', 'drawing_style', 'layout', 'self_check']
 };
@@ -1672,51 +1671,6 @@ function iwdieCheckReportText(result, fileName) {
 }
 
 /**
- * A complete, correct Ventilasjon seed: eleven unlinked objects on a two-run
- * drawing, every position from layout, every id from the catalogue. Grow it;
- * do not start from an empty array.
- */
-function iwdieExampleStarterVentilation() {
-  var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 750">'
-    + '<rect x="1145" y="0" width="255" height="750" fill="#CDD2D7" opacity="0.5"/>'
-    + '<rect x="1000" y="240" width="140" height="300" rx="16" fill="#CDD2D7" stroke="#FFFFFF" stroke-width="5"/>'
-    + '<g fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round"><path d="M58 238 H1000"/><path d="M58 428 H300"/><path d="M360 428 H1000"/></g>'
-    + '<g fill="none" stroke-width="2" stroke-linecap="round"><path d="M58 238 H1000" stroke="#F3C96A"/><path d="M58 428 H300" stroke="#B0E0EF"/><path d="M360 428 H1000" stroke="#F79E7A"/></g>'
-    + '<rect x="298" y="197" width="64" height="320" rx="32" fill="#CED1D2" stroke="#A6A6A9" stroke-width="1.5"/>'
-    + '<rect x="306" y="205" width="48" height="304" rx="24" fill="none" stroke="#FFFFFF" stroke-width="3"/>'
-    + '</svg>';
-  var n = 0;
-  var obj = function (objId, w, h, x, y, z, tag, alias) {
-    return { obj_id: objId, name: 'object_' + (n++), id: 'driver_id', posWidth: w, posHeight: h, posLeft: x, posTop: y,
-      zIndex: z, tag_text: tag, linked: 'false', link_name: '', link_tag: '', sub_group: '',
-      driver_id: 'driver_id', unit_id: '', unit_ref: '', alias_text: alias };
-  };
-  var objects = [
-    obj('number_v3_label_12px_bold', 50, 20, 430, 10, '1100', 'VENTILASJON 360.001 - <PLANT>', ''),
-    obj('V3_R_34px_circular_alarm_nrm', 34, 34, 384, 8, '375', '', 'Communication error'),
-    obj('V3_58px_fan_left_nrm', 59, 59, 186, 209, '40', 'JV50', 'JV50 Start avtrekksvifte'),
-    obj('number_v3_R_45px_con_top', 46, 38, 192, 266, '110', 'Padrag %', 'LR50 Padrag avtrekksvifte'),
-    obj('V3_R_34px_circular_alarm_nrm', 34, 34, 250, 208, '375', '', 'JV50 Feil avtrekksvifte'),
-    obj('number_v3_R_45px_con_down', 46, 38, 120, 363, '110', 'RT40 °C', 'RT40 Temperatur inntak'),
-    obj('V3_58px_fan_right_nrm', 59, 59, 380, 399, '40', 'JV40', 'JV40 Start tilluftsvifte'),
-    obj('number_v3_label_10px_bold', 50, 20, 1008, 246, '1100', 'Butikk', ''),
-    obj('number_v3_R_40px_no_conn_tag_up_left', 42, 22, 1076, 296, '110', 'RT-60', 'RT60 Temperatur butikk'),
-    obj('number_v3_header_grey75', 250, 20, 1150, 20, '5', 'Butikk settpunkt', ''),
-    obj('number_v3_60px_dark_no_conn_no_tag', 62, 22, 1175, 52, '110', ' ', 'Settpunkt romtemperatur butikk'),
-    obj('number_v3_label_10px_bold', 50, 20, 1245, 54, '1100', 'Settpunkt butikk °C', '')
-  ];
-  return {
-    format: IWDIE_FORMAT, version: IWDIE_FORMAT_VERSION, generator: '<your agent name>',
-    source_plant_id: '', panel_name: '360.001 Ventilasjon', panel_width: '1400px', panel_height: '750px',
-    counts: { single_objects: objects.length, containers: 0, graphics: 0 },
-    background_embedded: true,
-    panel: { plant_id: '', panel_name: '360.001 Ventilasjon', panel_width: '1400px', panel_height: '750px',
-      org_image_name: '', image_name: '', saved_by: '<your agent name>', image_svg: svg,
-      single_objects: objects, containers: [], graphics: [] }
-  };
-}
-
-/**
  * Which object a parameter row wants. Cross-tabulated over 202 linked objects
  * in two production Ventilasjon panels: dark boxes carried setpoints 17 times
  * of 22, con_down carried duct temperatures 12 of 16, the alarm bell carried a
@@ -1724,7 +1678,7 @@ function iwdieExampleStarterVentilation() {
  * the parameter export's own columns so an agent can decide mechanically.
  */
 var IWDIE_SIGNAL_TO_OBJECT = {
-  how_to_use: 'Read the parameter row first - Application, Access, Type and Eng unit decide the object. The description only decides where it goes.',
+  how_to_use: 'Read the parameter row first - Application, Access, Type and Eng unit decide the object; in overview.parameters there is no Application column: type float is an analog value, boolean a state, alarm an alarm, and rw is Access. The description only decides where it goes.',
   rules: [
     'Analog values + Read + a unit, a sensor on a duct -> number_v3_R_45px_con_down above the duct or number_v3_R_45px_con_top below it, with the connector pointing at the duct.',
     'Analog values + Read/write, a value the operator sets -> number_v3_60px_dark_no_conn_no_tag in the settings column, with a number_v3_label_10px_bold caption beside it.',
@@ -1737,7 +1691,7 @@ var IWDIE_SIGNAL_TO_OBJECT = {
     'Digital IO, start or drift of a fan or a pump -> link the equipment object itself (V3_58px_fan_left_nrm, V3_21px_single_pump_grey_green_up). Do not add a separate LED next to it.',
     'Digital IO, a damper or a valve -> link the damper or valve object.',
     'Integral values, or any value with a state list (systemvender, driftsmodus, valg) -> number_v3_60px_json_obj or number_v3_custom_json_obj.',
-    'Application Alarm (COM_ERR, COM_STAT) -> one V3_R_34px_circular_alarm_nrm near the panel title.',
+    'Application Alarm (COM_ERR, COM_STAT) -> one V3_R_34px_circular_alarm_nrm: in the first section of the settings column on a Ventilasjon panel (it has no title bar), near the panel title elsewhere.',
     'A reading with no unit and no state list is usually a constant or a tuning value: leave it off the panel rather than giving it a box.'
   ]
 };
@@ -1747,8 +1701,8 @@ var IWDIE_SIGNAL_TO_OBJECT = {
  * "copy a real export" is no help to an agent that was given none.
  */
 var IWDIE_LAYOUT = {
-  canvas: '1400 x 750. The drawing lives left of x 1145; the settings column owns x 1145-1400 and nothing from the drawing crosses into it.',
-  settings_column: 'Header bar at x 1150, 250 wide, 20 high. Value boxes at x 1175, captions at x 1245. Rows 25-30 apart, sections separated by a header bar. A section is a heading plus three to five rows.',
+  canvas: '1400 x 750 on a standard panel; take the size of this panel. On a Ventilasjon or Maskin panel the drawing lives left of x 1145 and the settings or information column owns x 1145-1400.',
+  settings_column: 'Header bars 250 wide, 20 high, at x 1150, one per section. Rows 25 apart: labels at x 1160-1175, value boxes right of them (setpoints at x 1260 and 1330, 62 x 22). Where this file has a sidebar, copy its rows.',
   ventilation_anatomy: 'Extract run across the top flowing right to left, supply run below it flowing left to right, rotary exchanger across both, zone boxes at the right end of the runs, special extracts on a branch above the extract run, coil branches dropping off the supply run towards their zone.',
   attach: 'Measured: a con_down value sits about 30 px above the duct centre line, a con_top value about 28 px below it, a flow box about 67 px above, an alarm bell within 40 px of the component it names, and a pump within 40 px of its coil.',
   reading_order: 'Along the air path, not alphabetically: intake, damper, filter, exchanger, fan, coils, duct sensor, zone.'
@@ -1770,11 +1724,11 @@ var IWDIE_SELF_CHECK = [
   'counts.single_objects, .containers and .graphics equal the array lengths.',
   'Every object has all 17 fields of schema.object_entry, obj_id is in object_catalogue, and posLeft, posTop, posWidth and posHeight are integers.',
   'Every object lies inside the canvas: posLeft + posWidth <= panel_width and posTop + posHeight <= panel_height.',
-  'No two value, setpoint, LED or bell objects overlap. A label may sit beside one, never on it.',
-  'Nothing except the settings column reaches past x 1145.',
+  'No two value, setpoint, LED or bell objects overlap, except what the supplied export proves deliberate (a cooling and a defrost symbol on one spot, a bell on the corner of its value box). A label may sit beside one, never on it.',
+  'Where the panel has a settings column (header bars at x 1145 or more), nothing except that column reaches past x 1145.',
   'Every linked object carries a driver_id and a unit_id copied from one parameter row; every unlinked one carries driver_id "driver_id" and linked "false".',
   'No two objects carry the same alias_text unless the same signal is deliberately shown twice - then say which, and why.',
-  'zIndex is a string of digits from the bands in z_index, not "default", on a panel whose other objects carry numbers.'
+  'zIndex is a string of digits from the bands of this file (z_index), not "default", on a panel whose other objects carry numbers.'
 ];
 
 /** What goes wrong, from panels that had to be rebuilt. */
@@ -1789,17 +1743,17 @@ var IWDIE_COMMON_MISTAKES = [
 ];
 
 var IWDIE_DRAWING_STYLE = {
-  canvas: '1400 x 750. Leave x 1145-1400 for the settings column, and keep the drawing left of it.',
+  canvas: '1400 x 750 on a standard panel. Ventilasjon and Maskin keep x 1145-1400 for the settings or information column and the drawing left of it; an Oversikt plan uses the full width.',
+  scope: 'For a picture you are asked to draw on a type that has artwork. This plant\'s own colours, pipes, pills and text are in overview.style: use them first. duct, duct_colours, zone_box, exchanger and settings_band are the Ventilasjon house construction, for a drawn Ventilasjon picture the user asks for or the plant already has.',
   layers: 'Top-level groups, each a layer when the panel is edited in VectorCraft: <g id="Bakgrunn" data-name="Bakgrunn"> (ground, panels), <g id="Ror" data-name="Rør"> (pipes, ducts), Former (equipment, boxes), Tekst (fixed text). An export\'s overview.style has this plant\'s own colours, pipe widths, pills and text.',
   duct: 'Not a solid bar: a WHITE casing 16 wide with round caps, and a 2 wide coloured core on the same centre line. Draw both from one path so they stay together.',
   duct_colours: { avtrekk: '#F3C96A', tilluft: '#F79E7A', uteluft: '#B0E0EF' },
   zone_box: 'Rounded rectangle, fill #CDD2D7, white border 5 wide, rx 16. One per zone at the end of the runs.',
   exchanger: 'Rounded pill, fill #CED1D2 with a #A6A6A9 hairline, a white inner pill 3 wide inset 8, and a grey triangle at each end. Place it across both runs.',
   settings_band: '#CDD2D7 at about half opacity behind the settings column.',
-  in_the_artwork: 'Ducts, exchanger, zone boxes, flow arrows, enclosures.',
-  stays_objects: 'Fans, filters, dampers, coils, pumps, valves, values, setpoints, LEDs, alarm bells and every label — only an object can show a signal or be linked.',
-  never: 'No fake numbers, no drawn bells or LEDs, no text where a label object belongs, no dark fills.',
-  how_common: 'Surveyed over 20 MENY plants: a background picture is on 82% of Oversikt panels, 63% of Energi, 50% of Ventilasjon and 20% of Maskin. Check what this plant has before deciding to draw one.'
+  in_the_artwork: 'Pipes, equipment outlines and frames that show no signal, zone boxes, flow arrows, enclosures and fixed picture text (Tekst layer). On Maskin: pipes, compressors, the gas cooler with its fan circles, valve symbols with their tags, empty pills.',
+  stays_objects: 'Whatever shows or sets a signal: values, setpoints, state strips, LEDs, alarm bells, and the fans, pumps, filters, dampers and valves that are linked. A caption is fixed picture text or a label object, never both.',
+  never: 'No fake numbers, no drawn bells or LEDs, no text where a label object belongs, no dark fills except a setpoint pill (overview.style.pills).'
 };
 
 /** Wrap an error list with a diagnosis and a paste-back prompt for the AI. */
@@ -1992,7 +1946,7 @@ function iwdieBuildAiFixPrompt(parsed, errors, facts, improvised) {
   L.push('- "counts" must equal the real array lengths.');
   L.push('- The canvas is 1400 x 750. Objects outside it are not visible.');
   L.push('- Every file the userscript exports carries an "ai_guide" with the complete field-by-field contract, the linking rules and worked examples — read it and follow it. You may keep or omit "ai_guide" and "summary" in your answer; never edit them.');
-  L.push('- A panel sits on a drawing: copy the plant\'s own background when it has one, else author it in "image_svg" to the construction in ai_guide.drawing_style. Ducts, exchanger and zone boxes go in the artwork; fans, filters, dampers, coils, pumps, values and alarms stay objects.');
+  L.push('- A panel sits on a drawing: copy the plant\'s own background when it has one, byte for byte. Author "image_svg" only for a type that has artwork (Maskin, Oversikt, Energi) when the plant has none; never for a Ventilasjon (its ducts, fans, dampers and coils are objects on the blank sidebar), curve, list or room-control panel. Whatever shows or sets a signal stays an object.');
   L.push('');
   L.push('Return the corrected JSON file and nothing else.');
   return L.join('\n');
@@ -8570,7 +8524,7 @@ var IWDIE_OV_READ_ME = [
   'units: every unit (controller) of the plant. parameters: every row of the units named in it, by group - the plant\'s own parameter source. signals: the rows the plant has tagged with a standard meaning (signal; its measure and link_tag are in signals.kinds). For a unit whose rows are not here, tick it in the UNITS list of the Parameter Selector (Actions > Open Paramselector Popup) and export again.',
   'Link an object by copying unit_id, alias_text, sub_group and driver_id from one of those rows; never build or edit one. bindings shows how this panel\'s objects are linked, each checked against the rows: ok, alias differs, in unit ..., not in unit, unit not on plant.',
   'picture: where this panel\'s picture has its panels, pipes, pills, figures and texts. style: its colours, pipes, pills and text, measured from it. parts: the objects it uses, and the component library kept in this browser. Use them to place things, and to keep a new picture in the same style.',
-  'A new picture goes in panel.image_svg: an <svg> of the panel\'s size whose top-level groups are the layers Bakgrunn, Rør, Former and Tekst - the ground and its panels, the pipes, the equipment drawn, the fixed text. Values, setpoints, alarms, pumps, fans and valves are panel objects over it, not drawing. Insert sets the SVG as the background, and Edit in VectorCraft opens it as vectors, layer by layer, to finish by hand.',
+  'A new picture goes in panel.image_svg: an <svg> of the panel\'s size whose top-level groups are the layers Bakgrunn, Rør, Former and Tekst - the ground and its panels, the pipes, the equipment drawn, the fixed text. Whatever shows or sets a signal (values, setpoints, alarms, and the linked fans, pumps and valves) is a panel object over it, not drawing. Insert sets the SVG as the background, and Edit in VectorCraft opens it as vectors, layer by layer, to finish by hand.',
   'Insert ignores this block: leave it out of a file you return.'
 ];
 
@@ -16538,7 +16492,6 @@ if (typeof module !== 'undefined' && module.exports) {
     bytesToBase64: iwdieBytesToBase64,
     ductLinesFromSvg: iwdieDuctLinesFromSvg,
     svgSize: iwdieSvgSize,
-    exampleStarterVentilation: iwdieExampleStarterVentilation,
     backgroundInfo: iwdieBackgroundInfo,
     imageHeaderSize: iwdieImageHeaderSize,
     base64ByteLength: iwdieBase64ByteLength,
