@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.55.1
+// @version      1.56.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.55.1';
+var IWDIE_VERSION = '1.56.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6695,6 +6695,12 @@ var IWDIE_PANG_FOLDER_URL = 'http://tools.iwmac.local/services/pang/folder.php';
 /** The .ai chosen in the Designer's tab instead of a trace (v1.51.0), on its way to the editor's tab
  *  of its job, and the most it may weigh: it travels through Tampermonkey's storage as base64. */
 var IWDIE_VC_AI_KEY = 'iwdie.vc.ai', IWDIE_VC_AI_MAX = 40 * 1024 * 1024;
+/** The edits a Designer tab answers for (v1.56.0): each job's plant and panel, kept a day, so a Designer tab
+ *  opened or reloaded since the edit began still takes its syncs. */
+var IWDIE_VC_JOBS_KEY = 'iwdie.vc.jobs', IWDIE_VC_JOBS_TTL = 24 * 3600e3;
+/** Auto-sync (v1.56.0): on or off, kept for the next edits; and how long the drawing is left alone after a
+ *  change before it is synced. */
+var IWDIE_VC_AUTO_KEY = 'iwdie.vc.autosync', IWDIE_VC_AUTO_IDLE = 2000;
 /** What each role of the catalogue is called in the library. */
 var IWDIE_VC_OBJ_ROLES = {
   header: 'Headers', label: 'Labels', value: 'Values', value_conn: 'Values with connector', value_tag: 'Values with tag',
@@ -9840,14 +9846,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* ---------- Ctrl+S: Sync to IWMAC Designer (v1.42.0) ----------
-       Ctrl+S on the editor's page offers to sync the drawing to the Designer tab it came from.
-       VectorCraft has no way in but its own Save. A document it has saved as SVG once is saved
-       again straight away. The first time, its Save As is answered here as the banner used to ask
-       it of the user - Format SVG, OK, Preserve Editing Capabilities, OK - by clicks where those
-       dialogs sit, centred in the window, and only once egui's own text field shows that the
-       dialog is there. The SVG then goes to the Designer as any SVG save from this page does. */
-    /** The Save chooser on Ctrl+S; `say(html, bad, keep)` hears how it went; `state` is shared
-     *  with the catcher of saves ({caught, editing, download}). */
+       Ctrl+S on the editor's page syncs the drawing to the Designer tab it came from (at once since
+       v1.56.0; it offered Sync or Save a file before). VectorCraft has no way in but its own Save.
+       A document it has saved as SVG once is saved again straight away. The first time, its Save As
+       is answered here as the banner used to ask it of the user - Format SVG, OK, OK - by clicks
+       where those dialogs sit, centred in the window, and only once egui's own text field shows
+       that the dialog is there. The SVG then goes to the Designer as any SVG save from this page does. */
+    /** Ctrl+S as a sync, and what drives VectorCraft for this script; `say(html, bad, keep)` hears how
+     *  it went; `state` is shared with the catcher of saves ({caught, editing, download, hold…}). */
     function vcSaveSync(job, say, state) {
       if (document.getElementById('iwdie-vcs-style')) return;
       var esc2 = iwdieEscHtml, font = '"Source Sans 3","Segoe UI",Roboto,Arial,sans-serif';
@@ -9880,7 +9886,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       st.textContent = css;
       (document.head || document.documentElement).appendChild(st);
 
-      var chooser = null, chosen = 0, busy = false, passing = false, asking = null;
+      var busy = false, passing = false, asking = null;
       var canvas = function () { return document.getElementById('vectorcraft_canvas'); };
       var wait = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
       // Waits are counted in the page's frames as well as in time: VectorCraft draws, and takes a click
@@ -9941,15 +9947,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var a = document.activeElement;
         return !!a && a.tagName === 'INPUT' && a.type === 'text' && !(a.closest && a.closest('.iwdie-vcb,.iwdie-vcm-m,.iwdie-vcs'));
       };
-      var sync = function () {
-        if (busy) return;
+      // `quiet` (an auto-sync, v1.56.0): nothing said when it cannot start. -> Promise<whether VectorCraft saved it>
+      var sync = function (quiet) {
+        if (busy) return Promise.resolve(false);
         // while the IWMAC objects are being put on the drawing, a save would leave them out (v1.55.0)
-        if (state.hold) { say(esc2(state.hold), true); return; }
+        if (state.hold) { if (!quiet) say(esc2(state.hold), true); return Promise.resolve(false); }
         if (typing()) {
-          say('Finish what is being typed in VectorCraft first (Esc), then <b>Ctrl+S</b> again.', true);
-          return;
+          if (!quiet) say('Finish what is being typed in VectorCraft first (Esc), then <b>Ctrl+S</b> again.', true);
+          return Promise.resolve(false);
         }
         busy = true;
+        state.auto = !!quiet;
         // while it syncs, a save in another format is held back and noted: it is no file the user asked for
         state.download = 0;
         state.syncing = true;
@@ -9966,9 +9974,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return ok || !state.other || tries <= 1 ? ok : saveAs(k * 2, tries - 1);
           });
         };
-        say('Syncing…');
+        say(quiet ? 'Syncing by itself…' : 'Syncing…');
         key('s', 'KeyS', { ctrl: true });
-        until(function () { return saved() || typing() || state.other; }, 480).then(function () {
+        return until(function () { return saved() || typing() || state.other; }, 480).then(function () {
           if (saved()) return true;
           if (typing()) return answer(1).then(function (ok) { return ok || !state.other ? ok : saveAs(2, 2); });
           // this document saves in another format, as it was saved here before: Save As, to make it SVG
@@ -9976,15 +9984,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }).then(function (ok) {
           busy = false;
           state.syncing = false;
+          state.auto = false;
           if (!ok) {
-            say('VectorCraft did not save it. If its Save As is open, finish it by hand: Format <b>SVG</b> → OK → tick ' +
-              '<b>Preserve Editing Capabilities</b> → OK - that syncs all the same.', true, true);
+            say('VectorCraft did not save it. If its Save As is open, finish it by hand: Format <b>SVG</b> → OK → OK - that syncs all the same.', true, true);
           }
+          return !!ok;
         });
       };
-      // VectorCraft's Save As, answered where its dialogs sit: Format SVG, OK, Preserve Editing Capabilities,
-      // OK. `k` slows it down: each step waits for its dialog or menu to settle, k × 300 ms and k × 15 frames.
-      // `saved()` tells when the save has come.
+      // VectorCraft's Save As, answered where its dialogs sit: Format SVG, OK, then OK in SVG Options - without
+      // Preserve Editing Capabilities since v1.56.0: the copy of the document it adds could never be reopened (a
+      // sync changes the SVG it would have to match), and only made each save bigger. `k` slows it down: each step
+      // waits for its dialog or menu to settle, k × 300 ms and k × 15 frames. `saved()` tells when the save has come.
       var answerSaveAs = function (k, saved) {
         var guard = document.createElement('div');
         guard.className = 'iwdie-vcs-g';
@@ -10004,7 +10014,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             // SVG Options gives its first field the keyboard: it is open, and the clicks went where they should
             if (!options) return false;
             return step()
-              .then(function () { return state.editing ? null : tap(-185, 106).then(step); })   // Preserve Editing Capabilities
               .then(function () { return tap(154, 194); })                                     // OK
               .then(function () { return until(saved, 1200); });
           })
@@ -10098,6 +10107,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var lockAndPaste = function (paste, fresh) {
         if (busy) return Promise.resolve(false);
         busy = true;
+        // the pointer and the keyboard kept off VectorCraft meanwhile (v1.56.0): a click between the keys took the
+        // selection that Lock was to lock
+        var guard = document.createElement('div');
+        guard.className = 'iwdie-vcs-g';
+        document.body.appendChild(guard);
+        state.guarding = true;
+        var end = function (v) { state.guarding = false; if (guard.parentNode) guard.parentNode.removeChild(guard); busy = false; return v; };
         var step = function () { return settle(150, 8); }, pasted = false;
         key('a', 'KeyA', { ctrl: true });
         return step().then(function () { key('2', 'Digit2', { ctrl: true }); return step(); })
@@ -10105,7 +10121,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           .then(function () { key('0', 'Digit0', { ctrl: true }); return step(); })
           .then(function () { return paste ? pasteInPlace(paste) : false; })
           .then(function (ok) { pasted = ok; key('a', 'KeyA', { ctrl: true, shift: true }); return step(); })
-          .then(function () { busy = false; return pasted; }, function () { busy = false; return false; });
+          .then(function () { return end(pasted); }, function () { return end(false); });
       };
       // a question in VectorCraft's own look, as the chooser asks (v1.55.0): `lead`, a line of HTML; `opts` [{act, title,
       // text (HTML)}], the first chosen to begin with. Enter takes the one chosen, Esc the last. -> Promise<act>
@@ -10142,72 +10158,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           });
         });
       };
-      var close = function () {
-        if (chooser) { chooser.parentNode.removeChild(chooser); chooser = null; }
-        var c = canvas();
-        try { if (c) c.focus({ preventScroll: true }); } catch (e) {}
-      };
-      var choose = function (act) {
-        close();
-        if (act === 'sync') sync();
-        else if (act === 'file') {
-          // VectorCraft's own Save As; what it saves in the next five minutes goes to Downloads
-          state.download = Date.now() + 300000;
-          key('S', 'KeyS', { ctrl: true, shift: true });
-        }
-      };
-      var mark = function () {
-        if (!chooser) return;
-        Array.prototype.forEach.call(chooser.querySelectorAll('.iwdie-vcs-o'), function (b, k) { b.classList.toggle('iwdie-on', k === chosen); });
-      };
-      var open = function () {
-        if (chooser) return;
-        chooser = document.createElement('div');
-        chooser.className = 'iwdie-vcs';
-        chooser.innerHTML = '<div class="iwdie-vcs-d" role="dialog" aria-label="Save"><div class="iwdie-vcs-t">Save</div>' +
-          '<button class="iwdie-vcs-o" data-act="sync"><b>Sync to IWMAC Designer</b><span>' + (job.panel ? '“' + esc2(job.panel) + '”' : 'The panel') +
-          ' gets this drawing as its background, and its PNG goes to the plant’s pictures on the server.</span></button>' +
-          '<button class="iwdie-vcs-o" data-act="file"><b>Save a file…</b><span>VectorCraft’s own Save As: a format and its options, to Downloads.</span></button>' +
-          '<div class="iwdie-vcs-a"><button class="iwdie-vcs-b" data-act="cancel">Cancel</button><button class="iwdie-vcs-b iwdie-vcs-p" data-act="ok">OK</button></div></div>';
-        document.body.appendChild(chooser);
-        chosen = 0;
-        mark();
-        chooser.addEventListener('click', function (e) {
-          var b = e.target && e.target.closest ? e.target.closest('button') : null;
-          if (!b && e.target === chooser) { close(); return; }
-          if (!b) return;
-          var act = b.getAttribute('data-act');
-          if (act === 'cancel') close();
-          else if (act === 'ok') choose(chosen ? 'file' : 'sync');
-          else choose(act);
-        });
-      };
-      // Ctrl+S is this script's while the drawing is a job's; the chooser has the keyboard while it is open,
-      // and while Ctrl+S is made ready nothing typed reaches VectorCraft's dialog
+      // Ctrl+S syncs at once (v1.56.0; until then it offered Sync or Save a file first); Ctrl+Shift+S is VectorCraft's
+      // own Save As, whose file goes to Downloads. While Ctrl+S is made ready, or the objects are being put on, nothing
+      // typed reaches VectorCraft; a question open has the keyboard.
       window.addEventListener('keydown', function (e) {
         if (passing) return;
-        if (state.priming) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+        if (state.priming || state.guarding) { e.preventDefault(); e.stopImmediatePropagation(); return; }
         // a question open has the keyboard too (v1.55.0)
         if (asking) { e.preventDefault(); e.stopImmediatePropagation(); asking(e); return; }
-        if (chooser) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          if (e.key === 'Escape') close();
-          else if (e.key === 'Enter') choose(chosen ? 'file' : 'sync');
-          else if (/^(ArrowUp|ArrowDown|Tab)$/.test(e.key)) { chosen = 1 - chosen; mark(); }
-          return;
-        }
-        if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || !(e.code === 'KeyS' || e.key === 's' || e.key === 'S')) return;
+        if (!(e.ctrlKey || e.metaKey) || e.altKey || !(e.code === 'KeyS' || e.key === 's' || e.key === 'S')) return;
+        if (e.shiftKey) { state.download = Date.now() + 300000; return; }
         e.preventDefault();
         e.stopImmediatePropagation();
         if (state.hold) say(esc2(state.hold), true);
-        else if (!busy) open();
+        else sync(false);
       }, true);
       return {
         prime: prime,
         capture: capture,
         lockAndPaste: lockAndPaste,
         ask: ask,
+        // a sync as Ctrl+S starts one; `quiet` for one that starts by itself (v1.56.0)
+        sync: sync,
+        busy: function () { return busy; },
         // the drawing under the objects unlocked: Object › Unlock All (Ctrl+Alt+2, v1.55.0)
         unlock: function () { key('2', 'Digit2', { ctrl: true, alt: true }); }
       };
@@ -10515,11 +10488,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var syncer = null;
       var ui = vcBanner('IWMAC · ' + esc2(job.panel || 'panel') + (job.plant ? ' · plant ' + esc2(job.plant) : ''),
         // what to do, then a row for each thing there is (v1.50.0); the how and why of each on hover
-        '<div class="iwdie-vcb-h" title="Ctrl+S offers Sync to IWMAC Designer: the panel’s background is updated, its PNG goes to the plant’s pictures, ' +
-        'and the panel’s objects follow their placeholders. Edit on and sync again as often as you like; the panel itself is kept by the Designer’s own Save.">' +
-        '<b>Ctrl+S</b> → <b>Enter</b> syncs the drawing to the Designer.</div>' +
+        '<div class="iwdie-vcb-h" title="Ctrl+S syncs at once: the panel’s background is updated, its PNG goes to the plant’s pictures, and the panel’s ' +
+        'objects follow their placeholders. Edit on and sync again as often as you like; the panel itself is kept by the Designer’s own Save. Ctrl+Shift+S is ' +
+        'VectorCraft’s own Save As, its file to Downloads.">' +
+        '<b>Ctrl+S</b> syncs the drawing to the Designer.</div>' +
         '<div class="iwdie-vcb-g"><span>Plant folder</span><span class="iwdie-vcb-p"></span><span>Components</span><span class="iwdie-vcb-c"></span>' +
-        '<span>IWMAC objects</span><span class="iwdie-vcb-o"></span><span>Drawing</span><span class="iwdie-vcb-d"></span></div>',
+        '<span>IWMAC objects</span><span class="iwdie-vcb-o"></span><span>Drawing</span><span class="iwdie-vcb-d"></span><span>Sync</span><span class="iwdie-vcb-y"></span></div>',
         // one button for the panel's Illustrator file (v1.49.0), opened as it is (v1.55.0)
         [{ act: 'ai', label: 'Open plant .ai…', title: 'The panel’s own Illustrator file - found in the plant’s folder once that is connected - opened here as it is, ' +
           'as File › Open opens it. Then you are asked whether to add the panel’s IWMAC objects to it.' },
@@ -10604,9 +10578,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         libraryOf(lastAi).then(function () { busy = false; }, function () { busy = false; });
       });
       var pause = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
-      // the tab in front, and the window's focus in it: only then does the editor take a paste (v1.55.0)
+      // the tab in front (v1.55.0), as VectorCraft draws its frames only then. Not the window's focus too (v1.56.0): while
+      // the window had none - another window in front, a screenshot being taken - the drawing stood there half done.
+      // Should VectorCraft take no paste without it, the check after it finds the objects missing (putOn)
       var focused = function () {
-        var ok = function () { return document.visibilityState === 'visible' && (typeof document.hasFocus !== 'function' || document.hasFocus()); };
+        var ok = function () { return document.visibilityState === 'visible'; };
         if (ok()) return Promise.resolve();
         return new Promise(function (resolve) {
           var on = function () {
@@ -10645,16 +10621,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         note('The panel’s IWMAC objects did not arrive on the drawing. <button class="iwdie-vcb-l" data-act="again">Put them on again</button> · ' +
           '<button class="iwdie-vcb-l" data-act="whole">Open the panel with them, unlocked</button>', true, true);
       };
+      // the objects put on again, then the drawing saved for the script - straight away once Ctrl+S is ready - to see that
+      // they are there now. -> Promise<there | null: no save to tell>
+      var putOn = function () {
+        note('Putting the panel’s ' + iwdieN(lifted.count, 'IWMAC object', 'IWMAC objects') + ' on the drawing…', false, true);
+        return focused().then(function () { return syncer.lockAndPaste(lifted.paste, false); }).then(function () {
+          return syncer.capture();
+        }).then(function (got) {
+          if (!got || !got.svg) return null;
+          return /\sdata-iwdie-ref\s*=/.test(got.svg);
+        });
+      };
       ui.on('again', function () {
         if (!lifted || !lifted.paste || !syncer || busy) return;
         busy = true;
-        note('Putting the panel’s ' + iwdieN(lifted.count, 'IWMAC object', 'IWMAC objects') + ' on the drawing…', false, true);
-        focused().then(function () { return syncer.lockAndPaste(lifted.paste, false); }).then(function () {
-          // saved for the script, straight away once Ctrl+S is ready: are they there now?
-          return syncer.capture();
-        }).then(function (got) {
+        putOn().then(function (there) {
           busy = false;
-          if (got && got.svg && !/\sdata-iwdie-ref\s*=/.test(got.svg)) { missing(); return; }
+          if (there === false) { missing(); return; }
           drawLine('locked');
           note('✓ The panel’s IWMAC objects are on the drawing.');
         }, function () { busy = false; });
@@ -10748,24 +10731,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         a2.remove();
         setTimeout(function () { try { revoke.call(W.URL, u); } catch (e) {} }, 60000);
       };
-      // The Designer answers every save: 'received' once it starts on it, then 'applied', 'refused'
-      // or 'failed'. No answer means no Designer tab is listening any more (closed, reloaded,
-      // discarded): the save then goes to Downloads instead, so no work is lost.
+      // The Designer answers every save: 'received' once it starts on it, then 'applied' - and 'uploaded' once the PNG is
+      // on the server (v1.56.0) - or 'queued' when it has another panel open (v1.56.0: applied when that one is open again),
+      // 'refused' or 'failed'. No answer in 8 s means no Designer tab of the plant is listening (all closed?): the save
+      // then goes to Downloads instead, so no work is lost - a Ctrl+S's; an auto-sync is paused instead.
       var pending = null, canAck = typeof GM_addValueChangeListener === 'function' && typeof GM_deleteValue === 'function';
       // the SVG saves caught, whether one kept VectorCraft's document, until when a save is for Downloads,
-      // and while a sync runs, when a save in another format was held back (v1.42.0); why no sync may start yet (v1.55.0)
-      var saves = { caught: 0, editing: false, download: 0, syncing: false, other: 0, priming: false, primed: false, want: null, hold: '' };
+      // and while a sync runs, when a save in another format was held back (v1.42.0); why no sync may start yet (v1.55.0);
+      // whether the sync running started by itself (v1.56.0)
+      var saves = { caught: 0, editing: false, download: 0, syncing: false, other: 0, priming: false, primed: false, want: null, hold: '', auto: false };
+      // the last sync's line, for the PNG's news to go under; auto-sync stopped until the next Ctrl+S (v1.56.0)
+      var lastNote = '', autoPaused = false;
       if (canAck) {
         GM_addValueChangeListener('iwdie.vc.ack.' + job.id, function (key, old, val) {
-          if (!val || !val.state || !pending) return;
+          if (!val || !val.state) return;
           if (val.state === 'received') {
-            if (pending.timer) { clearTimeout(pending.timer); pending.timer = null; }
+            if (pending && pending.timer) { clearTimeout(pending.timer); pending.timer = null; }
             note('Updating the panel…');
             return;
           }
+          if (pending && pending.timer) clearTimeout(pending.timer);
           var was = pending;
           pending = null;
-          if (was.timer) clearTimeout(was.timer);
           try { GM_deleteValue(key); } catch (e) {}
           if (val.state === 'applied') {
             var placed = +val.placed || 0, already = +val.already || 0, skipped = +val.skipped || 0;
@@ -10778,15 +10765,52 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               val.objError ? 'The IWMAC objects were not placed: ' + esc2(String(val.objError)) + ' - sync again' : '',
               val.uploadError ? 'The PNG was not uploaded: ' + esc2(String(val.uploadError)) : ''
             ].filter(Boolean);
-            note('<span title="' + esc2('The panel’s background is updated' + (val.uploaded ? ', and its PNG is in the plant’s pictures as ' + val.uploaded : '') +
+            lastNote = '<span title="' + esc2('The panel’s background is updated' + (val.uploading ? ', and its PNG is on its way to the plant’s pictures' : '') +
               (already ? '; ' + iwdieN(already, 'object was', 'objects were') + ' in the panel already' : '') + '.') + '">✓ Synced ' + hhmm() +
-              (did.length ? ' · ' + did.join(' · ') : '') + '</span>' + (wrong.length ? '<div class="iwdie-vcb-e">' + wrong.join('<br>') + '</div>' : ''),
-              false, wrong.length > 0);
+              (was && was.auto ? ' by itself' : '') + (did.length ? ' · ' + did.join(' · ') : '') + '</span>' +
+              (wrong.length ? '<div class="iwdie-vcb-e">' + wrong.join('<br>') + '</div>' : '');
+            note(lastNote, false, wrong.length > 0);
+          } else if (val.state === 'uploaded') {
+            // the PNG on the server, after the panel was set (v1.56.0): said only when it did not get there
+            if (val.uploadError) note(lastNote + '<div class="iwdie-vcb-e">The PNG was not uploaded: ' + esc2(String(val.uploadError)) + '</div>', false, true);
+          } else if (val.state === 'queued') {
+            note('Waiting: ' + esc2(String(val.msg || 'the Designer has another panel open')), false, true);
           } else {
             note('Not synced: ' + esc2(String(val.msg || val.state)), true);
           }
         });
       }
+      // auto-sync (v1.56.0): VectorCraft marks its title with * once the drawing has changed. A moment after that, with
+      // nothing pressed, dragged or typed meanwhile, the drawing is synced as Ctrl+S syncs it. On or off in the banner,
+      // kept for the next edits; paused when no Designer tab answers, until the next Ctrl+S.
+      var auto = false, lastInput = 0, autoNext = 0;
+      try { auto = !!GM_getValue(IWDIE_VC_AUTO_KEY, false); } catch (e) { auto = false; }
+      tip('iwdie-vcb-y', 'By itself: a moment after each change - nothing pressed, dragged or typed for ' + (IWDIE_VC_AUTO_IDLE / 1000) + ' s - the drawing is ' +
+        'synced as Ctrl+S syncs it, its PNG uploaded each time. On or off is kept for the next edits. Either way the panel is kept by the Designer’s own Save.');
+      var syncLine = function () {
+        ui.el.querySelector('.iwdie-vcb-y').innerHTML = auto
+          ? 'by itself, a moment after each change · <button class="iwdie-vcb-l" data-act="auto">Only on Ctrl+S</button>'
+          : 'on <b>Ctrl+S</b> · <button class="iwdie-vcb-l" data-act="auto">By itself</button>';
+      };
+      syncLine();
+      ui.on('auto', function () {
+        auto = !auto;
+        autoPaused = false;
+        try { GM_setValue(IWDIE_VC_AUTO_KEY, auto); } catch (e) {}
+        syncLine();
+      });
+      ['pointerdown', 'pointerup', 'keydown', 'wheel'].forEach(function (t) {
+        window.addEventListener(t, function () { lastInput = Date.now(); }, true);
+      });
+      window.addEventListener('pointermove', function (e) { if (e.buttons) lastInput = Date.now(); }, true);
+      setInterval(function () {
+        if (!auto || autoPaused || !syncer || saves.hold || saves.priming || saves.syncing || pending) return;
+        if (!/^\*/.test(title) || document.visibilityState !== 'visible') return;
+        var now = Date.now();
+        if (now - lastInput < IWDIE_VC_AUTO_IDLE || now < autoNext) return;
+        autoNext = now + 5000;
+        syncer.sync(true).then(function (ok) { if (!ok) autoNext = Date.now() + 30000; });
+      }, 1000);
       W.URL.createObjectURL = function (obj) {
         var url = make.call(W.URL, obj);
         try { if (obj && typeof obj.size === 'number' && typeof obj.slice === 'function') blobs[url] = obj; } catch (e) {}
@@ -10820,15 +10844,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return undefined;
         }
         if (b && /\.svg$/i.test(a.download)) {
-          var name = String(a.download), key = 'iwdie.vc.result.' + job.id;
+          var name = String(a.download), key = 'iwdie.vc.result.' + job.id, byItself = saves.auto;
           saves.caught++;
+          // a Ctrl+S takes auto-sync out of its pause
+          if (!byItself) autoPaused = false;
           b.text().then(function (text) {
             if (!/<svg\b/i.test(text)) throw new Error('the saved file is not an SVG');
-            var editing = /vectorcraft:document/.test(text);
-            if (editing) saves.editing = true;
+            // VectorCraft's own copy of the document left out (v1.56.0): a sync changes the SVG that copy would have to
+            // match, so it was never reopened - and it made what goes to the Designer two or three times bigger
+            if (/vectorcraft:document/.test(text)) { saves.editing = true; text = iwdieVcStripEditing(text); }
             if (pending && pending.timer) clearTimeout(pending.timer);
-            var mine = pending = { editing: editing, timer: null };
-            GM_setValue(key, { svg: text, name: name, at: Date.now(), editing: editing });
+            var mine = pending = { editing: false, timer: null, auto: byItself };
+            GM_setValue(key, { svg: text, name: name, at: Date.now(), editing: false });
             if (!canAck) {
               pending = null;
               note('✓ Sent ' + hhmm());
@@ -10839,6 +10866,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               if (pending !== mine) return;
               pending = null;
               try { GM_deleteValue(key); } catch (e) {}
+              if (mine.auto) {
+                // nobody to sync to: auto-sync waits for the next Ctrl+S (v1.56.0), and nothing piles up in Downloads
+                autoPaused = true;
+                note('No Designer tab of the plant answered, so auto-sync is paused. Open the plant in the Designer, then <b>Ctrl+S</b>.', true, true);
+                return;
+              }
               download(b, name);
               note('No Designer tab answered (closed or reloaded?), so the SVG went to <b>Downloads</b>. To sync, open ' +
                 '<b>Edit in VectorCraft</b> from the Designer again.', true);
@@ -10902,7 +10935,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               note('Getting Ctrl+S ready…');
               return syncer.prime(function (t) { text = t; });
             }).then(function (ok) {
-              if (ok && opened.count && typeof text === 'string' && !/\sdata-iwdie-ref\s*=/.test(text)) { missing(); return; }
+              if (ok && opened.count && typeof text === 'string' && !/\sdata-iwdie-ref\s*=/.test(text)) {
+                // missing: put on once more by itself (v1.56.0), and only said when that did not help either
+                return putOn().then(function (there) {
+                  if (there === false) { missing(); return; }
+                  drawLine('locked');
+                  note('✓ Ready to sync');
+                });
+              }
               note(ok ? '✓ Ready to sync' : 'The first sync answers VectorCraft’s Save As for you.');
             });
           });
@@ -11077,15 +11117,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           paper.done((Math.round(svg.length / 104857.6) / 10) + ' MB', 0.98);
           paper.step('open', 'the first start downloads about 20 MB; after that it is cached', 1);
         }
+        // this tab answers the edit's syncs, and (v1.56.0) the job is noted, so another Designer tab of the plant - this one
+        // reloaded, say - takes them when this one is gone
+        info.job = id;
+        vcLive[id] = info;
+        vcJobNote(id, info);
         GM_addValueChangeListener('iwdie.vc.result.' + id, function (key, old, val) {
           if (!val || !val.svg) return;
           try { GM_deleteValue(key); } catch (e) {}
-          // the editor's tab waits for this answer, and saves to Downloads when none comes
-          vcApplyResult(val, info, function (state, msg, extra) {
-            var a = { state: state, msg: msg || '', at: Date.now() };
-            if (extra) Object.keys(extra).forEach(function (k) { a[k] = extra[k]; });
-            try { GM_setValue('iwdie.vc.ack.' + id, a); } catch (e) {}
-          });
+          // the editor's tab waits for the answer, and saves to Downloads when none comes
+          vcTake(id, val, info);
         });
         var url = IWDIE_VC_URL + '#job=' + id;
         if (tab && !tab.closed) tab.location.href = url; else tab = W.open(url, '_blank');
@@ -12223,22 +12264,125 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /** What VectorCraft saved, as the panel's background: drawn at panel size, with the SVG
      *  (and VectorCraft's own document inside it) kept in the PNG for the next edit. The IWMAC
      *  placeholders in it come out of the picture and become their objects (v1.40.0). */
+    /* ---------- the edits a Designer tab answers for (v1.56.0) ----------
+       Each edit's job is noted in Tampermonkey's storage with its plant and panel. The tab that began the edit
+       answers its syncs; when that tab is gone - closed, or reloaded - another Designer tab of the plant showing
+       the panel takes them. A sync that comes while another panel is open waits, kept in the storage, until that
+       panel is open again in a Designer tab of the plant. Syncs of one edit go on one after another. */
+    var vcLive = {}, vcAdoptedInfo = {}, vcPendingTimer = null, vcTabId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+    function vcJobsRead() {
+      try { var j = GM_getValue(IWDIE_VC_JOBS_KEY, null); return j && typeof j === 'object' ? j : {}; } catch (e) { return {}; }
+    }
+
+    /** Job `id` noted with its plant and panel; jobs older than a day go. */
+    function vcJobNote(id, info) {
+      var all = vcJobsRead(), now = Date.now();
+      Object.keys(all).forEach(function (k) { if (!all[k] || !(now - (+all[k].at || 0) < IWDIE_VC_JOBS_TTL)) delete all[k]; });
+      all[id] = { plant: String(info.plant || ''), panel: String(info.panel || ''), at: now };
+      try { GM_setValue(IWDIE_VC_JOBS_KEY, all); } catch (e) {}
+    }
+
+    /** The answer to the editor's tab of job `id`: (state, message, more). */
+    function vcAcker(id) {
+      return function (state, msg, extra) {
+        var a = { state: state, msg: msg || '', at: Date.now() };
+        if (extra) Object.keys(extra).forEach(function (k) { a[k] = extra[k]; });
+        try { GM_setValue('iwdie.vc.ack.' + id, a); } catch (e) {}
+      };
+    }
+
+    /** Whether this tab shows the job's plant and panel: the Designer changes panels without reloading. */
+    function vcShowing(info) {
+      return (!info.panel || currentPanelName() === info.panel) && (!info.plant || String(currentPlantId()) === String(info.plant));
+    }
+
+    /** A sync of job `id` taken: applied now when its panel is open here, else kept until it is (v1.56.0). */
+    function vcTake(id, val, info) {
+      var ack = vcAcker(id);
+      if (!vcShowing(info)) {
+        try { GM_setValue('iwdie.vc.pending.' + id, val); } catch (e) {}
+        ack('queued', 'The Designer has “' + currentPanelName() + '” open: this sync goes onto “' + info.panel + '” as soon as that is open there again.',
+          { panel: info.panel });
+        vcWatchPending();
+        return;
+      }
+      info.chain = (info.chain || Promise.resolve()).then(function () { return vcApplyResult(val, info, ack); }).then(null, function () {});
+    }
+
+    /** A job begun in another tab, or in this one before it was reloaded: what is known of it. Objects deleted in
+     *  VectorCraft are not taken off by such a tab - it cannot tell them from objects renamed since. */
+    function vcAdopted(id, job) {
+      return vcAdoptedInfo[id] || (vcAdoptedInfo[id] = { job: id, plant: job.plant, panel: job.panel, sent: [], els: {}, placed: [], adopted: true });
+    }
+
+    /** The syncs kept for a panel, applied once it is open in this tab: looked for every 2 s while there are any. */
+    function vcWatchPending() {
+      if (vcPendingTimer || typeof GM_getValue !== 'function') return;
+      vcPendingTimer = setInterval(function () {
+        var jobs = vcJobsRead(), plant = String(currentPlantId() || ''), waiting = 0;
+        Object.keys(jobs).forEach(function (id) {
+          var job = jobs[id], val = null;
+          if (!job || String(job.plant) !== plant) return;
+          try { val = GM_getValue('iwdie.vc.pending.' + id, null); } catch (e) { val = null; }
+          if (!val || !val.svg) return;
+          var info = vcLive[id] || vcAdopted(id, job);
+          if (!vcShowing(info)) { waiting++; return; }
+          try { GM_deleteValue('iwdie.vc.pending.' + id); } catch (e) {}
+          vcTake(id, val, info);
+        });
+        if (!waiting) { clearInterval(vcPendingTimer); vcPendingTimer = null; }
+      }, 2000);
+    }
+
+    /** On a Designer page's start: the jobs of its plant begun elsewhere answered here too (v1.56.0). The tab that
+     *  began a job takes its syncs at once; one left after 3 s has no such tab any more. Then the tab that claims it
+     *  first takes it - showing the panel, or keeping it until then. */
+    function vcAdoptJobs() {
+      if (typeof GM_addValueChangeListener !== 'function' || typeof GM_getValue !== 'function') return;
+      var plant = String(currentPlantId() || ''), seen = {};
+      var each = function (jobs) {
+        Object.keys(jobs || {}).forEach(function (id) {
+          var job = jobs[id];
+          if (seen[id] || !job || String(job.plant) !== plant || vcLive[id]) return;
+          seen[id] = 1;
+          adopt(id, job);
+        });
+      };
+      // the jobs noted later, by a tab that may close before this one does
+      GM_addValueChangeListener(IWDIE_VC_JOBS_KEY, function (key, old, val) { each(val); });
+      each(vcJobsRead());
+      vcWatchPending();
+      function adopt(id, job) {
+        GM_addValueChangeListener('iwdie.vc.result.' + id, function (key, old, val) {
+          if (!val || !val.svg || vcLive[id]) return;
+          setTimeout(function () {
+            var still = null;
+            try { still = GM_getValue(key, null); } catch (e) { still = null; }
+            if (!still || still.at !== val.at) return;
+            try { GM_setValue('iwdie.vc.claim.' + id, { tab: vcTabId, at: val.at }); } catch (e) { return; }
+            setTimeout(function () {
+              var claim = null;
+              try { claim = GM_getValue('iwdie.vc.claim.' + id, null); } catch (e) { claim = null; }
+              if (!claim || claim.tab !== vcTabId || claim.at !== val.at) return;
+              try { GM_deleteValue(key); } catch (e) {}
+              vcTake(id, val, vcAdopted(id, job));
+            }, 400);
+          }, 3000);
+        });
+      }
+    }
+
     function vcApplyResult(val, info, ack) {
       ack = ack || function () {};
       var svg = String(val.svg || '');
       if (!/<svg\b/i.test(svg) || svg.length > 40 * 1024 * 1024) {
         toast('VectorCraft sent something that is not a usable SVG.', true, 8000);
         ack('failed', 'The Designer could not use it: it is not a usable SVG.');
-        return;
+        return Promise.resolve();
       }
-      // the Designer changes panels without reloading, and this listener outlives that
-      var panelNow = currentPanelName(), plantNow = currentPlantId();
-      if ((info.panel && panelNow !== info.panel) || (info.plant && plantNow !== String(info.plant))) {
-        toast('A VectorCraft save for “' + info.panel + '” arrived, but “' + panelNow + '” is open now. Nothing was changed - open “' +
-          info.panel + '” again, then save again in VectorCraft.', true, 12000);
-        ack('refused', 'The Designer has “' + panelNow + '” open now, not “' + info.panel + '”. Open that panel there, then save again.');
-        return;
-      }
+      // another panel opened meanwhile: kept until that one is open again (v1.56.0)
+      if (!vcShowing(info)) { vcTake(info.job, val, info); return Promise.resolve(); }
       ack('received');
       var size = exportPanelSize(), ph;
       try { ph = vcPlaceholders(svg, size); } catch (e) {
@@ -12254,7 +12398,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var placed = (info.placed || []).filter(function (p) { return p.el && p.el.parentNode; }).map(function (p) { return { name: p.el.getAttribute('name'), obj_id: p.obj_id }; });
       var sized = iwdieVcSized(svg, size.w, size.h);
       var url = URL.createObjectURL(new Blob([sized], { type: 'image/svg+xml' }));
-      loadPicture(url).then(function (img) {
+      return loadPicture(url).then(function (img) {
         URL.revokeObjectURL(url);
         var c = document.createElement('canvas');
         c.width = size.w; c.height = size.h;
@@ -12311,6 +12455,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           gone.slice(0, 6).join(', ') + (gone.length > 6 ? ', …' : '') + '). Delete them here if they should go.');
         if (ph.frames) lines.push('The art under ' + iwdieN(ph.frames, 'object', 'objects') + ' - its frame, its pill - is in the picture where its placeholder left it.');
         if (ph.skipped) lines.push(iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.');
+        // the editor's tab told at once (v1.56.0): the background and the objects are set; the PNG still goes up
+        var applied = { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error || mv.error || rm.error,
+          moved: mv.moved, removed: rm.removed.length, held: hold ? gone.length : 0, holdWhy: hold, uploading: true };
+        if (info.adopted) lines.push('This tab took the edit over from the tab it began in: objects deleted in VectorCraft are not taken off here - delete them by hand.');
+        ack('applied', Math.round(withDoc.length / 1024) + ' kB', applied);
         // and its PNG to the plant's pictures, as Upload to server does, named on the panel as Set background names it (v1.42.0)
         return vcUploadPng(withDoc, info).then(function (up) {
           if (up.ok) {
@@ -12328,9 +12477,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             lines: lines,
             footer: 'The panel is not saved yet — use the designer’s own Save when you are happy.'
           });
-          ack('applied', Math.round(withDoc.length / 1024) + ' kB', { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error || mv.error || rm.error,
-            moved: mv.moved, removed: rm.removed.length, held: hold ? gone.length : 0, holdWhy: hold,
-            uploaded: up.ok ? up.name : '', uploadError: up.ok ? '' : up.message });
+          ack('uploaded', up.ok ? up.name : up.message, { uploaded: up.ok ? up.name : '', uploadError: up.ok ? '' : up.message });
         });
       }).then(null, function (e) {
         try { URL.revokeObjectURL(url); } catch (e2) {}
@@ -13819,6 +13966,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       doExportAllParams: doExportAllParams,
       _collect: collectCurrentDoc
     };
+
+    // the VectorCraft edits of this plant begun in another tab, or before this one was reloaded (v1.56.0)
+    try { vcAdoptJobs(); } catch (e) {}
 
     var installTimer = setInterval(function () {
       ensureParamExportButton();

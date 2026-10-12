@@ -1369,6 +1369,66 @@ Measured in the stub host with `2349_Maskin.ai` and six objects:
   it; the sync held all six objects. *Put them on* in the Drawing row put them on, the check
   found them, and the next sync left all six where they were.
 
+**The sync, made faster to use and harder to lose (v1.56.0).** Thomas asked for the sync from
+VectorCraft to the Designer to be faster, more reliable and as automatic as it can be. It was
+measured first, in his Chrome on plant 2349's *Maskin* panel (58 objects, traced), with the
+upload stopped on its way so nothing reached the server:
+
+| Step | Time |
+|---|---|
+| Ctrl+S → the chooser → Enter | a key press, a dialog and another key press |
+| VectorCraft saves the SVG (Ctrl+S made ready) | 0.03 s |
+| Tampermonkey carries it to the Designer tab | 0.03 s |
+| The Designer: placeholders, picture, PNG, background, objects | about 1.1 s |
+| The upload of the PNG (the server answers in 40-110 ms) | a moment more |
+| The panel kept on the plant | the Designer's own *Compile Panel for Plant*, by hand |
+
+So the time went to the steps by hand, not the computer. And a sync could be lost: the
+Designer tab that began the edit was the only one listening, so after a reload of that tab,
+or with another panel open in it, a sync went to Downloads or was refused. What changed:
+
+- **Ctrl+S syncs at once.** No chooser; **Ctrl+Shift+S** is VectorCraft's own Save As, to
+  Downloads.
+- **Auto-sync**, in the banner's new row *Sync*: **By itself** syncs a moment after each
+  change - VectorCraft marks its title with \* when the drawing changes - once nothing has been
+  pressed, dragged or typed for 2 seconds. **Only on Ctrl+S** turns it off. Either is kept for
+  the next edits. With no Designer tab answering, auto-sync pauses until the next Ctrl+S instead
+  of filling Downloads.
+- **The upload no longer holds the sync up.** The Designer sets the background and the objects,
+  says *applied* at once, and uploads the PNG after; the banner says only when the upload
+  failed.
+- **Less to carry.** The SVG no longer brings VectorCraft's own copy of the document (*Preserve
+  Editing Capabilities*): a sync changes the SVG that copy would have to match, so it was never
+  reopened, and the Designer threw it away.
+- **The right Designer tab, found.** Each edit is noted in Tampermonkey's storage with its plant
+  and panel. When the tab that began it is gone - closed, reloaded - another Designer tab of the
+  plant takes the sync after 3 seconds. Such a tab does not take objects off: it cannot tell an
+  object deleted in VectorCraft from one renamed since, and says so.
+- **The right panel, waited for.** A sync that comes while the Designer shows another panel waits,
+  kept in the storage; the banner says *Waiting*. It goes on as soon as that panel is open again
+  in a Designer tab of the plant.
+- **The objects put on, whatever the window.** The objects are put on the drawing as soon as the
+  tab is in front, no longer only once the window has the focus too: while another window was in
+  front, or a screenshot was being taken, the drawing stood there unlocked and without its
+  objects. The pointer and the keyboard are kept off VectorCraft while it happens. If the save
+  that makes Ctrl+S ready shows them missing, they are put on once more by themselves before the
+  banner says so.
+
+Measured in the stub host, with six objects:
+
+- **Ctrl+S.** *✓ Synced* 0.3 s after the key, while the stand-in server took 1.5 s over the
+  upload.
+- **Auto-sync.** Synced by itself 2.9 s after a drag, and that object moved in the Designer.
+- **Another panel open.** The sync waited, then moved the object once the panel was back.
+- **The first Designer tab closed.** A second tab of the plant took the sync and moved the
+  object, 3.7 s after the key.
+- **Less to carry.** The SVG sent went from 509 kB to 106 kB for the plant's `.ai`, and from
+  958 kB to 442 kB for a traced panel.
+
+Left by hand: keeping the panel on the plant, the Designer's *Compile Panel for Plant*. It writes
+the panel to the live plant, so it is not done by itself yet: that needs a test on a panel where
+a compile does no harm.
+
 **The plant's .ai offered on any computer (v1.55.1).** On another computer the card *Best result:
 the plant's own .ai file* did not show. It came only before a trace, and there is a trace only
 when components from an `.ai` are kept. Tampermonkey keeps them in one browser alone, so a
@@ -1408,11 +1468,11 @@ The banner sits at the drawing's top left. It folds into a one-line tab 20 secon
 panel opens, and again 12 seconds after each message. A click on its title folds or unfolds
 it, and after that it stays as you left it.
 
-**Sending it back (v1.42.0).** In VectorCraft, press **Ctrl+S** and choose **Sync to IWMAC
-Designer**; **Enter** takes it. The drawing goes to the Designer tab the edit started from,
-which draws it at panel size and makes it the background through the host's own
-`iw_set_base_image`. **Save a file…**, the other choice, is VectorCraft's own Save As, to
-Downloads. The banner then reports one of these (shorter since v1.50.0):
+**Sending it back (v1.42.0).** In VectorCraft, press **Ctrl+S** (since v1.56.0 it syncs at
+once; until then it offered *Sync to IWMAC Designer* or *Save a file…* first). The drawing goes
+to the Designer tab the edit started from, which draws it at panel size and makes it the
+background through the host's own `iw_set_base_image`. **Ctrl+Shift+S** is VectorCraft's own
+Save As, its file to Downloads. The banner then reports one of these (shorter since v1.50.0):
 
 - *Updating the panel…*;
 - *✓ Synced 09:44*, with how many IWMAC objects were placed, changed and removed, and on hover
@@ -1429,10 +1489,10 @@ VectorCraft offers no way in other than its own Save, so the sync uses it:
   document is its Save As, so the script answers that once, right after the panel and the
   libraries are in, while the tab is in front. That save stays in the tab and goes nowhere.
   The banner then says *✓ Ready to sync*. Every sync after that is VectorCraft's own Save, without a
-  dialog: Ctrl+S, Enter, and the Designer has it, measured at 0.2 seconds. While it is being
+  dialog: Ctrl+S, and the Designer has it, measured at 0.2 seconds. While it is being
   made ready (about 3 seconds), keys typed are held back from VectorCraft's dialog.
 - When it could not be made ready, the first sync answers the Save As instead, as you would by
-  hand: Format **SVG**, OK, **Preserve Editing Capabilities**, OK.
+  hand: Format **SVG**, OK, OK (until v1.56.0 also **Preserve Editing Capabilities**).
   - It clicks where those dialogs sit, centred in the window, and only after VectorCraft's own
     text field shows that the dialog is open.
   - Each step waits for VectorCraft to draw, so a tab left in the background meanwhile is
@@ -1441,7 +1501,7 @@ VectorCraft offers no way in other than its own Save, so the sync uses it:
 - A save that comes out in another format meanwhile is held back, and Save As is tried again
   more slowly.
 - If it still does not save, the banner says so; finish the dialog by hand, as before
-  (Format SVG → OK → tick Preserve Editing Capabilities → OK), and it syncs all the same.
+  (Format SVG → OK → OK), and it syncs all the same.
 
 **The PNG on the server (v1.42.0).** Each sync also uploads the background's PNG to the plant's
 pictures, as Manage Images' *Upload to server* does. It is the same request
