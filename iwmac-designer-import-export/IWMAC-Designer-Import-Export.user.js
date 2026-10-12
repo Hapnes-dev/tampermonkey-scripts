@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.62.1
+// @version      1.63.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.62.1';
+var IWDIE_VERSION = '1.63.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1350,6 +1350,31 @@ function iwdieCheckFile(text, opts) {
     if (vb && pw && ph && (Math.abs(parseFloat(vb[1]) - pw) > 0.5 || Math.abs(parseFloat(vb[2]) - ph) > 0.5)) {
       out.warnings.push('image_svg is drawn ' + vb[1] + ' x ' + vb[2] + ' (its viewBox) for a ' + pw + ' x ' + ph + ' panel: it is stretched to fit, while the objects stay where the panel puts them.');
     }
+    // v1.63.0: the house symbols it places by name, which Insert draws from the component library kept in this browser
+    var refs = iwdieSymRefs(res.doc.image_svg);
+    if (refs.length) {
+      var count = {}, order = [];
+      refs.forEach(function (r) { if (!count[r.name]) { count[r.name] = 0; order.push(r.name); } count[r.name]++; });
+      out.facts.push('image_svg places ' + iwdieN(refs.length, 'house symbol', 'house symbols') + ' by name: ' +
+        order.slice(0, 8).map(function (n) { return n + (count[n] > 1 ? ' ×' + count[n] : ''); }).join(', ') + (order.length > 8 ? ', …' : '') + '.');
+      // a bell, an LED, a state pill or a switch is an IWMAC object on a live panel, never part of its picture
+      var st = iwdieSymTable(), live = order.filter(function (n) { var f = st.families[st.byKey[iwdieSymKey(n)]]; return f && !f.list; });
+      if (live.length) {
+        out.warnings.push('image_svg draws ' + live.slice(0, 6).join(', ') + ', which ' + (live.length === 1 ? 'is' : 'are') +
+          ' shown by IWMAC objects on a live panel: place the object over the picture instead, or the panel shows a frozen state.');
+      }
+      if (Array.isArray(opts.symbols)) {
+        var have = opts.symbols.map(iwdieSymKey);
+        var lack = order.filter(function (n) { return have.indexOf(iwdieSymKey(n)) < 0; });
+        if (lack.length) {
+          out.warnings.push(opts.symbols.length
+            ? 'image_svg places ' + iwdieN(lack.length, 'symbol', 'symbols') + ' the component library kept in this browser does not have (' + lack.slice(0, 6).join(', ') +
+              (lack.length > 6 ? ', …' : '') + '): Insert draws each as a red dashed box with its name, to swap by hand.'
+            : 'image_svg places house symbols by name, but no component library is kept in this browser: Insert draws each as a red dashed box with its name. ' +
+              'Import the Maskin template\'s .ai (or the plant\'s own) under Components in Edit in VectorCraft first, then Insert again.');
+        }
+      }
+    }
   }
   if (!out.errors.length) out.warnings = out.warnings.concat(iwdieCheckPanelGeometry(res.doc, out.notes, out.details));
 
@@ -1619,8 +1644,15 @@ function iwdieInsertOutcome(o) {
       (o.graphicsReason === 'failed' ? 'the designer could not load them.' : 'the canvas already has graphics, and the designer replaces rather than merges them.'));
   }
   if (o.quick) lines.push('Inserted without the check — overlaps, objects outside the panel and unknown types were not looked for.');
+  // v1.63.0: the house symbols the drawing placed by name
+  var sym = o.symbols || null;
+  if (sym && sym.placed) lines.push(iwdieN(sym.placed, 'house symbol', 'house symbols') + ' drawn from the component library kept in this browser.');
 
   var findings = [];
+  if (sym && sym.missing && sym.missing.length) {
+    findings.push('⚠ ' + iwdieN(sym.missing.length, 'symbol', 'symbols') + ' not in the kept library, drawn as red dashed boxes: ' + sym.missing.slice(0, 6).join(', ') +
+      (sym.missing.length > 6 ? ', …' : ''));
+  }
   if (foreign) findings.push('⚠ ' + iwdieN(foreign, 'object still points', 'objects still point') + ' at another plant’s drivers and will not link here');
   warnings.slice(0, 3).forEach(function (w) { findings.push('⚠ ' + lead(w)); });
   if (warnings.length > 3) findings.push('⚠ … and ' + (warnings.length - 3) + ' more');
@@ -1752,6 +1784,7 @@ var IWDIE_DRAWING_STYLE = {
   exchanger: 'Rounded pill, fill #CED1D2 with a #A6A6A9 hairline, a white inner pill 3 wide inset 8, and a grey triangle at each end. Place it across both runs.',
   settings_band: '#CDD2D7 at about half opacity behind the settings column.',
   in_the_artwork: 'Pipes, equipment outlines and frames that show no signal, zone boxes, flow arrows, enclosures and fixed picture text (Tekst layer). On Maskin: pipes, compressors, the gas cooler with its fan circles, valve symbols with their tags, empty pills.',
+  symbols: 'On Maskin, place the house symbols rather than drawing them: <use data-iwdie-symbol="Kompressor" x="120" y="80"/> in Former, width and height to fit a box, data-iwdie-turn="90" to turn it. overview.parts.components.symbols lists those the plant\'s library has (Kompressor, Gaskjøler4Lav, BeholderNivå, Ventil, Motorventil, Pil, Føler, KjølGrader, PilleMørk...). Insert draws each from the library kept in the browser; a name it lacks becomes a red dashed box.',
   stays_objects: 'Whatever shows or sets a signal: values, setpoints, state strips, LEDs, alarm bells, and the fans, pumps, filters, dampers and valves that are linked. A caption is fixed picture text or a label object, never both.',
   never: 'No fake numbers, no drawn bells or LEDs, no text where a label object belongs, no dark fills except a setpoint pill (overview.style.pills).'
 };
@@ -7039,18 +7072,112 @@ function iwdieVcObjectSearch(query) {
 /** The catalogue id a placeholder's name stands for - "IWMAC number_v3_value_only", or the id
  *  VectorCraft's SVG gives it: "IWMAC_number_v3_value_only", "-2" added for the second - or
  *  null for a name that is no placeholder. A file's extension, which a dropped file's name
- *  brings, is no part of it. */
+ *  brings, is no part of it, nor (v1.63.0) the parameter written after the id. */
 function iwdieVcObjectId(name) {
-  var m = /^IWMAC[ _]+(\S+)$/.exec(String(name || '').trim());
-  if (!m) return null;
-  var known = iwdieVcObjectIndex();
-  if (known[m[1]]) return m[1];
-  var bare = m[1].replace(/-\d+$/, '').replace(/\.(svg|vectorcraft)$/i, '');
-  return known[bare] ? bare : null;
+  var p = iwdieVcPlaceholderName(name);
+  return p ? p.id : null;
 }
 
-/** The placeholders found in a saved drawing ([{id, x, y, w, h, text}], in panel pixels) as
- *  Designer objects: the 17 fields of an unlinked object, at the stacking order of the panel's
+/* ===================== Placeholders bound to parameters (v1.63.0) =====================
+   A placeholder may say which parameter its object shows, after its obj_id in its name:
+     IWMAC number_v3_value_only Pgc @ AK3
+   the parameter's alias text and its unit - its name in the Designer's UNITS list, or its unit_id - or, where a unit
+   has that alias twice, its driver_id in brackets: IWMAC number_v3_value_only [9999_AK3_AKC_0_111_0_336_10]. The IWMAC
+   menu's Parameters place one so, and the panel's own objects come to VectorCraft so named, their parameter in the
+   name. A sync links a new object as its placeholder says, and relinks one of the panel's objects whose placeholder
+   was renamed - each read against the plant's own rows. */
+
+/** A placeholder's name read: the obj_id it stands for, and the binding written after it ('' for none). The panel's
+ *  own objects (`obj`: their data-iwdie-obj) may be of a kind outside the catalogue. -> {id, bind} or null */
+function iwdieVcPlaceholderName(name, obj) {
+  var s = String(name || '').trim().replace(/\.(svg|vectorcraft)$/i, '');
+  var m = /^IWMAC[ _]+(\S+)(?:\s+([\s\S]*))?$/.exec(s);
+  if (!m) return null;
+  var known = iwdieVcObjectIndex(), tok = m[1], bare = tok.replace(/-\d+$/, '').replace(/\.(svg|vectorcraft)$/i, '');
+  var id = known[tok] ? tok : known[bare] ? bare : obj && (tok === obj || bare === obj) && /^[\w.-]+$/.test(obj) ? obj : null;
+  return id ? { id: id, bind: String(m[2] || '').trim() } : null;
+}
+
+/** A binding as a placeholder's name writes it: "<alias> @ <unit>", "<alias>", "[<driver_id>]" or a bare driver_id.
+ *  A driver_id in brackets decides over the alias beside it. -> {driver, alias, unit} or null for none */
+function iwdieVcParseBind(text) {
+  var s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  var driver = '', m = /\[\s*(\d+_[^\s\[\]]+)\s*\]/.exec(s);
+  if (m) { driver = m[1]; s = (s.slice(0, m.index) + s.slice(m.index + m[0].length)).trim(); }
+  else if (/^\d+_\S+$/.test(s)) { driver = s; s = ''; }
+  var unit = '', at = s.lastIndexOf('@');
+  if (at >= 0) { unit = s.slice(at + 1).trim(); s = s.slice(0, at).trim(); }
+  return { driver: driver, alias: s, unit: unit };
+}
+
+/** What follows the obj_id in a bound object's placeholder: its alias text and " @ " its unit - the unit's name in
+ *  `units` ([{unit_id, name}]), or its unit_id where the name is empty or another unit has it too. -> text, '' for none */
+function iwdieVcBindLabel(alias, unitId, units) {
+  var a = String(alias == null ? '' : alias).replace(/\s+/g, ' ').trim(), id = String(unitId == null ? '' : unitId);
+  if (!a && !id) return '';
+  var named = (units || []).filter(function (u) { return u && String(u.unit_id) === id; })[0], name = named ? String(named.name || '').trim() : '';
+  var twice = name && (units || []).filter(function (u) { return u && String(u.name || '').trim().toLowerCase() === name.toLowerCase(); }).length > 1;
+  var unit = name && !twice && name.indexOf('@') < 0 ? name : id;
+  return (a || '?') + (unit ? ' @ ' + unit : '');
+}
+
+/** A binding (iwdieVcParseBind's) read against the plant: `plant` {units: [{unit_id, name}], rows: {unit_id: rows of
+ *  iwdieOvParseRows}, tagged: [{unit_id, driver_id, alias_text, sub_group, tag}] - the rows the plant has tagged, which
+ *  give sub_group and link_tag}. An alias is matched whole, case and runs of spaces aside, in the unit named, else in
+ *  every unit whose rows are there, else among the tagged rows. -> {link: {driver_id, unit_id, alias_text, sub_group,
+ *  link_tag}} or {error: 'unit' (no such unit) | 'rows' (its rows were not read) | 'not found' | 'ambiguous', units} */
+function iwdieVcResolveBind(bind, plant) {
+  plant = plant || {};
+  var units = plant.units || [], rows = plant.rows || {}, tagged = plant.tagged || [];
+  if (!bind || (!bind.driver && !bind.alias)) return { error: 'not found', units: [] };
+  var norm = function (v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase(); };
+  var tagOf = {};
+  tagged.forEach(function (t) { if (t && t.driver_id) tagOf[t.driver_id] = t; });
+  var link = function (u, d, alias) {
+    var t = tagOf[d];
+    return { link: { driver_id: String(d), unit_id: String(u), alias_text: String(alias == null ? '' : alias), sub_group: t ? String(t.sub_group || '') : '',
+      link_tag: t ? String(t.tag || '') : '' } };
+  };
+  var read = Object.keys(rows), scope = read;
+  if (bind.unit) {
+    var want = norm(bind.unit);
+    var byId = units.filter(function (u) { return u && norm(u.unit_id) === want; });
+    var picked = (byId.length ? byId : units.filter(function (u) { return u && norm(u.name) === want; })).map(function (u) { return String(u.unit_id); });
+    if (!picked.length) return { error: 'unit', units: [] };
+    scope = picked;
+  }
+  var hits = [], seen = {};
+  var hit = function (u, r) { if (!seen[r.driver_id]) { seen[r.driver_id] = 1; hits.push({ u: u, r: r }); } };
+  if (bind.driver) {
+    read.forEach(function (u) { (rows[u] || []).forEach(function (r) { if (r && r.driver_id === bind.driver) hit(u, r); }); });
+    if (!hits.length && tagOf[bind.driver]) hit(String(tagOf[bind.driver].unit_id), tagOf[bind.driver]);
+    return hits.length ? link(hits[0].u, hits[0].r.driver_id, hits[0].r.alias_text) : { error: 'not found', units: [] };
+  }
+  var a = norm(bind.alias);
+  scope.forEach(function (u) { (rows[u] || []).forEach(function (r) { if (r && norm(r.alias_text) === a) hit(u, r); }); });
+  // a unit whose rows were not read: its tagged rows
+  if (!hits.length) tagged.forEach(function (t) { if (t && norm(t.alias_text) === a && (!bind.unit || scope.indexOf(String(t.unit_id)) >= 0)) hit(String(t.unit_id), t); });
+  if (hits.length === 1) return link(hits[0].u, hits[0].r.driver_id, hits[0].r.alias_text);
+  if (hits.length) return { error: 'ambiguous', units: hits.map(function (h) { return h.u; }).filter(function (u, i, all) { return all.indexOf(u) === i; }) };
+  var unread = scope.filter(function (u) { return !Object.prototype.hasOwnProperty.call(rows, u); });
+  return { error: bind.unit && unread.length === scope.length ? 'rows' : 'not found', units: scope };
+}
+
+/** Why a binding was not made, for the sync's report. */
+function iwdieVcBindWhy(r, text) {
+  var t = '"' + String(text || '') + '"';
+  if (!r || !r.error) return '';
+  if (r.error === 'unit') return t + ': no unit of that name or unit_id';
+  if (r.error === 'rows') return t + ': the rows of its unit could not be read';
+  if (r.error === 'ambiguous') return t + ': ' + (r.units.length > 1 ? 'units ' + r.units.join(', ') + ' each have it - add @ and the unit' : 'its unit has it twice - give its [driver_id]');
+  if (r.error === 'cannot link') return t + ': this kind of object cannot be linked';
+  return t + ': no parameter by that' + (r.units && r.units.length ? ' in ' + r.units.slice(0, 3).join(', ') : '');
+}
+
+/** The placeholders found in a saved drawing ([{id, x, y, w, h, text, link}], in panel pixels) as
+ *  Designer objects: the 17 fields of an object, linked to `link` where its placeholder named a parameter
+ *  (v1.63.0: {driver_id, unit_id, alias_text, sub_group, link_tag}), else unlinked, at the stacking order of the panel's
  *  own objects of that kind or role, else of its band. One that is already on the panel - an
  *  object of that kind within 2 px of it, as after an earlier save - is counted, not repeated.
  *  Its text becomes tag_text on a label, the header and an object with a tag (JV401 on a fan).
@@ -7080,10 +7207,13 @@ function iwdieVcDesignerObjects(found, existing) {
     // its text is the object's tag text: a label's or the header's as written; on an object with a
     // tag, as written, its default included (v1.43.0); not what a placeholder without the object's
     // picture says the object is, and nothing for an object without a tag
-    var text = String(f.text || '').replace(/\s+/g, ' ').trim();
+    var text = String(f.text || '').replace(/\s+/g, ' ').trim(), L = f.link || null;
     if (o.kind !== 'label' && o.kind !== 'bar' && (!o.hasTag || text === iwdieVcObjectCaption(o))) text = '';
+    // a bound placeholder's caption is its parameter's alias (v1.63.0), not a tag
+    if (L && text === String(L.alias_text || '').replace(/\s+/g, ' ').trim()) text = '';
     objects.push({ obj_id: o.id, name: 'object_0', id: 'driver_id', posWidth: w, posHeight: h, posLeft: x, posTop: y, zIndex: zOf(o),
-      tag_text: text, linked: 'false', link_name: '', link_tag: '', sub_group: '', driver_id: 'driver_id', unit_id: '', unit_ref: '', alias_text: '' });
+      tag_text: text, linked: L ? 'true' : 'false', link_name: L ? 'link_name' : '', link_tag: L ? String(L.link_tag || '') : '', sub_group: L ? String(L.sub_group || '') : '',
+      driver_id: L ? String(L.driver_id) : 'driver_id', unit_id: L ? String(L.unit_id) : '', unit_ref: '', alias_text: L ? String(L.alias_text) : '' });
   });
   return { objects: objects, already: already };
 }
@@ -7094,8 +7224,9 @@ function iwdieVcDesignerObjects(found, existing) {
  *  drawing parsed as XML; `measure(groups)` gives each one's box in panel pixels ({x, y, w, h}),
  *  {hidden: true} for a hidden one, which stays as it is, or null, in order. One without a box
  *  goes too, and is counted. The art its object stands on stays (v1.47.0, iwdieVcKeepUnder).
- *  -> {found: [{id, x, y, w, h, text}], skipped, layer: whether the layer IWMAC-objekter is in it,
- *  frames: placeholders whose art stayed} */
+ *  -> {found: [{id, x, y, w, h, text, bind, label}], skipped, layer: whether the layer IWMAC-objekter is in it,
+ *  frames: placeholders whose art stayed} - `bind` the parameter its name writes after the obj_id, `label` what that was
+ *  when the panel's object was sent (v1.63.0) */
 function iwdieVcTakePlaceholders(doc, measure) {
   var groups = doc.getElementsByTagName('g'), picked = [], layer = false;
   for (var i = 0; i < groups.length; i++) {
@@ -7128,6 +7259,10 @@ function iwdieVcTakePlaceholders(doc, measure) {
         one.ref = ref;
         if (was) one.at = was;
       }
+      // the parameter its name writes (v1.63.0), and the one it was sent with (data-iwdie-label: the name's part then)
+      var pn = iwdieVcPlaceholderName(q.g.getAttribute('data-name') || q.g.getAttribute('id'), q.g.getAttribute('data-iwdie-obj'));
+      if (pn && pn.bind) one.bind = pn.bind;
+      if (q.g.getAttribute('data-iwdie-label') !== null) one.label = q.g.getAttribute('data-iwdie-label');
       found.push(one);
     } else skipped++;
     // the art its object stands on stays in the picture, where the placeholder left it (v1.47.0)
@@ -7163,7 +7298,7 @@ function iwdieVcKeepUnder(g, box, was, k) {
     }
     m.removeAttribute('data-iwdie-fat');
   });
-  ['data-iwdie-obj', 'data-iwdie-ref', 'data-iwdie-at'].forEach(function (a) { g.removeAttribute(a); });
+  ['data-iwdie-obj', 'data-iwdie-ref', 'data-iwdie-at', 'data-iwdie-bind', 'data-iwdie-label'].forEach(function (a) { g.removeAttribute(a); });
   g.setAttribute('id', 'iwdie-ramme-' + k);
   g.setAttribute('data-name', 'Ramme');
   return true;
@@ -7201,7 +7336,8 @@ function iwdieVcItemParts(it) {
  *  piece of the picture where it is, in panel pixels; or [{markup, box}], the art a VectorCraft
  *  background kept of it), each marked data-iwdie-under with its box (data-iwdie-fat). The object's
  *  own look (v1.60.0, `ob.iwdieLook`: one the Designer paints by CSS, painted at its size) goes before
- *  its kind's, and its tag text where the Designer writes it (`ob.iwdieTag`). */
+ *  its kind's, and its tag text where the Designer writes it (`ob.iwdieTag`). A bound object's name says its
+ *  parameter (v1.63.0, `ob.iwdieBind`: {driver, label}): "IWMAC <obj_id> <alias> @ <unit>". */
 function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
   var x = parseFloat(ob && ob.posLeft), y = parseFloat(ob && ob.posTop), w = parseFloat(ob && ob.posWidth), h = parseFloat(ob && ob.posHeight);
   var id = String((ob && ob.obj_id) || '');
@@ -7227,9 +7363,12 @@ function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
   }).join('');
   // the art it carries shows through: the bubble of a value that is bare text, as the Designer shows it
   if (art) o.see = true;
-  var it = iwdieVcObjectItem(o), name = IWDIE_VC_OBJ_PREFIX + id, gid = iwdieVcSvgId(name, used);
+  // the parameter it shows (v1.63.0, `ob.iwdieBind`: {driver, label}) in its name, and as it was, to tell a rename
+  var bd = ob.iwdieBind && ob.iwdieBind.label ? ob.iwdieBind : null;
+  var it = iwdieVcObjectItem(o), name = IWDIE_VC_OBJ_PREFIX + id + (bd ? ' ' + bd.label : ''), gid = iwdieVcSvgId(name, used);
   return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-ref="' + esc(String(ob.name || '')) + '" data-iwdie-obj="' + esc(id) +
-    '" data-iwdie-at="' + [x, y, w, h].map(f).join(' ') + '" transform="translate(' + f(x) + ' ' + f(y) + ')">' + art + iwdieVcItemParts(it).join('') + '</g>';
+    '" data-iwdie-at="' + [x, y, w, h].map(f).join(' ') + '"' + (bd ? ' data-iwdie-bind="' + esc(String(bd.driver || '')) + '" data-iwdie-label="' + esc(bd.label) + '"' : '') +
+    ' transform="translate(' + f(x) + ' ' + f(y) + ')">' + art + iwdieVcItemParts(it).join('') + '</g>';
 }
 
 /** The panel's objects as a layer of placeholders, IWMAC-objekter, with `looks` by obj_id and the
@@ -7317,8 +7456,8 @@ function iwdieVcElementEnd(s, from, tag) {
  *  (v1.46.1) places nothing. The objects an earlier sync of this edit placed (v1.47.0, `placed`:
  *  [{name, obj_id}]) each take the nearest placeholder of their kind that stands for no object: that
  *  one moves it, and one left without is `dropped`. `existing`: the panel's objects now.
- *  -> {moves: [{name, obj_id, x, y, w, h, text, was: {x, y, w, h, text}}], fresh: [found...], same, missing: [name...], orphans: [found...],
- *  dropped: [name...]} */
+ *  -> {moves: [{name, obj_id, x, y, w, h, text, was: {x, y, w, h, text}, link}], fresh: [found...], same, missing: [name...], orphans: [found...],
+ *  dropped: [name...]} - `link` (v1.63.0) where the placeholder's renamed binding (f.link) is another parameter */
 function iwdieVcObjectChanges(found, existing, sent, placed) {
   var have = (existing || []).filter(function (e) { return e && typeof e === 'object' && e.name; });
   var taken = {}, claimed = {}, moves = [], fresh = [], same = 0, unmatched = [], orphans = [], news = [];
@@ -7370,9 +7509,13 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
     var caption = iwdieVcObjectCaption(o || { id: f.id, w: parseFloat(e.posWidth), h: parseFloat(e.posHeight), role: '', desc: f.id });
     if (text === caption || (o && o.kind !== 'label' && o.kind !== 'bar' && !o.hasTag)) text = was;
     var moved = !(near(e.posLeft, x) && near(e.posTop, y) && near(e.posWidth, w) && near(e.posHeight, h));
-    if (!moved && text === was) { same++; return; }
-    moves.push({ name: e.name, obj_id: e.obj_id, x: x, y: y, w: w, h: h, text: text,
-      was: { x: parseFloat(e.posLeft), y: parseFloat(e.posTop), w: parseFloat(e.posWidth), h: parseFloat(e.posHeight), text: was } });
+    // linked to another parameter (v1.63.0): its placeholder renamed, the new one resolved by the sync
+    var relink = f.link && String(f.link.driver_id) !== String(e.driver_id == null ? '' : e.driver_id) ? f.link : null;
+    if (!moved && text === was && !relink) { same++; return; }
+    var mv = { name: e.name, obj_id: e.obj_id, x: x, y: y, w: w, h: h, text: text,
+      was: { x: parseFloat(e.posLeft), y: parseFloat(e.posTop), w: parseFloat(e.posWidth), h: parseFloat(e.posHeight), text: was } };
+    if (relink) mv.link = relink;
+    moves.push(mv);
   }
 }
 
@@ -8500,6 +8643,490 @@ function iwdieVcLineSvg(L, used) {
     '" fill="none" stroke="' + iwdieVcHex(L.colour) + '" stroke-width="' + f(L.width) + '" stroke-linejoin="miter" stroke-linecap="butt"/>';
 }
 
+/* ===================== Named components (v1.63.0) =====================
+   The Maskin template (reference_data/maskin-light-template.ai in the Copilot kit) keeps its symbols around the
+   artboard, and a plant's own Maskin .ai keeps copies of them: 382 of 2349's 386 components are the template's,
+   drawn the same. The template names six of them. IWDIE_SYMBOLS names them all, without carrying a single one:
+   it holds what each is drawn of (a hash of its shapes' kinds, path letters, colours and stroke widths), its size,
+   and two points that tell its turned and mirrored copies apart. A component read from any .ai that matches one
+   takes its name - in Libraries, in the IWMAC menu, among the components found in a picture and in the export's
+   overview - and a drawing (an agent's image_svg) can place it by that name:
+     <use data-iwdie-symbol="Kompressor" x="120" y="80"/>
+   which Insert replaces with the component itself, from the library kept in this browser. */
+
+/** The template's components (v1.63.0): `families` [name, what it is, offered to a drawing (1) or not (0), turned only
+ *  inside (1: the template turns what is in its box and keeps the box)];
+ *  `entries` one per way the template draws one - "family|hash|w|h|fx|fy|wx|wy|k", `k` its turn from the family's
+ *  own (0-3 quarter turns clockwise, +4 mirrored left to right first). Generated by sym-build.js from the template. */
+var IWDIE_SYMBOLS = {
+  v: 1, source: 'maskin-light-template.ai',
+  families: [
+    ['VifteRamme', 'a fan in a square frame', 1, 0],
+    ['PilLiten', 'a small flow arrow, pointing right', 1, 0],
+    ['Pil', 'a flow arrow, pointing right', 1, 0],
+    ['PilSikksakk', 'a flow arrow with a zigzag, pointing right', 1, 0],
+    ['StorVifte', 'a big fan: a green triangle in a circle (running); the template\'s own name', 1, 0],
+    ['StorVifteAv', 'a big fan, grey (stopped); the template\'s own name', 1, 0],
+    ['Beholder', 'an upright vessel with a head line near the top (oil separator, a small tank)', 1, 0],
+    ['Tank', 'a vessel with head lines at both ends; upright, or turned 90 lying', 1, 0],
+    ['BeholderVæske', 'an upright vessel holding liquid (a wave under the top)', 1, 0],
+    ['BeholderElVarme', 'an upright vessel holding liquid, with a lightning bolt (electric heating)', 1, 0],
+    ['BeholderVindu', 'a tall vessel with a window inside (the receiver\'s body)', 1, 0],
+    ['BeholderVarmespiral', 'a tall vessel with a coil in its bottom', 1, 0],
+    ['BeholderSpiral', 'a tall vessel with a coil up its middle', 1, 0],
+    ['BeholderNivå', 'a vessel with a level bar beside it (receiver with level)', 1, 0],
+    ['TankLiggende', 'a lying vessel with a leg under its right end', 1, 0],
+    ['Gaskjøler2', 'a gas cooler or condenser: a box with 2 fans', 1, 0],
+    ['Gaskjøler2Lav', 'a low gas cooler with 2 fans', 1, 0],
+    ['Gaskjøler3', 'a gas cooler with 3 fans in a row', 1, 0],
+    ['Gaskjøler3Lav', 'a low gas cooler with 3 fans', 1, 0],
+    ['Gaskjøler4', 'a gas cooler with 4 fans in a row', 1, 0],
+    ['Gaskjøler4Lav', 'a low gas cooler with 4 fans in a row (the template\'s own)', 1, 0],
+    ['Gaskjøler4Kvadrat', 'a square gas cooler with 4 fans, 2 by 2', 1, 0],
+    ['Gaskjøler6', 'a gas cooler with 6 fans, 2 rows of 3', 1, 0],
+    ['Gaskjøler8', 'a gas cooler with 8 fans, 2 rows of 4', 1, 0],
+    ['Varmeveksler', 'a plate heat exchanger, upright: two bars with an X between them', 1, 0],
+    ['VarmevekslerBlå', 'a plate heat exchanger with cyan (suction) ends', 1, 0],
+    ['VarmevekslerOransje', 'a plate heat exchanger with orange (high pressure) ends', 1, 0],
+    ['VarmevekslerHalv', 'one side of a plate heat exchanger', 1, 0],
+    ['VarmevekslerHalvBlå', 'one side of a plate heat exchanger, cyan ends', 1, 0],
+    ['VarmevekslerHalvOransje', 'one side of a plate heat exchanger, orange ends', 1, 0],
+    ['VarmevekslerTom', 'an empty plate heat exchanger frame', 1, 0],
+    ['VarmevekslerTomBlå', 'an empty plate heat exchanger frame, cyan ends', 1, 0],
+    ['VarmevekslerTomOransje', 'an empty plate heat exchanger frame, orange ends', 1, 0],
+    ['VarmevekslerLiggende', 'a lying heat exchanger: grey plates above and below, orange ends, an arrowhead inside', 1, 0],
+    ['Kompressor', 'a compressor: a box with a cap and a green status circle (running)', 1, 0],
+    ['KompressorAv', 'a compressor with a grey status circle (stopped)', 1, 0],
+    ['KompressorPID', 'a circle with a trapezoid, the P&ID compressor symbol, green', 1, 0],
+    ['KompressorPIDHvit', 'the P&ID compressor symbol, white', 1, 0],
+    ['KompressorPIDAv', 'the P&ID compressor symbol, grey', 1, 0],
+    ['Lyn', 'a lightning bolt (electric heating)', 1, 0],
+    ['MiniVifte', 'a small green triangle in a circle, pointing up; drawn as the Designer\'s 21 px pump; the template\'s own name', 1, 0],
+    ['MiniVifteAv', 'a small grey triangle in a circle, pointing up', 1, 0],
+    ['MiniVifteDobbel', 'two small green triangles in joined circles (twin pump)', 1, 0],
+    ['MiniVifteDobbelAv', 'two small grey triangles in joined circles', 1, 0],
+    ['Batteri', 'a coil in a box', 1, 0],
+    ['Radiator', 'a finned radiator', 1, 0],
+    ['RadiatorVarm', 'a finned radiator with an orange (heated) coil', 1, 0],
+    ['KarLyseblå', 'an open basin of liquid with a light blue probe', 1, 0],
+    ['KarBlå', 'an open basin of liquid with a blue probe', 1, 0],
+    ['KarOransje', 'an open basin of liquid with an orange probe', 1, 0],
+    ['KarGul', 'an open basin of liquid with a yellow probe', 1, 0],
+    ['Kjølerom', 'a circle with a roof and dashes (a cold room)', 1, 0],
+    ['SirkelPiler', 'a circle with four arrows meeting in the middle and four status dots', 1, 0],
+    ['Luftkjøler', 'a tall box cut by a diagonal, a small fan in its corner (an air cooler)', 1, 0],
+    ['Viftekasse', 'a fan in a box with diagonals, green triangle pointing down', 1, 1],
+    ['ViftekasseAv', 'a fan in a box with diagonals, grey triangle pointing down', 1, 1],
+    ['Alarm', 'a red alarm bell in a circle; the template\'s own name', 0, 0],
+    ['NoConnection', 'a white pill with a red bow tie (no connection); the template\'s own name', 0, 0],
+    ['Bryter3Av', 'a rotary switch av/på/auto, set to av', 0, 0],
+    ['Bryter3På', 'a rotary switch av/på/auto, set to på (green)', 0, 0],
+    ['Bryter3Auto', 'a rotary switch av/på/auto, set to auto (green)', 0, 0],
+    ['Bryter2Av', 'a rotary switch av/på, set to av', 0, 0],
+    ['Bryter2På', 'a rotary switch av/på, set to på (green)', 0, 0],
+    ['Klokke', 'a clock, white face (a time schedule)', 0, 0],
+    ['KlokkeGrå', 'a clock, grey face', 0, 0],
+    ['KjølGrader', 'a white value pill 60 x 20; the template\'s own name', 1, 0],
+    ['PilleMørk', 'a dark grey pill (a setpoint or reference)', 1, 0],
+    ['PilleGrå', 'a light grey pill (inactive, manual)', 0, 0],
+    ['PilleRød', 'a red pill (alarm)', 0, 0],
+    ['PilleGrønn', 'a green pill (OK, running, enabled)', 0, 0],
+    ['PilleDelt', 'a pill half green, half dark grey', 0, 0],
+    ['PilleKoblingSide', 'a white value pill with a dotted lead out of its left end', 1, 0],
+    ['PilleKoblingTopp', 'a white value pill with a dotted lead up out of its top', 1, 0],
+    ['PilleMørkKoblingSide', 'a dark grey pill with a lead out of its left end', 1, 0],
+    ['PilleMørkKoblingTopp', 'a dark grey pill with a lead up out of its top', 1, 0],
+    ['Føler', 'a sensor lead: a dotted line down to a dot on the pipe', 1, 0],
+    ['FølerVinkel', 'a sensor lead with a bend: dotted, ending in a dot', 1, 0],
+    ['Nivåmåler', 'a level gauge: a tall bar, filled from below', 1, 0],
+    ['LedGrønn', 'a green status dot in a white ring (LED on)', 0, 0],
+    ['LedGrå', 'a grey status dot in a white ring (LED off)', 0, 0],
+    ['LedRød', 'a red status dot in a white ring (LED alarm)', 0, 0],
+    ['Tilbakeslagsventil', 'a check valve: a triangle against a bar, pointing right', 1, 0],
+    ['Rørbøy', 'a small pipe bend', 1, 0],
+    ['Ventil', 'a valve: two dark triangles tip to tip, on a lying pipe', 1, 0],
+    ['VentilHvit', 'a valve with its left triangle white (closed side)', 1, 0],
+    ['Treveisventil', 'a three-way valve: a through port white, the branch down', 1, 0],
+    ['TreveisventilSide', 'a three-way valve with its branch port white', 1, 0],
+    ['TreveisMotorventil', 'a three-way valve with a motor (m)', 1, 0],
+    ['Motorventil', 'a valve with a motor (m) on top', 1, 0],
+    ['MotorventilHvit', 'a valve with one triangle white and a motor (m)', 1, 0],
+    ['Magnetventil', 'a solenoid valve: a green square on top', 1, 0],
+    ['MagnetventilAv', 'a solenoid valve, grey square', 1, 0],
+    ['Aktuatorventil', 'a valve with a green round actuator on top', 1, 0],
+    ['AktuatorventilAv', 'a valve with a grey round actuator', 1, 0],
+    ['RørVæske', 'a liquid (receiver) pipe piece, yellow', 0, 0],
+    ['RørHøytrykk', 'a high pressure (discharge) pipe piece, orange', 0, 0],
+    ['RørSugeLT', 'an LT suction pipe piece, teal', 0, 0],
+    ['Rørkryss', 'a gap in the ground colour where one pipe crosses another', 0, 0],
+    ['RørSugeMT', 'an MT suction pipe piece, light cyan', 0, 0],
+    ['RørBlå', 'a blue pipe piece', 0, 0],
+    ['RørOransje', 'a light orange pipe piece', 0, 0],
+    ['RørGrønn', 'a green pipe piece', 0, 0],
+    ['RørVarmegjenvinning', 'a heat recovery pipe piece, green', 0, 0],
+    ['Strek', 'a short dark line', 0, 0],
+    ['FargeMørkGrå', 'a colour sample, #697c87', 0, 0],
+    ['FargeGrå', 'a colour sample, #9ea5af', 0, 0],
+    ['FargeOransje', 'a colour sample, #f89f79', 0, 0],
+    ['FargeGul', 'a colour sample, #f3c96a', 0, 0],
+    ['FargeLyseblå', 'a colour sample, #93d8ee', 0, 0],
+    ['FargeBlå', 'a colour sample, #84c2ce', 0, 0],
+    ['FargeLysGrå', 'a colour sample, #c9cccf', 0, 0],
+    ['FargeGrønn', 'a colour sample, #6cc5a2', 0, 0],
+    ['FargeRød', 'a colour sample, #ef473b', 0, 0],
+    ['FargeTekst', 'a colour sample, #3c505e', 0, 0]
+  ],
+  entries:
+    '0|1dfxxhx|31|31|1|1|0.69|0.5|0;94|1vtyugy|277|112|1|1|1|1|0;95|iagpsf|413|204|0|1|0|1|0;95|tnrltz|15.7|12.3|0|0|0|0|2;' +
+    '95|tnrltz|42.5|32|0|0|0|0|2;96|9oatbb|187.2|0|1|0|1|0|0;95|132rgt7|0|44.8|0|1|0|1|1;' +
+    '95|1t9ocw3|133|78.9|0.19|1|0.19|1|6;95|132rgt7|88|0|0|0|0|0|2;96|1mdgnx7|373|0|0|0|0|0|0;95|iagpsf|266|36|0|1|0|1|0;' +
+    '96|ylnoz3|25.5|67.3|0|1|0|1|3;95|1t9ocw3|27|27|0|0.22|0|0.22|7;95|1t9ocw3|37.8|27|0|0.22|0|0.22|2;' +
+    '95|tnrltz|70.5|6|0|1|0|1|6;97|18ypxn1|26|0|1|0|1|0|0;95|iagpsf|140|51|1|1|1|1|0;97|9gjmg9|26|0|1|0|1|0|0;' +
+    '95|1t9ocw3|460|44.8|1|0|1|0|6;97|noda|0|26|0|0|0|0|3;97|18ypxn1|127.5|0|1|0|1|0|0;98|j9ss5y|209|115|1|0|1|0|0;' +
+    '98|1wkt0ri|154|0|0|0|0|0|0;98|1l5klfu|73|46|1|0|1|0|0;98|1eupeby|489|260|1|1|1|1|6;98|1v26w3m|454|207|1|1|1|1|4;' +
+    '97|18ypxn1|0|26|0|0|0|0|3;96|grnz3f|771|195|0|1|0|1|2;1|il9mjr|9.8|5.5|0.7|0|0.9|0.33|0;' +
+    '2|12iq0bj|18.6|15|0.4|1|0.13|0.67|2;2|12iq0bj|18.6|15|0.6|0|0.87|0.33|0;1|il9mjr|9.9|5.5|0.3|1|0.1|0.67|2;' +
+    '3|12gcv9y|25.9|15|0|0.5|0.55|0.77|2;3|12gcv9y|25.9|15|1|0.5|0.45|0.23|0;95|132rgt7|0|130.2|0|1|0|1|1;' +
+    '98|1wkt0ri|0|17|0|1|0|1|3;5|112c0t1|53.2|53.2|0.5|0.98|0.73|0.43|0;4|1yhhxec|53|53|0.5|0.98|0.73|0.43|0;' +
+    '6|ktxdfh|64.7|107|0.25|0.99|0.29|0.26|0;8|hr44k9|33.3|54.4|0.24|0.98|0.31|0.29|0;' +
+    '6|ktxdfh|35.8|64|0.17|0.98|0.31|0.26|0;19|12yllsl|128.3|66|1|1|0.47|0.46|0;20|12yllsl|128.3|41.9|1|1|0.47|0.42|0;' +
+    '17|1yllhlh|98.2|66|1|1|0.51|0.46|0;23|16tg32t|128.3|66|1|1|0.49|0.54|0;22|16o91xx|98.2|66|1|1|0.51|0.54|0;' +
+    '18|1yllhlh|98.2|41.9|1|1|0.51|0.43|0;15|1dw8is5|66|66|1|1|0.65|0.48|0;21|12yllsl|66|66|1|1|0.6|0.37|0;' +
+    '16|1dw8is5|66|41.9|1|1|0.65|0.46|0;24|1cxviwo|26.3|60.5|1|0.94|0.59|0.12|0;25|1kynrf9|26.3|60.5|0.04|0.92|0.56|0.11|0;' +
+    '24|1b1dc1g|26.3|60.5|1|0.94|0.59|0.12|0;29|nauagg|26.3|60.5|0.04|0.92|0.47|0.11|0;' +
+    '35|1j48lwb|29.6|34|0.2|0.97|0.72|0.37|0;34|xx6c4i|29.6|34|0.2|0.97|0.72|0.37|0;' +
+    '32|h5lbtt|26.3|60.5|0.04|0.92|0.58|0.11|0;39|1aklo4a|11|19.5|0.14|0|0.25|0.43|0;40|1yhhxec|20|20|0.5|0.98|0.5|0.21|0;' +
+    '41|112c0t1|20|20|0.5|0.98|0.71|0.43|1;40|1yhhxec|20|20|0.5|0.98|0.71|0.43|1;41|112c0t1|20|20|0.5|0.98|0.5|0.21|0;' +
+    '40|1yhhxec|20|20|0.5|0.98|0.5|0.64|2;41|112c0t1|20|20|0.5|0.98|0.5|0.64|2;40|1yhhxec|20|20|0.5|0.98|0.29|0.43|3;' +
+    '41|112c0t1|20|20|0.5|0.98|0.29|0.43|3;42|15p81nl|20|35.3|0.5|0.99|0.8|0.48|0;42|1tsf1nl|35.3|20|0.72|0.98|0.59|0.16|3;' +
+    '42|15p81nl|20|35.3|0.5|0.99|0.2|0.43|2;42|1tsf1nl|35.3|20|0.72|0.98|0.54|0.76|1;43|1lcmxb|20|35.3|0.5|0.99|0.8|0.48|0;' +
+    '43|1ugy0gf|35.3|20|0.72|0.98|0.59|0.16|3;43|1lcmxb|20|35.3|0.5|0.99|0.2|0.43|2;' +
+    '43|1ugy0gf|35.3|20|0.72|0.98|0.54|0.76|1;44|xyaybw|60.9|49|0.02|0.98|0.34|0.26|0;44|xyaybw|44|36|0.02|0.97|0.34|0.27|0;' +
+    '36|148rxfk|20|20|0.5|0.98|0.51|0.12|0;37|azpq6f|20|20|0.5|0.98|0.52|0.15|0;38|5q4o7t|20|20|0.5|0.98|0.51|0.12|0;' +
+    '36|148rxfk|20|20|0.5|0.98|0.49|0.82|2;37|azpq6f|20|20|0.5|0.98|0.48|0.76|2;38|5q4o7t|20|20|0.5|0.98|0.49|0.82|2;' +
+    '36|148rxfk|20|20|0.5|0.98|0.85|0.49|1;37|azpq6f|20|20|0.5|0.98|0.81|0.48|1;38|5q4o7t|20|20|0.5|0.98|0.85|0.49|1;' +
+    '36|148rxfk|20|20|0.5|0.98|0.15|0.46|3;37|azpq6f|20|20|0.5|0.98|0.19|0.44|3;38|5q4o7t|20|20|0.5|0.98|0.15|0.46|3;' +
+    '14|1eqn9hd|105|92|0.85|0.01|0.54|0.69|0;14|1eqn9hd|105|72|0.85|0.01|0.54|0.65|0;' +
+    '14|1eqn9hd|69|60.5|0.85|0.01|0.54|0.69|0;14|1eqn9hd|69|47.3|0.85|0.01|0.54|0.65|0;' +
+    '8|1xdzoeb|64.7|107|0.25|0.99|0.61|0.2|0;33|1uhmpyb|60.5|26.3|0.08|0.96|0.91|0.63|0;' +
+    '51|1iehwex|20|20|0.5|0.98|0.42|0.56|0;45|j4sknx|52.5|41.3|0.9|0|0.54|0.27|0;46|86t0w9|52.5|41.3|0.9|0|0.95|0.18|0;' +
+    '45|j4sknx|43|33.8|0.9|0|0.54|0.27|0;46|86t0w9|43|33.8|0.9|0|0.95|0.18|0;12|178ya3w|64.7|107|0.25|0.99|0.71|0.42|0;' +
+    '47|100jir9|31.6|29.3|1|0.28|0.37|0.44|0;52|x4g5jq|53.2|53.2|0.5|0.98|0.49|0.53|0;53|1s36tor|18.5|40|1|1|0.94|0.59|0;' +
+    '11|1b1w4fl|64.7|107|0.25|0.99|0.24|0.47|0;25|qx33in|26.3|60.5|0.04|0.92|0.55|0.2|0;' +
+    '26|n3qlrf|26.3|60.5|0.04|0.92|0.55|0.2|0;24|qyi1j2|26.3|60.5|1|0.94|0.58|0.2|0;' +
+    '26|12ffj9d|26.3|60.5|0.04|0.92|0.56|0.11|0;28|1lcymng|26.3|60.5|0.04|0.92|0.47|0.11|0;' +
+    '27|16ajdgv|26.3|60.5|1|0.94|0.51|0.13|0;29|nauagg|26.3|60.5|0.04|0.92|0.58|0.84|2;' +
+    '28|1lcymng|26.3|60.5|0.04|0.92|0.58|0.84|2;27|16ajdgv|26.3|60.5|0|0.06|0.49|0.87|2;' +
+    '10|152jftn|64.7|107|0.25|0.99|0.54|0.37|0;9|1pnujnh|33.3|54.4|0.24|0.98|0.46|0.55|0;' +
+    '9|oil4tb|64.7|107|0.25|0.99|0.65|0.45|0;8|hr44k9|25|40.8|0.24|0.98|0.31|0.29|0;9|1pnujnh|25|40.8|0.24|0.98|0.43|0.55|0;' +
+    '6|ktxdfh|33.3|54.4|0.24|0.98|0.3|0.29|0;6|ktxdfh|25|40.8|0.24|0.98|0.3|0.29|0;7|5mwroj|54.4|33.3|0.15|0.97|0.5|0.12|1;' +
+    '7|5mwroj|33.3|54.4|0.24|0.98|0.86|0.43|0;7|5mwroj|40.8|25|0.2|0.96|0.5|0.13|1;7|5mwroj|25|40.8|0.32|0.98|0.85|0.43|0;' +
+    '6|ktxdfh|42.7|69.6|0.21|0.99|0.31|0.29|0;7|5mwroj|69.6|42.7|0.13|0.98|0.51|0.12|1;' +
+    '7|5mwroj|42.7|69.7|0.21|0.99|0.86|0.42|0;8|1jdnv1l|42.7|69.6|0.21|0.99|0.7|0.25|0;' +
+    '9|12wbqfh|42.7|69.6|0.21|0.99|0.67|0.49|0;7|5mwroj|107|64.7|0.15|0.98|0.5|0.5|1;' +
+    '7|5mwroj|64.7|107|0.25|0.99|0.58|0.49|0;13|efzf1f|80.3|107|0.39|0.99|0.14|0.65|0;' +
+    '13|efzf1f|58|69.6|0.42|0.99|0.18|0.69|0;13|efzf1f|48.6|54.4|0.48|0.98|0.2|0.69|0;54|1rkhb1s|33.1|25.8|1|1|0.52|0.56|0;' +
+    '54|1rkhb1s|33.1|25.8|1|1|0.44|0.44|1;54|1rkhb1s|33.1|25.8|1|1|0.52|0.33|2;54|1rkhb1s|33.1|25.8|1|1|0.61|0.44|3;' +
+    '55|ze90re|33.1|25.8|0|0|0.45|0.68|0;55|ze90re|33.1|25.8|1|1|0.55|0.3|2;55|ze90re|33.1|25.8|1|1|0.47|0.39|1;' +
+    '55|ze90re|33.1|25.8|0|0|0.53|0.58|3;31|177dpx|26.3|60.5|0.04|0.92|0.58|0.11|0;30|11wmbpw|26.3|60.5|1|0.94|0.66|0.16|0;' +
+    '48|xgw8x5|31.6|29.3|1|0.28|0.37|0.44|0;49|1sqcwfp|31.6|29.3|1|0.28|0.37|0.44|0;50|1p5una9|31.6|29.3|1|0.28|0.37|0.44|0;' +
+    '56|3soy08|34|34|0.5|0.97|0.46|0.42|0;57|fv2gbq|60|20|0.17|0.98|0.53|0.57|0;58|130fov3|59.4|63.4|0.09|0.27|0.68|0.35|0;' +
+    '59|hg5xm2|59.4|61.1|0.09|0.28|0.69|0.41|0;61|1y4huz5|54.5|63.5|0.1|0.27|0.57|0.38|0;' +
+    '62|1idzizc|52.2|61.1|0.1|0.28|0.61|0.46|0;60|hg5xm2|59.4|63.5|0.09|0.27|0.66|0.43|0;' +
+    '61|1y4huz5|55.7|52.1|0.1|0.17|0.64|0.4|0;62|1idzizc|55.7|52.1|0.1|0.17|0.55|0.51|0;64|d917sr|40|40|1|0.5|0.51|0.43|0;' +
+    '63|eapsy1|40|40|1|0.5|0.51|0.43|0;104|1axhige|20|20|1|1|1|1|0;105|1ce0hnl|20|20|1|1|1|1|0;106|1x3quhj|20|20|1|1|1|1|0;' +
+    '107|1js7pne|20|20|1|1|1|1|0;108|gz8ro2|20|20|1|1|1|1|0;109|95tm3f|20|20|1|1|1|1|0;110|wmz74l|20|20|1|1|1|1|0;' +
+    '111|aton4k|20|20|1|1|1|1|0;112|x46v4l|20|20|1|1|1|1|0;113|1rtxrv|20|20|1|1|1|1|0;99|6qweot|240.2|0|1|0|1|0|0;' +
+    '96|9oatbb|240.2|0|1|0|1|0|0;100|7u6hve|240.2|0|1|0|1|0|0;95|132rgt7|240.2|0|1|0|1|0|2;101|k3ugn8|240.2|0|1|0|1|0|0;' +
+    '102|jq84eu|240.2|0|1|0|1|0|0;99|6qweot|0|166.3|0|0|0|0|3;96|9oatbb|0|166.3|0|0|0|0|3;100|7u6hve|0|166.3|0|0|0|0|3;' +
+    '95|132rgt7|0|166.3|0|0|0|0|1;101|k3ugn8|0|166.3|0|0|0|0|3;102|jq84eu|0|166.3|0|0|0|0|3;' +
+    '66|khxtwu|60|20|0.17|0.98|0.61|0.36|0;65|zm5j58|60|20|0.17|0.98|0.61|0.36|0;75|mp6d2g|4.5|14.4|0.5|0|0.3|0.6|0;' +
+    '75|mp6d2g|4.5|38.5|0.5|0|0.3|0.66|0;103|18rq901|7.3|0|0|0|0|0|0;103|18rq901|0|7.3|0|1|0|1|3;' +
+    '85|1ir60j5|14|18|0.64|0.5|0.65|0.59|5;85|1ir60j5|14|18|0.36|0.5|0.27|0.59|3;85|1ir60j5|18|14|0.5|0.36|0.35|0.22|0;' +
+    '85|1ir60j5|14|18|0.64|0.5|0.7|0.35|1;85|1ir60j5|18|14|0.5|0.64|0.6|0.64|2;85|1ir60j5|18|14|0.5|0.64|0.35|0.6|6;' +
+    '85|1ir60j5|14|18|0.36|0.5|0.32|0.35|7;85|1ir60j5|18|14|0.5|0.36|0.6|0.26|4;86|16z0so5|14|18|0.04|0.27|0.57|0.46|3;' +
+    '86|16z0so5|18|14|0.27|0.04|0.51|0.57|0;86|16z0so5|14|18|0.43|0.5|0.39|0.48|1;86|16z0so5|18|14|0.27|0.96|0.48|0.37|2;' +
+    '87|lw2q97|21.2|18|0.42|0.5|0.61|0.52|0;87|lw2q97|18|21.2|0.5|0.42|0.46|0.56|1;87|lw2q97|21.2|18|0.58|0.5|0.42|0.42|2;' +
+    '87|lw2q97|18|21.2|0.5|0.58|0.56|0.37|3;87|lw2q97|21.2|18|0.58|0.5|0.4|0.52|4;87|lw2q97|18|21.2|0.5|0.42|0.56|0.57|7;' +
+    '87|lw2q97|21.2|18|0.42|0.5|0.62|0.42|6;87|lw2q97|18|21.2|0.5|0.58|0.46|0.36|5;89|6ytqla|17.2|18|0.05|0.97|0.55|0.5|1;' +
+    '89|6ytqla|18|17.2|0.56|0.71|0.56|0.43|0;89|6ytqla|17.2|18|0.47|0.03|0.5|0.43|3;89|6ytqla|18|17.2|0.03|0.05|0.47|0.49|2;' +
+    '88|18pay2i|17.2|18|0.29|0.5|0.58|0.48|1;88|18pay2i|18|17.2|0.5|0.71|0.52|0.42|0;' +
+    '88|18pay2i|17.2|18|0.71|0.5|0.47|0.48|3;88|18pay2i|18|17.2|0.5|0.29|0.52|0.53|2;92|1yaaffv|17.2|18|0.29|0.5|0.65|0.5|1;' +
+    '90|z4hsw7|16.4|18|1|0.7|0.59|0.55|1;91|13s0sm2|16.4|18|1|0.7|0.59|0.55|1;90|z4hsw7|18|16.4|0.3|1|0.45|0.59|2;' +
+    '91|13s0sm2|18|16.4|0.3|1|0.45|0.59|2;90|z4hsw7|16.4|18|0|0.3|0.41|0.45|3;91|13s0sm2|16.4|18|0|0.3|0.41|0.45|3;' +
+    '90|z4hsw7|18|16.4|0.7|0|0.55|0.41|0;91|13s0sm2|18|16.4|0.7|0|0.55|0.41|0;93|p5v02a|17.2|18|0.29|0.5|0.65|0.5|1;' +
+    '92|1yaaffv|18|17.2|0.5|0.71|0.5|0.35|0;93|p5v02a|18|17.2|0.5|0.71|0.5|0.35|0;92|1yaaffv|17.2|18|0.71|0.5|0.35|0.5|3;' +
+    '93|p5v02a|17.2|18|0.71|0.5|0.35|0.5|3;92|1yaaffv|18|17.2|0.5|0.29|0.5|0.65|2;93|p5v02a|18|17.2|0.5|0.29|0.5|0.65|2;' +
+    '84|ge9uns|10|18|0.09|0.97|0.54|0.57|3;84|ge9uns|18|10|0.03|0.09|0.36|0.47|0;84|ge9uns|10|18|0.09|0.03|0.45|0.36|1;' +
+    '84|ge9uns|18|10|0.56|0.5|0.59|0.36|2;83|88jip8|10|18|0.5|0.5|0.6|0.5|1;83|88jip8|18|10|0.5|0.5|0.5|0.6|0;' +
+    '82|wd1847|7.1|5.9|0|0|0|0|0;83|88jip8|18|10|0.5|0.5|0.5|0.4|0;82|wd1847|5.9|7.1|0|1|0|1|3;' +
+    '83|88jip8|10|18|0.5|0.5|0.4|0.5|1;82|wd1847|7.1|5.9|1|1|1|1|2;82|wd1847|5.9|7.1|1|0|1|0|1;' +
+    '71|7qe4ru|44.9|20|0.12|0.5|0.37|0.48|0;71|7qe4ru|44.9|20|0.88|0.5|0.66|0.48|2;72|7qe4ru|40|24.8|0.5|0.22|0.52|0.38|0;' +
+    '72|7qe4ru|40|24.8|0.5|0.78|0.52|0.58|2;67|1ctp3ar|80|20|0.13|0.95|0.63|0.38|0;68|j708eb|80|20|0.13|0.95|0.63|0.38|0;' +
+    '69|zogolu|80|20|0.13|0.95|0.63|0.38|0;68|j708eb|60|20|0.17|0.95|0.61|0.38|0;69|zogolu|60|20|0.17|0.95|0.61|0.38|0;' +
+    '70|yy0ifv|80|20|0.13|0.95|0.38|0.64|0;66|1lqvwlo|80|20|0.13|0.95|0.63|0.38|0;' +
+    '77|19vv1oh|18.8|88.6|0.47|0.83|0.39|0.73|0;77|19vv1oh|18.8|88.6|0.52|0.83|0.61|0.72|4;' +
+    '77|19vv1oh|18.8|64|0.47|0.84|0.39|0.73|0;77|19vv1oh|18.8|64|0.53|0.84|0.62|0.72|4;' +
+    '77|19vv1oh|18.8|47|0.47|0.86|0.39|0.74|0;77|19vv1oh|18.8|47|0.53|0.86|0.62|0.73|4;81|bum8la|10|10|1|1|1|1|3;' +
+    '81|bum8la|10|10|0|1|0|1|0;81|bum8la|10|10|0|0|0|0|1;81|bum8la|10|10|1|0|1|0|2;75|mp6d2g|4.5|26.3|0.5|0|0.3|0.65|0;' +
+    '75|mp6d2g|14.4|4.5|1|0.5|0.4|0.3|1;75|mp6d2g|26.3|4.5|1|0.5|0.35|0.3|1;75|mp6d2g|38.5|4.5|1|0.5|0.34|0.3|1;' +
+    '75|mp6d2g|4.5|14.4|0.5|1|0.7|0.4|2;75|mp6d2g|4.5|26.3|0.5|1|0.7|0.35|2;75|mp6d2g|4.5|38.5|0.5|1|0.7|0.34|2;' +
+    '75|mp6d2g|14.4|4.5|0|0.5|0.6|0.7|3;75|mp6d2g|26.3|4.5|0|0.5|0.65|0.7|3;75|mp6d2g|38.5|4.5|0|0.5|0.66|0.7|3;' +
+    '76|1m3ct8c|14|14.4|1|0.01|0.23|0.45|0;76|1m3ct8c|25.9|26.3|1|0|0.19|0.49|0;76|1m3ct8c|39|38.5|1|0|0.17|0.5|0;' +
+    '76|1m3ct8c|14|14.4|0|0.01|0.68|0.45|4;76|1m3ct8c|25.9|26.3|0|0|0.76|0.49|4;76|1m3ct8c|39|38.5|0|0|0.79|0.5|4;' +
+    '76|1m3ct8c|14.4|14|0.99|0|0.55|0.68|5;76|1m3ct8c|26.3|25.9|1|0|0.51|0.76|5;76|1m3ct8c|38.5|39|1|0|0.5|0.79|5;' +
+    '76|1m3ct8c|14|14.4|1|0.99|0.32|0.55|6;76|1m3ct8c|25.9|26.3|1|1|0.24|0.51|6;76|1m3ct8c|39|38.5|1|1|0.21|0.5|6;' +
+    '76|1m3ct8c|14.4|14|0.01|1|0.45|0.32|7;76|1m3ct8c|26.3|25.9|0|1|0.49|0.24|7;76|1m3ct8c|38.5|39|0|1|0.5|0.21|7;' +
+    '76|1m3ct8c|14.4|14|0.99|1|0.55|0.23|1;76|1m3ct8c|26.3|25.9|1|1|0.51|0.19|1;76|1m3ct8c|38.5|39|1|1|0.5|0.17|1;' +
+    '76|1m3ct8c|14|14.4|0|0.99|0.77|0.55|2;76|1m3ct8c|25.9|26.3|0|1|0.81|0.51|2;76|1m3ct8c|39|38.5|0|1|0.83|0.5|2;' +
+    '76|1m3ct8c|14.4|14|0.01|0|0.45|0.77|3;76|1m3ct8c|26.3|25.9|0|0|0.49|0.81|3;76|1m3ct8c|38.5|39|0|0|0.5|0.83|3;' +
+    '74|azi5qc|60|26.4|0.17|0.74|0.56|0.64|2;74|n9b3gc|60|26.4|0.17|0.98|0.56|0.26|0;73|n9b3gc|67|20|0.25|0.98|0.38|0.43|0;' +
+    '73|n9b3gc|67|20|0.15|0.98|0.72|0.43|2;78|tq2q9n|10|10|0.5|1|0.5|0.89|0;79|y63312|10|10|0.5|1|0.5|0.89|0;' +
+    '80|568866|10|10|0.5|1|0.5|0.89|0;73|1c4c0fn|44.9|20|0.12|0.5|0.52|0.43|0;73|1c4c0fn|44.9|20|0.88|0.5|0.55|0.43|2;' +
+    '74|1c4c0fn|40|24.8|0.5|0.22|0.54|0.48|0;74|1c4c0fn|40|24.8|0.5|0.78|0.54|0.41|2;67|1ctp3ar|60|20|0.17|0.95|0.61|0.38|0'
+};
+
+/** A component's shapes, groups opened, in drawing order. */
+function iwdieSymLeaves(shapes, out) {
+  out = out || [];
+  (shapes || []).forEach(function (s) { if (s && s.t === 'group') iwdieSymLeaves(s.items, out); else if (s) out.push(s); });
+  return out;
+}
+
+/** The box of one shape, from every point it names (a path's control points too). -> {x0, y0, x1, y1} or null */
+function iwdieSymBox(s) {
+  var xs = [], ys = [];
+  if (s.t === 'd') {
+    var v = String(s.d).match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [];
+    for (var i = 0; i + 1 < v.length; i += 2) { xs.push(+v[i]); ys.push(+v[i + 1]); }
+  } else if (s.t === 'rect') { xs.push(s.x, s.x + s.w); ys.push(s.y, s.y + s.h); }
+  else if (s.t === 'ellipse') { xs.push(s.cx - s.rx, s.cx + s.rx); ys.push(s.cy - s.ry, s.cy + s.ry); }
+  else if (s.t === 'line') (s.pts || []).forEach(function (p) { xs.push(p[0]); ys.push(p[1]); });
+  else if (s.t === 'path') (s.nodes || []).forEach(function (p) { xs.push(p.x); ys.push(p.y); });
+  else if (s.t === 'text') { xs.push(s.x); ys.push(s.y); }
+  if (!xs.length) return null;
+  return { x0: Math.min.apply(null, xs), y0: Math.min.apply(null, ys), x1: Math.max.apply(null, xs), y1: Math.max.apply(null, ys) };
+}
+
+/** FNV-1a of a string, base 36. */
+function iwdieSymHash(str) {
+  var h = 2166136261;
+  for (var i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}
+
+/** Where a shape starts: a path's first point, else its box's top left. -> [x, y] or null */
+function iwdieSymStart(s) {
+  if (s.t === 'd') {
+    var v = /^\s*M\s*(-?\d*\.?\d+(?:e[-+]?\d+)?)[\s,]+(-?\d*\.?\d+(?:e[-+]?\d+)?)/i.exec(String(s.d));
+    if (v) return [+v[1], +v[2]];
+  }
+  var b = iwdieSymBox(s);
+  return b ? [b.x0, b.y0] : null;
+}
+
+/** What a library component is drawn of, as IWDIE_SYMBOLS keeps it: the hash of its shapes (kind, path letters, fill,
+ *  stroke, stroke width, fill rule - no coordinate), its size, where its first shape starts and where all its shapes
+ *  start on average, each later one weighing more - both over its own box, 0 to 1. A turned or mirrored copy starts its
+ *  paths elsewhere. -> {h, w, ht, fx, fy, wx, wy} */
+function iwdieSymPrint(it) {
+  var L = iwdieSymLeaves(it.shapes), W = Math.max(+it.w || 0, 0.01), H = Math.max(+it.h || 0, 0.01);
+  var sig = L.map(function (s) {
+    var st = s.st || {};
+    return [s.t, s.t === 'd' ? String(s.d).replace(/[^MLCZ]/g, '') : '', st.fill || '-', st.stroke || '-', Math.round((+st.sw || 0) * 10) / 10, s.rule || ''].join(',');
+  }).join('|');
+  var r2 = function (v) { return Math.round(v * 100) / 100; }, fx = 0.5, fy = 0.5, sx = 0, sy = 0, sw = 0;
+  L.forEach(function (s, i) {
+    var a = iwdieSymStart(s), cx = a ? a[0] / W : 0.5, cy = a ? a[1] / H : 0.5;
+    if (!i) { fx = cx; fy = cy; }
+    sx += (i + 1) * cx; sy += (i + 1) * cy; sw += i + 1;
+  });
+  return { h: iwdieSymHash(sig), w: Math.round(W * 10) / 10, ht: Math.round(H * 10) / 10, fx: r2(fx), fy: r2(fy), wx: r2(sw ? sx / sw : 0.5), wy: r2(sw ? sy / sw : 0.5) };
+}
+
+/** A symbol's name as a drawing may write it: case, æ ø å written ae o a, spaces, dashes and underscores aside -
+ *  "gaskjoler 4" is Gaskjøler4. */
+function iwdieSymKey(name) {
+  return String(name == null ? '' : name).toLowerCase().replace(/æ/g, 'ae').replace(/[øö]/g, 'o').replace(/[åä]/g, 'a').replace(/[\s_\-.]+/g, '');
+}
+
+var iwdieSymCache = null;
+/** IWDIE_SYMBOLS read: {families: [{name, en, list, inner}], byHash: {hash: [{f, w, h, fx, fy, wx, wy, k}]}, byName: {name: f},
+ *  byKey: {iwdieSymKey(name): f}} */
+function iwdieSymTable() {
+  if (iwdieSymCache) return iwdieSymCache;
+  var t = { families: [], byHash: {}, byName: {}, byKey: {} };
+  var src = IWDIE_SYMBOLS || { families: [], entries: '' };
+  src.families.forEach(function (f, i) { t.families.push({ name: f[0], en: f[1], list: !!f[2], inner: !!f[3] }); t.byName[f[0]] = i; t.byKey[iwdieSymKey(f[0])] = i; });
+  String(src.entries || '').split(';').forEach(function (e) {
+    var p = e.split('|');
+    if (p.length !== 9) return;
+    var one = { f: +p[0], w: +p[2], h: +p[3], fx: +p[4], fy: +p[5], wx: +p[6], wy: +p[7], k: +p[8] };
+    (t.byHash[p[1]] = t.byHash[p[1]] || []).push(one);
+  });
+  return (iwdieSymCache = t);
+}
+
+/** Which of the template's components `it` is: drawn of the same, the same size within 1.5 px, its two points within
+ *  0.06 of its box. -> {name, en, list, k} or null */
+function iwdieSymMatch(it) {
+  var t = iwdieSymTable(), p = iwdieSymPrint(it), best = null, bd = 1e9;
+  (t.byHash[p.h] || []).forEach(function (e) {
+    if (Math.abs(e.w - p.w) > 1.5 || Math.abs(e.h - p.ht) > 1.5) return;
+    var d = Math.max(Math.abs(e.fx - p.fx), Math.abs(e.fy - p.fy), Math.abs(e.wx - p.wx), Math.abs(e.wy - p.wy));
+    if (d <= 0.06 && d < bd) { bd = d; best = e; }
+  });
+  if (!best) return null;
+  var f = t.families[best.f];
+  return { name: f.name, en: f.en, list: f.list, k: best.k };
+}
+
+/** A library's components with the template's names (v1.63.0): each that is one of the template's takes its name when
+ *  Illustrator gave it none, and every one so known carries `sym` ({name, k, named}: which, how it is turned, whether its
+ *  name is the table's - not to be kept as its own). The items are copied, not changed. */
+function iwdieSymName(items) {
+  return (items || []).map(function (it) {
+    var m = it ? iwdieSymMatch(it) : null, c = {};
+    Object.keys(it || {}).forEach(function (k) { c[k] = it[k]; });
+    if (m) {
+      c.sym = { name: m.name, k: m.k, named: !String(c.name || '').trim() };
+      if (c.sym.named) c.name = m.name;
+    }
+    return c;
+  });
+}
+
+/** The eight ways to turn and mirror a component, as matrices on its centre: k = quarter turns clockwise (0-3), +4 for
+ *  mirrored left to right before the turn. -> [a, b, c, d] for (x, y) -> (a x + c y, b x + d y) */
+function iwdieSymMatrix(k) {
+  var m = (k & 4) ? [-1, 0, 0, 1] : [1, 0, 0, 1];
+  for (var i = 0; i < (k & 3); i++) m = [-m[1], m[0], -m[3], m[2]];   // then a quarter turn clockwise: (x, y) -> (-y, x)
+  return m;
+}
+
+/** The k of a matrix. */
+function iwdieSymK(m) {
+  for (var k = 0; k < 8; k++) {
+    var q = iwdieSymMatrix(k);
+    if (q[0] === m[0] && q[1] === m[1] && q[2] === m[2] && q[3] === m[3]) return k;
+  }
+  return 0;
+}
+
+/** What must still be done to a member turned `has` to stand turned `want`: want after the inverse of has. -> k */
+function iwdieSymStill(want, has) {
+  var a = iwdieSymMatrix(want), b = iwdieSymMatrix(has);
+  // b is orthogonal: its inverse is its transpose
+  var bi = [b[0], b[2], b[1], b[3]];
+  return iwdieSymK([a[0] * bi[0] + a[2] * bi[1], a[1] * bi[0] + a[3] * bi[1], a[0] * bi[2] + a[2] * bi[3], a[1] * bi[2] + a[3] * bi[3]]);
+}
+
+/** The member of a symbol family to place (v1.63.0): among `items` (a library named by iwdieSymName) those of `name`,
+ *  best the one the template drew turned as asked (`k`) - the template's own upright "m" on a turned valve - then
+ *  the one closest to the box asked for (`w` x `h`, either may be 0: its own size), else whichever is there.
+ *  Components named so in Illustrator, not by the template, count too, as drawn (k 0). Names are matched as iwdieSymKey
+ *  writes them.
+ *  -> {it, still: the turn left to do} or null */
+function iwdieSymPick(items, name, k, w, h) {
+  var key = iwdieSymKey(name);
+  var all = (items || []).filter(function (it) { return it && ((it.sym && iwdieSymKey(it.sym.name) === key) || (!it.sym && iwdieSymKey(it.name) === key)); });
+  if (!all.length) return null;
+  var kOf = function (it) { return it.sym ? it.sym.k : 0; };
+  var size = function (it) {
+    var odd = iwdieSymStill(k, kOf(it)) & 1, iw = odd ? it.h : it.w, ih = odd ? it.w : it.h;
+    if (!(w > 0) && !(h > 0)) return 0;
+    var rw = w > 0 ? w / Math.max(iw, 0.01) : null, rh = h > 0 ? h / Math.max(ih, 0.01) : null;
+    var s = Math.min(rw === null ? rh : rw, rh === null ? rw : rh);
+    return Math.abs(Math.log(Math.max(s, 1e-6)));
+  };
+  var same = all.filter(function (it) { return kOf(it) === k; }), from = same.length ? same : all;
+  var best = from[0], bs = size(best);
+  from.forEach(function (it) { var s = size(it); if (s < bs - 1e-9) { bs = s; best = it; } });
+  return { it: best, still: iwdieSymStill(k, kOf(best)) };
+}
+
+/** The symbols a drawing places (<use data-iwdie-symbol="…">), in its order: {name, x, y, w, h, k, at, end} with
+ *  `at`/`end` the element's place in the text. data-iwdie-turn is clockwise degrees (90, 180, 270) and data-iwdie-flip
+ *  "1" mirrors left to right before the turn. */
+function iwdieSymRefs(svg) {
+  var s = String(svg || ''), out = [], re = /<use\b([^>]*?\sdata-iwdie-symbol\s*=\s*(["'])([^"']*)\2[^>]*?)(\/?)>/g, m;
+  var attr = function (a, n) { var r = new RegExp('\\s' + n + '\\s*=\\s*(["\'])([^"\']*)\\1').exec(a); return r ? r[2] : ''; };
+  while ((m = re.exec(s))) {
+    var a = m[1], end = m.index + m[0].length;
+    if (!m[4]) {   // <use ...></use>
+      var close = /^\s*<\/use\s*>/.exec(s.slice(end));
+      if (close) end += close[0].length;
+    }
+    var num = function (n) { var v = parseFloat(attr(a, n)); return isFinite(v) ? v : 0; };
+    var turn = Math.round((parseFloat(attr(a, 'data-iwdie-turn')) || 0) / 90) % 4;
+    if (turn < 0) turn += 4;
+    var flip = /^(1|true|x|yes)$/i.test(attr(a, 'data-iwdie-flip'));
+    out.push({ name: m[3].trim(), x: num('x'), y: num('y'), w: Math.max(0, num('width')), h: Math.max(0, num('height')),
+      k: turn + (flip ? 4 : 0), id: attr(a, 'id'), at: m.index, end: end });
+    re.lastIndex = end;
+  }
+  return out;
+}
+
+/** A drawing with each symbol it places drawn (v1.63.0): the component of that name from `items` (a library named by
+ *  iwdieSymName), turned and mirrored as asked, scaled - its proportions kept - into the box asked for, as a group
+ *  named after it (VectorCraft shows the name; data-iwdie-symbol says which it was). One the library lacks becomes a
+ *  dashed box of its size with its name in it, to be swapped by hand. -> {svg, placed: n, missing: [name...]} */
+function iwdieSymExpand(svg, items) {
+  var refs = iwdieSymRefs(svg);
+  if (!refs.length) return { svg: String(svg || ''), placed: 0, missing: [] };
+  var s = String(svg), used = {}, out = '', from = 0, placed = 0, missing = [], f = iwdieDrawFmt, esc = iwdieDrawEsc, t = iwdieSymTable();
+  // the ids taken, those of the <use> elements that go left out: one keeps its id as the group it becomes
+  var rest = '', at = 0;
+  refs.forEach(function (r) { rest += s.slice(at, r.at); at = r.end; });
+  rest += s.slice(at);
+  (rest.match(/\sid\s*=\s*"[^"]*"/g) || []).forEach(function (q) { used[q.replace(/^\sid\s*=\s*"|"$/g, '')] = 1; });
+  refs.forEach(function (r) {
+    out += s.slice(from, r.at);
+    from = r.end;
+    var pick = r.name ? iwdieSymPick(items, r.name, r.k, r.w, r.h) : null;
+    var gid = iwdieVcSvgId(r.id || r.name || 'symbol', used);
+    if (!pick) {
+      if (missing.indexOf(r.name) < 0) missing.push(r.name);
+      var bw = r.w || 40, bh = r.h || 30;
+      out += '<g id="' + esc(gid) + '" data-name="' + esc(r.name) + '" data-iwdie-symbol="' + esc(r.name) + '" data-iwdie-missing="1">' +
+        '<rect x="' + f(r.x) + '" y="' + f(r.y) + '" width="' + f(bw) + '" height="' + f(bh) + '" fill="none" stroke="#ef473b" stroke-width="1" stroke-dasharray="4 2"/>' +
+        '<text x="' + f(r.x + 3) + '" y="' + f(r.y + Math.min(bh - 3, 12)) + '" font-family="Source Sans 3" font-size="9" fill="#ef473b">' + esc(r.name) + '</text></g>';
+      return;
+    }
+    var it = pick.it, m = iwdieSymMatrix(pick.still), odd = pick.still & 1, real = (it.sym && it.sym.name) || String(it.name || '').trim() || r.name;
+    var nw = odd ? it.h : it.w, nh = odd ? it.w : it.h;
+    var bw2 = r.w > 0 ? r.w : (r.h > 0 ? nw * r.h / Math.max(nh, 0.01) : nw), bh2 = r.h > 0 ? r.h : (r.w > 0 ? nh * r.w / Math.max(nw, 0.01) : nh);
+    var sc = Math.min(bw2 / Math.max(nw, 0.01), bh2 / Math.max(nh, 0.01));
+    var tf = 'translate(' + f(r.x + bw2 / 2) + ' ' + f(r.y + bh2 / 2) + ')' + (Math.abs(sc - 1) > 1e-4 ? ' scale(' + (Math.round(sc * 10000) / 10000) + ')' : '') +
+      (pick.still ? ' matrix(' + m.join(' ') + ' 0 0)' : '') + ' translate(' + f(-it.w / 2) + ' ' + f(-it.h / 2) + ')';
+    var defs = iwdieDrawDefsSvg(it.shapes);
+    out += '<g id="' + esc(gid) + '" data-name="' + esc(real) + '" data-iwdie-symbol="' + esc(real) + '" transform="' + tf + '">' +
+      (defs ? '<defs>' + defs + '</defs>' : '') + it.shapes.map(function (sh) { return iwdieDrawShapeSvg(sh); }).join('') + '</g>';
+    placed++;
+  });
+  out += s.slice(from);
+  return { svg: out, placed: placed, missing: missing };
+}
+
+/** The symbols a drawing may place (v1.63.0): the families of `items` (a library named by iwdieSymName) the template
+ *  offers to a drawing, each with its sizes as drawn - turned members turned back - and how often the library has it,
+ *  in the table's order; with no library, none. -> [{name, en, sizes: ["33x54", ...], count}] */
+function iwdieSymAvailable(items) {
+  var t = iwdieSymTable(), by = {};
+  (items || []).forEach(function (it) {
+    if (!it || !it.sym) return;
+    var f = t.byName[it.sym.name], fam = t.families[f];
+    if (!fam || !fam.list) return;
+    var b = by[it.sym.name] = by[it.sym.name] || { f: f, name: it.sym.name, en: fam.en, sizes: [], count: 0 };
+    var odd = (it.sym.k & 1) && !fam.inner, sz = Math.round(odd ? it.h : it.w) + 'x' + Math.round(odd ? it.w : it.h);
+    if (b.sizes.indexOf(sz) < 0) b.sizes.push(sz);
+    b.count++;
+  });
+  return Object.keys(by).map(function (n) { return by[n]; }).sort(function (a, b) { return a.f - b.f; })
+    .map(function (b) { return { name: b.name, en: b.en, sizes: b.sizes, count: b.count }; });
+}
+
 /* ===================== Overview for an agent (v1.62.0) =====================
  * An export's `overview`: the plant behind the panel, for an agent that draws an overview picture - or links one - from
  * the export and the documentation it is given. The units, the rows of their parameters as the Designer's parameter
@@ -8816,7 +9443,16 @@ function iwdieBuildOverview(doc, src) {
     });
     parts.components = { file: str(lib.file), count: lib.items.length, layers: layerOrder.map(function (L) { return [L, byLayer[L]]; }),
       named: namedItems.slice(0, 40),
-      note: 'Kept in this browser from the plant\'s .ai. VectorCraft offers them under Libraries; a drawing cannot point at them, so draw with plain shapes and leave the components to be dragged in by hand.' };
+      note: 'Kept in this browser from the plant\'s .ai. VectorCraft offers them under Libraries and in its IWMAC menu.' };
+    // v1.63.0: those the Maskin template's table knows, by name, for a drawing to place
+    var syms = iwdieSymAvailable(lib.items);
+    if (syms.length) {
+      parts.components.symbols = { cols: ['name', 'sizes', 'what'], rows: syms.map(function (s) { return [s.name, s.sizes.join(' '), s.en]; }) };
+      parts.components.place = 'A drawing places a symbol by name instead of drawing it: <use data-iwdie-symbol="Kompressor" x="120" y="80"/> puts the ' +
+        'library\'s compressor with its top left at 120, 80, at its own size; width and height fit it into that box, its proportions kept; ' +
+        'data-iwdie-turn="90" (180, 270) turns it clockwise, data-iwdie-flip="1" mirrors it left to right first. Insert draws each from this ' +
+        'library, as a group named after it; a name it lacks becomes a red dashed box. sizes are those the library has; the nearest is used.';
+    }
   }
 
   var nTagged = 0;
@@ -11067,9 +11703,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        .ai… on the components tab reads them here, into Tampermonkey's storage, where the
        Designer and the editor's page both reach them. Nothing leaves the browser. */
 
+    // a name the template's table gave (v1.63.0) is not kept as the component's own: the table may name it better later
     function libStore(lib) {
       GM_setValue(IWDIE_LIB_KEY, { v: 1, file: lib.file, imported: lib.imported, hidden: lib.hidden, noArtboard: lib.noArtboard,
-        items: lib.items.map(function (it) { return { name: it.name, layer: it.layer, w: it.w, h: it.h, x: it.x, y: it.y, shapes: it.shapes }; }) });
+        items: lib.items.map(function (it) { return { name: it.sym && it.sym.named ? '' : it.name, layer: it.layer, w: it.w, h: it.h, x: it.x, y: it.y, shapes: it.shapes }; }) });
       GM_setValue(IWDIE_LIB_META_KEY, { file: lib.file, imported: lib.imported, count: lib.items.length });
     }
 
@@ -11082,8 +11719,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         hidden: Math.max(0, parseInt(o.hidden, 10) || 0), noArtboard: !!o.noArtboard, items: items };
     }
 
+    /** The kept library, its components named by the Maskin template's table (v1.63.0). */
     function libLoad() {
-      try { return libClean(GM_getValue(IWDIE_LIB_KEY, null)); } catch (e) { return null; }
+      try {
+        var lib = libClean(GM_getValue(IWDIE_LIB_KEY, null));
+        if (lib) lib.items = iwdieSymName(lib.items);
+        return lib;
+      } catch (e) { return null; }
     }
 
     /** A library imported in Draw (1.33.0 to 1.35.0) lives in the Designer's own storage:
@@ -11414,8 +12056,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        placeholder, as one dragged from Libraries. */
     /** The IWMAC menu on the editor's page; `say(html, bad)` hears what went wrong. With the kept
      *  components (`lib`, v1.45.0), those are in it too, by Illustrator layer: VectorCraft's own
-     *  Libraries panel does not scroll, so a big library cannot be seen whole there. */
-    function vcObjectMenu(say, looks, lib) {
+     *  Libraries panel does not scroll, so a big library cannot be seen whole there. With the plant's
+     *  parameters (`params`, v1.63.0: the job's), each unit's rows by group, placed bound. */
+    function vcObjectMenu(say, looks, lib, params) {
       if (document.getElementById('iwdie-vcm')) return;
       var esc2 = iwdieEscHtml, all = iwdieVcObjects(looks), byId = {}, roles = [], byRole = {};
       all.forEach(function (o) {
@@ -11429,6 +12072,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!byLayer[layer]) { byLayer[layer] = []; layers.push(layer); }
         byLayer[layer].push(k);
       });
+      // the plant's parameters (v1.63.0): a row chosen is placed as the object the panel shows such a parameter with -
+      // an alarm as its alarms, a state as its LEDs, the rest as its values - named "IWMAC <obj_id> <alias> @ <unit>", which
+      // a sync links; by its [driver_id] where the unit has that alias twice or the name would not survive as a file's
+      var pu = (params && params.units) || [], prow = (params && params.rows) || {}, kinds = (params && params.kinds) || {};
+      var pnorm = function (v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase(); };
+      var twice = {};
+      pu.forEach(function (u) { var c = twice[u[0]] = {}; (prow[u[0]] || []).forEach(function (r) { var a = pnorm(r[0]); c[a] = (c[a] || 0) + 1; }); });
+      var kindOf = function (r) { var t = String(r[3] || ''); return byId[/alarm/i.test(t) ? kinds.alarm : /bool/i.test(t) ? kinds.led : kinds.value] || byId.number_v3_value_only; };
+      var plain = /^[\w æøåÆØÅ.,%°()+#'-]+$/;
+      var bindText = function (u, r) {
+        var a = String(r[0] || '').replace(/\s+/g, ' ').trim(), unit = String(u[1] || '');
+        return a && plain.test(a) && plain.test(unit) && twice[u[0]][pnorm(a)] === 1 ? a + ' @ ' + unit : '[' + r[1] + ']';
+      };
       var font = '"Source Sans 3","Segoe UI",Roboto,Arial,sans-serif';
       var css = [
         // the title in VectorCraft's bar, after Help, as its own titles are: 13 px, the bar's text colour, the hover fill
@@ -11495,6 +12151,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           esc2('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(t.svg)) + '"></span><span class="iwdie-vcm-l">' + esc2(compNames[k]) + '</span>' +
           '<span class="iwdie-vcm-k">' + Math.round(it.w) + ' × ' + Math.round(it.h) + '</span></div>';
       };
+      var unitRow = function (ui) {
+        return '<div class="iwdie-vcm-i" data-unit="' + ui + '" title="' + esc2(pu[ui][0]) + '"><span class="iwdie-vcm-l">' + esc2(pu[ui][1]) + '</span>' +
+          '<span class="iwdie-vcm-k">' + (prow[pu[ui][0]] || []).length + '</span><span class="iwdie-vcm-k">▸</span></div>';
+      };
+      var paramRow = function (ui, k) {
+        var u = pu[ui], r = prow[u[0]][k], o = kindOf(r);
+        return '<div class="iwdie-vcm-i" data-param="' + ui + ':' + k + '" title="' + esc2(r[1] + (r[2] ? ' · ' + r[2] : '') + (o ? ' · as ' + o.id : '')) + '">' +
+          '<span class="iwdie-vcm-l">' + esc2(String(r[0] || r[1]).trim()) + '</span><span class="iwdie-vcm-k">' +
+          esc2([r[5], /w/i.test(String(r[4] || '')) ? 'RW' : ''].filter(Boolean).join(' ')) + '</span></div>';
+      };
+      var unitRows = function (ui) {
+        var rows = prow[pu[ui][0]] || [], out = '', last = null;
+        rows.forEach(function (r, k) {
+          if (r[2] !== last) { last = r[2]; out += '<div class="iwdie-vcm-h">' + esc2(r[2] || '-') + '</div>'; }
+          out += paramRow(ui, k);
+        });
+        return out;
+      };
+      var paramThing = function (ui, k) {
+        var u = pu[ui], r = prow[u[0]] && prow[u[0]][k], o = r ? kindOf(r) : null;
+        if (!o) return null;
+        var alias = String(r[0] || '').trim(), shown = {};
+        Object.keys(o).forEach(function (key) { shown[key] = o[key]; });
+        if (alias) shown.desc = alias;   // its box says which parameter it shows
+        return { label: (alias || r[1]) + ' · ' + u[1], w: o.w, h: o.h, name: IWDIE_VC_OBJ_PREFIX + o.id + ' ' + bindText(u, r),
+          svg: function () { return iwdieVcObjectSvg(shown); } };
+      };
       var layerRow = function (l) {
         return '<div class="iwdie-vcm-i" data-layer="' + esc2(l) + '"><span class="iwdie-vcm-l">' + esc2(l) + '</span>' +
           '<span class="iwdie-vcm-k">' + byLayer[l].length + '</span><span class="iwdie-vcm-k">▸</span></div>';
@@ -11512,6 +12195,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       var thingOf = function (row) {
         if (!row) return null;
+        if (row.getAttribute('data-param') !== null) { var pp = row.getAttribute('data-param').split(':'); return paramThing(+pp[0], +pp[1]); }
         if (row.getAttribute('data-comp') !== null && comps[+row.getAttribute('data-comp')]) return compThing(+row.getAttribute('data-comp'));
         return byId[row.getAttribute('data-id')] ? objThing(byId[row.getAttribute('data-id')]) : null;
       };
@@ -11563,13 +12247,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       var rowOf = function (e) { return e.target && e.target.closest ? e.target.closest('.iwdie-vcm-i') : null; };
       var openSub = function (row) {
-        var role = row.getAttribute('data-role'), layer = row.getAttribute('data-layer'), key = role ? 'r:' + role : 'l:' + layer;
+        var role = row.getAttribute('data-role'), layer = row.getAttribute('data-layer'), unit = row.getAttribute('data-unit');
+        var key = role ? 'r:' + role : unit !== null ? 'u:' + unit : 'l:' + layer;
         if (sub && sub.getAttribute('data-key') === key) return;
         closeSub();
         sub = document.createElement('div');
         sub.className = 'iwdie-vcm-m';
         sub.setAttribute('data-key', key);
         sub.innerHTML = role ? '<div class="iwdie-vcm-h">' + esc2(IWDIE_VC_OBJ_ROLES[role] || role) + '</div>' + byRole[role].map(objectRow).join('')
+          : unit !== null ? '<div class="iwdie-vcm-h">' + esc2(pu[+unit][1]) + ' · ' + esc2(pu[+unit][0]) + ' · placed linked when synced</div>' + unitRows(+unit)
           : '<div class="iwdie-vcm-h">' + esc2(layer) + ' · ' + esc2((lib && lib.file) || 'Komponenter') + '</div>' + byLayer[layer].map(compRow).join('');
         document.body.appendChild(sub);
         var mr = menu.getBoundingClientRect(), rr = row.getBoundingClientRect();
@@ -11583,9 +12269,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         stop();
         menu = document.createElement('div');
         menu.className = 'iwdie-vcm-m';
-        menu.innerHTML = '<input class="iwdie-vcm-s" type="text" placeholder="Search: fan, value, alarm' + (comps.length ? ', a component' : '') + '…" spellcheck="false" autocomplete="off">' +
+        menu.innerHTML = '<input class="iwdie-vcm-s" type="text" placeholder="Search: fan, value, alarm' + (pu.length ? ', a parameter' : '') + (comps.length ? ', a component' : '') +
+          '…" spellcheck="false" autocomplete="off">' +
           '<div class="iwdie-vcm-list"></div><div class="iwdie-vcm-x"></div>' +
-          '<div class="iwdie-vcm-h">Choose one, then click where it goes on the drawing.<br>Saved back, each IWMAC object becomes that object in the panel.</div>';
+          '<div class="iwdie-vcm-h">Choose one, then click where it goes on the drawing.<br>Saved back, each IWMAC object becomes that object in the panel' +
+          (pu.length ? ',<br>a parameter linked to it' : '') + '.</div>';
         var r = title.getBoundingClientRect();
         menu.style.left = r.left + 'px';
         menu.style.top = (r.bottom + 3) + 'px';
@@ -11593,12 +12281,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         title.classList.add('iwdie-on');
         var input = menu.querySelector('.iwdie-vcm-s'), list = menu.querySelector('.iwdie-vcm-list');
         var fill = function () {
-          var q = input.value.trim(), hits = q ? iwdieVcObjectSearch(q).map(function (o) { return byId[o.id]; }) : null, ql = q.toLowerCase(), compHits = [];
+          var q = input.value.trim(), hits = q ? iwdieVcObjectSearch(q).map(function (o) { return byId[o.id]; }) : null, ql = q.toLowerCase(), compHits = [], paramHits = [];
           if (q) comps.forEach(function (it, k) { if (compHits.length < 80 && (compNames[k] + ' ' + (it.layer || '')).toLowerCase().indexOf(ql) >= 0) compHits.push(k); });
+          // parameters by their alias, or their driver_id (v1.63.0)
+          if (q) pu.forEach(function (u, ui) { (prow[u[0]] || []).forEach(function (r, k) {
+            if (paramHits.length < 60 && (String(r[0] || '') + ' ' + r[1]).toLowerCase().indexOf(ql) >= 0) paramHits.push([ui, k]);
+          }); });
           closeSub();
           var compHead = '<div class="iwdie-vcm-x"></div><div class="iwdie-vcm-h">Komponenter' + (lib && lib.file ? ' · ' + esc2(lib.file) : '') + '</div>';
-          list.innerHTML = !q ? roles.map(roleRow).join('') + (layers.length ? compHead + layers.map(layerRow).join('') : '')
-            : hits.length || compHits.length ? hits.map(objectRow).join('') + (compHits.length ? compHead + compHits.map(compRow).join('') : '')
+          var paramHead = '<div class="iwdie-vcm-x"></div><div class="iwdie-vcm-h">Parametere · placed linked when synced</div>';
+          var noParams = params && !pu.length ? '<div class="iwdie-vcm-x"></div><div class="iwdie-vcm-h">Parametere: none read - link an object on the panel to a unit, or tick ' +
+            'units in the Parameter Selector, then Edit in VectorCraft again</div>' : '';
+          list.innerHTML = !q ? roles.map(roleRow).join('') + (pu.length ? paramHead + pu.map(function (u, ui) { return unitRow(ui); }).join('') : noParams) +
+              (layers.length ? compHead + layers.map(layerRow).join('') : '')
+            : hits.length || compHits.length || paramHits.length ? hits.map(objectRow).join('') +
+              (paramHits.length ? paramHead + paramHits.map(function (h) { return paramRow(h[0], h[1]); }).join('') : '') +
+              (compHits.length ? compHead + compHits.map(compRow).join('') : '')
             : '<div class="iwdie-vcm-n">Nothing matches.</div>';
         };
         fill();
@@ -11609,7 +12307,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         input.addEventListener('input', fill);
         input.addEventListener('keydown', function (e) {
           if (e.key !== 'Enter') return;
-          choose(thingOf(list.querySelector('[data-id],[data-comp]')));
+          choose(thingOf(list.querySelector('[data-id],[data-param],[data-comp]')));
         });
         menu.addEventListener('mouseover', function (e) {
           var row = rowOf(e);
@@ -11618,13 +12316,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // with a submenu open, a moment's grace: the pointer may only be crossing this row on its way there
           pending = setTimeout(function () {
             if (!menu) return;
-            if (row.getAttribute('data-role') || row.getAttribute('data-layer')) openSub(row); else closeSub();
+            if (row.getAttribute('data-role') || row.getAttribute('data-layer') || row.getAttribute('data-unit') !== null) openSub(row); else closeSub();
           }, sub ? 150 : 0);
         });
         menu.addEventListener('click', function (e) {
           var row = rowOf(e);
           if (!row) return;
-          if (row.getAttribute('data-role') || row.getAttribute('data-layer')) openSub(row);
+          if (row.getAttribute('data-role') || row.getAttribute('data-layer') || row.getAttribute('data-unit') !== null) openSub(row);
           else choose(thingOf(row));
         });
         setTimeout(function () { try { input.focus(); } catch (e) {} }, 0);
@@ -12454,7 +13152,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // a file's components, read once (v1.59.0): for around its artboard and for Libraries alike
       var compRead = null;
       var readComp = function (f, step) {
-        if (!compRead || compRead.f !== f) compRead = { f: f, p: libRead(f, step || function (html) { comp(html); }) };
+        // named by the template's table (v1.63.0), around the artboard and in Libraries alike
+        if (!compRead || compRead.f !== f) compRead = { f: f, p: libRead(f, step || function (html) { comp(html); }).then(function (got) { got.items = iwdieSymName(got.items); return got; }) };
         return compRead.p;
       };
       // the file's components into Libraries, in place of those kept (v1.33.0, v1.37.0) - when asked for (v1.55.0)
@@ -12718,10 +13417,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           try { GM_deleteValue(key); } catch (e) {}
           if (val.state === 'applied') {
             var placed = +val.placed || 0, already = +val.already || 0, skipped = +val.skipped || 0;
-            var mov = +val.moved || 0, rem = +val.removed || 0, held = +val.held || 0;
+            var mov = +val.moved || 0, rem = +val.removed || 0, held = +val.held || 0, linkd = +val.linked || 0;
             // what changed, on one line; what went wrong, a line each under it (v1.50.0)
-            var did = [placed ? placed + ' placed' : '', mov ? mov + ' changed' : '', rem ? rem + ' removed' : ''].filter(Boolean);
+            var did = [placed ? placed + ' placed' : '', mov ? mov + ' changed' : '', linkd ? linkd + ' linked' : '', rem ? rem + ' removed' : ''].filter(Boolean);
             var wrong = [
+              (val.linkFailed || []).length ? 'Not linked: ' + esc2((val.linkFailed || []).join('; ')) : '',
               held ? iwdieN(held, 'object', 'objects') + ' without a placeholder stayed in the panel: ' + esc2(String(val.holdWhy || '')) : '',
               skipped ? iwdieN(skipped, 'placeholder', 'placeholders') + ' without a size (hidden?) became no object' : '',
               val.objError ? 'The IWMAC objects were not placed: ' + esc2(String(val.objError)) + ' - sync again' : '',
@@ -12867,7 +13567,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return ai || openPanel();
         }).then(null, function () { return null; }).then(function (opened) {
           if (!opened) return;
-          try { vcObjectMenu(note, looks, lib); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
+          try { vcObjectMenu(note, looks, lib, job.params || null); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
           return objText.then(function (pages) {
             return pause(1200).then(function () {
               vcDropFiles(asFiles(pages), 'menu');
@@ -12946,12 +13646,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var kinds = [];
       info.objects.forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (/^[\w.-]+$/.test(k) && kinds.indexOf(k) < 0) kinds.push(k); });
       info.sent = iwdieVcPanelSent(info.objects);
+      // the parameter each bound object shows, in its placeholder's name (v1.63.0); the plant's rows for the IWMAC menu's
+      // Parameters and for linking by name - the edit goes on without them after 10 s
+      var plantUnits = vcPlantUnits();
+      info.objects.forEach(function (ob) {
+        if (ob && iwdieOvBound(ob)) ob.iwdieBind = { driver: String(ob.driver_id), label: iwdieVcBindLabel(ob.alias_text, ob.unit_id, plantUnits) };
+      });
+      var params = ovTimeout(vcParams(info.objects), 10000).then(function (p) { info.params = p; }, function () { info.params = null; });
       // and each object as the Designer shows it (v1.60.0): those its CSS paints at their own size, tags where it writes them
       var painted = vcPaintObjects(info.objects).then(null, function () {});
       var looked = vcObjectLooks(kinds).then(function (l) { info.looks = l; return painted.then(function () { return l; }); }, function () { return painted.then(function () { return null; }); });
       // a background that cannot be read must not become an empty one in the editor
       (url ? fetchBackgroundBytes(url) : Promise.resolve(null)).then(function (bg) {
-        return looked.then(function () { return bg; });
+        return looked.then(function () { return params; }).then(function () { return bg; });
       }).then(function (bg) {
         info.bg = bg;
         info.found = (bg && iwdieSniffMime(bg.bytes) === 'image/png') ? iwdieDrawExtract(bg.bytes) : null;
@@ -13095,7 +13802,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
         var safe = String(info.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
         var job = { id: id, svg: svg, name: 'iwmac-' + (info.plant || 'plant') + '-' + safe + '.svg', panel: info.panel || '', plant: info.plant || '', at: Date.now(), version: IWDIE_VERSION,
-          vector: !!info.vector, authored: !!info.authored };
+          vector: !!info.vector, authored: !!info.authored, params: vcJobParams(info.params) };
         // the .ai chosen instead of a trace (v1.51.0) goes along, in Tampermonkey's storage until the editor's tab takes it;
         // one slot, as the job's: a job without one clears one an earlier job's tab never took
         if (info.ai) GM_setValue(IWDIE_VC_AI_KEY, { job: id, name: info.ai.name, type: info.ai.type, b64: iwdieBytesToBase64(info.ai.bytes), at: Date.now() });
@@ -13354,6 +14061,142 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
       try { W.UpdateObjectWorker(); } catch (e) {}
       return { removed: removed, error: lost.length ? iwdieN(lost.length, 'object', 'objects') + ' (' + lost.join(', ') + ') not on the panel any more' : '' };
+    }
+
+    /* ---------- Placeholders bound to parameters (v1.63.0): the Designer's side ---------- */
+    /** The plant's units as the Designer lists them. -> [{unit_id, name}] */
+    function vcPlantUnits() {
+      var out = [];
+      (Array.isArray(W.yourplantUnits) ? W.yourplantUnits : []).forEach(function (u) {
+        if (u && u.unit_id != null) out.push({ unit_id: String(u.unit_id), name: String(u.unit_name == null ? '' : u.unit_name) });
+      });
+      return out;
+    }
+
+    /** The rows the plant has tagged, which give a link its sub_group and link_tag. -> [{unit_id, driver_id, alias_text, sub_group, tag}] */
+    function vcTagged() {
+      var out = [];
+      (Array.isArray(W.yourplantUnits) ? W.yourplantUnits : []).forEach(function (u) {
+        (u && Array.isArray(u.params) ? u.params : []).forEach(function (p) {
+          if (p && p.driver) out.push({ unit_id: String(u.unit_id), driver_id: String(p.driver), alias_text: String(p.alias_text == null ? '' : p.alias_text),
+            sub_group: String(p.sub_group == null ? '' : p.sub_group), tag: String(p.iw_param_tag == null ? '' : p.iw_param_tag) });
+        });
+      });
+      return out;
+    }
+
+    /** The kinds of object a parameter becomes when placed from the IWMAC menu: those the panel shows its values, alarms and
+     *  states with most, else the catalogue's plainest. -> {value, alarm, led} */
+    function vcParamKinds(objects) {
+      var count = { value: {}, alarm: {}, led: {} }, of = { value: 'value', value_conn: 'value', value_tag: 'value', alarm: 'alarm', led: 'led' };
+      (objects || []).forEach(function (ob) {
+        var g = ob && iwdieOvBound(ob) ? of[iwdieRoleOf(ob.obj_id)] : null;
+        if (g) count[g][ob.obj_id] = (count[g][ob.obj_id] || 0) + 1;
+      });
+      var known = iwdieVcObjectIndex(), most = function (g, dflt) {
+        var best = null;
+        Object.keys(count[g]).forEach(function (id) { if (known[id] && (!best || count[g][id] > count[g][best])) best = id; });
+        return best || dflt;
+      };
+      return { value: most('value', 'number_v3_value_only'), alarm: most('alarm', 'V3_R_34px_circular_alarm_nrm'), led: most('led', 'V3_led_13px_circ_grey_green') };
+    }
+
+    /** What the plant has behind the panel, for an edit: its units, the rows of those in scope (as an export reads them:
+     *  linked on the panel, or ticked in the Parameter Selector), its tagged rows, and the kinds a parameter becomes.
+     *  -> Promise<{units, rows: {unit_id: rows}, failed, tagged, kinds}> */
+    function vcParams(objects) {
+      var units = vcPlantUnits(), known = {};
+      units.forEach(function (u) { known[u.unit_id] = 1; });
+      var ids = Object.keys(ovScope({ single_objects: objects || [] })).filter(function (u) { return !units.length || known[u]; });
+      return ovRowsFor(ids).then(function (got) {
+        return { units: units, rows: got.rows, failed: got.failed, tagged: vcTagged(), kinds: vcParamKinds(objects) };
+      });
+    }
+
+    /** The plant's parameters for the editor's tab, small: each unit in scope with its rows - alias, driver_id, group, type,
+     *  access, unit of measure - 6000 rows at most. -> {units: [[unit_id, name, rows]], rows: {unit_id: [[...]]}, kinds} | null */
+    function vcJobParams(p) {
+      if (!p || !p.rows) return null;
+      var left = 6000, out = { units: [], rows: {}, kinds: p.kinds, failed: p.failed || [] };
+      var nameOf = {};
+      (p.units || []).forEach(function (u) { nameOf[u.unit_id] = u.name; });
+      Object.keys(p.rows).forEach(function (u) {
+        var rows = (p.rows[u] || []).slice(0, Math.max(0, left));
+        left -= rows.length;
+        out.units.push([u, iwdieVcBindLabel('', u, p.units).replace(/^\? @ /, '') || u, (p.rows[u] || []).length]);
+        out.rows[u] = rows.map(function (r) { return [r.alias_text, r.driver_id, r.group, r.type, r.rw, r.eng_unit]; });
+      });
+      return out.units.length ? out : null;
+    }
+
+    /** The bindings the saved placeholders write, read against the plant (v1.63.0): each placeholder whose name gives a
+     *  parameter other than the one it was sent with gets `link`; the rows of a unit a binding names are read when this
+     *  edit has not read them yet. -> Promise<{linked: [text], failed: [why]}> */
+    function vcLinkFound(found, info) {
+      var todo = (found || []).filter(function (f) { return f && f.bind && (f.label === undefined || f.bind !== f.label); });
+      if (!todo.length) return Promise.resolve({ linked: [], failed: [] });
+      var p = info.params || {}, units = vcPlantUnits(), rows = {}, norm = function (v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase(); };
+      Object.keys(p.rows || {}).forEach(function (u) { rows[u] = p.rows[u]; });
+      var want = [];
+      todo.forEach(function (f) {
+        var b = iwdieVcParseBind(f.bind);
+        if (!b || !b.unit) return;
+        units.forEach(function (u) {
+          if ((norm(u.unit_id) === norm(b.unit) || norm(u.name) === norm(b.unit)) && !rows[u.unit_id] && want.indexOf(u.unit_id) < 0) want.push(u.unit_id);
+        });
+      });
+      return ovRowsFor(want).then(function (got) {
+        Object.keys(got.rows).forEach(function (u) { rows[u] = got.rows[u]; });
+        if (info.params) info.params.rows = rows;
+        var plant = { units: units, rows: rows, tagged: p.tagged || vcTagged() }, linked = [], failed = [];
+        todo.forEach(function (f) {
+          var d = W.controls && Object.prototype.hasOwnProperty.call(W.controls, f.id) ? W.controls[f.id] : null;
+          var r = d && d.canLink === false ? { error: 'cannot link' } : iwdieVcResolveBind(iwdieVcParseBind(f.bind), plant);
+          if (r.link) { f.link = r.link; linked.push(f.bind); } else failed.push(iwdieVcBindWhy(r, f.bind));
+        });
+        return { linked: linked, failed: failed };
+      });
+    }
+
+    /** The panel's objects whose placeholders were renamed to another parameter (v1.63.0), linked to it - moved, resized
+     *  and relabelled too, as their placeholders were: each made again by the Designer's own loader with the new link, as
+     *  Insert makes a linked object, then the old one taken off; the edit knows the new one by the old one's place in it.
+     *  -> {relinked, error} */
+    function vcRelinkObjects(moves, info) {
+      var cc = document.getElementById('control_container'), have = exportPanelObjects(), fresh = [], olds = [], lost = [];
+      if (!cc) return { relinked: 0, error: 'the panel is not on the canvas' };
+      moves.forEach(function (m) {
+        var ob = have.filter(function (o) { return o && o.name === m.name; })[0], el = null;
+        for (var i = 0; i < cc.children.length && !el; i++) if (cc.children[i].getAttribute('name') === m.name) el = cc.children[i];
+        if (!ob || !el) { lost.push(m.name); return; }
+        var n = {}, L = m.link;
+        IWDIE_OBJECT_FIELDS.forEach(function (k) { n[k] = Object.prototype.hasOwnProperty.call(ob, k) ? ob[k] : ''; });
+        n.posLeft = Math.round(m.x); n.posTop = Math.round(m.y); n.posWidth = Math.round(m.w); n.posHeight = Math.round(m.h);
+        if (m.text !== m.was.text) n.tag_text = m.text;
+        n.linked = 'true'; n.driver_id = L.driver_id; n.unit_id = L.unit_id; n.alias_text = L.alias_text; n.link_tag = L.link_tag; n.sub_group = L.sub_group;
+        if (!n.link_name) n.link_name = 'link_name';
+        fresh.push(n);
+        olds.push({ el: el, name: m.name });
+      });
+      if (!fresh.length) return { relinked: 0, error: lost.length ? iwdieN(lost.length, 'object', 'objects') + ' (' + lost.join(', ') + ') not on the panel any more' : '' };
+      var before = Array.prototype.slice.call(cc.children);
+      try {
+        new W.DesignPanelHandler().load_new_ver_objects(iwdieNormalizeDoc({ single_objects: fresh }).single_objects);
+      } catch (e) {
+        return { relinked: 0, error: String((e && e.message) || e) };
+      }
+      var added = Array.prototype.slice.call(cc.children).filter(function (c) { return before.indexOf(c) < 0; });
+      // only now the old ones go, as the Designer's Delete takes them
+      vcRemoveObjects(olds.map(function (o) { return o.name; }));
+      renumberCanvasNames();
+      added.forEach(function (el, i) {
+        var old = olds[i];
+        if (!old) return;
+        Object.keys(info.els || {}).forEach(function (k) { if (info.els[k] === old.el) info.els[k] = el; });
+        (info.placed || []).forEach(function (p) { if (p.el === old.el) p.el = el; });
+      });
+      try { W.UpdateObjectWorker(); } catch (e) {}
+      return { relinked: added.length, error: lost.length ? iwdieN(lost.length, 'object', 'objects') + ' (' + lost.join(', ') + ') not on the panel any more' : '' };
     }
 
     /* ---------- Sync to IWMAC Designer (v1.42.0): the picture uploaded ---------- */
@@ -14688,13 +15531,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }).then(function (pngBytes) {
         return vcPack(svg).then(function (pack) { return { png: pngBytes, pack: pack }; });
       }).then(function (r) {
+        // the parameters the placeholders' names give (v1.63.0), read against the plant before anything changes
+        return vcLinkFound(ph.found, info).then(function (lk) { r.links = lk; return r; }, function () { r.links = { linked: [], failed: [] }; return r; });
+      }).then(function (r) {
         var pack = r.pack, withDoc = iwdieVcEmbed(r.png, pack.data, pack.type), mi = document.getElementById('main_image');
         var dataUrl = 'data:image/png;base64,' + iwdieBytesToBase64(withDoc);
         W.iw_set_base_image((mi && mi.style.width) || (size.w + 'px'), (mi && mi.style.height) || (size.h + 'px'), dataUrl);
         try { if (!W.$('#main_image').attr('org_image_name')) W.$('#main_image').attr('org_image_name', 'iwdie-vectorcraft.png'); } catch (e) {}
         // the panel's own objects changed where their placeholders went (v1.46.0), the other placeholders placed as new ones
         var ch = iwdieVcObjectChanges(ph.found, exportPanelObjects(), sent, placed);
-        var mv = ch.moves.length ? vcMoveObjects(ch.moves) : { moved: 0, error: '' };
+        // one renamed to another parameter is made again, linked (v1.63.0); the rest move where their placeholders went
+        var plain = ch.moves.filter(function (m) { return !m.link; }), relinks = ch.moves.filter(function (m) { return m.link; });
+        var mv = plain.length ? vcMoveObjects(plain) : { moved: 0, error: '' };
+        var rl = relinks.length ? vcRelinkObjects(relinks, info) : { relinked: 0, error: '' };
+        var links = r.links || { linked: [], failed: [] };
         // one whose placeholder was deleted there goes here too (v1.47.0) - but not when the layer of them
         // was not in the save (hidden: VectorCraft leaves hidden things out), nor most of them at once
         var gone = ch.missing.concat(ch.dropped), hold = '';
@@ -14712,13 +15562,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             : val.editing ? ', with the VectorCraft document inside, compressed, for the next edit.'
             : ' - saved as plain SVG (without Preserve Editing Capabilities): the next edit opens its layers and paths.')];
         if (objs.error) lines.push('The IWMAC objects could not be placed: ' + objs.error + '. Their placeholders are out of the picture; save again in VectorCraft to try again.');
-        else if (objs.placed) lines.push(iwdieN(objs.placed, 'IWMAC object', 'IWMAC objects') +
-          (objs.placed === 1 ? ' placed where its placeholder was' : ' placed where their placeholders were') + ' - unlinked, to link as any new object' +
-          (objs.already ? '; ' + objs.already + ' there already' : '') + '.');
+        else if (objs.placed) {
+          var nLinked = ch.fresh.filter(function (f) { return f.link; }).length;
+          lines.push(iwdieN(objs.placed, 'IWMAC object', 'IWMAC objects') + (objs.placed === 1 ? ' placed where its placeholder was' : ' placed where their placeholders were') +
+            (nLinked === objs.placed ? ' - linked as ' + (nLinked === 1 ? 'its placeholder names it' : 'their placeholders name them')
+              : nLinked ? ' - ' + nLinked + ' linked as their placeholders name them, the rest unlinked, to link as any new object'
+              : ' - unlinked, to link as any new object') + (objs.already ? '; ' + objs.already + ' there already' : '') + '.');
+        }
         else if (objs.already) lines.push('Its IWMAC objects were on the panel already, where their placeholders are.');
         if (mv.moved) lines.push(iwdieN(mv.moved, 'IWMAC object', 'IWMAC objects') + ' of the panel moved, resized or relabelled as in VectorCraft' +
           (ch.same ? '; ' + ch.same + ' as they were' : '') + '.');
         if (mv.error) lines.push('Not changed: ' + mv.error + '.');
+        if (rl.relinked) lines.push(iwdieN(rl.relinked, 'IWMAC object', 'IWMAC objects') + ' of the panel linked to the parameter ' +
+          (rl.relinked === 1 ? 'its placeholder was renamed to' : 'their placeholders were renamed to') + ' - made again by the Designer, linked.');
+        if (rl.error) lines.push('Not linked again: ' + rl.error + '.');
+        if (links.failed.length) lines.push(iwdieN(links.failed.length, 'placeholder', 'placeholders') + ' named a parameter that was not linked: ' +
+          links.failed.slice(0, 4).join('; ') + (links.failed.length > 4 ? '; …' : '') + '. ' + (links.failed.length === 1 ? 'Its object stays' : 'Their objects stay') +
+          ' as ' + (links.failed.length === 1 ? 'it was' : 'they were') + ' linked, a new one unlinked.');
         if (ch.orphans.length) lines.push(iwdieN(ch.orphans.length, 'placeholder', 'placeholders') + ' stood for objects no longer on the panel, so nothing was placed for ' +
           (ch.orphans.length === 1 ? 'it' : 'them') + '.');
         if (rm.removed.length) lines.push(iwdieN(rm.removed.length, 'object', 'objects') + ' taken off the panel, as their placeholders were deleted in VectorCraft (' +
@@ -14729,8 +15589,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (ph.frames) lines.push('The art under ' + iwdieN(ph.frames, 'object', 'objects') + ' - its frame, its pill - is in the picture where its placeholder left it.');
         if (ph.skipped) lines.push(iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.');
         // the editor's tab told at once (v1.56.0): the background and the objects are set; the PNG still goes up
-        var applied = { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error || mv.error || rm.error,
-          moved: mv.moved, removed: rm.removed.length, held: hold ? gone.length : 0, holdWhy: hold, uploading: true };
+        var applied = { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error || mv.error || rm.error || rl.error,
+          moved: mv.moved + rl.relinked, removed: rm.removed.length, held: hold ? gone.length : 0, holdWhy: hold, uploading: true,
+          linked: ch.fresh.filter(function (f) { return f.link; }).length + rl.relinked, linkFailed: links.failed.slice(0, 6) };
         if (info.adopted) lines.push('This tab took the edit over from the tab it began in: objects deleted in VectorCraft are not taken off here - delete them by hand.');
         ack('applied', Math.round(withDoc.length / 1024) + ' kB', applied);
         // and its PNG to the plant's pictures, as Upload to server does, named on the panel as Set background names it (v1.42.0)
@@ -14745,8 +15606,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             lines.push('Its PNG was not uploaded to the plant’s pictures: ' + up.message + '. The background is set all the same.');
           }
           outcomeToast({
-            tone: objs.error || mv.error || rm.error || hold || !up.ok ? 'caution' : 'good',
-            title: objs.placed || mv.moved || rm.removed.length ? '✅ Background and IWMAC objects from VectorCraft' : '✅ Background updated from VectorCraft',
+            tone: objs.error || mv.error || rm.error || rl.error || links.failed.length || hold || !up.ok ? 'caution' : 'good',
+            title: objs.placed || mv.moved || rl.relinked || rm.removed.length ? '✅ Background and IWMAC objects from VectorCraft' : '✅ Background updated from VectorCraft',
             lines: lines,
             footer: 'The panel is not saved yet — use the designer’s own Save when you are happy.'
           });
@@ -15128,7 +15989,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var stageSeq = 0;
     function stageImportText(text, name) {
       stagedText = text; stagedName = name || 'the file';
-      var result = iwdieCheckFile(text, { plantId: currentPlantId() }), seq = ++stageSeq;
+      // the symbols the kept library can draw (v1.63.0): the names Insert finds in it
+      var kept = /data-iwdie-symbol/.test(text) ? libLoad() : null, names = [];
+      if (kept) kept.items.forEach(function (it) {
+        [it.sym && it.sym.name, String(it.name || '').trim()].forEach(function (n) { if (n && names.indexOf(n) < 0) names.push(n); });
+      });
+      var result = iwdieCheckFile(text, { plantId: currentPlantId(), symbols: names }), seq = ++stageSeq;
       renderCheckReport(result);
       // the plant's own word on the file's links (v1.62.0): the report again with it, while it is still the one shown
       ovCheckPlant(result).then(function (added) {
@@ -15565,9 +16431,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var doc = iwdieNormalizeDoc(rawDoc);
       // AI-authored artwork: panel.image_svg (raw SVG text) -> embedded background.
       // A file picked in the modal takes precedence over the JSON's SVG.
+      var symbols = null;
       if (!pendingBg && doc.image_svg) {
         var svgErrors = iwdieValidateSvg(doc.image_svg);
         if (svgErrors.length) { showErrors(svgErrors, v.warnings); return; }
+        // the house symbols it places by name (v1.63.0), drawn from the component library kept in this browser
+        if (iwdieSymRefs(doc.image_svg).length) {
+          var kept = libLoad();
+          symbols = iwdieSymExpand(doc.image_svg, kept ? kept.items : []);
+          doc.image_svg = symbols.svg;
+        }
         var svgUrl = iwdieSvgToDataUrl(doc.image_svg);
         if (svgUrl) { doc = iwdieAttachBackground(doc, svgUrl, doc.org_image_name || 'ai-background.svg'); }
       }
@@ -15735,7 +16608,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             cleared: cleared, rebound: rebindNote, background: bgStatus, backgroundError: bgError,
             graphicsSkipped: skippedGraphics, graphicsReason: graphicsReason, foreign: foreign.length,
             warnings: (v && v.warnings) || [], notes: (v && v.notes) || [], details: (v && v.details) || {},
-            quick: !!(v && v.quick)
+            quick: !!(v && v.quick), symbols: symbols ? { placed: symbols.placed, missing: symbols.missing } : null
           }));
         });
       }
@@ -16473,9 +17346,26 @@ if (typeof module !== 'undefined' && module.exports) {
     vcPanelSent: iwdieVcPanelSent,
     vcAddPanelObjects: iwdieVcAddPanelObjects,
     vcObjectChanges: iwdieVcObjectChanges,
+    vcPlaceholderName: iwdieVcPlaceholderName,
+    vcParseBind: iwdieVcParseBind,
+    vcBindLabel: iwdieVcBindLabel,
+    vcResolveBind: iwdieVcResolveBind,
+    vcBindWhy: iwdieVcBindWhy,
     vcComponentNames: iwdieVcComponentNames,
     vcSvgId: iwdieVcSvgId,
     vcComponentSvg: iwdieVcComponentSvg,
+    SYMBOLS: IWDIE_SYMBOLS,
+    symPrint: iwdieSymPrint,
+    symKey: iwdieSymKey,
+    symTable: iwdieSymTable,
+    symMatch: iwdieSymMatch,
+    symName: iwdieSymName,
+    symMatrix: iwdieSymMatrix,
+    symStill: iwdieSymStill,
+    symPick: iwdieSymPick,
+    symRefs: iwdieSymRefs,
+    symExpand: iwdieSymExpand,
+    symAvailable: iwdieSymAvailable,
     vcObjectSvg: iwdieVcObjectSvg,
     vcObjectSearch: iwdieVcObjectSearch,
     VC_UPLOADS_KEY: IWDIE_VC_UPLOADS_KEY,

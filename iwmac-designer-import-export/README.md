@@ -236,6 +236,39 @@ The kit's `tests/test-draw-library.js` holds the reader, the decoder, the colour
 cleaning. `tests/test-vectorcraft-bridge.js` holds the library file and the VectorCraft
 documents in it.
 
+### Named by the Maskin template (v1.63.0)
+
+The Maskin template keeps 418 components around its artboard and names six of them. In
+Libraries and in the IWMAC menu the rest were *Komponenter v1 23*. A plant's own Maskin `.ai`
+is drawn from the template: 382 of `2349_Maskin.ai`'s 386 components are the template's, drawn
+the same. So the script now carries a table of the template's components, `IWDIE_SYMBOLS`, and
+names every component it reads that matches one, from whichever file it came. Examples:
+*Kompressor*, *KompressorAv*, *Gaskjøler4Lav*, *BeholderNivå*, *Varmeveksler*, *Motorventil*,
+*Treveisventil*, *Pil*, *Føler*, *KjølGrader*, *PilleMørk*.
+
+- **What the table holds.** It carries no drawing, only names. For each way the template draws a
+  component it has a hash of what it is drawn of: each shape's kind, its path letters, colours,
+  stroke width and fill rule, with no coordinate. It also has the component's size and two points:
+  where its first shape starts, and where all its shapes start on average. A copy turned or
+  mirrored starts its paths elsewhere, so a left arrow is told from a right one. 309 entries in
+  114 families, about 18 kB.
+- **Turned copies.** A family is one symbol at its sizes and turns. The template draws its valves
+  turned with the motor's "m" still upright, and its tanks lying as well as standing. The table
+  says how each copy is turned against the family's own.
+- **What it names.** A name Illustrator gave stays the component's own, and the table's says what
+  it is. The table's names are not stored as the component's own, so a later table can name better.
+  The components around an opened `.ai`'s artboard and those found in a picture are named the
+  same way.
+- **Not offered to a drawing.** Pipe pieces and colour samples get a name but are not offered. So
+  is what an IWMAC object shows on a live panel: an alarm bell, an LED, a state pill, a switch or a
+  clock.
+
+A drawing can now place these symbols by name instead of drawing them; see *House symbols by name*
+under *File format*. The kit's `reference_data/maskin-symbols.json` lists them, what each is and
+the sizes it comes in, and `maskin-symbols.png` shows them.
+`tests/test-named-components.js` holds the table to the template: all 418 named, the right ones
+by the right names, each turned copy told apart.
+
 ## What it handles for you
 
 | Concern | Behaviour |
@@ -302,6 +335,36 @@ documents in it.
 ```
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
+
+### House symbols by name (v1.63.0)
+
+An agent drawing a Maskin picture into `panel.image_svg` had to draw its compressors, gas
+coolers, receivers and valves from plain shapes. They never looked like the house's own. Now it
+places them by the template's names, and Insert draws the real ones:
+
+```
+<use data-iwdie-symbol="Kompressor" x="120" y="80"/>
+<use data-iwdie-symbol="Gaskjøler4Lav" x="860" y="80" width="192" height="63"/>
+<use data-iwdie-symbol="Motorventil" x="400" y="295" data-iwdie-turn="90"/>
+```
+
+- **Placing one.** `x` and `y` are the top left of its box. Without `width` and `height` it comes
+  at its own size; with them it is fitted into that box, its proportions kept and centred.
+  `data-iwdie-turn` turns it clockwise by 90, 180 or 270, and `data-iwdie-flip="1"` mirrors it
+  left to right first.
+- **Which copy.** Where the template draws its own turned copy, that copy is used, so the motor's
+  "m" stays upright. Among sizes, the nearest is used, so a stroke stays as drawn. Names are
+  matched loosely: case, spaces and `ø` written `o` do not matter.
+- **Where they come from.** Insert draws each symbol from the component library kept in this
+  browser, as a group named after it. VectorCraft then shows it as *Kompressor*, to move or swap.
+  Import the Maskin template's `.ai` (or the plant's own) under Components in *Edit in
+  VectorCraft…* once. A name the library lacks becomes a red dashed box with the name in it.
+- **The check.** Insert's check lists the symbols the drawing places. It warns of those the kept
+  library lacks, and of any an IWMAC object should show instead.
+- **The export.** It lists the symbols the plant's library has, in
+  `overview.parts.components.symbols` (name, sizes, what it is), with how to place them in
+  `parts.components.place`. The in-file guide's `drawing_style.symbols` says to use them on
+  Maskin.
 
 ### The guide agrees with the Copilot kit (v1.62.1)
 
@@ -1701,6 +1764,46 @@ again, it differs from the picture by 0.41 of 255 on average; 0.08 % of its pixe
 than 40, none by more than 100. An older picture with gradients and shadows (1050 x 745, 48
 colours) took 2.1 s and differs by 1.07 on average. VectorCraft opened the vectorized panel with
 its seven layers, and a sync came back with the six placeholders.
+
+**Placeholders that name their parameter (v1.63.0).** A placeholder placed in VectorCraft became
+an unlinked object, to be linked in the Designer afterwards, one by one. Now its name can say
+which parameter it shows, after the object's id:
+
+```
+IWMAC number_v3_value_only Pgc @ AK-PC782AB 111
+IWMAC number_v3_value_only [9999_AK3_AKC_0_111_0_207_7]
+```
+
+The first form is the parameter's alias text and its unit, by the name the Designer's UNITS list
+gives it or by its unit_id. The second is its driver_id, for a unit that has the same alias twice.
+A sync links the new object to that parameter, with the unit_id, alias text, sub_group and
+link_tag of the plant's own row, just as Insert links an object from a file.
+
+- **Parameters in the IWMAC menu.** The menu now lists the plant's parameters: each unit in scope,
+  its rows grouped as the Parameter Selector groups them. A unit is in scope when an object on the
+  panel is linked to it or when it is ticked in the Parameter Selector. The search finds a
+  parameter by its alias or driver_id. One chosen is placed as the object the panel shows such a
+  parameter with: an alarm as its alarms, a state as its LEDs, the rest as its values, falling back
+  to the catalogue's plainest kind. Its name binds it, and its box shows the alias.
+- **The panel's own objects say theirs.** A bound object comes to VectorCraft named after its
+  parameter, so the Layers panel shows what each value is. Renaming a placeholder there to another
+  parameter relinks its object at the next sync. The Designer makes it again through its own loader,
+  linked, as Insert makes a linked object, and only then takes the old one off. A placeholder named
+  as it was sent changes nothing, and one whose binding was deleted keeps its link.
+- **What could not be linked** is said, and why: no such parameter in that unit, an alias two
+  units have (add `@` and the unit), an alias a unit has twice (give the driver_id), a unit whose
+  rows could not be read, or a kind of object that cannot be linked. The object then stays as it
+  was linked, and a new one unlinked. The editor's banner counts the linked ones: *✓ Synced · 1
+  placed · 1 changed · 2 linked*.
+
+The rows are read once, when the edit begins, with the same read-only request the Parameter
+Selector makes when a unit is clicked. That waits ten seconds at most and is kept a minute. A unit
+a binding names whose rows were not read yet is read at the sync.
+
+Measured in the stub host with the real VectorCraft web build: *Pgc* chosen in the menu and placed
+came back named `IWMAC number_v3_value_only Pgc @ AK-PC782AB 111` and became an object linked to
+its row, with the tagged row's sub_group and link_tag. A placeholder renamed from *Suction temp.
+To-MT* to *Main Switch @ 000:111* relinked its object where it stood. The other stayed as it was.
 
 **The PNG on the server (v1.42.0).** Each sync also uploads the background's PNG to the plant's
 pictures, as Manage Images' *Upload to server* does. It is the same request
