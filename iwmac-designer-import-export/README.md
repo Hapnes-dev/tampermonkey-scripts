@@ -1369,6 +1369,21 @@ Measured in the stub host with `2349_Maskin.ai` and six objects:
   it; the sync held all six objects. *Put them on* in the Drawing row put them on, the check
   found them, and the next sync left all six where they were.
 
+**The plant's .ai offered on any computer (v1.55.1).** On another computer the card *Best result:
+the plant's own .ai file* did not show. It came only before a trace, and there is a trace only
+when components from an `.ai` are kept. Tampermonkey keeps them in one browser alone, so a
+computer that had never read them got neither. Now the card shows whenever no VectorCraft drawing
+is behind the panel's background, and it says what happens without the `.ai`:
+
+| Components kept | Picture | The card says | Its other button |
+|---|---|---|---|
+| yes | yes | the picture is about to be traced | **Trace the picture** |
+| no | yes | the picture is about to open as it is | **Open the picture** |
+| - | no | VectorCraft is about to open an empty canvas | **Open an empty canvas** |
+
+A panel whose background was synced from VectorCraft opens that drawing, as before, without the
+card. **Open plant .ai…** in VectorCraft's banner works on any computer too.
+
 A sync knows each object by its element on the canvas, not by its name, so it stays right
 when names change between syncs: the Designer renames the objects when one is placed or taken
 off. An object placed by a sync is known again at the next one too: moved, resized or deleted

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.55.0
+// @version      1.55.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.55.0';
+var IWDIE_VERSION = '1.55.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -11027,8 +11027,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         var lib = base ? libLoad() : null;
         // the plant's own .ai offered first (v1.51.0): before the picture is read for components, the file it was
-        // drawn in - whose artboard is the picture as exact vectors - with the plant's folder to find it in
-        return (lib ? vcPreferAi(tab, info) : Promise.resolve(null)).then(function (ai) {
+        // drawn in - whose artboard is the picture as exact vectors - with the plant's folder to find it in. Offered
+        // as well where no components are kept (v1.55.1): Tampermonkey keeps them in this browser alone, so on
+        // another computer there were none, and neither the trace nor the .ai was offered
+        return vcPreferAi(tab, info, { trace: !!lib, picture: !!base }).then(function (ai) {
           if (ai === false) { var stop = new Error('the editor’s tab was closed'); stop.cancelled = true; throw stop; }
           if (ai) { info.ai = ai; lib = null; }
           paper = lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
@@ -11552,9 +11554,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  in Explorer through PANG's own pang:// handler, and the .ai is dragged here from there, or chosen. Where
      *  this page may read folders (https), the plants' folder, connected once, also lists the plant's .ai files
      *  here, each used with a click (v1.52.0). The browser wants a click in this tab for each picker,
-     *  permission, copy and launch, so they are this tab's own.
-     *  -> Promise<{name, type, bytes} | null: trace the picture | false: the tab was closed> */
-    function vcPreferAi(tab, info) {
+     *  permission, copy and launch, so they are this tab's own. `how` (v1.55.1): {trace: the picture is to be
+     *  read for components, picture: there is one} - without components it opens as it is, without a picture
+     *  as an empty canvas, and the card says so.
+     *  -> Promise<{name, type, bytes} | null: trace or open the picture | false: the tab was closed> */
+    function vcPreferAi(tab, info, how) {
+      how = how || { trace: true, picture: true };
       return new Promise(function (resolve) {
         var doc = null, done = false, watch = null;
         var finish = function (v) { if (done) return; done = true; if (watch) clearInterval(watch); resolve(v); };
@@ -11586,15 +11591,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#535353;color:#d1d1d1;font:13px/1.5 ' + font + '">' +
             '<div style="width:600px;padding:22px;box-sizing:border-box;background:#424242;border:1px solid #383838;border-radius:6px;box-shadow:0 8px 14px rgba(0,0,0,.55)">' +
             '<div style="font-size:16px;font-weight:600;color:#ffffff;margin-bottom:8px">Best result: the plant’s own .ai file</div>' +
-            '<p style="margin:0 0 12px">The picture is about to be traced, to find your components in it. The Illustrator file it was drawn in ' +
-            'has the whole picture as exact vectors - nothing traced, nothing guessed.</p>' +
+            '<p style="margin:0 0 12px">' + (how.trace ? 'The picture is about to be traced, to find your components in it. The Illustrator file it was drawn in ' +
+              'has the whole picture as exact vectors - nothing traced, nothing guessed.'
+              : how.picture ? 'The picture is about to open as it is: pixels, under the IWMAC objects. The Illustrator file it was drawn in has the whole ' +
+              'picture as exact vectors.'
+              : 'The panel has no picture yet, so VectorCraft is about to open an empty canvas. The plant’s Illustrator file has its drawing as exact vectors.') +
+            '</p>' +
             '<div style="display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 12px;margin-bottom:14px">' +
             '<span style="color:#9a9a9a">Plant folder</span><span id="folder"></span><span id="seenl" style="color:#9a9a9a"></span><span id="seen"></span></div>' +
             '<div id="drop" style="padding:18px;border:1.5px dashed #6a6a6a;border-radius:6px;text-align:center;cursor:pointer">' +
             'Drag the .ai here from the plant folder, or click to choose it</div>' +
             '<div id="say" style="margin-top:8px;font-size:12px;color:#9a9a9a"></div>' +
             '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">' +
-            '<button id="trace" style="' + pillCss(false) + '">Trace the picture</button>' +
+            '<button id="trace" style="' + pillCss(false) + '">' + (how.trace ? 'Trace the picture' : how.picture ? 'Open the picture' : 'Open an empty canvas') + '</button>' +
             '<button id="choose" style="' + pillCss(false) + '">Choose the .ai file…</button>' +
             '<a id="open" target="iwdie-ext" style="' + pillCss(true) + '">Open plant folder</a></div>' +
             '<input id="file" type="file" accept=".ai,.pdf,.eps,application/pdf,application/postscript,application/illustrator" style="display:none">' +
