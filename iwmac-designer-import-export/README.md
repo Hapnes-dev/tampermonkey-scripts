@@ -1491,17 +1491,27 @@ VectorCraft offers no way in other than its own Save, so the sync uses it:
   The banner then says *✓ Ready to sync*. Every sync after that is VectorCraft's own Save, without a
   dialog: Ctrl+S, and the Designer has it, measured at 0.2 seconds. While it is being
   made ready (about 3 seconds), keys typed are held back from VectorCraft's dialog.
-- When it could not be made ready, the first sync answers the Save As instead, as you would by
-  hand: Format **SVG**, OK, OK (until v1.56.0 also **Preserve Editing Capabilities**).
-  - It clicks where those dialogs sit, centred in the window, and only after VectorCraft's own
-    text field shows that the dialog is open.
-  - Each step waits for VectorCraft to draw, so a tab left in the background meanwhile is
-    slower but not wrong.
-  - Measured: 2.9 seconds in front, 78 seconds behind another tab.
+- When it could not be made ready - and for a plant's `.ai`, which is not saved as it opens - the
+  first sync answers the Save As instead: Format **SVG**, OK, OK (until v1.56.0 also **Preserve
+  Editing Capabilities**). Since v1.57.0 it does so from the keyboard, out of sight:
+  - VectorCraft's web Save As starts on its own format, for a drawing opened from SVG or `.ai`
+    alike. Tab takes the keyboard from the file name to the Format menu, Space opens it, five
+    Tabs reach SVG, Space takes it, Enter is OK, and Enter again in SVG Options.
+  - The keys go straight to VectorCraft's canvas while the dialog's field keeps the keyboard, so
+    nothing depends on where the dialogs sit.
+  - A card in VectorCraft's look, *Syncing to the IWMAC Designer…*, covers the dialogs
+    meanwhile, and the pointer is kept off them.
+  - Where the keys did not get there, the dialogs are closed again and the clicks of earlier
+    versions take over: where those dialogs sit, centred in the window, once VectorCraft's own
+    text field shows that the dialog is open (2.9 seconds in front, 78 seconds behind another
+    tab, measured in v1.46.0).
+  - Measured in the stub host: no click, 1.9 s from Ctrl+S to the Designer's answer, where the
+    clicks took 3.9 s. With the keys sent wrong on purpose, the clicks took over and it still
+    saved as SVG, in 4.6 s.
 - A save that comes out in another format meanwhile is held back, and Save As is tried again
   more slowly.
-- If it still does not save, the banner says so; finish the dialog by hand, as before
-  (Format SVG → OK → OK), and it syncs all the same.
+- If it still does not save, the dialogs it opened are closed again, and the banner says *Not
+  synced* with **Try again**: nothing is left to finish by hand (v1.57.0).
 
 **The PNG on the server (v1.42.0).** Each sync also uploads the background's PNG to the plant's
 pictures, as Manage Images' *Upload to server* does. It is the same request

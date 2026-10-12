@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.56.0
+// @version      1.57.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.56.0';
+var IWDIE_VERSION = '1.57.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9879,7 +9879,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '.iwdie-vcs-p{background:#1473e6;color:#ffffff;box-shadow:none}',
         '.iwdie-vcs-p:hover{background:#378ef0}',
         // while VectorCraft's own dialogs are being answered: the pointer is kept off them
-        '.iwdie-vcs-g{position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483645;cursor:progress}'
+        '.iwdie-vcs-g{position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483645;cursor:progress}',
+        // and they are covered (v1.57.0): a card in VectorCraft's look where they open, so it runs as by itself
+        '.iwdie-vcs-cover{position:fixed;left:50%;top:50%;width:560px;height:560px;margin:-290px 0 0 -280px;z-index:2147483646;box-sizing:border-box;',
+        '  display:flex;align-items:center;justify-content:center;text-align:center;background:#535353;border:1px solid #383838;border-radius:6px;',
+        '  box-shadow:0 8px 14px rgba(0,0,0,.55);font:400 13px/1.5 ' + font + ';color:#d1d1d1;cursor:progress}',
+        '.iwdie-vcs-cover b{display:block;color:#ffffff;font-size:15px;font-weight:600;margin-bottom:4px}',
+        '.iwdie-vcs-cover span{display:block;color:#b0b0b0}'
       ].join('\n');
       var st = document.createElement('style');
       st.id = 'iwdie-vcs-style';
@@ -9985,39 +9991,88 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           busy = false;
           state.syncing = false;
           state.auto = false;
-          if (!ok) {
-            say('VectorCraft did not save it. If its Save As is open, finish it by hand: Format <b>SVG</b> → OK → OK - that syncs all the same.', true, true);
-          }
+          // its dialogs are closed again by the answer itself: nothing left to finish by hand (v1.57.0)
+          if (!ok) say('Not synced: VectorCraft did not save the drawing. <button class="iwdie-vcb-l" data-act="resync">Try again</button>', true, true);
           return !!ok;
         });
       };
-      // VectorCraft's Save As, answered where its dialogs sit: Format SVG, OK, then OK in SVG Options - without
-      // Preserve Editing Capabilities since v1.56.0: the copy of the document it adds could never be reopened (a
-      // sync changes the SVG it would have to match), and only made each save bigger. `k` slows it down: each step
-      // waits for its dialog or menu to settle, k × 300 ms and k × 15 frames. `saved()` tells when the save has come.
+      // a key straight at egui (v1.57.0), the keyboard left where it is: a dialog's field keeps it, and egui still hears
+      // the key - unlike `key`, which takes the focus to the canvas first
+      var press = function (k, code, mods) {
+        var c = canvas();
+        if (!c) return;
+        mods = mods || {};
+        passing = true;
+        try {
+          ['keydown', 'keyup'].forEach(function (type) {
+            c.dispatchEvent(new W.KeyboardEvent(type, { key: k, code: code, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt, bubbles: true, cancelable: true }));
+          });
+        } finally { passing = false; }
+      };
+      // VectorCraft's Save As, answered without a click (v1.57.0): Tab takes the keyboard from the file name to the Format
+      // menu, Space opens it, five Tabs reach SVG (the fourth format: VectorCraft, VectorCraft Template, PDF, SVG - the
+      // first Tab enters the list) and Space takes it; Enter is OK, and Enter again in SVG Options. Where the keys did not
+      // get there, the clicks where those dialogs sit, as before 1.57.0. Without Preserve Editing Capabilities since
+      // v1.56.0. Meanwhile a card in VectorCraft's own look covers the dialogs, and the pointer is kept off them: it runs
+      // as by itself. `k` slows it down: each step waits k × 120 ms and k × 8 frames. `saved()` tells when the save has
+      // come. -> Promise<saved>
       var answerSaveAs = function (k, saved) {
-        var guard = document.createElement('div');
+        var guard = document.createElement('div'), cover = document.createElement('div');
         guard.className = 'iwdie-vcs-g';
+        cover.className = 'iwdie-vcs-cover';
+        cover.innerHTML = '<div><b>' + esc2(state.priming ? 'Getting Ctrl+S ready…' : 'Syncing to the IWMAC Designer…') + '</b>' +
+          '<span>VectorCraft’s Save As is answered for you, once.</span></div>';
         document.body.appendChild(guard);
-        var done = function (ok) { if (guard.parentNode) guard.parentNode.removeChild(guard); return ok; };
-        var step = function () { return settle(300 * k, 15 * k); };
-        return step().then(function () { return tap(5, -159); }).then(step)          // Format ▾
-          .then(function () { return tap(-92, -40); }).then(step)                     // SVG
-          .then(function () {
-            // the menu took the keyboard from the file name; if it did not, the clicks went astray: no more
-            if (typing()) return false;
-            return tap(154, 19)                                                       // OK
-              .then(function () { return until(function () { return typing() || state.other; }, 240 * k); })
-              .then(function () { return typing(); });
-          })
-          .then(function (options) {
-            // SVG Options gives its first field the keyboard: it is open, and the clicks went where they should
-            if (!options) return false;
-            return step()
-              .then(function () { return tap(154, 194); })                                     // OK
-              .then(function () { return until(saved, 1200); });
-          })
-          .then(done, function () { return done(false); });
+        document.body.appendChild(cover);
+        var done = function (ok) {
+          if (guard.parentNode) guard.parentNode.removeChild(guard);
+          if (cover.parentNode) cover.parentNode.removeChild(cover);
+          return ok;
+        };
+        var step = function () { return settle(120 * k, 8 * k); };
+        var hit = function (key, code, n) {
+          var p = Promise.resolve();
+          for (var i = 0; i < (n || 1); i++) p = p.then(function () { press(key, code); return step(); });
+          return p;
+        };
+        // Enter in SVG Options, once its first field has the keyboard: it is open
+        var finish = function () {
+          return until(function () { return typing() || saved() || state.other; }, 240 * k).then(function () {
+            if (saved()) return true;
+            if (!typing() || state.other) return false;
+            // a save in another format is held back and noted: that, too, ends the wait
+            return step().then(function () { return hit('Enter', 'Enter'); })
+              .then(function () { return until(function () { return saved() || state.other; }, 1200); }).then(function () { return saved(); });
+          });
+        };
+        // the dialogs this opened, closed again, so the next way starts from Save As anew
+        var shut = function () {
+          var n = 0;
+          var esc = function () { press('Escape', 'Escape'); return settle(200, 10).then(function () { return typing() && ++n < 3 ? esc() : null; }); };
+          return esc();
+        };
+        var byKeys = function () {
+          return step().then(function () { return hit('Tab', 'Tab'); }).then(function () { return hit(' ', 'Space'); })
+            .then(function () { return hit('Tab', 'Tab', 5); }).then(function () { return hit(' ', 'Space'); })
+            .then(function () { return hit('Enter', 'Enter'); }).then(finish);
+        };
+        var byClicks = function () {
+          var slow = function () { return settle(300 * k, 15 * k); };
+          return slow().then(function () { return tap(5, -159); }).then(slow)            // Format ▾
+            .then(function () { return tap(-92, -40); }).then(slow)                       // SVG
+            .then(function () { return typing() ? false : tap(154, 19).then(finish); });  // OK, then OK in SVG Options
+        };
+        return byKeys().then(function (ok) {
+          if (ok || saved()) return true;
+          // the keys did not get there: the dialogs closed, Save As again, and the clicks
+          return shut().then(function () {
+            state.other = 0;
+            key('S', 'KeyS', { ctrl: true, shift: true });
+            return until(typing, 480 * k);
+          }).then(function (open) { return open ? byClicks() : false; });
+        }).then(function (ok) {
+          return ok || saved() ? true : shut().then(function () { return false; });
+        }).then(done, function () { return shut().then(function () { return done(false); }, function () { return done(false); }); });
       };
       // the document in front saved as SVG and kept here, sent nowhere (v1.46.0): VectorCraft's first save of a document
       // is its Save As, answered as by hand. `want(text, name)` hears what was saved (v1.54.0). -> Promise<saved>
@@ -10542,6 +10597,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         syncer.unlock();
         drawLine('unlocked');
       });
+      // a sync that did not save, tried again from the banner (v1.57.0)
+      ui.on('resync', function () { if (syncer) syncer.sync(false); });
       // the panel's Illustrator file (v1.49.0), from the plant's folder when that is connected, else as chosen
       var input = document.createElement('input');
       input.type = 'file';
