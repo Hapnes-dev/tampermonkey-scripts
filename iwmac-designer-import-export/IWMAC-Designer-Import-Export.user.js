@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.64.0
+// @version      1.64.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.64.0';
+var IWDIE_VERSION = '1.64.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1786,7 +1786,7 @@ var IWDIE_DRAWING_STYLE = {
   exchanger: 'Rounded pill, fill #CED1D2 with a #A6A6A9 hairline, a white inner pill 3 wide inset 8, and a grey triangle at each end. Place it across both runs.',
   settings_band: '#CDD2D7 at about half opacity behind the settings column.',
   in_the_artwork: 'Pipes, equipment outlines and frames that show no signal, zone boxes, flow arrows, enclosures and fixed picture text (Tekst layer). On Maskin: pipes, compressors, the gas cooler with its fan circles, valve symbols with their tags, empty pills.',
-  symbols: 'On Maskin, place the house symbols rather than drawing them: <use data-iwdie-symbol="Kompressor" x="120" y="80"/> in Former, width and height to fit a box, data-iwdie-turn="90" to turn it. overview.parts.components.symbols lists those the plant\'s library has (Kompressor, Gaskjøler4Lav, BeholderNivå, Ventil, Motorventil, Pil, Føler, KjølGrader, PilleMørk...). Insert draws each from the library kept in the browser; a name it lacks becomes a red dashed box.',
+  symbols: 'On Maskin, place the house symbols rather than drawing them: <use data-iwdie-symbol="Kompressor" x="120" y="80"/> in Former, width and height to fit a box, data-iwdie-turn="90" to turn it. overview.parts.components.symbols lists those the plant\'s library has (Kompressor, Gaskjøler4Lav, BeholderNivå, Ventil, Motorventil, Pil, Føler, KjølGrader, PilleMørk...). Insert draws each from the library kept in the browser; a name it lacks becomes a red dashed box. Join each pipe at a symbol\'s port (the ports column there): [u, v, way] at turn 0, the pipe ending at x + u * width, y + v * height. A picture already drawn so lists its symbols and its layout in overview.picture (symbols, layout): add in its rows, at their spacing, with values where its values stand.',
   stays_objects: 'Whatever shows or sets a signal: values, setpoints, state strips, LEDs, alarm bells, and the fans, pumps, filters, dampers and valves that are linked. A caption is fixed picture text or a label object, never both.',
   never: 'No fake numbers, no drawn bells or LEDs, no text where a label object belongs, no dark fills except a setpoint pill (overview.style.pills).'
 };
@@ -8702,6 +8702,30 @@ var IWDIE_CB_PORTS = (function () {
   return p;
 })();
 
+/** A house symbol's own ports at turn 0 (v1.64.1), for an export: {port: [u, v, way]} - u and v the share of its box
+ *  across and down, way the direction a pipe leaves it - or null for a symbol joined at its sides only. */
+function iwdieCbPortsOf(name) {
+  var p = name ? IWDIE_CB_PORTS[name] : null;
+  if (!p) return null;
+  var out = {};
+  Object.keys(p).forEach(function (k) { out[k] = [p[k][0], p[k][1], p[k][2]]; });
+  return out;
+}
+
+/** The house circuit a colour draws (v1.64.1): the nearest of IWDIE_CB_CIRCUITS' colours, when near enough - a colour
+ *  measured from a picture's pixels drifts a little from the one drawn. -> its name | '' */
+function iwdieCbCircuitOfColour(hex) {
+  var m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return '';
+  var v = parseInt(m[1], 16), best = '', bd = 1e9;
+  IWDIE_CB_CIRCUITS.forEach(function (c) {
+    var w = parseInt(c[1].slice(1), 16);
+    var d = Math.abs((v >> 16) - (w >> 16)) + Math.abs(((v >> 8) & 255) - ((w >> 8) & 255)) + Math.abs((v & 255) - (w & 255));
+    if (d < bd) { bd = d; best = c[0]; }
+  });
+  return bd <= 40 ? best : '';
+}
+
 /** The ways a pipe can leave a port, as vectors. */
 var IWDIE_CB_DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
 
@@ -8888,6 +8912,9 @@ function iwdieCbFacts(items, size) {
         run.sort(function (a, b) { return a.box[s] - b.box[s]; });
         var steps = [];
         for (var i = 1; i < run.length; i++) steps.push(Math.round(run[i].box[s] - run[i - 1].box[s]));
+        // a bank, not two of a kind far apart on one line (two arrows on a long pipe): its step within six of its own size
+        var along = iwdieCbMedian(run.map(function (o) { return s === 'x' ? o.box.w : o.box.h; })) || 1;
+        if (iwdieCbMedian(steps) > 6 * along) continue;
         var row = { symbol: name, cids: run.map(function (o) { return o.cid; }), spacing: iwdieCbMedian(steps) };
         row[k] = Math.round(head.box[k]);
         row.from = Math.round(run[0].box[s]);
@@ -8915,7 +8942,7 @@ function iwdieCbFacts(items, size) {
   });
   var circuits = Object.keys(circ).map(function (k) {
     var c = circ[k], named = c.circuit ? iwdieCbCircuit(c.circuit) : null;
-    if (!named) IWDIE_CB_CIRCUITS.forEach(function (n) { if (!named && String(c.colour || '').toLowerCase() === n[1]) named = { name: n[0] }; });
+    if (!named && iwdieCbCircuitOfColour(c.colour)) named = { name: iwdieCbCircuitOfColour(c.colour) };
     return { colour: c.colour, circuit: c.circuit || (named ? named.name : null), pipes: c.pipes, length: Math.round(c.length), box: [Math.round(c.x0), Math.round(c.y0), Math.round(c.x1 - c.x0), Math.round(c.y1 - c.y0)] };
   }).sort(function (a, b) { return b.length - a.length; });
   // where values stand by their nearest symbol, by kind of symbol
@@ -8927,7 +8954,8 @@ function iwdieCbFacts(items, size) {
       var sx = s.box.x + s.box.w / 2, sy = s.box.y + s.box.h / 2, d = Math.abs(sx - cx) + Math.abs(sy - cy);
       if (d < bd) { bd = d; best = s; }
     });
-    if (!best || bd > 160) return;
+    // near enough to be that symbol's own (v1.64.1): a value by the compressors is not the oil separator's, 150 px above
+    if (!best || bd > 120) return;
     var o = off[best.symbol] = off[best.symbol] || { dx: [], dy: [] };
     o.dx.push(Math.round(it.box.x - best.box.x)); o.dy.push(Math.round(it.box.y - best.box.y));
   });
@@ -9182,7 +9210,8 @@ function iwdieCbPlan(ops, scene, ctx) {
           keep(o.ref, { box: vb, obj_id: id, pill: pill });
           if (o.label) {
             var fs = (ctx.facts && ctx.facts.text && ctx.facts.text.size) || 11;
-            steps.push({ 'do': 'add', kind: 'text', text: String(o.label), x: r1(pill.x - 4), y: r1(pill.y + 14), size: fs, anchor: 'end',
+            // the caption ends clear of the value object, which reaches 5 px past its pill (v1.64.1)
+            steps.push({ 'do': 'add', kind: 'text', text: String(o.label), x: r1(Math.min(pill.x, vb.x) - 3), y: r1(pill.y + 14), size: fs, anchor: 'end',
               colour: (ctx.facts && ctx.facts.text && ctx.facts.text.colour) || '#425664', op: i });
           }
         } else keep(o.ref, { box: pill });
@@ -9924,7 +9953,8 @@ var IWDIE_OV_READ_ME = [
   'Tables are {cols, rows}: each row holds its values in the order of cols. Boxes are x, y, width, height in panel pixels from the top left corner.',
   'units: every unit (controller) of the plant. parameters: every row of the units named in it, by group - the plant\'s own parameter source. signals: the rows the plant has tagged with a standard meaning (signal; its measure and link_tag are in signals.kinds). For a unit whose rows are not here, tick it in the UNITS list of the Parameter Selector (Actions > Open Paramselector Popup) and export again.',
   'Link an object by copying unit_id, alias_text, sub_group and driver_id from one of those rows; never build or edit one. bindings shows how this panel\'s objects are linked, each checked against the rows: ok, alias differs, in unit ..., not in unit, unit not on plant.',
-  'picture: where this panel\'s picture has its panels, pipes, pills, figures and texts. style: its colours, pipes, pills and text, measured from it. parts: the objects it uses, and the component library kept in this browser. Use them to place things, and to keep a new picture in the same style.',
+  'picture: where this panel\'s picture has its panels, pipes, pills, figures and texts. style: its colours, pipes (with the circuit each colour draws), pills and text, measured from it. parts: the objects it uses, and the component library kept in this browser. Use them to place things, and to keep a new picture in the same style.',
+  'A picture that is a drawing made with the house symbols also lists them (picture.symbols: name, box, turn) and the layout it follows (picture.layout: rows of like symbols and their spacing, the information column, the circuits, where values stand by each kind of symbol, the text). To change such a picture, keep what it has and add in its rows, at their spacing. parts.components.symbols gives each symbol\'s ports: where its pipes join.',
   'A new picture goes in panel.image_svg: an <svg> of the panel\'s size whose top-level groups are the layers Bakgrunn, Rør, Former and Tekst - the ground and its panels, the pipes, the equipment drawn, the fixed text. Whatever shows or sets a signal (values, setpoints, alarms, and the linked fans, pumps and valves) is a panel object over it, not drawing. Insert sets the SVG as the background, and Edit in VectorCraft opens it as vectors, layer by layer, to finish by hand.',
   'Insert ignores this block: leave it out of a file you return.'
 ];
@@ -10140,6 +10170,30 @@ function iwdieBuildOverview(doc, src) {
         : { cols: ['x', 'y', 'w', 'h', 'colour', 'letters'], rows: (ol.words || []).slice(0, 400) }
     };
     if (Array.isArray(pic.layers) && pic.layers.length) picture.layers = { cols: ['name', 'shapes'], rows: pic.layers.slice(0, 40) };
+    // v1.64.1: a drawing's own house symbols and the layout they follow, as the Claude bridge reads a drawing - the
+    // panel's objects along, for where its values stand
+    var drawn = Array.isArray(pic.items) && pic.items.length ? pic.items : null;
+    if (drawn) {
+      var r1 = function (v) { return Math.round(v * 10) / 10; };
+      var placed = drawn.filter(function (it) { return it.kind === 'symbol' && it.symbol; });
+      if (placed.length) picture.symbols = { cols: ['name', 'x', 'y', 'w', 'h', 'turn'], rows: placed.slice(0, 200).map(function (it) {
+        var k = +it.k || 0;
+        return [it.symbol, r1(it.box.x), r1(it.box.y), r1(it.box.w), r1(it.box.h), k >= 4 ? (k % 4) * 90 + ' flip' : (k % 4) * 90];
+      }) };
+      var objs = all.map(function (p, i) {
+        return { cid: 'o' + i, kind: 'object', role: iwdieRoleOf(str(p.o.obj_id)), box: { x: p.x, y: p.y, w: parseInt(p.o.posWidth, 10) || 0, h: parseInt(p.o.posHeight, 10) || 0 } };
+      });
+      var lay = iwdieCbFacts(drawn.concat(objs), size);
+      picture.layout = {
+        how: 'As the drawing itself has it. rows: like symbols in a row, the step between them and their y; columns likewise. values: where the value objects stand by each kind of symbol, from its top left (dx, dy) over n of them. circuits: each pipe colour, the circuit it draws, and its reach.',
+        rows: lay.rows.map(function (q) { return { symbol: q.symbol, count: q.cids.length, spacing: q.spacing, y: q.y, from_x: q.from, to_x: q.to }; }),
+        columns: lay.columns.map(function (q) { return { symbol: q.symbol, count: q.cids.length, spacing: q.spacing, x: q.x, from_y: q.from, to_y: q.to }; }),
+        info_column: lay.infoColumn ? { x: lay.infoColumn.x, w: lay.infoColumn.w } : null,
+        circuits: lay.circuits.map(function (c) { return { colour: c.colour, circuit: c.circuit, pipes: c.pipes, length: c.length, box: c.box }; }),
+        values: lay.values,
+        text: lay.text
+      };
+    }
     var left = (ol.figures || []).length - picture.figures.rows.length + Math.max(0, (ol.pipes || []).length - 200) + Math.max(0, (ol.pills || []).length - 200);
     if (left > 0) picture.left_out = left + ' of the smallest figures or past the caps (200 pipes, 200 pills, 150 figures, 400 texts)';
 
@@ -10170,8 +10224,9 @@ function iwdieBuildOverview(doc, src) {
       canvas_colour: str(src.canvasColour) || null,
       ground: (ol.palette && ol.palette[0]) ? ol.palette[0][0] : null,
       colours: { cols: ['colour', 'percent'], rows: (ol.palette || []).slice(0, 12).map(function (c) { return [c[0], totalPx ? Math.round(c[1] / totalPx * 1000) / 10 : 0]; }) },
-      pipes: { cols: ['colour', 'count', 'width', 'length'], rows: pipeOrder.sort(function (a, b) { return pipeBy[b].len - pipeBy[a].len; }).map(function (k) {
-        return [k, pipeBy[k].n, iwdieOvMedian(pipeBy[k].w), Math.round(pipeBy[k].len)];
+      // v1.64.1: the house circuit each colour draws, where it is one (maskin-drawing-method.txt section 3)
+      pipes: { cols: ['colour', 'count', 'width', 'length', 'circuit'], rows: pipeOrder.sort(function (a, b) { return pipeBy[b].len - pipeBy[a].len; }).map(function (k) {
+        return [k, pipeBy[k].n, iwdieOvMedian(pipeBy[k].w), Math.round(pipeBy[k].len), iwdieCbCircuitOfColour(k) || null];
       }) },
       pills: { cols: ['fill', 'ring', 'ring_width', 'height', 'count'], rows: pillOrder.sort(function (a, b) { return pillBy[b].n - pillBy[a].n; }).map(function (k) {
         var q = pillBy[k];
@@ -10221,11 +10276,16 @@ function iwdieBuildOverview(doc, src) {
     // v1.63.0: those the Maskin template's table knows, by name, for a drawing to place
     var syms = iwdieSymAvailable(lib.items);
     if (syms.length) {
-      parts.components.symbols = { cols: ['name', 'sizes', 'what'], rows: syms.map(function (s) { return [s.name, s.sizes.join(' '), s.en]; }) };
+      // v1.64.1: with the ports their pipes join at
+      parts.components.symbols = { cols: ['name', 'sizes', 'what', 'ports'], rows: syms.map(function (s) { return [s.name, s.sizes.join(' '), s.en, iwdieCbPortsOf(s.name)]; }) };
       parts.components.place = 'A drawing places a symbol by name instead of drawing it: <use data-iwdie-symbol="Kompressor" x="120" y="80"/> puts the ' +
         'library\'s compressor with its top left at 120, 80, at its own size; width and height fit it into that box, its proportions kept; ' +
         'data-iwdie-turn="90" (180, 270) turns it clockwise, data-iwdie-flip="1" mirrors it left to right first. Insert draws each from this ' +
-        'library, as a group named after it; a name it lacks becomes a red dashed box. sizes are those the library has; the nearest is used.';
+        'library, as a group named after it; a name it lacks becomes a red dashed box. sizes are those the library has; the nearest is used. ' +
+        'ports: where its pipes join, {port: [u, v, way]} at turn 0 - u and v the share of its box across and down, way the direction ' +
+        'the pipe leaves it; a pipe ends at x + u * width, y + v * height (a compressor\'s out is the middle of its top, a motor valve\'s ' +
+        'in and out 71 % down its sides, through its knot). A turned symbol turns its ports with it. Every symbol also joins at the middle ' +
+        'of each side; null means only there. Pipes are orthogonal runs from port to port.';
     }
   }
 
@@ -11831,6 +11891,45 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /** The texts of a drawing - a VectorCraft document kept in the picture, or an SVG background - with their words, and
      *  its layers: the drawing laid out at the panel's size in a frame out of sight (its styles stay in there), nothing
      *  in it that runs or loads. -> {texts: [[x, y, w, h, size, colour, text]], layers: [[name, shapes]]} */
+    /** The things a drawing is made of, mounted at `root` in `win`, each classified as iwdieCbClassify does and boxed in
+     *  panel pixels: the children of each layer, and the pipes of each circuit group in Rør. -> [item] (1500 at most) */
+    function ovSvgItems(root, win, hidden) {
+      var kids = function (el) { return Array.prototype.filter.call(el.children, function (c) { return !/^(defs|title|desc|metadata|style|script)$/i.test(c.localName); }); };
+      var nameOf = function (el) { return el.getAttribute('data-name') || el.getAttribute('id') || ''; };
+      var top = kids(root).filter(function (el) { return el.localName === 'g'; });
+      if (top.length === 1 && !nameOf(top[0])) top = kids(top[0]).filter(function (el) { return el.localName === 'g'; });
+      var cands = [];
+      top.forEach(function (L) {
+        var ln = nameOf(L);
+        kids(L).forEach(function (el) {
+          if (/^r(o|ø)r$/i.test(ln) && el.localName === 'g' && !el.getAttribute('data-iwdie-symbol')) {
+            kids(el).forEach(function (p) { cands.push({ el: p, layer: ln, circuit: nameOf(el) }); });
+          } else cands.push({ el: el, layer: ln });
+        });
+      });
+      var attrs = ['data-iwdie-symbol', 'data-iwdie-missing', 'data-iwdie-k', 'fill', 'stroke', 'stroke-width', 'rx', 'd', 'font-size'];
+      var out = [];
+      cands.slice(0, 1500).forEach(function (c, i) {
+        if (hidden(c.el)) return;
+        var bb, m;
+        try { bb = c.el.getBBox(); m = c.el.getCTM(); } catch (e) { return; }
+        if (!bb || !m) return;
+        var xs = [], ys = [];
+        [[bb.x, bb.y], [bb.x + bb.width, bb.y], [bb.x, bb.y + bb.height], [bb.x + bb.width, bb.y + bb.height]].forEach(function (p) {
+          xs.push(m.a * p[0] + m.c * p[1] + m.e);
+          ys.push(m.b * p[0] + m.d * p[1] + m.f);
+        });
+        var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys), at = {};
+        attrs.forEach(function (n) { var v = c.el.getAttribute(n); if (v !== null) at[n] = v; });
+        var text = c.el.localName === 'text' ? c.el.textContent : '';
+        var pts = null;
+        if (c.el.localName === 'line') pts = [[+c.el.getAttribute('x1'), +c.el.getAttribute('y1')], [+c.el.getAttribute('x2'), +c.el.getAttribute('y2')]];
+        out.push(iwdieCbClassify({ cid: 'd' + i, layer: c.layer, tag: c.el.localName, name: nameOf(c.el), attrs: at, text: String(text || '').replace(/\s+/g, ' ').trim(),
+          box: { x: x0, y: y0, w: Math.max.apply(null, xs) - x0, h: Math.max.apply(null, ys) - y0 }, circuit: c.circuit, pts: pts }));
+      });
+      return out;
+    }
+
     function ovSvgTexts(svgText, size) {
       var parsed = new DOMParser().parseFromString(String(svgText || ''), 'image/svg+xml');
       if (!parsed || !parsed.documentElement || parsed.getElementsByTagName('parsererror').length) return { texts: null, layers: null };
@@ -11881,7 +11980,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (String(g.tagName).toLowerCase() !== 'g') return;
           layers.push([g.getAttribute('data-name') || g.getAttribute('id') || '(unnamed)', g.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon,text,use').length]);
         });
-        return { texts: texts, layers: layers };
+        // v1.64.1: the drawing's things, as the Claude bridge reads them - each layer's children, a circuit group's pipes,
+        // measured where they stand - for the house symbols it places and the layout it follows
+        var items = [];
+        try { items = ovSvgItems(root, win, hidden); } catch (e) { items = []; }
+        return { texts: texts, layers: layers, items: items };
       } finally {
         if (frame.parentNode) frame.parentNode.removeChild(frame);
       }
@@ -11903,7 +12006,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }).then(function (vz) {
             if (!vz || !vz.outline) return null;
             return { source: svg ? (mime === 'image/svg+xml' ? 'svg' : 'vectorcraft') : 'traced', outline: vz.outline,
-              texts: got && got.texts && got.texts.length ? got.texts : null, layers: got && got.layers && got.layers.length ? got.layers : null };
+              texts: got && got.texts && got.texts.length ? got.texts : null, layers: got && got.layers && got.layers.length ? got.layers : null,
+              items: got && got.items && got.items.length ? got.items : null };
           });
         });
       });
@@ -18505,6 +18609,8 @@ if (typeof module !== 'undefined' && module.exports) {
     CB_PORTS: IWDIE_CB_PORTS,
     CB_CIRCUITS: IWDIE_CB_CIRCUITS,
     cbCircuit: iwdieCbCircuit,
+    cbCircuitOfColour: iwdieCbCircuitOfColour,
+    cbPortsOf: iwdieCbPortsOf,
     cbPorts: iwdieCbPorts,
     cbRoute: iwdieCbRoute,
     cbPathD: iwdieCbPathD,

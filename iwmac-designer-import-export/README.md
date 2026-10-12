@@ -366,6 +366,40 @@ places them by the template's names, and Insert draws the real ones:
   `parts.components.place`. The in-file guide's `drawing_style.symbols` says to use them on
   Maskin.
 
+### Where pipes join, and a drawing's own layout (v1.64.1)
+
+Thomas asked whether the export needed more for a Copilot agent to draw his pictures easily.
+Drawing a basic Maskin through Claude's bridge showed what it lacked. Claude could route each
+pipe to a compressor's cap, a valve's knot or a receiver's inlet, and continue a row of
+compressors at its own spacing. An agent working from the export knew the symbols' names and
+sizes, but not where their pipes join or what layout the picture already follows. The export
+now tells it:
+
+- **Ports.** `overview.parts.components.symbols` has a fourth column, `ports`: where each house
+  symbol's pipes join, as `{port: [u, v, way]}` at turn 0. `u` and `v` are the share of its box
+  across and down, and `way` is the direction the pipe leaves. A pipe ends at
+  `x + u × width, y + v × height`. A compressor's `out` is the middle of its top; a motor valve's
+  `in` and `out` are 71 % down its sides, through its knot. These are the same ports the bridge
+  routes by.
+- **Circuits.** `overview.style.pipes` names the `circuit` each measured pipe colour draws:
+  HP, Liquid, MT suction, LT suction or Heat recovery, when it is within a step of the house colour.
+- **A drawn picture's own symbols and layout.** When the picture is a drawing made with house
+  symbols, `overview.picture` adds two more lists. `symbols` gives each symbol's name, box and
+  turn. `layout` gives the rows of like symbols and their spacing, the information column, the
+  circuits, where values stand by each kind of symbol, and the text. To change such a picture,
+  an agent keeps what it has and adds in its rows. The drawing is measured in a hidden frame and
+  read as the bridge reads it.
+- **Captions** of values placed by the bridge now end 8 px before the pill, clear of the value
+  object.
+- The in-file guide's `drawing_style.symbols` says to join pipes at the ports and to follow a
+  drawn picture's layout.
+
+Measured in the stub host: the kit's new worked example, a whole basic Maskin, was inserted with
+"9 of 9 match the plant" and 16 house symbols drawn. Its export listed the 16 symbols, both
+compressor banks 80 apart, the information column, the four circuits by name, and where the
+values stand. The kit's `tests/test-overview.js`, `test-named-components.js` and
+`test-claude-bridge.js` hold the new parts.
+
 ### The guide agrees with the Copilot kit (v1.62.1)
 
 A deep pass over the Copilot agent's knowledge kit against this script found the file's
