@@ -1562,6 +1562,43 @@ Measured in the stub host with `2349_Maskin.ai`: the 386 components were in plac
 single group of 53 x 53 pt. The save VectorCraft made was 536-539 kB with all 386. What the
 panel's PNG kept was 107-110 kB of SVG (24-25 kB packed), with only the one dragged on.
 
+**Vectorize image (v1.61.0).** Thomas asked for a button for when the plant's `.ai` is not to be
+had: one that turns the picture into vectors by itself, as fast and as exact as it can, keeping
+its colours, shapes and details, and leaving it as easy to edit in VectorCraft as possible. The
+card *Best result: the plant's own .ai file* now has **Vectorize image** whenever the panel has a
+picture (the first two rows of the table above). VectorCraft's web build has no API to run its
+own tracer, and its logo mode works at 1024 px with ten colours at most. So the script traces the
+picture itself, in a worker, before VectorCraft opens, and the steps' paper shows how far it is,
+colour by colour.
+
+- **Colours.** The palette is the picture's flat colours. A pixel counts when its neighbours
+  along a row or a column match it and it is no blend of the pixels on either side of it. The
+  shades along anti-aliased edges are not colours of their own: each edge pixel is read as one
+  colour or as a blend of two, with how much of each.
+- **Outlines.** Each colour's outline runs where it covers half a pixel. An edge pixel is cut
+  into 4 x 4 parts, filled from the side its coverage rises, so an outline is placed to a
+  quarter of a pixel. The outlines are fitted: sharp corners stay sharp, lines are snapped level
+  or upright, circles become circles and the rest Bézier curves. A fit that strays from the
+  outline's area is replaced by a plain polygon.
+- **What is what.** Pills become rounded rectangles, coloured pipes stroked lines. A hole stays
+  a hole: the ground shows through an "o" instead of being drawn again on top.
+- **Layers, nothing locked.** *Bakgrunn* holds the ground and the large panels, *Rør* the pipes,
+  *Former* the figures (each a group with what lies on it, so a click takes the whole figure),
+  *Tekst* the letters, grouped into words. A letter on its own (an arrow, a dot) is a figure.
+  The picture as it was is on the hidden layer *Bakgrunn (original)*, and the panel's objects are
+  placeholders on *IWMAC-objekter* as before. **Ctrl+S** syncs as for any edit.
+
+Its limits: gradients and drop shadows become flat bands of colour; rounded rectangles that are
+not whole pills are traced as outlines; letters are shapes, so they can be moved, recoloured or
+deleted but not retyped; and where two pipes cross, the gap between them may be closed.
+
+Measured in the stub host with 2349's Maskin picture (1400 x 750, 17 colours): vectorized in
+1.9 s, into 1513 shapes, 58 pills, 39 pipes and 1154 letters in 179 words, 391 kB of SVG. Drawn
+again, it differs from the picture by 0.41 of 255 on average; 0.08 % of its pixels differ by more
+than 40, none by more than 100. An older picture with gradients and shadows (1050 x 745, 48
+colours) took 2.1 s and differs by 1.07 on average. VectorCraft opened the vectorized panel with
+its seven layers, and a sync came back with the six placeholders.
+
 **The PNG on the server (v1.42.0).** Each sync also uploads the background's PNG to the plant's
 pictures, as Manage Images' *Upload to server* does. It is the same request
 (`designer_site/iw_upload_image.php`, field `userfile`), read the same way. The panel then
