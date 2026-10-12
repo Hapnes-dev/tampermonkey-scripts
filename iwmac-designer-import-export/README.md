@@ -366,6 +366,33 @@ places them by the template's names, and Insert draws the real ones:
   `parts.components.place`. The in-file guide's `drawing_style.symbols` says to use them on
   Maskin.
 
+### A picture for the agent, its pills numbered (v1.64.3)
+
+Thomas most often asks Copilot to *link out* a panel's picture, and it has to do that from the
+Export JSON alone. The export already measures every empty pill in the picture
+(`overview.picture.pills`). It cannot read the captions beside them in a traced PNG, so an agent
+could not tell which pill shows *Pgc* and which *Prec*.
+
+Export JSON now also saves the picture beside the file, as `<file>-for-ai.png`, whenever the
+panel has one:
+
+- the panel's picture at its own size;
+- each pill outlined in red and numbered **P1, P2…** in the order `overview.picture.pills` lists
+  them;
+- the object already on a pill named in the pill's badge, **P2 · o0**, where `o0` is
+  `panel.single_objects[0]`;
+- every other object outlined in blue and marked **o\<n>**;
+- a grid every 50 px, with its coordinates every 100.
+
+`overview.picture.numbered` says so in the file. Give the agent both files: it reads each pill's
+caption on the picture and its exact place in the JSON. Chrome asks once whether the Designer may
+download two files at a time.
+
+The Copilot kit was updated with it. A link-out of a Maskin panel is its own request class (6),
+with its own validator scope, `--patch-scope link-out`. An agent is told what to do with each of
+the export's link checks, how to read a pill's caption, and how to deliver placing and linking in
+one file.
+
 ### Where pipes join, and a drawing's own layout (v1.64.1)
 
 Thomas asked whether the export needed more for a Copilot agent to draw his pictures easily.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.64.2
+// @version      1.64.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.64.2';
+var IWDIE_VERSION = '1.64.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -10010,6 +10010,23 @@ var IWDIE_OV_READ_ME = [
   'Insert ignores this block: leave it out of a file you return.'
 ];
 
+/** The marks of the picture Export JSON saves for an agent beside the file (v1.64.3): each pill of the picture, numbered
+ *  P1, P2... in the order of overview.picture.pills, and each object of the panel, o0, o1... in the order iwdieOvObjects
+ *  lists them (panel.single_objects, then each container's items). An object whose centre lies on a pill is that pill's:
+ *  `pill` names it on the object, `objects` on the pill. -> {pills: [{id, box, objects}], objects: [{id, name, obj_id, box, pill}]} */
+function iwdieOvAiMarks(ov, doc) {
+  var rows = (ov && ov.picture && ov.picture.pills && ov.picture.pills.rows) || [];
+  var pills = rows.map(function (r, i) { return { id: 'P' + (i + 1), box: { x: +r[0] || 0, y: +r[1] || 0, w: +r[2] || 0, h: +r[3] || 0 }, objects: [] }; });
+  var objects = iwdieOvObjects(doc).map(function (p, i) {
+    var box = { x: p.x, y: p.y, w: parseInt(p.o.posWidth, 10) || 0, h: parseInt(p.o.posHeight, 10) || 0 };
+    var cx = box.x + box.w / 2, cy = box.y + box.h / 2, on = null;
+    pills.forEach(function (q) { if (!on && cx >= q.box.x - 1 && cx <= q.box.x + q.box.w + 1 && cy >= q.box.y - 1 && cy <= q.box.y + q.box.h + 1) on = q; });
+    if (on) on.objects.push('o' + i);
+    return { id: 'o' + i, name: String(p.o.name || ''), obj_id: String(p.o.obj_id || ''), box: box, pill: on ? on.id : null };
+  });
+  return { pills: pills, objects: objects };
+}
+
 /** Text of an XML element, its entities decoded, exactly as it is - a trailing space is part of an alias. */
 function iwdieOvXmlText(s) {
   return String(s == null ? '' : s).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, function (m, e) {
@@ -10221,6 +10238,12 @@ function iwdieBuildOverview(doc, src) {
         : { cols: ['x', 'y', 'w', 'h', 'colour', 'letters'], rows: (ol.words || []).slice(0, 400) }
     };
     if (Array.isArray(pic.layers) && pic.layers.length) picture.layers = { cols: ['name', 'shapes'], rows: pic.layers.slice(0, 40) };
+    // v1.64.3: the picture saved beside the export, for an agent that has to read what each pill shows
+    picture.numbered = 'Export JSON saves this picture beside the file, as the file\'s name with -for-ai.png: each pill outlined in red and ' +
+      'numbered P1, P2... in the order of pills.rows; each object outlined in blue and marked o0, o1... in the order of ' +
+      'panel.single_objects, then the containers\' items - one on a pill named in the pill\'s badge, "P2 · o0"; a grid every ' +
+      '50 px, its coordinates every 100. Read there the ' +
+      'caption by each pill - the words a traced picture\'s texts do not carry.';
     // v1.64.1: a drawing's own house symbols and the layout they follow, as the Claude bridge reads a drawing - the
     // panel's objects along, for where its values stand
     var drawn = Array.isArray(pic.items) && pic.items.length ? pic.items : null;
@@ -11944,6 +11967,74 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  in it that runs or loads. -> {texts: [[x, y, w, h, size, colour, text]], layers: [[name, shapes]]} */
     /** The things a drawing is made of, mounted at `root` in `win`, each classified as iwdieCbClassify does and boxed in
      *  panel pixels: the children of each layer, and the pipes of each circuit group in Rør. -> [item] (1500 at most) */
+    /** The picture for an agent, saved beside the export (v1.64.3): the panel's picture at its size, each pill numbered and
+     *  each object marked as iwdieOvAiMarks has them, over a grid every 50 px - for an agent linking the panel out, which
+     *  has to read which caption stands by which pill. Nothing when the panel has no picture. -> Promise<file name | null> */
+    function ovAiPicture(env, name) {
+      var url = grabBackgroundUrl();
+      if (!url || !env || !env.overview || !env.overview.picture) return Promise.resolve(null);
+      var size = exportPanelSize(), fill = grabBackgroundFillColor();
+      return fetchBackgroundBytes(url).then(function (bg) {
+        var mime = iwdieSniffMime(bg.bytes);
+        return exportPaint(bg.bytes, mime !== 'application/octet-stream' ? mime : bg.mime, size, fill);
+      }).then(function (c) {
+        var ctx = c.getContext('2d'), marks = iwdieOvAiMarks(env.overview, env.panel);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(40, 60, 80, 0.13)';
+        ctx.lineWidth = 1;
+        for (var gx = 50; gx < size.w; gx += 50) { ctx.beginPath(); ctx.moveTo(gx + 0.5, 0); ctx.lineTo(gx + 0.5, size.h); ctx.stroke(); }
+        for (var gy = 50; gy < size.h; gy += 50) { ctx.beginPath(); ctx.moveTo(0, gy + 0.5); ctx.lineTo(size.w, gy + 0.5); ctx.stroke(); }
+        ctx.fillStyle = 'rgba(40, 60, 80, 0.8)';
+        ctx.font = '9px Arial, sans-serif';
+        ctx.textBaseline = 'top';
+        for (var lx = 100; lx < size.w; lx += 100) ctx.fillText(String(lx), lx + 2, 2);
+        for (var ly = 100; ly < size.h; ly += 100) ctx.fillText(String(ly), 2, ly + 2);
+        ctx.restore();
+        var badge = function (text, x, y, colour) {
+          ctx.font = 'bold 10px Arial, sans-serif';
+          var w = Math.ceil(ctx.measureText(text).width) + 6;
+          ctx.fillStyle = colour;
+          ctx.fillRect(x, y, w, 13);
+          ctx.fillStyle = 'white';
+          ctx.textBaseline = 'top';
+          ctx.fillText(text, x + 3, y + 1.5);
+        };
+        marks.objects.forEach(function (m) {
+          ctx.save();
+          ctx.strokeStyle = '#1f6feb';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 2]);
+          ctx.strokeRect(m.box.x + 0.5, m.box.y + 0.5, Math.max(1, m.box.w - 1), Math.max(1, m.box.h - 1));
+          ctx.restore();
+          // one on a pill is named in the pill's badge; the rest to the right of their box, or left at the edge
+          if (m.pill) return;
+          var bx = m.box.x + m.box.w + 2 + 30 > size.w ? Math.max(0, m.box.x - 32) : m.box.x + m.box.w + 2;
+          badge(m.id, bx, Math.max(0, Math.min(size.h - 13, m.box.y + (m.box.h - 13) / 2)), '#1f6feb');
+        });
+        // the pills last, over the objects: what an agent places a value on
+        marks.pills.forEach(function (m) {
+          ctx.save();
+          ctx.strokeStyle = '#d1242f';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(m.box.x - 1, m.box.y - 1, m.box.w + 2, m.box.h + 2);
+          ctx.restore();
+          badge(m.id + (m.objects.length ? ' · ' + m.objects.join(' ') : ''), m.box.x, Math.max(0, m.box.y - 14), '#d1242f');
+        });
+        return new Promise(function (resolve) { c.toBlob(resolve, 'image/png'); });
+      }).then(function (blob) {
+        if (!blob) return null;
+        var file = String(name || 'iwmac-panel.json').replace(/\.json$/i, '') + '-for-ai.png';
+        var u = URL.createObjectURL(blob), a = document.createElement('a');
+        a.href = u;
+        a.download = file;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(u); }, 5000);
+        return file;
+      }).then(null, function () { return null; });
+    }
+
     function ovSvgItems(root, win, hidden) {
       var kids = function (el) { return Array.prototype.filter.call(el.children, function (c) { return !/^(defs|title|desc|metadata|style|script)$/i.test(c.localName); }); };
       var nameOf = function (el) { return el.getAttribute('data-name') || el.getAttribute('id') || ''; };
@@ -12252,6 +12343,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
       if (!quiet) hostOk('Exported ' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + traceNote +
         (env.overview ? ' + ' + iwdieOvNote(env.overview) : '') + ' → ' + name);
+      // the picture for an agent beside it (v1.64.3): its pills numbered as the export lists them
+      if (env.overview && env.overview.picture) {
+        ovAiPicture(env, name).then(function (file) {
+          if (file) toast('The picture for the AI, beside the export: its pills numbered P1… as overview.picture.pills lists them, ' +
+            'its objects marked o0… → ' + file, false, 7000);
+        });
+      }
       return name;
     }
 
@@ -18663,6 +18761,7 @@ if (typeof module !== 'undefined' && module.exports) {
     cbCircuitOfColour: iwdieCbCircuitOfColour,
     cbPortsOf: iwdieCbPortsOf,
     cbStrayArrows: iwdieCbStrayArrows,
+    ovAiMarks: iwdieOvAiMarks,
     cbPorts: iwdieCbPorts,
     cbRoute: iwdieCbRoute,
     cbPathD: iwdieCbPathD,
