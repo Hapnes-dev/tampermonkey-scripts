@@ -2080,6 +2080,51 @@ placeholders - each with its picture, its tag text and which object it is - what
 the panel (moved, relabelled, resized, found again after a renaming, new, gone), and Ctrl+S
 made ready.
 
+## Claude in VectorCraft (v1.64.0)
+
+Thomas asked for Claude to work in VectorCraft directly: to understand the panel's picture
+and the plant behind it, and to add, connect and lay out equipment as asked — *"add three
+compressors, connect them to the condenser, put the energy meters on the right, and align
+everything with the existing layout"* — from understanding the plant through to a picture
+ready to sync.
+
+VectorCraft's own MCP server drives the desktop app, not the web build Edit in VectorCraft
+opens, and the web build has no programming interface. So this script is Claude's hands in
+the editor's tab, and a small MCP server of this repository's own,
+[`claude-bridge/iwmac-vc-mcp.js`](claude-bridge/README.md), connects Claude Code to it.
+Set-up, tools and safety are in [its README](claude-bridge/README.md).
+
+- **The banner's Claude row** says whether the tab has found the server: *connected · ask
+  Claude in Claude Code*, *working: edit…* while it works, *not running* when Claude Code is
+  not running the server. Tampermonkey asks once to let the script reach `127.0.0.1`.
+- **What Claude reads.** The drawing as a table — each house symbol, IWMAC object, pill,
+  pipe and text with its box, an id that lasts, and a note (an object's binding, a pipe's
+  circuit) — plus the drawing's own conventions: rows of like symbols and their spacing, the
+  information column, the circuits and their colours, where values sit by each kind of
+  symbol, the text style. A preview when it needs to look. The kept symbol library, the
+  object catalogue and the plant's parameter rows, with the exact binding text.
+- **What Claude changes.** House symbols by name from the kept library (v1.63.0), banks of
+  them at the drawing's own spacing, values on empty pills with their bound placeholders,
+  pipes routed orthogonally between the equipment's ports and coloured by circuit, text,
+  moves, deletes, rebinding, alignment. Each edit is made on a copy and opens as a new
+  document, *&lt;name&gt; · Claude N.svg*; the version before stays in its tab, and Claude
+  can open it again.
+- **What Claude cannot do.** Sync. Ctrl+S stays yours, with every guard it has: the
+  background and its PNG, the placed objects made, the bound ones linked, and no picture
+  this script did not upload written over. Claude cannot change a drawing it has not read,
+  nor one another tab put in its place since.
+- **Two edits open.** The tab opened last has Claude. The other says *with another
+  VectorCraft tab* and waits; its **bring Claude here** takes Claude back.
+
+Measured in the stub host with the real VectorCraft web build and the real server, Claude
+played by a script: the scene with its facts (a row of compressors 60 apart), a preview,
+three compressors carrying that row on at 60, a gas cooler, HP pipes from the compressors' caps into
+the cooler's inlet, a bound *Pgc* value with its pill and caption, the check (a missing
+symbol, a bell drawn where an object should be, two old values without pills), a move and
+an undo — 1.5 s of tab time in all. A second tab took Claude over, the first waited without
+taking it back for 20 s, and its button brought Claude back. The kit's
+`tests/test-claude-bridge.js` holds the pure part and the server.
+
 ## AI-generated panels (Copilot)
 
 Insert JSON also takes **AI-authored** files — generate a panel from a P&ID or system description and insert it, then link the objects by hand. The authoring kit lives in the private `tampermonkey-scripts-documents` repository.

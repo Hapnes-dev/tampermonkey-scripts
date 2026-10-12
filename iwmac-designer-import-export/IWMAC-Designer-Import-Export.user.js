@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.63.0
+// @version      1.64.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -21,6 +21,8 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @connect      tools.iwmac.local
+// @connect      127.0.0.1
+// @connect      localhost
 // ==/UserScript==
 
 /*
@@ -32,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.63.0';
+var IWDIE_VERSION = '1.64.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8643,6 +8645,775 @@ function iwdieVcLineSvg(L, used) {
     '" fill="none" stroke="' + iwdieVcHex(L.colour) + '" stroke-width="' + f(L.width) + '" stroke-linejoin="miter" stroke-linecap="butt"/>';
 }
 
+/* ===================== Claude in VectorCraft (v1.64.0) =====================
+   Claude reaches the panel open in VectorCraft through a small MCP server of this project's own
+   (claude-bridge/iwmac-vc-mcp.js), which listens on 127.0.0.1 only and hands each of Claude's tool calls to this
+   script in the editor's tab. There the drawing is read - its layers, the house symbols, the IWMAC objects, the pipes
+   and the text, each with its box and an id that lasts through saves - and changed as asked: symbols, objects, pills,
+   pipes and text placed, moved, joined, lined up; then opened in VectorCraft again, the version before it kept. Nothing
+   is synced from here: Ctrl+S stays the user's. These functions are the pure part: where a symbol is joined, how a pipe
+   runs between two of them, where a free place is, what a drawing's own layout is, what is wrong with it, and an
+   edit's plan. */
+
+/** The bridge on this computer (claude-bridge/iwmac-vc-mcp.js): its port, and the protocol both ends speak. */
+var IWDIE_CB_PORT = 47913, IWDIE_CB_PROTOCOL = 1;
+
+/** A Maskin picture's circuits: name, colour as production Maskin pictures draw it (the kit's
+ *  maskin-drawing-method.txt, section 3), and the words that name it. */
+var IWDIE_CB_CIRCUITS = [
+  ['HP', '#f79f79', ['hp', 'highpressure', 'discharge', 'hotgas', 'trykkgass', 'hoytrykk', 'varmgass', 'trykk']],
+  ['Liquid', '#eed243', ['liquid', 'receiver', 'vaeske', 'veske', 'liq']],
+  ['MT suction', '#83c2ce', ['mt', 'mtsuction', 'suctionmt', 'mtsuge', 'sugemt', 'sugmt', 'mtsuct']],
+  ['LT suction', '#70abc5', ['lt', 'ltsuction', 'suctionlt', 'ltsuge', 'sugelt', 'suglt', 'ltsuct']],
+  ['Heat recovery', '#8ec1a3', ['hr', 'heatrecovery', 'varmegjenvinning', 'tapwater', 'tappevann', 'vgv']]
+];
+
+/** The circuit a word names (case, spaces and æ ø å aside), or null. -> {name, colour} */
+function iwdieCbCircuit(word) {
+  var k = iwdieSymKey(word);
+  if (!k) return null;
+  for (var i = 0; i < IWDIE_CB_CIRCUITS.length; i++) {
+    var c = IWDIE_CB_CIRCUITS[i];
+    if (iwdieSymKey(c[0]) === k || c[2].indexOf(k) >= 0) return { name: c[0], colour: c[1] };
+  }
+  return null;
+}
+
+/** Where each house symbol is joined at turn 0 (v1.64.0): a point on its box (0 to 1) and the way a pipe leaves it
+ *  there. Measured on the template: a valve's pipe runs through its knot, 71 % down a motor valve, whose "m" sits on
+ *  top. Every symbol, and every other thing, also has its four sides: top, bottom, left, right. */
+var IWDIE_CB_PORTS = (function () {
+  var p = {}, put = function (names, ports) { names.forEach(function (n) { p[n] = ports; }); };
+  var upDown = { 'in': [0.5, 1, 'down'], out: [0.5, 0, 'up'] }, lr = { 'in': [0, 0.5, 'left'], out: [1, 0.5, 'right'] };
+  put(['Kompressor', 'KompressorAv', 'KompressorPID', 'KompressorPIDHvit', 'KompressorPIDAv', 'MiniVifte', 'MiniVifteAv'], upDown);
+  put(['StorVifte', 'StorVifteAv', 'MiniVifteDobbel', 'MiniVifteDobbelAv', 'Ventil', 'VentilHvit', 'Tilbakeslagsventil', 'VarmevekslerLiggende',
+    'Gaskjøler2', 'Gaskjøler2Lav', 'Gaskjøler3', 'Gaskjøler3Lav', 'Gaskjøler4', 'Gaskjøler4Lav', 'Gaskjøler4Kvadrat', 'Gaskjøler6', 'Gaskjøler8'], lr);
+  put(['Treveisventil'], { 'in': [0, 0.36, 'left'], out: [1, 0.36, 'right'], branch: [0.5, 1, 'down'] });
+  put(['TreveisventilSide'], { 'in': [0, 0.65, 'left'], out: [1, 0.65, 'right'], branch: [0.5, 0, 'up'] });
+  put(['TreveisMotorventil'], { 'in': [0.42, 0, 'up'], out: [0.42, 1, 'down'], branch: [0, 0.5, 'left'] });
+  put(['Motorventil', 'MotorventilHvit', 'Aktuatorventil', 'AktuatorventilAv'], { 'in': [0, 0.71, 'left'], out: [1, 0.71, 'right'] });
+  put(['Magnetventil', 'MagnetventilAv'], { 'in': [0, 0.7, 'left'], out: [1, 0.7, 'right'] });
+  put(['Føler'], { tip: [0.5, 0.84, 'down'], end: [0.5, 0, 'up'] });
+  put(['FølerVinkel'], { tip: [0.16, 0.84, 'down'], end: [1, 0, 'right'] });
+  put(['PilleKoblingSide', 'PilleMørkKoblingSide'], { tip: [0, 0.5, 'left'] });
+  put(['PilleKoblingTopp', 'PilleMørkKoblingTopp'], { tip: [0.5, 0, 'up'] });
+  put(['Pil', 'PilLiten', 'PilSikksakk'], { tail: [0, 0.5, 'left'], head: [1, 0.5, 'right'] });
+  put(['BeholderNivå'], { top: [0.62, 0, 'up'], bottom: [0.62, 1, 'down'] });
+  return p;
+})();
+
+/** The ways a pipe can leave a port, as vectors. */
+var IWDIE_CB_DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+
+/** The ports of a thing on the drawing (v1.64.0): its four sides, and a house symbol's own (`name`, turned `k` as
+ *  iwdieSymMatrix turns it), each where it lies on `box` ({x, y, w, h}, as placed) and the way a pipe leaves it.
+ *  -> {port: {x, y, dir}} */
+function iwdieCbPorts(name, box, k) {
+  var out = {}, r = function (v) { return Math.round(v * 10) / 10; };
+  var sides = { top: [0.5, 0, 'up'], bottom: [0.5, 1, 'down'], left: [0, 0.5, 'left'], right: [1, 0.5, 'right'] };
+  var own = name ? IWDIE_CB_PORTS[name] || IWDIE_CB_PORTS[(iwdieSymTable().families[iwdieSymTable().byKey[iwdieSymKey(name)]] || {}).name] : null;
+  var m = iwdieSymMatrix(k || 0), turn = function (u, v) {
+    var x = u - 0.5, y = v - 0.5;
+    return [m[0] * x + m[2] * y + 0.5, m[1] * x + m[3] * y + 0.5];
+  };
+  var dirOf = function (d) {
+    var v = IWDIE_CB_DIRS[d] || [0, 0], x = m[0] * v[0] + m[2] * v[1], y = m[1] * v[0] + m[3] * v[1];
+    return x > 0.5 ? 'right' : x < -0.5 ? 'left' : y > 0.5 ? 'down' : 'up';
+  };
+  Object.keys(sides).forEach(function (s) { var q = sides[s]; out[s] = { x: r(box.x + q[0] * box.w), y: r(box.y + q[1] * box.h), dir: q[2] }; });
+  Object.keys(own || {}).forEach(function (s) {
+    var q = own[s], t = turn(q[0], q[1]);
+    out[s] = { x: r(box.x + t[0] * box.w), y: r(box.y + t[1] * box.h), dir: dirOf(q[2]) };
+  });
+  return out;
+}
+
+/** A polyline without repeated points or points a straight run passes through. */
+function iwdieCbSimplify(pts) {
+  var out = [];
+  pts.forEach(function (p) {
+    var q = [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10], n = out.length;
+    if (n && out[n - 1][0] === q[0] && out[n - 1][1] === q[1]) return;
+    if (n >= 2) {
+      var a = out[n - 2], b = out[n - 1];
+      if ((a[0] === b[0] && b[0] === q[0]) || (a[1] === b[1] && b[1] === q[1])) { out[n - 1] = q; return; }
+    }
+    out.push(q);
+  });
+  return out;
+}
+
+/** An orthogonal pipe from port `a` to port `b` ({x, y, dir}), never a diagonal: out of each along its way by `stub`
+ *  (8 unless given), then joined with one bend, or two at the middle when both leave the same way round.
+ *  -> [[x, y]...] */
+function iwdieCbRoute(a, b, stub) {
+  stub = stub === undefined ? 8 : stub;
+  var da = IWDIE_CB_DIRS[a.dir] || [0, 0], db = IWDIE_CB_DIRS[b.dir] || [0, 0];
+  var p = [a.x + da[0] * stub, a.y + da[1] * stub], q = [b.x + db[0] * stub, b.y + db[1] * stub];
+  var pts = [[a.x, a.y], p], aV = da[1] !== 0, bV = db[1] !== 0;
+  // in line already: straight through
+  if ((aV && bV && a.x === b.x) || (!aV && !bV && a.y === b.y)) return iwdieCbSimplify([[a.x, a.y], [b.x, b.y]]);
+  if (p[0] !== q[0] && p[1] !== q[1]) {
+    if (aV && bV) { var my = Math.round((p[1] + q[1]) / 2); pts.push([p[0], my], [q[0], my]); }
+    else if (!aV && !bV) { var mx = Math.round((p[0] + q[0]) / 2); pts.push([mx, p[1]], [mx, q[1]]); }
+    else if (aV) pts.push([p[0], q[1]]);
+    else pts.push([q[0], p[1]]);
+  }
+  pts.push(q, [b.x, b.y]);
+  return iwdieCbSimplify(pts);
+}
+
+/** SVG path data for a polyline. */
+function iwdieCbPathD(pts) {
+  return pts.map(function (p, i) { return (i ? 'L' : 'M') + iwdieDrawFmt(p[0]) + ' ' + iwdieDrawFmt(p[1]); }).join(' ');
+}
+
+/** The points of path data that is straight runs only (M, L, H, V, Z; absolute or relative), or null for one with a
+ *  curve. -> [[x, y]...] */
+function iwdieCbPathPoints(d) {
+  var t = String(d || '').match(/[A-Za-z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) || [], i = 0, c = null, x = 0, y = 0, sx = 0, sy = 0, out = [];
+  var num = function () { return parseFloat(t[i++]); };
+  while (i < t.length) {
+    if (/[A-Za-z]/.test(t[i])) c = t[i++];
+    if (!c) return null;
+    if (c === 'M' || c === 'm' || c === 'L' || c === 'l') {
+      var nx = num(), ny = num();
+      if (!isFinite(nx) || !isFinite(ny)) return null;
+      if (c === 'm' || c === 'l') { nx += x; ny += y; }
+      x = nx; y = ny;
+      if (c === 'M' || c === 'm') { sx = x; sy = y; c = c === 'M' ? 'L' : 'l'; }
+    } else if (c === 'H' || c === 'h') { var h = num(); if (!isFinite(h)) return null; x = c === 'h' ? x + h : h; }
+    else if (c === 'V' || c === 'v') { var v = num(); if (!isFinite(v)) return null; y = c === 'v' ? y + v : v; }
+    else if (c === 'Z' || c === 'z') { x = sx; y = sy; }
+    else return null;
+    out.push([x, y]);
+  }
+  return out;
+}
+
+/** Whether two boxes ({x, y, w, h}) come closer than `gap`. */
+function iwdieCbHit(a, b, gap) {
+  gap = gap || 0;
+  return a.x < b.x + b.w + gap && b.x < a.x + a.w + gap && a.y < b.y + b.h + gap && b.y < a.y + a.h + gap;
+}
+
+/** The free place nearest `want` ({x, y, w, h}) for a box its size (v1.64.0): clear of every box in `taken` by `gap`
+ *  (6 unless given), inside `area` ({x, y, w, h}) and out of every box in `keepOut`; tried on a `step` grid (5) in rings
+ *  out to `reach` (400). -> {x, y} or null */
+function iwdieCbFree(want, taken, area, opts) {
+  opts = opts || {};
+  var gap = opts.gap === undefined ? 6 : opts.gap, step = opts.step || 5, reach = opts.reach || 400, keep = opts.keepOut || [];
+  var ok = function (x, y) {
+    var b = { x: x, y: y, w: want.w, h: want.h };
+    if (area && (x < area.x || y < area.y || x + want.w > area.x + area.w || y + want.h > area.y + area.h)) return false;
+    for (var i = 0; i < keep.length; i++) if (iwdieCbHit(b, keep[i], 0)) return false;
+    for (var j = 0; j < (taken || []).length; j++) if (iwdieCbHit(b, taken[j], gap)) return false;
+    return true;
+  };
+  if (ok(want.x, want.y)) return { x: want.x, y: want.y };
+  for (var r = step; r <= reach; r += step) {
+    var best = null, bd = 1e9;
+    for (var dx = -r; dx <= r; dx += step) {
+      for (var dy = -r; dy <= r; dy += step) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        var d = dx * dx + dy * dy;
+        if (d < bd && ok(want.x + dx, want.y + dy)) { bd = d; best = { x: want.x + dx, y: want.y + dy }; }
+      }
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
+/** Moves that line boxes up (v1.64.0): `how` top, middle, bottom (y) or left, center, right (x), to the first box's.
+ *  -> [{dx, dy}] per box */
+function iwdieCbAlign(boxes, how) {
+  if (!boxes.length) return [];
+  var f = boxes[0], at = {
+    top: function (b) { return [0, f.y - b.y]; }, bottom: function (b) { return [0, f.y + f.h - b.y - b.h]; },
+    middle: function (b) { return [0, f.y + f.h / 2 - b.y - b.h / 2]; }, left: function (b) { return [f.x - b.x, 0]; },
+    right: function (b) { return [f.x + f.w - b.x - b.w, 0]; }, center: function (b) { return [f.x + f.w / 2 - b.x - b.w / 2, 0]; }
+  }[how];
+  if (!at) return null;
+  return boxes.map(function (b) { var d = at(b); return { dx: Math.round(d[0] * 10) / 10, dy: Math.round(d[1] * 10) / 10 }; });
+}
+
+/** Moves that space boxes evenly along `axis` (x or y): `gap` apart, else as far apart as the first and the last
+ *  allow, in the order they stand. -> [{dx, dy}] per box, in the order given */
+function iwdieCbDistribute(boxes, axis, gap) {
+  var k = axis === 'y' ? 'y' : 'x', s = axis === 'y' ? 'h' : 'w';
+  var order = boxes.map(function (b, i) { return i; }).sort(function (a, b) { return boxes[a][k] - boxes[b][k]; });
+  var out = boxes.map(function () { return { dx: 0, dy: 0 }; });
+  if (order.length < 2) return out;
+  var total = 0;
+  order.forEach(function (i) { total += boxes[i][s]; });
+  var first = boxes[order[0]], last = boxes[order[order.length - 1]];
+  var g = gap !== undefined && gap !== null ? +gap : (last[k] + last[s] - first[k] - total) / (order.length - 1);
+  var at = first[k];
+  order.forEach(function (i) {
+    var d = Math.round((at - boxes[i][k]) * 10) / 10;
+    if (k === 'x') out[i].dx = d; else out[i].dy = d;
+    at += boxes[i][s] + g;
+  });
+  return out;
+}
+
+/** A box as [x, y, w, h], rounded, from {x, y, w, h}. */
+function iwdieCbBoxRow(b) {
+  var r = function (v) { return Math.round(v * 10) / 10; };
+  return [r(b.x), r(b.y), r(b.w), r(b.h)];
+}
+
+/** The middle of a list of numbers. */
+function iwdieCbMedian(list) {
+  var a = list.slice().sort(function (p, q) { return p - q; });
+  return a.length ? a[a.length >> 1] : null;
+}
+
+/** What a drawing's own layout says (v1.64.0), for new things to follow it: the rows and columns of like symbols, with
+ *  their spacing; the information column; each circuit with its colour, its pipes and its reach; where value objects sit
+ *  by each kind of symbol; the text size and colour most used. `items` as the scene gives them (iwdieCbSceneItem);
+ *  `size` {w, h}. -> {rows, columns, infoColumn, circuits, values, text} */
+function iwdieCbFacts(items, size) {
+  var sym = items.filter(function (it) { return it.kind === 'symbol' && it.symbol; });
+  var lines = function (axis) {
+    var k = axis === 'x' ? 'y' : 'x', s = axis === 'x' ? 'x' : 'y', by = {}, out = [];
+    sym.forEach(function (it) { (by[it.symbol] = by[it.symbol] || []).push(it); });
+    Object.keys(by).forEach(function (name) {
+      var left = by[name].slice().sort(function (a, b) { return a.box[k] - b.box[k]; });
+      while (left.length) {
+        var head = left.shift(), run = [head].concat(left.filter(function (o) { return Math.abs(o.box[k] - head.box[k]) <= 4; }));
+        left = left.filter(function (o) { return run.indexOf(o) < 0; });
+        if (run.length < 2) continue;
+        run.sort(function (a, b) { return a.box[s] - b.box[s]; });
+        var steps = [];
+        for (var i = 1; i < run.length; i++) steps.push(Math.round(run[i].box[s] - run[i - 1].box[s]));
+        var row = { symbol: name, cids: run.map(function (o) { return o.cid; }), spacing: iwdieCbMedian(steps) };
+        row[k] = Math.round(head.box[k]);
+        row.from = Math.round(run[0].box[s]);
+        row.to = Math.round(run[run.length - 1].box[s]);
+        out.push(row);
+      }
+    });
+    return out;
+  };
+  var W = size && size.w ? size.w : 1400, H = size && size.h ? size.h : 750, info = null;
+  items.forEach(function (it) {
+    if ((it.kind === 'shape' || it.kind === 'rect') && it.box.x >= W * 0.7 && it.box.h >= H * 0.8 && it.box.w <= W * 0.35 && (!info || it.box.x < info.x)) {
+      info = { x: Math.round(it.box.x), w: Math.round(it.box.w), cid: it.cid };
+    }
+  });
+  var circ = {};
+  items.forEach(function (it) {
+    if (it.kind !== 'pipe') return;
+    var key = String(it.colour || '').toLowerCase() + '|' + (it.circuit || '');
+    var c = circ[key] = circ[key] || { colour: it.colour || null, circuit: it.circuit || null, pipes: 0, length: 0, x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 };
+    c.pipes++;
+    var p = it.pts || [];
+    for (var i = 1; i < p.length; i++) c.length += Math.abs(p[i][0] - p[i - 1][0]) + Math.abs(p[i][1] - p[i - 1][1]);
+    c.x0 = Math.min(c.x0, it.box.x); c.y0 = Math.min(c.y0, it.box.y); c.x1 = Math.max(c.x1, it.box.x + it.box.w); c.y1 = Math.max(c.y1, it.box.y + it.box.h);
+  });
+  var circuits = Object.keys(circ).map(function (k) {
+    var c = circ[k], named = c.circuit ? iwdieCbCircuit(c.circuit) : null;
+    if (!named) IWDIE_CB_CIRCUITS.forEach(function (n) { if (!named && String(c.colour || '').toLowerCase() === n[1]) named = { name: n[0] }; });
+    return { colour: c.colour, circuit: c.circuit || (named ? named.name : null), pipes: c.pipes, length: Math.round(c.length), box: [Math.round(c.x0), Math.round(c.y0), Math.round(c.x1 - c.x0), Math.round(c.y1 - c.y0)] };
+  }).sort(function (a, b) { return b.length - a.length; });
+  // where values stand by their nearest symbol, by kind of symbol
+  var off = {};
+  items.forEach(function (it) {
+    if (it.kind !== 'object' || !/value/.test(it.role || '')) return;
+    var cx = it.box.x + it.box.w / 2, cy = it.box.y + it.box.h / 2, best = null, bd = 1e9;
+    sym.forEach(function (s) {
+      var sx = s.box.x + s.box.w / 2, sy = s.box.y + s.box.h / 2, d = Math.abs(sx - cx) + Math.abs(sy - cy);
+      if (d < bd) { bd = d; best = s; }
+    });
+    if (!best || bd > 160) return;
+    var o = off[best.symbol] = off[best.symbol] || { dx: [], dy: [] };
+    o.dx.push(Math.round(it.box.x - best.box.x)); o.dy.push(Math.round(it.box.y - best.box.y));
+  });
+  var values = Object.keys(off).map(function (n) { return { symbol: n, dx: iwdieCbMedian(off[n].dx), dy: iwdieCbMedian(off[n].dy), n: off[n].dx.length }; });
+  var sizes = {}, colours = {};
+  items.forEach(function (it) {
+    if (it.kind !== 'text') return;
+    if (it.size) sizes[it.size] = (sizes[it.size] || 0) + 1;
+    if (it.colour) colours[it.colour] = (colours[it.colour] || 0) + 1;
+  });
+  var most = function (o) { var b = null; Object.keys(o).forEach(function (k) { if (b === null || o[k] > o[b]) b = k; }); return b; };
+  return { rows: lines('x'), columns: lines('y'), infoColumn: info, circuits: circuits, values: values,
+    text: { size: most(sizes) ? +most(sizes) : null, colour: most(colours) } };
+}
+
+/** What is wrong with a drawing before it is synced (v1.64.0): an IWMAC object off the panel, live objects on each
+ *  other, a symbol the library lacked, a symbol an object should show, a value with no pill under it, symbols on each
+ *  other, a pipe that is not straight runs, drawn text that is a number or a state, and - given `opts.resolve(bind)`,
+ *  which answers why a binding does not resolve or '' - a placeholder bound to nothing. -> [{level, rule, what, cids}] */
+function iwdieCbCheck(items, size, opts) {
+  opts = opts || {};
+  var out = [], W = size && size.w ? size.w : 1400, H = size && size.h ? size.h : 750, st = iwdieSymTable();
+  var add = function (level, rule, what, cids) { out.push({ level: level, rule: rule, what: what, cids: cids || [] }); };
+  var objs = items.filter(function (it) { return it.kind === 'object'; });
+  objs.forEach(function (o) {
+    var b = o.box;
+    if (b.x < 0 || b.y < 0 || b.x + b.w > W + 0.5 || b.y + b.h > H + 0.5) add('error', 'CB-O01', (o.obj_id || 'an object') + ' lies off the ' + W + ' x ' + H + ' panel', [o.cid]);
+  });
+  var live = objs.filter(function (o) { return IWDIE_LIVE_ROLES[o.role]; });
+  for (var i = 0; i < live.length; i++) for (var j = i + 1; j < live.length; j++) {
+    if (iwdieCbHit(live[i].box, live[j].box, -1)) add('error', 'CB-O02', live[i].obj_id + ' and ' + live[j].obj_id + ' lie on each other', [live[i].cid, live[j].cid]);
+  }
+  var syms = items.filter(function (it) { return it.kind === 'symbol'; });
+  syms.forEach(function (s) {
+    if (s.missing) add('error', 'CB-S01', s.symbol + ' is not in the kept library: drawn as a red dashed box', [s.cid]);
+    var f = st.families[st.byKey[iwdieSymKey(s.symbol)]];
+    if (f && !f.list) add('warning', 'CB-S02', s.symbol + ' is shown by an IWMAC object on a live panel, not by the picture', [s.cid]);
+  });
+  for (var a = 0; a < syms.length; a++) for (var b2 = a + 1; b2 < syms.length; b2++) {
+    if (iwdieCbHit(syms[a].box, syms[b2].box, -2)) add('warning', 'CB-S03', syms[a].symbol + ' and ' + syms[b2].symbol + ' overlap', [syms[a].cid, syms[b2].cid]);
+  }
+  if (opts.maskin !== false) {
+    var pills = items.filter(function (it) { return it.kind === 'pill' || (it.kind === 'symbol' && /^(KjølGrader|PilleMørk|PilleKobling|PilleMørkKobling)/.test(it.symbol || '')); });
+    objs.forEach(function (o) {
+      if (o.obj_id !== 'number_v3_value_only' && o.obj_id !== 'number_v3_white_value_only') return;
+      var cx = o.box.x + o.box.w / 2, cy = o.box.y + o.box.h / 2;
+      if (!pills.some(function (p) { return cx >= p.box.x && cx <= p.box.x + p.box.w && cy >= p.box.y && cy <= p.box.y + p.box.h; })) {
+        add('warning', 'CB-P01', o.obj_id + (o.bind ? ' (' + o.bind + ')' : '') + ' has no pill under it', [o.cid]);
+      }
+    });
+  }
+  items.forEach(function (it) {
+    if (it.kind === 'pipe' && it.pts === null) add('warning', 'CB-R01', 'a pipe with a curve or a diagonal: pipes are straight runs', [it.cid]);
+    if (it.kind === 'pipe' && it.pts) {
+      for (var k = 1; k < it.pts.length; k++) {
+        if (it.pts[k][0] !== it.pts[k - 1][0] && it.pts[k][1] !== it.pts[k - 1][1]) { add('warning', 'CB-R01', 'a pipe with a diagonal run: pipes are orthogonal', [it.cid]); break; }
+      }
+    }
+    if (it.kind === 'text' && /^\s*[-+]?\d+([.,]\d+)?\s*(%|°c|°|bar|k|kw|kwh|rpm|hz|a|v)?\s*$|^\s*(on|off|auto|ok|alarm|running|stopped|av|på)\s*$/i.test(it.text || '')) {
+      add('warning', 'CB-T01', 'drawn text "' + it.text + '" is a number or a state: an object shows those', [it.cid]);
+    }
+    if (it.kind === 'object' && it.bind && typeof opts.resolve === 'function' && it.bind !== it.label) {
+      var why = opts.resolve(it.bind, it);
+      if (why) add('warning', 'CB-B01', why, [it.cid]);
+    }
+  });
+  return out;
+}
+
+/** The sizes the kept library draws each house symbol at (v1.64.0), turned members turned back, exact to the hundredth;
+ *  with what it is, whether a drawing may place it, whether only its inside turns. -> {name: {sizes: [[w, h]], what, offered, inner}} */
+function iwdieCbSymbolSizes(items) {
+  var t = iwdieSymTable(), out = {}, r = function (v) { return Math.round(v * 100) / 100; };
+  (items || []).forEach(function (it) {
+    if (!it || !it.sym) return;
+    var f = t.families[t.byName[it.sym.name]];
+    if (!f) return;
+    var o = out[f.name] = out[f.name] || { sizes: [], what: f.en, offered: f.list, inner: f.inner };
+    var odd = (it.sym.k & 1) && !f.inner, w = r(odd ? it.h : it.w), h = r(odd ? it.w : it.h);
+    if (!o.sizes.some(function (s) { return Math.abs(s[0] - w) < 0.6 && Math.abs(s[1] - h) < 0.6; })) o.sizes.push([w, h]);
+  });
+  return out;
+}
+
+/** The size a symbol gets placed at (v1.64.0): `want` (w and/or h, either may be missing) fitted to the nearest size the
+ *  library has, its proportions kept; turned by `k`. -> {w, h} or null when the library has no such symbol */
+function iwdieCbSymbolBox(sizes, name, k, want) {
+  var t = iwdieSymTable(), f = t.families[t.byKey[iwdieSymKey(name)]], s = sizes && f ? sizes[f.name] : null;
+  if (!s || !s.sizes.length) return null;
+  var odd = (k & 1) && !s.inner, list = s.sizes.map(function (z) { return odd ? [z[1], z[0]] : z; });
+  var w = want && want.w > 0 ? +want.w : 0, h = want && want.h > 0 ? +want.h : 0, best = list[0];
+  if (w || h) {
+    var cost = function (z) { var q = Math.min(w ? w / z[0] : Infinity, h ? h / z[1] : Infinity); return Math.abs(Math.log(q)); };
+    list.forEach(function (z) { if (cost(z) < cost(best)) best = z; });
+    var q = Math.min(w ? w / best[0] : Infinity, h ? h / best[1] : Infinity);
+    return { w: Math.round(best[0] * q * 100) / 100, h: Math.round(best[1] * q * 100) / 100 };
+  }
+  return { w: best[0], h: best[1] };
+}
+
+/** The turn an op asks for: degrees clockwise (90, 180, 270, -90…) and a mirror. -> k as iwdieSymMatrix takes it */
+function iwdieCbTurn(deg, flip) {
+  var q = Math.round((+deg || 0) / 90) % 4;
+  if (q < 0) q += 4;
+  return q + (flip ? 4 : 0);
+}
+
+/** An edit's plan (v1.64.0): the ops Claude sends, resolved against the drawing into steps with every place worked out.
+ *  `scene` {items (iwdieCbSceneItem's), size {w, h}}; `ctx` {sizes: iwdieCbSymbolSizes(...), objects: {obj_id: {w, h, role,
+ *  hasTag, kind}}, facts?}. The ops, each {op, ...}:
+ *    symbol   {name, at, w?, h?, turn?, flip?, ref?, label?}           a house symbol
+ *    bank     {name, count, at, spacing?, axis?, turn?, refs?, labels?} a row (or column) of like symbols
+ *    object   {obj_id, at, w?, h?, bind?, text?, ref?}                 an IWMAC object, as its placeholder
+ *    value    {bind?, at, dark?, obj_id?, label?, ref?}                a value on its pill: the Maskin way
+ *    pill     {at, dark?, ref?}                                        an empty 40 x 20 pill
+ *    pipe     {points | d, circuit?, colour?, width?, ref?}            a pipe, orthogonal runs
+ *    connect  {from, to, circuit?, colour?, width?, ref?}              a pipe routed between two ports
+ *    text     {text, at, size?, colour?, anchor?, ref?}                fixed text
+ *    move     {target, dx?, dy?, at?}      delete {target}      set_text {target, text}      bind {target, bind}
+ *    align    {targets, how}               distribute {targets, axis, gap?}
+ *  A place (`at`) is {x, y} (its top left), {cx, cy} (its centre), or {near: target, side: right|left|above|below, gap?,
+ *  align?: start|center|end}; `free: true` moves it to the nearest free place. A target is {cid} or {ref} (one placed
+ *  earlier in the same edit); a port is a target with `port` (in, out, branch, tip, top, bottom, left, right).
+ *  -> {steps, refs: {ref: {cid?, box}}, notes, errors} */
+function iwdieCbPlan(ops, scene, ctx) {
+  ctx = ctx || {};
+  var items = (scene && scene.items) || [], size = (scene && scene.size) || { w: 1400, h: 750 };
+  var steps = [], refs = {}, notes = [], errors = [], boxes = [], byCid = {};
+  items.forEach(function (it) { byCid[it.cid] = it; if (it.kind !== 'pipe' && it.kind !== 'text' && it.layer !== 'Bakgrunn') boxes.push(it.box); });
+  var r1 = function (v) { return Math.round(v * 10) / 10; };
+  var area = { x: 0, y: 0, w: size.w, h: size.h };
+  var fail = function (i, why) { errors.push('op ' + (i + 1) + ': ' + why); };
+  var thing = function (t) {
+    if (!t) return null;
+    if (t.ref !== undefined && refs[t.ref]) return refs[t.ref];
+    if (t.cid !== undefined && byCid[t.cid]) return { cid: t.cid, box: byCid[t.cid].box, symbol: byCid[t.cid].symbol, k: byCid[t.cid].k, item: byCid[t.cid] };
+    return null;
+  };
+  // a box of `w` x `h` placed as `at` says
+  var place = function (at, w, h, i) {
+    if (!at) { fail(i, 'no place (at)'); return null; }
+    var x, y;
+    if (at.near) {
+      var n = thing(at.near);
+      if (!n) { fail(i, 'the thing it is to stand near is not there'); return null; }
+      var g = at.gap === undefined ? 12 : +at.gap, side = at.side || 'right', al = at.align || 'center', b = n.box;
+      if (side === 'right' || side === 'left') {
+        x = side === 'right' ? b.x + b.w + g : b.x - g - w;
+        y = al === 'start' ? b.y : al === 'end' ? b.y + b.h - h : b.y + (b.h - h) / 2;
+      } else if (side === 'above' || side === 'below') {
+        y = side === 'below' ? b.y + b.h + g : b.y - g - h;
+        x = al === 'start' ? b.x : al === 'end' ? b.x + b.w - w : b.x + (b.w - w) / 2;
+      } else if (side === 'on') { x = b.x + (b.w - w) / 2; y = b.y + (b.h - h) / 2; }
+      else { fail(i, 'side is right, left, above, below or on'); return null; }
+    } else if (isFinite(at.cx) && isFinite(at.cy)) { x = at.cx - w / 2; y = at.cy - h / 2; }
+    else if (isFinite(at.x) && isFinite(at.y)) { x = +at.x; y = +at.y; }
+    else { fail(i, 'a place is {x, y}, {cx, cy} or {near, side}'); return null; }
+    // the size as the library draws it, to the hundredth: a symbol so placed is drawn at 1:1
+    var box = { x: r1(x), y: r1(y), w: Math.round(w * 100) / 100, h: Math.round(h * 100) / 100 };
+    if (at.free) {
+      var f = iwdieCbFree(box, boxes, area, { gap: at.gap === undefined ? 6 : +at.gap });
+      if (!f) { fail(i, 'no free place near (' + box.x + ', ' + box.y + ')'); return null; }
+      box.x = f.x; box.y = f.y;
+    }
+    return box;
+  };
+  var keep = function (ref, rec) { if (ref !== undefined && ref !== null && ref !== '') refs[ref] = rec; };
+  var objSize = function (id) {
+    var o = (ctx.objects && ctx.objects[id]) || iwdieVcObjectIndex()[id];
+    return o ? { w: o.w, h: o.h, role: o.role } : null;
+  };
+  var addLabel = function (text, box, i) {
+    if (!text) return;
+    var fs = (ctx.facts && ctx.facts.text && ctx.facts.text.size) || 12;
+    steps.push({ 'do': 'add', kind: 'text', text: String(text), x: r1(box.x + box.w / 2), y: r1(box.y - 5), size: fs, anchor: 'middle',
+      colour: (ctx.facts && ctx.facts.text && ctx.facts.text.colour) || '#425664', op: i });
+  };
+  var symbolStep = function (o, i, at, ref, label) {
+    var k = iwdieCbTurn(o.turn, o.flip), sz = iwdieCbSymbolBox(ctx.sizes, o.name, k, { w: o.w, h: o.h });
+    if (!sz) {
+      // not in the kept library: placed all the same, at the size asked or a guess, and drawn as a box until it is
+      var st = iwdieSymTable(), fam = st.families[st.byKey[iwdieSymKey(o.name)]];
+      if (!fam) { fail(i, 'no house symbol is called "' + o.name + '"'); return null; }
+      notes.push('op ' + (i + 1) + ': ' + fam.name + ' is not in the kept library; Insert-like expansion draws a red dashed box');
+      sz = { w: +o.w || 40, h: +o.h || 40 };
+    }
+    var box = place(at, sz.w, sz.h, i);
+    if (!box) return null;
+    var st2 = iwdieSymTable(), real = (st2.families[st2.byKey[iwdieSymKey(o.name)]] || {}).name || o.name;
+    if (st2.families[st2.byKey[iwdieSymKey(o.name)]] && !st2.families[st2.byKey[iwdieSymKey(o.name)]].list) {
+      notes.push('op ' + (i + 1) + ': ' + real + ' is what an IWMAC object shows on a live panel; placed as drawing all the same');
+    }
+    steps.push({ 'do': 'add', kind: 'symbol', name: real, box: box, k: k, ref: ref, op: i });
+    boxes.push(box);
+    keep(ref, { box: box, symbol: real, k: k });
+    addLabel(label, box, i);
+    return box;
+  };
+  (ops || []).forEach(function (o, i) {
+    if (!o || typeof o !== 'object') { fail(i, 'not an object'); return; }
+    switch (o.op) {
+      case 'symbol': symbolStep(o, i, o.at, o.ref, o.label); break;
+      case 'bank': {
+        var n = Math.max(1, Math.min(40, parseInt(o.count, 10) || 0)), axis = o.axis === 'y' ? 'y' : 'x';
+        var k = iwdieCbTurn(o.turn, o.flip), sz = iwdieCbSymbolBox(ctx.sizes, o.name, k, { w: o.w, h: o.h }) || { w: +o.w || 40, h: +o.h || 40 };
+        var spacing = +o.spacing, lines = (ctx.facts && ctx.facts[axis === 'x' ? 'rows' : 'columns']) || [];
+        var at0 = o.at, nearCid = at0 && at0.near ? at0.near.cid : undefined;
+        // next to one of a row of the same symbol, along the row: the bank carries the row on
+        var row = nearCid === undefined ? null : lines.filter(function (r) { return r.cids.indexOf(nearCid) >= 0 && iwdieSymKey(r.symbol) === iwdieSymKey(o.name); })[0];
+        var along = at0 && (axis === 'x' ? at0.side === 'right' || at0.side === 'left' : at0.side === 'below' || at0.side === 'above');
+        if (!(spacing > 0)) {
+          // the spacing of that row, or of a row of the same symbol on the drawing, else the symbol's size and half again
+          var same = row || lines.filter(function (r) { return iwdieSymKey(r.symbol) === iwdieSymKey(o.name); })[0];
+          spacing = same && same.spacing ? same.spacing : Math.round((axis === 'x' ? sz.w : sz.h) * 2.5);
+        }
+        if (row && along && at0.gap === undefined) {
+          var at1 = {};
+          Object.keys(at0).forEach(function (key) { at1[key] = at0[key]; });
+          at1.gap = Math.max(0, Math.round((spacing - (axis === 'x' ? sz.w : sz.h)) * 100) / 100);
+          at0 = at1;
+        }
+        var first = place(at0, sz.w, sz.h, i);
+        if (!first) break;
+        // placed before the thing it stands by: the last of the bank is the one next to it
+        if (along && (at0.side === 'left' || at0.side === 'above')) first[axis] = r1(first[axis] - (n - 1) * spacing);
+        for (var b = 0; b < n; b++) {
+          var at = { x: first.x + (axis === 'x' ? b * spacing : 0), y: first.y + (axis === 'y' ? b * spacing : 0) };
+          symbolStep({ name: o.name, turn: o.turn, flip: o.flip, w: sz.w, h: sz.h }, i, at, o.refs ? o.refs[b] : undefined, o.labels ? o.labels[b] : null);
+        }
+        break;
+      }
+      case 'object': {
+        var os = objSize(o.obj_id);
+        if (!os) { fail(i, 'no IWMAC object kind "' + o.obj_id + '"'); break; }
+        var ob = place(o.at, +o.w || os.w, +o.h || os.h, i);
+        if (!ob) break;
+        steps.push({ 'do': 'add', kind: 'object', obj_id: o.obj_id, box: ob, bind: o.bind ? String(o.bind) : '', text: o.text ? String(o.text) : '', ref: o.ref, op: i });
+        boxes.push(ob);
+        keep(o.ref, { box: ob, obj_id: o.obj_id });
+        break;
+      }
+      case 'pill':
+      case 'value': {
+        var pill = place(o.at, 40, 20, i);
+        if (!pill) break;
+        steps.push({ 'do': 'add', kind: 'pill', box: pill, dark: !!o.dark, op: i });
+        boxes.push(pill);
+        if (o.op === 'value') {
+          var id = o.obj_id || (o.dark ? 'number_v3_white_value_only' : 'number_v3_value_only'), vs = objSize(id) || { w: 50, h: 20 };
+          var vb = { x: r1(pill.x + (pill.w - vs.w) / 2), y: r1(pill.y + (pill.h - vs.h) / 2), w: vs.w, h: vs.h };
+          steps.push({ 'do': 'add', kind: 'object', obj_id: id, box: vb, bind: o.bind ? String(o.bind) : '', text: '', ref: o.ref, op: i });
+          keep(o.ref, { box: vb, obj_id: id, pill: pill });
+          if (o.label) {
+            var fs = (ctx.facts && ctx.facts.text && ctx.facts.text.size) || 11;
+            steps.push({ 'do': 'add', kind: 'text', text: String(o.label), x: r1(pill.x - 4), y: r1(pill.y + 14), size: fs, anchor: 'end',
+              colour: (ctx.facts && ctx.facts.text && ctx.facts.text.colour) || '#425664', op: i });
+          }
+        } else keep(o.ref, { box: pill });
+        break;
+      }
+      case 'pipe': {
+        var pts = Array.isArray(o.points) ? o.points.map(function (p) { return [+p[0], +p[1]]; }) : iwdieCbPathPoints(o.d);
+        if (!pts || pts.length < 2 || pts.some(function (p) { return !isFinite(p[0]) || !isFinite(p[1]); })) { fail(i, 'a pipe needs points [[x, y]...] or straight-run path data'); break; }
+        var c = o.circuit ? iwdieCbCircuit(o.circuit) : null;
+        steps.push({ 'do': 'add', kind: 'pipe', pts: iwdieCbSimplify(pts), colour: o.colour || (c ? c.colour : '#9ea5af'), width: +o.width || 2, circuit: c ? c.name : (o.circuit || ''), ref: o.ref, op: i });
+        break;
+      }
+      case 'connect': {
+        var a = thing(o.from), z = thing(o.to);
+        if (!a || !z) { fail(i, 'connect needs from and to, each a {cid} or a {ref} on the drawing'); break; }
+        var pa = iwdieCbPorts(a.symbol, a.box, a.k), pz = iwdieCbPorts(z.symbol, z.box, z.k);
+        // the ports asked for, else the facing sides
+        var face = function (p, q) {
+          var dx = (q.box.x + q.box.w / 2) - (p.box.x + p.box.w / 2), dy = (q.box.y + q.box.h / 2) - (p.box.y + p.box.h / 2);
+          return Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top');
+        };
+        var sa = o.from.port || face(a, z), sz2 = o.to.port || face(z, a);
+        if (!pa[sa] || !pz[sz2]) { fail(i, 'no port "' + (!pa[sa] ? sa : sz2) + '": ' + Object.keys(!pa[sa] ? pa : pz).join(', ')); break; }
+        var cc = o.circuit ? iwdieCbCircuit(o.circuit) : null;
+        steps.push({ 'do': 'add', kind: 'pipe', pts: iwdieCbRoute(pa[sa], pz[sz2], o.stub), colour: o.colour || (cc ? cc.colour : '#9ea5af'), width: +o.width || 2,
+          circuit: cc ? cc.name : (o.circuit || ''), ref: o.ref, op: i });
+        break;
+      }
+      case 'text': {
+        if (!o.text) { fail(i, 'no text'); break; }
+        var fsz = +o.size || (ctx.facts && ctx.facts.text && ctx.facts.text.size) || 12, tw = String(o.text).length * fsz * 0.55;
+        var tb = place(o.at, tw, fsz, i);
+        if (!tb) break;
+        var anchor = o.anchor === 'middle' || o.anchor === 'end' ? o.anchor : 'start';
+        steps.push({ 'do': 'add', kind: 'text', text: String(o.text), x: r1(anchor === 'start' ? tb.x : anchor === 'middle' ? tb.x + tw / 2 : tb.x + tw),
+          y: r1(tb.y + fsz * 0.8), size: fsz, anchor: anchor, colour: o.colour || (ctx.facts && ctx.facts.text && ctx.facts.text.colour) || '#425664', ref: o.ref, op: i });
+        keep(o.ref, { box: tb });
+        break;
+      }
+      case 'move': {
+        var m = thing(o.target);
+        if (!m || !m.cid) { fail(i, 'move needs a target {cid} on the drawing'); break; }
+        var dx = +o.dx || 0, dy = +o.dy || 0;
+        if (o.at) {
+          var to = place(o.at, m.box.w, m.box.h, i);
+          if (!to) break;
+          dx = to.x - m.box.x; dy = to.y - m.box.y;
+        }
+        steps.push({ 'do': 'move', cid: m.cid, dx: r1(dx), dy: r1(dy), op: i });
+        m.box.x = r1(m.box.x + dx); m.box.y = r1(m.box.y + dy);
+        break;
+      }
+      case 'delete': {
+        var d = thing(o.target);
+        if (!d || !d.cid) { fail(i, 'delete needs a target {cid} on the drawing'); break; }
+        steps.push({ 'do': 'delete', cid: d.cid, op: i });
+        break;
+      }
+      case 'set_text': {
+        var t = thing(o.target);
+        if (!t || !t.cid) { fail(i, 'set_text needs a target {cid}'); break; }
+        steps.push({ 'do': 'text', cid: t.cid, text: String(o.text == null ? '' : o.text), op: i });
+        break;
+      }
+      case 'bind': {
+        var bt = thing(o.target);
+        if (!bt || !bt.cid || !bt.item || bt.item.kind !== 'object') { fail(i, 'bind needs an IWMAC object {cid}'); break; }
+        steps.push({ 'do': 'bind', cid: bt.cid, bind: String(o.bind || ''), op: i });
+        break;
+      }
+      case 'align':
+      case 'distribute': {
+        var ts = (o.targets || []).map(thing);
+        if (ts.length < 2 || ts.some(function (q) { return !q || !q.cid; })) { fail(i, o.op + ' needs two or more targets {cid} on the drawing'); break; }
+        var mv = o.op === 'align' ? iwdieCbAlign(ts.map(function (q) { return q.box; }), o.how) : iwdieCbDistribute(ts.map(function (q) { return q.box; }), o.axis, o.gap);
+        if (!mv) { fail(i, 'align how is top, middle, bottom, left, center or right'); break; }
+        mv.forEach(function (q, k2) {
+          if (!q.dx && !q.dy) return;
+          steps.push({ 'do': 'move', cid: ts[k2].cid, dx: q.dx, dy: q.dy, op: i });
+          ts[k2].box.x = r1(ts[k2].box.x + q.dx); ts[k2].box.y = r1(ts[k2].box.y + q.dy);
+        });
+        break;
+      }
+      default: fail(i, 'no op "' + o.op + '"');
+    }
+  });
+  return { steps: steps, refs: refs, notes: notes, errors: errors };
+}
+
+/** One thing on the drawing as the scene lists it (v1.64.0), from what the page read of its element: `d` {cid, layer,
+ *  tag, name (data-name or id), attrs {…}, text, box {x, y, w, h}, circuit (the Rør sub-group it is in)}. A placeholder
+ *  is an IWMAC object; a group a symbol was drawn as (or one named after a symbol, dragged from Libraries) is that
+ *  symbol; a stroked path without fill in Rør a pipe; a rounded 40 x 20 box in Former a pill. -> item */
+function iwdieCbClassify(d) {
+  var a = d.attrs || {}, it = { cid: d.cid, layer: d.layer, kind: 'shape', name: d.name || '', box: d.box };
+  var pn = d.tag === 'g' ? iwdieVcPlaceholderName(d.name, a['data-iwdie-obj']) : null;
+  if (pn) {
+    var known = iwdieVcObjectIndex()[pn.id];
+    it.kind = 'object'; it.obj_id = pn.id; it.role = known ? known.role : iwdieRoleOf(pn.id);
+    if (pn.bind) it.bind = pn.bind;
+    if (a['data-iwdie-label'] !== undefined && a['data-iwdie-label'] !== null) it.label = a['data-iwdie-label'];
+    if (a['data-iwdie-ref']) it.ref = a['data-iwdie-ref'];
+    if (d.text) it.text = d.text;
+    return it;
+  }
+  var st = iwdieSymTable(), sym = a['data-iwdie-symbol'];
+  if (!sym && d.tag === 'g' && d.name) {
+    var bare = String(d.name).replace(/[\s_-]+\d+$/, ''), f = st.families[st.byKey[iwdieSymKey(bare)]];
+    if (f) sym = f.name;
+  }
+  if (sym) {
+    it.kind = 'symbol'; it.symbol = sym; it.k = parseInt(a['data-iwdie-k'], 10) || 0;
+    if (a['data-iwdie-missing']) it.missing = true;
+    return it;
+  }
+  var fill = String(a.fill || '').toLowerCase(), stroke = String(a.stroke || '').toLowerCase();
+  if ((d.tag === 'path' || d.tag === 'line' || d.tag === 'polyline') && (!fill || fill === 'none') && stroke && stroke !== 'none' && /^r(o|ø)r$/i.test(d.layer || '')) {
+    it.kind = 'pipe'; it.colour = stroke; it.width = parseFloat(a['stroke-width']) || 1;
+    it.pts = d.tag === 'path' ? iwdieCbPathPoints(a.d) : d.pts || null;
+    if (d.circuit) it.circuit = d.circuit;
+    return it;
+  }
+  if (d.tag === 'text') {
+    it.kind = 'text'; it.text = String(d.text || '').replace(/\s+/g, ' ').trim();
+    it.size = parseFloat(a['font-size']) || null; it.colour = fill || null;
+    return it;
+  }
+  if (d.tag === 'image') { it.kind = 'image'; return it; }
+  var b = d.box || { w: 0, h: 0 };
+  if (/^former$/i.test(d.layer || '') && (d.tag === 'rect' || d.tag === 'path') && b.h >= 17 && b.h <= 23 && b.w >= 36 && b.w <= 64 &&
+    (d.tag !== 'rect' || parseFloat(a.rx) >= 8)) {
+    it.kind = 'pill';
+    if (/^#[0-9a-f]{6}$/.test(fill)) {
+      var r = parseInt(fill.slice(1, 3), 16), g = parseInt(fill.slice(3, 5), 16), bl = parseInt(fill.slice(5, 7), 16);
+      if (0.299 * r + 0.587 * g + 0.114 * bl < 140) it.dark = true;
+    }
+    return it;
+  }
+  if (d.tag === 'rect') it.kind = 'rect';
+  else if (d.tag === 'g') it.kind = 'group';
+  return it;
+}
+
+/** The scene as Claude reads it (v1.64.0): the layers with their counts, then the things - filtered by `opts` {layer,
+ *  kind, near: [x, y, w, h], query, limit (150)} - as rows of cid, kind, name, x, y, w, h and a short note (a symbol's
+ *  turn, an object's binding, a pipe's colour and points, a text's words). Symbols, objects, pills, pipes and text come
+ *  before plain shapes when the limit cuts. -> {size, layers, cols, rows, more} */
+function iwdieCbSceneRows(items, size, opts) {
+  opts = opts || {};
+  var layers = [], count = {};
+  items.forEach(function (it) { if (!count[it.layer]) { count[it.layer] = 0; layers.push(it.layer); } count[it.layer]++; });
+  var near = Array.isArray(opts.near) && opts.near.length === 4 ? { x: +opts.near[0], y: +opts.near[1], w: +opts.near[2], h: +opts.near[3] } : null;
+  var q = String(opts.query || '').toLowerCase(), rank = { symbol: 0, object: 1, pill: 2, pipe: 3, text: 4, group: 5, rect: 6, shape: 7, image: 8 };
+  var picked = items.filter(function (it) {
+    if (opts.layer && String(it.layer).toLowerCase() !== String(opts.layer).toLowerCase()) return false;
+    if (opts.kind && it.kind !== opts.kind) return false;
+    if (near && !iwdieCbHit(it.box, near, 0)) return false;
+    if (q && (it.name + ' ' + (it.symbol || '') + ' ' + (it.obj_id || '') + ' ' + (it.bind || '') + ' ' + (it.text || '')).toLowerCase().indexOf(q) < 0) return false;
+    return true;
+  }).map(function (it, i) { return { it: it, i: i }; }).sort(function (a, b) { return (rank[a.it.kind] - rank[b.it.kind]) || (a.i - b.i); });
+  var limit = Math.max(1, Math.min(2000, parseInt(opts.limit, 10) || 150)), more = Math.max(0, picked.length - limit);
+  var note = function (it) {
+    if (it.kind === 'symbol') return (it.k ? 'k' + it.k : '') + (it.missing ? ' MISSING' : '');
+    if (it.kind === 'object') return [it.bind ? 'bind ' + it.bind : 'unbound', it.ref ? 'panel ' + it.ref : 'new', it.text ? 'text ' + it.text : ''].filter(Boolean).join('; ');
+    if (it.kind === 'pipe') return (it.circuit ? it.circuit + ' ' : '') + it.colour + ' ' + it.width + (it.pts ? ' ' + it.pts.map(function (p) { return p.join(','); }).join(' ') : ' curved');
+    if (it.kind === 'text') return it.text + (it.size ? ' (' + it.size + 'px)' : '');
+    if (it.kind === 'pill') return it.dark ? 'dark' : 'light';
+    return '';
+  };
+  return {
+    size: [size.w, size.h], layers: layers.map(function (l) { return [l, count[l]]; }), cols: ['cid', 'kind', 'name', 'x', 'y', 'w', 'h', 'note'],
+    rows: picked.slice(0, limit).map(function (p) {
+      var it = p.it, b = iwdieCbBoxRow(it.box);
+      return [it.cid, it.kind, it.kind === 'symbol' ? it.symbol : it.kind === 'object' ? it.obj_id : it.name, b[0], b[1], b[2], b[3], note(it)];
+    }),
+    more: more
+  };
+}
+
+/** The SVG of one step that adds (v1.64.0), with its id on the drawing (`cid`): a house symbol as <use data-iwdie-symbol>
+ *  for iwdieSymExpand to draw from the library, an IWMAC object as its placeholder (`looks` as the menu has them), an
+ *  empty pill, a pipe, fixed text. `used` {id: 1} keeps placeholder ids apart. -> markup */
+function iwdieCbMarkup(s, cid, looks, used) {
+  var f = iwdieDrawFmt, esc = iwdieDrawEsc, c = ' data-iwdie-cid="' + esc(cid) + '"';
+  if (s.kind === 'symbol') {
+    var deg = (s.k & 3) * 90;
+    return '<use data-iwdie-symbol="' + esc(s.name) + '" x="' + f(s.box.x) + '" y="' + f(s.box.y) + '" width="' + f(s.box.w) + '" height="' + f(s.box.h) + '"' +
+      (deg ? ' data-iwdie-turn="' + deg + '"' : '') + (s.k & 4 ? ' data-iwdie-flip="1"' : '') + c + '/>';
+  }
+  if (s.kind === 'object') {
+    var base = iwdieVcObjects(looks || null).filter(function (o) { return o.id === s.obj_id; })[0], o = {};
+    if (base) Object.keys(base).forEach(function (k) { o[k] = base[k]; });
+    else { o.id = s.obj_id; o.role = ''; o.desc = s.obj_id; o.kind = 'picture'; o.hasTag = true; }
+    o.w = s.box.w; o.h = s.box.h;
+    if (s.text) o.tag = s.text;
+    var name = IWDIE_VC_OBJ_PREFIX + s.obj_id + (s.bind ? ' ' + s.bind : ''), gid = iwdieVcSvgId(name, used || {});
+    return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '"' + c + ' transform="translate(' + f(s.box.x) + ' ' + f(s.box.y) + ')">' +
+      iwdieVcItemParts(iwdieVcObjectItem(o)).join('') + '</g>';
+  }
+  if (s.kind === 'pill') {
+    return '<rect x="' + f(s.box.x) + '" y="' + f(s.box.y) + '" width="' + f(s.box.w) + '" height="' + f(s.box.h) + '" rx="10"' +
+      (s.dark ? ' fill="#6b7e87"' : ' fill="#ffffff" stroke="#6a7d88" stroke-width="1"') + c + '/>';
+  }
+  if (s.kind === 'pipe') {
+    return '<path d="' + iwdieCbPathD(s.pts) + '" fill="none" stroke="' + esc(s.colour) + '" stroke-width="' + f(s.width) + '"' + c + '/>';
+  }
+  if (s.kind === 'text') {
+    return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Roboto, Arial, sans-serif" font-size="' + f(s.size) + '" fill="' + esc(s.colour) + '"' +
+      (s.anchor && s.anchor !== 'start' ? ' text-anchor="' + s.anchor + '"' : '') + c + '>' + esc(s.text) + '</text>';
+  }
+  return '';
+}
+
+/** Where each kind of step goes (v1.64.0): the layer by its name. */
+function iwdieCbLayerOf(s) {
+  return s.kind === 'object' ? 'IWMAC-objekter' : s.kind === 'pipe' ? 'Rør' : s.kind === 'text' ? 'Tekst' : 'Former';
+}
+
+/** What the page tells the bridge about itself when it attaches (v1.64.0): the job, the panel's size, the symbols the
+ *  kept library draws (iwdieCbSymbolSizes), the object catalogue, the plant's parameters as the job carries them, the
+ *  ports and the circuits. -> context */
+function iwdieCbContext(job, size, sizes, libFile, looks) {
+  var cat = iwdieVcObjects(looks || null).map(function (o) { return [o.id, o.role, o.w, o.h, o.desc]; });
+  return {
+    protocol: IWDIE_CB_PROTOCOL, version: IWDIE_VERSION,
+    job: { id: job.id, plant: job.plant || '', panel: job.panel || '', name: job.name || '' }, size: [size.w, size.h],
+    library: { file: libFile || '', symbols: sizes }, objects: { cols: ['obj_id', 'role', 'w', 'h', 'what'], rows: cat },
+    params: job.params || null, ports: IWDIE_CB_PORTS, circuits: IWDIE_CB_CIRCUITS.map(function (c) { return [c[0], c[1]]; })
+  };
+}
+
 /* ===================== Named components (v1.63.0) =====================
    The Maskin template (reference_data/maskin-light-template.ai in the Copilot kit) keeps its symbols around the
    artboard, and a plant's own Maskin .ai keeps copies of them: 382 of 2349's 386 components are the template's,
@@ -9062,7 +9833,7 @@ function iwdieSymRefs(svg) {
     if (turn < 0) turn += 4;
     var flip = /^(1|true|x|yes)$/i.test(attr(a, 'data-iwdie-flip'));
     out.push({ name: m[3].trim(), x: num('x'), y: num('y'), w: Math.max(0, num('width')), h: Math.max(0, num('height')),
-      k: turn + (flip ? 4 : 0), id: attr(a, 'id'), at: m.index, end: end });
+      k: turn + (flip ? 4 : 0), id: attr(a, 'id'), cid: attr(a, 'data-iwdie-cid'), at: m.index, end: end });
     re.lastIndex = end;
   }
   return out;
@@ -9089,7 +9860,8 @@ function iwdieSymExpand(svg, items) {
     if (!pick) {
       if (missing.indexOf(r.name) < 0) missing.push(r.name);
       var bw = r.w || 40, bh = r.h || 30;
-      out += '<g id="' + esc(gid) + '" data-name="' + esc(r.name) + '" data-iwdie-symbol="' + esc(r.name) + '" data-iwdie-missing="1">' +
+      out += '<g id="' + esc(gid) + '" data-name="' + esc(r.name) + '" data-iwdie-symbol="' + esc(r.name) + '" data-iwdie-missing="1"' +
+        (r.cid ? ' data-iwdie-cid="' + esc(r.cid) + '"' : '') + '>' +
         '<rect x="' + f(r.x) + '" y="' + f(r.y) + '" width="' + f(bw) + '" height="' + f(bh) + '" fill="none" stroke="#ef473b" stroke-width="1" stroke-dasharray="4 2"/>' +
         '<text x="' + f(r.x + 3) + '" y="' + f(r.y + Math.min(bh - 3, 12)) + '" font-family="Source Sans 3" font-size="9" fill="#ef473b">' + esc(r.name) + '</text></g>';
       return;
@@ -9101,7 +9873,9 @@ function iwdieSymExpand(svg, items) {
     var tf = 'translate(' + f(r.x + bw2 / 2) + ' ' + f(r.y + bh2 / 2) + ')' + (Math.abs(sc - 1) > 1e-4 ? ' scale(' + (Math.round(sc * 10000) / 10000) + ')' : '') +
       (pick.still ? ' matrix(' + m.join(' ') + ' 0 0)' : '') + ' translate(' + f(-it.w / 2) + ' ' + f(-it.h / 2) + ')';
     var defs = iwdieDrawDefsSvg(it.shapes);
-    out += '<g id="' + esc(gid) + '" data-name="' + esc(real) + '" data-iwdie-symbol="' + esc(real) + '" transform="' + tf + '">' +
+    // which way it was asked to turn (v1.64.0: Claude's pipes find its ports by it), and its id on the drawing when it has one
+    out += '<g id="' + esc(gid) + '" data-name="' + esc(real) + '" data-iwdie-symbol="' + esc(real) + '" transform="' + tf + '" data-iwdie-k="' + r.k + '"' +
+      (r.cid ? ' data-iwdie-cid="' + esc(r.cid) + '"' : '') + '>' +
       (defs ? '<defs>' + defs + '</defs>' : '') + it.shapes.map(function (sh) { return iwdieDrawShapeSvg(sh); }).join('') + '</g>';
     placed++;
   });
@@ -12775,7 +13549,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         sync: sync,
         busy: function () { return busy; },
         // the drawing under the objects unlocked: Object › Unlock All (Ctrl+Alt+2, v1.55.0)
-        unlock: function () { key('2', 'Digit2', { ctrl: true, alt: true }); }
+        unlock: function () { key('2', 'Digit2', { ctrl: true, alt: true }); },
+        // the document in front closed (v1.64.0): File › Close (Ctrl+W), which asks first only when something in it is unsaved
+        close: function () { key('w', 'KeyW', { ctrl: true }); return settle(400, 20); }
       };
     }
 
@@ -13086,7 +13862,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         'VectorCraft’s own Save As, its file to Downloads.">' +
         '<b>Ctrl+S</b> syncs the drawing to the Designer.</div>' +
         '<div class="iwdie-vcb-g"><span>Plant folder</span><span class="iwdie-vcb-p"></span><span>Components</span><span class="iwdie-vcb-c"></span>' +
-        '<span>IWMAC objects</span><span class="iwdie-vcb-o"></span><span>Drawing</span><span class="iwdie-vcb-d"></span><span>Sync</span><span class="iwdie-vcb-y"></span></div>',
+        '<span>IWMAC objects</span><span class="iwdie-vcb-o"></span><span>Drawing</span><span class="iwdie-vcb-d"></span><span>Sync</span><span class="iwdie-vcb-y"></span>' +
+        '<span>Claude</span><span class="iwdie-vcb-ai"></span></div>',
         // one button for the panel's Illustrator file (v1.49.0), opened as it is (v1.55.0)
         [{ act: 'ai', label: 'Open plant .ai…', title: 'The panel’s own Illustrator file - found in the plant’s folder once that is connected - opened here as it is, ' +
           'as File › Open opens it. Then you are asked whether to add the panel’s IWMAC objects to it.' },
@@ -13608,8 +14385,366 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               note(ok ? '✓ Ready to sync' : 'The first sync answers VectorCraft’s Save As for you.');
             });
           });
-        }).then(function () { busy = false; }, function () { busy = false; });
+        }).then(function () { busy = false; }, function () { busy = false; }).then(function () {
+          // Claude, through the iwmac-vectorcraft MCP server, once it runs (v1.64.0)
+          var sized = /<svg\b[^>]*\sviewBox\s*=\s*"\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(job.svg);
+          vcClaude({ job: job, looks: looks, size: function () { return sized ? { w: +sized[1], h: +sized[2] } : { w: 1400, h: 750 }; },
+            lib: function () { return lib; }, syncer: function () { return syncer; }, title: function () { return title; }, titled: titled, note: note,
+            row: function (html) { var r = ui.el.querySelector('.iwdie-vcb-ai'); if (r) r.innerHTML = html; }, on: ui.on });
+        });
       }, note);
+    }
+
+    /* ---------- Claude in VectorCraft (v1.64.0): the editor's side ----------
+       The bridge (claude-bridge/iwmac-vc-mcp.js) runs while Claude Code runs it, on 127.0.0.1 only. This tab looks for it,
+       and once it answers tells it what the edit holds - the job, the symbols the kept library draws, the object catalogue,
+       the plant's parameters - then takes Claude's calls one at a time: the scene, a preview, an edit, a check, an undo. An
+       edit is made on a copy of the drawing and opened in VectorCraft as a document of its own, the version before it kept
+       in its tab; nothing is synced from here, and nothing reaches the Designer but by the user's Ctrl+S. */
+    /** `api`: {job, size(), lib(), syncer(), title(), titled(name, ms), note(html, bad, keep), row(html), on(act, fn), looks}.
+     *  -> {stop} | null */
+    function vcClaude(api) {
+      if (typeof GM_xmlhttpRequest !== 'function') return null;
+      var esc2 = iwdieEscHtml, port = IWDIE_CB_PORT, session = null, stopped = false, working = '', edits = 0;
+      // `away`: another tab took Claude over; this one does not take it back by itself, so two open edits never trade
+      // Claude to and fro and Claude never edits a panel it did not just read
+      var away = false, timer = null;
+      try { port = parseInt(GM_getValue('iwdie.vc.bridge.port', IWDIE_CB_PORT), 10) || IWDIE_CB_PORT; } catch (e) {}
+      var base = 'http://127.0.0.1:' + port, snap = null, revisions = [], rev = 0, cidNext = 1;
+      var line = function (how) {
+        api.row(how === 'busy' ? 'working: ' + esc2(working) + '…'
+          : how === 'on' ? 'connected' + (edits ? ' · ' + iwdieN(edits, 'edit', 'edits') : '') + ' · ask Claude in Claude Code'
+          : how === 'away' ? 'with another VectorCraft tab · <button class="iwdie-vcb-l" data-act="cbtake" title="Claude works on one ' +
+            'panel at a time: the tab opened last. This takes Claude back to this panel.">bring Claude here</button>'
+          : '<span title="Claude reaches this tab through the iwmac-vectorcraft MCP server, which runs while Claude Code does. ' +
+            'This tab finds it by itself.">not running</span>');
+      };
+      var later = function (ms) { clearTimeout(timer); timer = setTimeout(hello, ms); };
+      if (api.on) api.on('cbtake', function () { away = false; later(0); });
+      // one request to the bridge, as Tampermonkey makes it: no page can, it needs a header a page cannot send unasked
+      var req = function (method, path, body, timeout) {
+        return new Promise(function (resolve, reject) {
+          var headers = { 'X-IWDIE-Bridge': String(IWDIE_CB_PROTOCOL) };
+          if (session) headers['X-IWDIE-Session'] = session;
+          if (body !== undefined) headers['Content-Type'] = 'application/json';
+          GM_xmlhttpRequest({
+            method: method, url: base + path, headers: headers, data: body === undefined ? undefined : JSON.stringify(body), timeout: timeout || 10000, anonymous: true,
+            onload: function (r) { var j = null; try { j = JSON.parse(r.responseText || 'null'); } catch (e) {} resolve({ status: r.status, json: j }); },
+            onerror: function () { reject(new Error('the bridge did not answer')); },
+            ontimeout: function () { reject(new Error('the bridge did not answer in time')); }
+          });
+        });
+      };
+      var hello = function () {
+        if (stopped) return;
+        req('GET', '/bridge/hello', undefined, 2500).then(function (r) {
+          if (r.status !== 200 || !r.json || r.json.server !== 'iwmac-vc-mcp') throw new Error('not the bridge');
+          // Claude is with the tab that took it over: wait until that one lets go, or the user brings Claude here
+          if (away && r.json.attached) { line('away'); later(15000); return; }
+          var lib = api.lib();
+          return req('POST', '/bridge/attach', { context: iwdieCbContext(api.job, api.size(), iwdieCbSymbolSizes(lib ? lib.items : []), lib ? lib.file : '', api.looks) }, 30000)
+            .then(function (r2) {
+              if (r2.status !== 200 || !r2.json || !r2.json.session) throw new Error('refused');
+              session = r2.json.session;
+              away = false;
+              line('on');
+              poll();
+            });
+        }).then(null, function () { session = null; line(away ? 'away' : 'off'); later(15000); });
+      };
+      var poll = function () {
+        if (stopped || !session) return;
+        req('GET', '/bridge/next?wait=25', undefined, 40000).then(function (r) {
+          if (r.status !== 200) {
+            // another tab took Claude over; or the bridge let this one go, or started anew: look for it again
+            session = null;
+            if (r.status === 409 && r.json && /another VectorCraft tab/.test(String(r.json.error || ''))) away = true;
+            line(away ? 'away' : 'off');
+            later(away ? 15000 : 3000);
+            return;
+          }
+          var cmd = r.json && r.json.cmd;
+          if (!cmd) { poll(); return; }
+          return run(cmd).then(function (res) {
+            return req('POST', '/bridge/result', { id: cmd.id, ok: true, result: res }, 30000);
+          }, function (e) {
+            return req('POST', '/bridge/result', { id: cmd.id, ok: false, error: String((e && e.message) || e) }, 30000);
+          }).then(poll, poll);
+        }, function () { session = null; line('off'); later(5000); });
+      };
+      var run = function (cmd) {
+        var a = cmd.args || {};
+        working = cmd.name;
+        line('busy');
+        var p = cmd.name === 'scene' ? scene(a) : cmd.name === 'preview' ? preview(a) : cmd.name === 'edit' ? edit(a)
+          : cmd.name === 'check' ? check() : cmd.name === 'undo' ? undo() : cmd.name === 'ping' ? Promise.resolve({ pong: true })
+          : Promise.reject(new Error('no command "' + cmd.name + '"'));
+        var done = function () { working = ''; line('on'); };
+        return p.then(function (v) { done(); return v; }, function (e) { done(); throw e; });
+      };
+
+      /* the drawing, read */
+      var kids = function (el) {
+        var out = [];
+        for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 1 && !/^(defs|title|desc|metadata|style|script)$/i.test(n.localName)) out.push(n);
+        return out;
+      };
+      var nameOf = function (el) { return el.getAttribute('data-name') || el.getAttribute('id') || ''; };
+      var isRor = function (n) { return /^r(o|ø)r$/i.test(String(n || '')); };
+      // the layers: the root's groups - or those of the one group a page-wide blending wraps them in
+      var layersOf = function (root) {
+        var top = kids(root).filter(function (el) { return el.localName === 'g'; });
+        if (top.length === 1 && !nameOf(top[0])) top = kids(top[0]).filter(function (el) { return el.localName === 'g'; });
+        return top;
+      };
+      var read = function (svg, title) {
+        var doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+        if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) throw new Error('the drawing is not well-formed SVG');
+        var root = doc.documentElement, vb = String(root.getAttribute('viewBox') || '').split(/[\s,]+/).map(parseFloat);
+        var size = vb.length === 4 && vb.every(isFinite) && vb[2] > 0 ? { w: vb[2], h: vb[3] } : api.size();
+        var cands = [];
+        layersOf(root).forEach(function (L) {
+          var ln = nameOf(L);
+          kids(L).forEach(function (el) {
+            // Rør's circuits are groups of pipes: their pipes are the things
+            if (isRor(ln) && el.localName === 'g' && !el.getAttribute('data-iwdie-symbol') && !iwdieVcObjectId(nameOf(el))) {
+              kids(el).forEach(function (p) { cands.push({ el: p, layer: ln, circuit: nameOf(el) }); });
+            } else cands.push({ el: el, layer: ln });
+          });
+        });
+        cands.forEach(function (c) {
+          var have = c.el.getAttribute('data-iwdie-cid'), m = /^c(\d+)$/.exec(have || '');
+          if (m) cidNext = Math.max(cidNext, +m[1] + 1);
+        });
+        var seen = {};
+        cands.forEach(function (c) {
+          var have = c.el.getAttribute('data-iwdie-cid');
+          if (!have || seen[have]) { have = 'c' + (cidNext++); c.el.setAttribute('data-iwdie-cid', have); }
+          seen[have] = 1;
+        });
+        var boxes = cands.length ? vcMeasure(doc, cands.map(function (c) { return c.el; }), size) : [];
+        var attrs = ['data-iwdie-symbol', 'data-iwdie-missing', 'data-iwdie-k', 'data-iwdie-obj', 'data-iwdie-ref', 'data-iwdie-bind', 'data-iwdie-label',
+          'fill', 'stroke', 'stroke-width', 'rx', 'd', 'font-size'];
+        var items = [];
+        cands.forEach(function (c, k) {
+          var b = boxes[k];
+          if (!b || b.hidden) return;
+          var at = {};
+          attrs.forEach(function (n) { var v = c.el.getAttribute(n); if (v !== null) at[n] = v; });
+          var text = '';
+          if (c.el.localName === 'text') text = c.el.textContent;
+          else if (c.el.localName === 'g') Array.prototype.forEach.call(c.el.getElementsByTagName('text'), function (t) { text += (text ? ' ' : '') + t.textContent; });
+          var pts = null;
+          if (c.el.localName === 'line') pts = [[+c.el.getAttribute('x1'), +c.el.getAttribute('y1')], [+c.el.getAttribute('x2'), +c.el.getAttribute('y2')]];
+          else if (c.el.localName === 'polyline') pts = String(c.el.getAttribute('points') || '').trim().split(/[\s]+/).map(function (p) { return p.split(',').map(Number); });
+          items.push(iwdieCbClassify({ cid: c.el.getAttribute('data-iwdie-cid'), layer: c.layer, tag: c.el.localName, name: nameOf(c.el), attrs: at,
+            text: String(text || '').replace(/\s+/g, ' ').trim(), box: { x: b.x, y: b.y, w: b.w, h: b.h }, circuit: c.circuit, pts: pts }));
+        });
+        var out = new XMLSerializer().serializeToString(doc);
+        if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
+        snap = { svg: out, title: title, items: items, size: size, facts: null };
+        return snap;
+      };
+      // the drawing as it stands: the last one this tab opened, unless VectorCraft marks it changed since (*) - then saved and read
+      var current = function () {
+        var t = api.title();
+        if (snap && snap.title === t && !/^\*/.test(t)) return Promise.resolve(snap);
+        var syncer = api.syncer();
+        if (!syncer) return Promise.reject(new Error('the editor is not ready yet'));
+        if (syncer.busy()) return Promise.reject(new Error('VectorCraft is saving or syncing: try again in a moment'));
+        return syncer.capture().then(function (got) {
+          if (!got || !got.svg) throw new Error('VectorCraft did not save the drawing, so it could not be read');
+          return read(got.svg, api.title());
+        });
+      };
+      var scene = function (a) {
+        return current().then(function (s) {
+          var out = iwdieCbSceneRows(s.items, s.size, a);
+          if (a.facts) out.facts = s.facts || (s.facts = iwdieCbFacts(s.items, s.size));
+          out.document = s.title;
+          return out;
+        });
+      };
+      var picture = function (svg, size) {
+        return new Promise(function (resolve, reject) {
+          var url = URL.createObjectURL(new Blob([iwdieVcSized(iwdieVcCssLengths(svg), size.w, size.h)], { type: 'image/svg+xml' })), img = new Image();
+          img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
+          img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('the drawing could not be drawn')); };
+          img.src = url;
+        });
+      };
+      var preview = function (a) {
+        return current().then(function (s) {
+          var max = Math.max(200, Math.min(1600, +a.max || 1000));
+          var box = Array.isArray(a.box) && a.box.length === 4 && a.box.every(function (v) { return isFinite(+v); }) && +a.box[2] > 0 && +a.box[3] > 0
+            ? a.box.map(Number) : [0, 0, s.size.w, s.size.h];
+          var k = Math.min(max / box[2], max / box[3], 4), w = Math.max(1, Math.round(box[2] * k)), h = Math.max(1, Math.round(box[3] * k));
+          return picture(s.svg, s.size).then(function (img) {
+            var c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            var g = c.getContext('2d');
+            g.fillStyle = '#ffffff';
+            g.fillRect(0, 0, w, h);
+            g.drawImage(img, box[0], box[1], box[2], box[3], 0, 0, w, h);
+            return { mime: 'image/jpeg', data: c.toDataURL('image/jpeg', 0.86).split(',')[1], width: w, height: h, box: box, document: s.title };
+          });
+        });
+      };
+
+      /* the drawing, changed */
+      var layer = function (doc, want) {
+        var root = doc.documentElement, all = layersOf(root), key = function (n) { return isRor(n) ? 'ror' : String(n || '').toLowerCase(); };
+        var found = all.filter(function (L) { return key(nameOf(L)) === key(want); })[0];
+        if (found) return found;
+        var g = doc.createElementNS('http://www.w3.org/2000/svg', 'g'), id = isRor(want) ? 'Ror' : want;
+        g.setAttribute('id', id);
+        g.setAttribute('data-name', want);
+        var host = all.length ? all[0].parentNode : root, objs = all.filter(function (L) { return key(nameOf(L)) === 'iwmac-objekter'; })[0];
+        // in the house order - Bakgrunn, Rør, Former, Tekst - and under the IWMAC objects
+        var order = ['bakgrunn', 'ror', 'former', 'tekst'], at = order.indexOf(key(want)), before = null;
+        if (want !== 'IWMAC-objekter') {
+          all.forEach(function (L) { var o = order.indexOf(key(nameOf(L))); if (!before && ((o > at && at >= 0) || L === objs)) before = L; });
+          if (!before && objs) before = objs;
+        }
+        host.insertBefore(g, before);
+        return g;
+      };
+      var sub = function (doc, parent, name) {
+        for (var n = parent.firstChild; n; n = n.nextSibling) if (n.nodeType === 1 && n.localName === 'g' && nameOf(n).toLowerCase() === String(name).toLowerCase()) return n;
+        var g = doc.createElementNS('http://www.w3.org/2000/svg', 'g');
+        g.setAttribute('data-name', name);
+        parent.appendChild(g);
+        return g;
+      };
+      var fragment = function (doc, markup) {
+        var f = new DOMParser().parseFromString('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">' + markup + '</svg>', 'image/svg+xml');
+        if (f.getElementsByTagName('parsererror').length) throw new Error('a step made markup that is not SVG');
+        return doc.importNode(f.documentElement.firstElementChild, true);
+      };
+      var byCid = function (doc, cid) {
+        var all = doc.getElementsByTagName('*');
+        for (var i = 0; i < all.length; i++) if (all[i].getAttribute('data-iwdie-cid') === cid) return all[i];
+        return null;
+      };
+      // whether a move in panel pixels is one in the element's own: no ancestor transform scales or turns
+      var plain = function (el) {
+        for (var p = el.parentNode; p && p.nodeType === 1 && p.localName !== 'svg'; p = p.parentNode) {
+          var t = p.getAttribute('transform');
+          if (t && !/^\s*translate\([^)]*\)\s*$/.test(t)) return false;
+        }
+        return true;
+      };
+      var apply = function (doc, steps, cidOf) {
+        var used = {}, notes = [];
+        Array.prototype.forEach.call(doc.getElementsByTagName('*'), function (e) { var id = e.getAttribute('id'); if (id) used[id] = 1; });
+        steps.forEach(function (st) {
+          if (st['do'] === 'add') {
+            var cid = 'c' + (cidNext++), L = layer(doc, iwdieCbLayerOf(st));
+            cidOf.push({ ref: st.ref, cid: cid, kind: st.kind });
+            var host = st.kind === 'pipe' && st.circuit ? sub(doc, L, st.circuit) : L;
+            host.appendChild(fragment(doc, iwdieCbMarkup(st, cid, api.looks, used)));
+            return;
+          }
+          var el = byCid(doc, st.cid);
+          if (!el) { notes.push(st.cid + ' is not on the drawing any more'); return; }
+          if (st['do'] === 'move') {
+            if (!plain(el)) notes.push(st.cid + ' sits in a scaled group: moved in its own units');
+            var t = el.getAttribute('transform');
+            el.setAttribute('transform', 'translate(' + iwdieDrawFmt(st.dx) + ' ' + iwdieDrawFmt(st.dy) + ')' + (t ? ' ' + t : ''));
+          } else if (st['do'] === 'delete') {
+            el.parentNode.removeChild(el);
+          } else if (st['do'] === 'text') {
+            var tx = el.localName === 'text' ? el : el.getElementsByTagName('text')[0];
+            if (!tx) { notes.push(st.cid + ' has no text'); return; }
+            while (tx.firstChild) tx.removeChild(tx.firstChild);
+            tx.appendChild(doc.createTextNode(st.text));
+          } else if (st['do'] === 'bind') {
+            var pn = iwdieVcPlaceholderName(nameOf(el), el.getAttribute('data-iwdie-obj'));
+            if (!pn) { notes.push(st.cid + ' is no IWMAC object'); return; }
+            el.setAttribute('data-name', IWDIE_VC_OBJ_PREFIX + pn.id + (st.bind ? ' ' + st.bind : ''));
+          }
+        });
+        return notes;
+      };
+      var job = api.job, stem = String(job.name || 'panel.svg').replace(/\.svg$/i, '');
+      var mine = function (t) { return /\s·\sClaude\s\d+\.svg$/.test(String(t || '').replace(/^\*/, '')); };
+      // a version opened in VectorCraft as a document of its own; the tab before it closed when it is one of these and
+      // holds nothing unsaved (the save that read it saved it), so the panel's own tab and the newest stay
+      var reopen = function (svg) {
+        var t = api.title(), syncer = api.syncer(), name = stem + ' · Claude ' + (++rev) + '.svg';
+        var closing = mine(t) && !/^\*/.test(t) && syncer && syncer.close ? syncer.close() : Promise.resolve();
+        return closing.then(function () {
+          vcDropFile(svg, name, 'image/svg+xml', 'menu');
+          return api.titled(name, 60000);
+        }).then(function (ok) {
+          if (!ok) throw new Error('VectorCraft did not open the new version (' + name + ')');
+          return name;
+        });
+      };
+      var edit = function (a) {
+        if (!Array.isArray(a.ops) || !a.ops.length) return Promise.reject(new Error('no ops'));
+        if (a.ops.length > 400) return Promise.reject(new Error('at most 400 ops in one edit'));
+        return current().then(function (s) {
+          if (!s.facts) s.facts = iwdieCbFacts(s.items, s.size);
+          var lib = api.lib(), libItems = lib ? lib.items : [];
+          var copy = s.items.map(function (it) { var c = {}; Object.keys(it).forEach(function (k) { c[k] = it[k]; }); c.box = { x: it.box.x, y: it.box.y, w: it.box.w, h: it.box.h }; return c; });
+          var plan = iwdieCbPlan(a.ops, { items: copy, size: s.size }, { sizes: iwdieCbSymbolSizes(libItems), facts: s.facts });
+          if (plan.errors.length && !a.partial) return { applied: false, errors: plan.errors, notes: plan.notes, hint: 'nothing was changed; fix the ops, or send partial: true to make the rest' };
+          var counts = {};
+          plan.steps.forEach(function (st) { var k = st['do'] === 'add' ? 'add ' + st.kind : st['do']; counts[k] = (counts[k] || 0) + 1; });
+          // planned only: where each would go, nothing made
+          if (a.dry_run) {
+            var placed = {};
+            Object.keys(plan.refs).forEach(function (r) { placed[r] = iwdieCbBoxRow(plan.refs[r].box); });
+            return { applied: false, dry_run: true, steps: counts, refs: placed, notes: plan.notes, errors: plan.errors,
+              plan: plan.steps.map(function (st) {
+                return [st['do'], st.kind || '', st.name || st.obj_id || st.text || st.cid || '', st.box ? iwdieCbBoxRow(st.box) : st.pts || (st.dx !== undefined ? [st.dx, st.dy] : [st.x, st.y])];
+              }) };
+          }
+          var doc = new DOMParser().parseFromString(s.svg, 'image/svg+xml'), made = [];
+          var notes = plan.notes.concat(apply(doc, plan.steps, made));
+          var out = new XMLSerializer().serializeToString(doc);
+          var ex = iwdieSymExpand(out, libItems);
+          if (ex.missing.length) notes.push('not in the kept library, drawn as red dashed boxes: ' + ex.missing.join(', ') + ' - import the Maskin template under Components');
+          var refs = {};
+          made.forEach(function (m) { if (m.ref !== undefined && m.ref !== null) refs[m.ref] = m.cid; });
+          var summary = { applied: true, steps: counts, refs: refs, notes: notes, errors: plan.errors };
+          var before = { svg: s.svg, title: s.title };
+          return reopen(ex.svg).then(function (name) {
+            revisions.push(before);
+            if (revisions.length > 20) revisions.shift();
+            edits++;
+            read(ex.svg, name);
+            summary.document = name;
+            api.note('✓ Claude’s edit is open as <b>' + esc2(name) + '</b> (' + esc2(Object.keys(counts).map(function (k) { return counts[k] + ' ' + k; }).join(', ')) +
+              '). Look it over; <b>Ctrl+S</b> syncs it to the Designer. The version before is in its own tab.', false, true);
+            return summary;
+          });
+        });
+      };
+      var undo = function () {
+        var prev = revisions.pop();
+        if (!prev) return Promise.reject(new Error('nothing to undo: no edit of Claude’s in this tab'));
+        return reopen(prev.svg).then(function (name) {
+          read(prev.svg, name);
+          api.note('↶ The version before Claude’s last edit is open again as <b>' + esc2(name) + '</b>.', false, true);
+          return { document: name, left: revisions.length };
+        });
+      };
+      var check = function () {
+        return current().then(function (s) {
+          var P = job.params, plant = null;
+          if (P && P.rows) {
+            plant = { units: (P.units || []).map(function (u) { return { unit_id: u[0], name: u[1] }; }), rows: {}, tagged: [] };
+            Object.keys(P.rows).forEach(function (u) { plant.rows[u] = P.rows[u].map(function (r) { return { alias_text: r[0], driver_id: r[1] }; }); });
+          }
+          var resolve = plant ? function (bind) { var r = iwdieVcResolveBind(iwdieVcParseBind(bind), plant); return r.link ? '' : iwdieVcBindWhy(r, bind); } : null;
+          return { document: s.title, findings: iwdieCbCheck(s.items, s.size, { resolve: resolve }) };
+        });
+      };
+      line('off');
+      hello();
+      return { stop: function () { stopped = true; } };
     }
 
     /* ---------- Edit in VectorCraft (v1.35.0): the Designer's side ---------- */
@@ -17366,6 +18501,29 @@ if (typeof module !== 'undefined' && module.exports) {
     symRefs: iwdieSymRefs,
     symExpand: iwdieSymExpand,
     symAvailable: iwdieSymAvailable,
+    CB_PORT: IWDIE_CB_PORT,
+    CB_PORTS: IWDIE_CB_PORTS,
+    CB_CIRCUITS: IWDIE_CB_CIRCUITS,
+    cbCircuit: iwdieCbCircuit,
+    cbPorts: iwdieCbPorts,
+    cbRoute: iwdieCbRoute,
+    cbPathD: iwdieCbPathD,
+    cbPathPoints: iwdieCbPathPoints,
+    cbHit: iwdieCbHit,
+    cbFree: iwdieCbFree,
+    cbAlign: iwdieCbAlign,
+    cbDistribute: iwdieCbDistribute,
+    cbFacts: iwdieCbFacts,
+    cbCheck: iwdieCbCheck,
+    cbSymbolSizes: iwdieCbSymbolSizes,
+    cbSymbolBox: iwdieCbSymbolBox,
+    cbTurn: iwdieCbTurn,
+    cbPlan: iwdieCbPlan,
+    cbClassify: iwdieCbClassify,
+    cbSceneRows: iwdieCbSceneRows,
+    cbMarkup: iwdieCbMarkup,
+    cbLayerOf: iwdieCbLayerOf,
+    cbContext: iwdieCbContext,
     vcObjectSvg: iwdieVcObjectSvg,
     vcObjectSearch: iwdieVcObjectSearch,
     VC_UPLOADS_KEY: IWDIE_VC_UPLOADS_KEY,
