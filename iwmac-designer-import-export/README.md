@@ -2058,7 +2058,7 @@ The hosted files stay exactly as released. The script only adds the banner and c
 save while the page runs. Nothing leaves the browser: the editor is a static page, and the
 panel goes from tab to tab through Tampermonkey's storage.
 
-**The hosted copy.** It is VectorCraft's official web build 0.9.0, byte for byte, with its
+**The hosted copy.** It is VectorCraft's official web build 0.10.0 (0.9.0 until 2026-10-12), byte for byte, with its
 licences and notices. To move to a newer release, run the repository's *Update VectorCraft*
 workflow with the release tag.
 
