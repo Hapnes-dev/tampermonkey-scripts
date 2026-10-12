@@ -326,7 +326,9 @@ by the right names, each turned copy told apart.
     // saved_by, single_objects[], containers[], graphics[]
     // + converted:"true" when a background is embedded
     // + image_svg when that background is authored artwork (v1.23.0) — the markup
-    //   itself, returned so the drawing stays editable across round trips
+    //   itself, returned so the drawing stays editable across round trips — or
+    //   (v1.65.0) the drawing a PNG from VectorCraft or Insert keeps, stamped
+    //   data-iwdie-drawing, in place of image_svg_trace
   },
   "image_data": "data:image/png;base64,…",   // v1.17.0: last in the file
   "image_svg_trace": "<svg …>",              // v1.17.0: last in the file
@@ -335,6 +337,71 @@ by the right names, each turned copy told apart.
 ```
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
+
+### Every drawing stays vectors, from Copilot to Illustrator (v1.65.0)
+
+Thomas wants every panel file Copilot writes to end as if he had drawn it in VectorCraft: a
+vector drawing that VectorCraft opens with its layers, an Illustrator file with the same layers,
+and a PNG on the panel's overview picture. Before this version, Insert set an agent's
+`panel.image_svg` as an SVG background. Nothing reached the plant's pictures until a sync from
+VectorCraft. Background → Illustrator handed the SVG over as it was, so Illustrator saw groups
+but no layers.
+
+- **Insert makes the drawing the panel's picture, as a sync does.**
+  - It draws `panel.image_svg` at the panel's size, with the fonts it names.
+  - It keeps the drawing inside the PNG.
+  - It uploads the PNG to the plant's pictures. The name follows the sync's rule, and it never
+    writes over a picture this script did not upload.
+  - It names the picture on the panel, as Set background does.
+
+  The result says where the picture went and has an **Edit in VectorCraft…** button. An SVG
+  picked under *Background options* is handled the same way. If the browser cannot draw the
+  drawing, the background stays an SVG, as before.
+- **Edit in VectorCraft opens it as the drawing it is.** The drawing in the picture is marked
+  `data-iwdie-given`. The editor opens it as its layers, with nothing locked and the panel's
+  objects as placeholders on top. This was checked in the web build: its own save at Ctrl+S had the
+  layers Bakgrunn, Rør, Former, Tekst and IWMAC-objekter, and every house symbol was still a
+  named group.
+- **Open IWMAC JSON… in VectorCraft.** The editor's banner takes a panel file too. It hands the
+  file to the Designer tab the edit began in, where Insert's check and questions come up. Once the
+  file is in, the editor opens the panel again in the same tab: its drawing as layers, its objects
+  as placeholders.
+- **Background → Illustrator writes the drawing itself.** When the background is a drawing (an
+  SVG background, or the drawing kept inside a PNG from VectorCraft or Insert), the dialog offers
+  two files: an `.ai` with the drawing's own layers, or the `.svg` as the panel keeps it.
+  - The `.ai` is Illustrator's own editing data.
+  - Each top-level group becomes a layer of the same name, hidden if it is hidden.
+  - Each group stays a named group.
+  - Each shape becomes a path in panel coordinates, with its fill, stroke, dashes, caps and joins.
+  - Each text becomes point text in the matching Arial face, turned and aligned as drawn.
+  - A picture in the drawing goes in where it stands, one per layer.
+  - What Illustrator's art program cannot hold is drawn as close as it can be, and the message
+    names it: a gradient as its first colour, a marker as an arrowhead. Clip paths, masks and
+    filters are left out.
+
+  Illustrator (Beta) opened the worked Maskin example with its four layers, its named pipe and
+  symbol groups, and its 22 texts updated to Illustrator's own type.
+- **Export JSON hands the drawing back.** When a picture keeps a drawing, the export carries it as
+  `panel.image_svg` in place of the coarse trace. It is stamped `data-iwdie-drawing` with a hash of
+  itself. If it comes back unchanged, Insert keeps the picture. If it was edited, Insert draws it
+  again.
+- **The check names what VectorCraft would lose.** Its findings follow VectorCraft's own SVG
+  importer:
+  - anything at the top level other than a group with an id puts the whole drawing on one layer;
+  - so does opacity, a filter or a mask on a layer group;
+  - a group with a `data-name` but no id gets no name, and one holding a single thing is
+    dissolved into it;
+  - `visibility="hidden"` loses what it hides, while `display="none"` keeps it hidden;
+  - a marker comes in as loose paths;
+  - a picture comes in as pixels.
+
+  Insert refuses a drawing that uses a namespace prefix it does not declare, such as
+  `xlink:href` without `xmlns:xlink`. The browser cannot draw such an SVG, and VectorCraft cannot
+  open it.
+
+The Copilot kit was updated with it. An answer now delivers two files: the panel JSON, and its
+drawing as an `.svg`. The kit also gained the drawing's layer rules, a JSON schema for the panel
+file, and validator checks for both.
 
 ### House symbols by name (v1.63.0)
 
@@ -1094,6 +1161,7 @@ system.
   - **SVG — vector trace** (v1.4.0): the image is auto-traced to an **`.svg` of editable vector shapes** (vendored [imagetracerjs](https://github.com/jankovicsandras/imagetracerjs), public domain — the script stays one self-contained file). Shapes, pills and pipe runs come out clean **in the drawing's own colours** (v1.5.1: the palette is built from the image's exact colours with a guaranteed slot for saturated ones — before that, flat schematics traced to grey because thin coloured lines never won a sampled palette slot); **small text becomes rough outlines** — retype labels in Illustrator (that limitation is inherent to tracing, Illustrator's own Image Trace included). Since v1.4.1 the trace runs **in a Web Worker**, so the browser stays fully responsive even on photo backgrounds that take minutes (measured: main thread answers in ~4 ms while tracing; ~1–2 s total for a 1400×750 schematic, ≈7–16 k paths depending on colours). The worker is built by lifting the tracer's own constructor source — no second copy of the library, and a main-thread fallback covers browsers that cannot start a worker at all (since v1.29.0 that is the *only* case it covers: a failure inside the worker is reported, not retried on the main thread, and a progress panel with a Cancel shows the stage the worker is at).
   - **Save the picture as-is** (v1.11.0, flatten v1.16.2): opaque pixels stay **byte-for-byte**; transparent holes are filled with `#main_image`'s CSS background-color so the file matches the designer (a transparent PNG otherwise renders those holes black in viewers). Same file the empty-canvas export path produces. This is what an AI asked to look at the panel and propose link positions actually wants; a trace or a PDF only makes the drawing harder for it to read.
 - **SVG background** (e.g. an AI-authored `image_svg` one) → the **`.svg` itself**, because it is already vector and Illustrator opens `.svg` natively (*File → Open*) with full editability — wrapping it in a PDF would rasterize exactly what you want to edit. The toast says so.
+- **A drawing** (v1.65.0): an SVG background, or the drawing a PNG from VectorCraft or Insert keeps, goes through the same dialog. Its `.ai` card writes the drawing's own layers as Illustrator's objects, and its SVG card saves the drawing as the panel keeps it. See *Every drawing stays vectors* above.
 
 Filename: `iwmac-bg_<plant>_<panel>_<stamp>.ai` (or `.svg`, `.png`, `.jpg`). The .ai is about 200 kB for a 1400 × 750 panel and is written in about a second. Note: because the designer runs on plain `http`, Chrome may flag the download ("can't be downloaded securely") — choose **Keep**; the file still lands in Downloads on default settings.
 

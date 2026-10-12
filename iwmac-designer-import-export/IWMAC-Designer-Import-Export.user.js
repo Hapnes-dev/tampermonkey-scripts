@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.64.3
+// @version      1.65.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.64.3';
+var IWDIE_VERSION = '1.65.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -251,7 +251,7 @@ var IWDIE_PANEL_SCHEMA = [
   { field: 'containers', type: 'array of containers', required: 'yes', meaning: 'Grouped objects (table rows, room cards). [] on most panels. See schema.container.', example: '[]' },
   { field: 'graphics', type: 'array', required: 'yes', meaning: 'Opaque host graphics records. Preserve verbatim; never author one; [] on almost every panel.', example: '[]' },
   { field: 'converted', type: 'string', required: 'no', allowed: '"true"', meaning: 'Present as "true" when a background picture is embedded in image_data.', example: 'true' },
-  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'AI-authored background artwork: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert converts it into image_data, and Export writes it back when the panel still carries it, so the drawing survives the round trip as editable vector. Author one only for a type that has artwork (Maskin, Oversikt, Energi) when the plant has none; never on Ventilasjon, curve, list or room-control panels, and never as a replacement for a supplied picture, which is copied verbatim. See drawing_style for how the house draws ducts, zones and the exchanger.', example: '<svg viewBox="0 0 1400 750" ...>' }
+  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'AI-authored background artwork: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert draws it into the panel\'s picture as a sync from VectorCraft does - a PNG that keeps the drawing, uploaded to the plant\'s pictures - so Edit in VectorCraft opens its layers and Background → Illustrator writes them as an .ai; Export hands it back here, stamped data-iwdie-drawing. Author one only for a type that has artwork (Maskin, Oversikt, Energi) when the plant has none; never on Ventilasjon, curve, list or room-control panels, and never as a replacement for a supplied picture, which is copied verbatim. See drawing_style for how the house draws ducts, zones and the exchanger.', example: '<svg viewBox="0 0 1400 750" ...>' }
 ];
 
 /** One row per top-level key of the export file, in file order. */
@@ -276,6 +276,89 @@ function iwdieFileLayout() {
     { key: 'image_svg_trace', type: 'string (SVG markup)', required: 'no', set_by: 'exporter', meaning: 'A coarse vector trace of the background, for reading where things are (see structure). Input only: the importer discards it. Never copy it into image_svg.' },
     { key: 'change_log', type: 'array', required: 'no', set_by: 'agent', meaning: 'Optional. When you modify a file you may append entries {when, by, change} here. It is the only sanctioned place for notes; the importer ignores it.' }
   ];
+}
+
+/** The rules a drawing - panel.image_svg - keeps to stay vectors from Copilot to Illustrator (v1.65.0): what VectorCraft's
+ *  importer needs to open it as its layers, and what Insert, Edit in VectorCraft and Background → Illustrator make of it. */
+var IWDIE_DRAWING_RULES = [
+  'The root is the panel\'s size: <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="750" viewBox="0 0 1400 750">.',
+  'Every element at the top level is a layer group with an id and a data-name, in this order: <g id="Bakgrunn" data-name="Bakgrunn">, ' +
+    '<g id="Ror" data-name="Rør">, <g id="Former" data-name="Former">, <g id="Tekst" data-name="Tekst">. One element loose at the top, or ' +
+    'opacity, a filter or a mask on a layer group, and VectorCraft opens the whole drawing as one layer.',
+  'Each piece of equipment is a group with an id of its own beside its data-name (<g id="Former_MT1" data-name="MT1">), or a house symbol ' +
+    'placed by name (<use data-iwdie-symbol="Kompressor" x="120" y="80"/>). VectorCraft names only what has an id, and dissolves a group ' +
+    'without one that holds a single thing.',
+  'Pipes are stroked paths with fill="none", one sub-group per circuit in Ror; a flow arrow is a small filled path of its own, never a marker.',
+  'Text stays <text>, its font-family, font-size and fill as attributes; never outlines.',
+  'Hide with display="none", never visibility="hidden". No <image>, <script>, <foreignObject>, <style> or CSS classes: fills and strokes ' +
+    'are attributes. A prefix such as xlink: is declared on <svg> (xmlns:xlink) or not used; Insert refuses one that is not.',
+  'Insert makes the drawing the panel\'s picture as a sync from VectorCraft does - a PNG that keeps the drawing, uploaded to the plant\'s ' +
+    'pictures - so Edit in VectorCraft opens its layers, Background → Illustrator writes them as an .ai, and Export JSON hands it back ' +
+    'as panel.image_svg, stamped data-iwdie-drawing.'
+];
+
+/** The panel file as a JSON Schema (draft 2020-12, v1.65.0), made from the tables the in-file guide writes - so the schema an
+ *  agent reads and the file Insert takes cannot drift apart. Free of the script's version, so it changes only with a rule. */
+function iwdiePanelJsonSchema() {
+  var kind = function (t) {
+    t = String(t || '');
+    if (/^integer/.test(t)) return { type: 'integer' };
+    if (/^boolean/.test(t)) return { type: 'boolean' };
+    if (/^array/.test(t)) return { type: 'array' };
+    if (/^object or null/.test(t)) return { type: ['object', 'null'] };
+    if (/^object/.test(t)) return { type: 'object' };
+    if (/^string or null/.test(t)) return { type: ['string', 'null'] };
+    if (/^string/.test(t)) return { type: 'string' };
+    return {};
+  };
+  var unversioned = function (text) { return String(text).split(IWDIE_VERSION).join('<version>'); };
+  var props = function (rows, key) {
+    var o = {};
+    rows.forEach(function (r) {
+      var p = kind(r.type);
+      p.description = unversioned(r.meaning + (r.allowed ? ' Allowed: ' + r.allowed + '.' : ''));
+      if (r.example !== undefined && !/^[\[{]/.test(String(r.example))) p.examples = [r.example];
+      o[r[key]] = p;
+    });
+    return o;
+  };
+  var needed = function (rows, key) { return rows.filter(function (r) { return r.required === 'yes'; }).map(function (r) { return r[key]; }); };
+  var object = { type: 'object', description: 'One object: the same 17 fields on every entry of single_objects and of containers[].items, in this order.',
+    required: needed(IWDIE_OBJECT_SCHEMA, 'field'), properties: props(IWDIE_OBJECT_SCHEMA, 'field') };
+  object.properties.id.const = 'driver_id';
+  object.properties.linked.enum = ['true', 'false'];
+  object.properties.zIndex.pattern = '^(\\d+|default)$';
+  var container = { type: 'object', description: 'A container of objects (table rows, room cards), as the host writes a plain objects_container.',
+    required: needed(IWDIE_CONTAINER_SCHEMA, 'field'), properties: props(IWDIE_CONTAINER_SCHEMA, 'field') };
+  container.properties.unique_id.pattern = 'custom_';
+  container.properties.items.items = { $ref: '#/$defs/object' };
+  var panel = { type: 'object', description: 'The panel document itself, the only part Insert draws.',
+    required: needed(IWDIE_PANEL_SCHEMA, 'field'), properties: props(IWDIE_PANEL_SCHEMA, 'field') };
+  panel.properties.panel_width.pattern = '^\\d+px$';
+  panel.properties.panel_height.pattern = '^\\d+px$';
+  panel.properties.single_objects.items = { $ref: '#/$defs/object' };
+  panel.properties.containers.items = { $ref: '#/$defs/container' };
+  panel.properties.converted.const = 'true';
+  panel.properties.image_svg = { $ref: '#/$defs/drawing' };
+  var drawing = { type: 'string', description: 'The panel\'s picture as vectors (authored on Maskin, Oversikt and Energi only, never on Ventilasjon). ' +
+    IWDIE_DRAWING_RULES.join(' '), pattern: '^<svg\\b[\\s\\S]*</svg>\\s*$', not: { pattern: '<script|<foreignObject|<image\\b|visibility\\s*=\\s*["\']hidden' } };
+  var file = iwdieFileLayout(), top = props(file, 'key');
+  top.format.const = IWDIE_FORMAT;
+  top.version.const = IWDIE_FORMAT_VERSION;
+  top.panel = { $ref: '#/$defs/panel', description: top.panel.description };
+  top.counts.properties = { single_objects: { type: 'integer', minimum: 0 }, containers: { type: 'integer', minimum: 0 }, graphics: { type: 'integer', minimum: 0 } };
+  return {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    $id: 'https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/iwmac-designer-import-export/panel-file.schema.json',
+    title: 'IWMAC Designer panel file',
+    description: 'The file Insert JSON… takes and Export JSON writes (format ' + IWDIE_FORMAT + ', version ' + IWDIE_FORMAT_VERSION + '), made by the ' +
+      'userscript from the same tables its in-file guide writes. An agent returns one such file per panel, raw JSON, counts equal to the array ' +
+      'lengths; for a new picture, its drawing in panel.image_svg and the same drawing beside it as an .svg.',
+    type: 'object',
+    required: needed(file, 'key'),
+    properties: top,
+    $defs: { panel: panel, object: object, container: container, drawing: drawing }
+  };
 }
 
 /**
@@ -861,7 +944,9 @@ function iwdieNoteArtworkInAiGuide(env, svg) {
     shapes: iwdieCountSvgShapes(svg),
     what: 'The background of this panel is authored vector artwork, returned verbatim — the same markup that drew it, not a trace of the pixels.',
     use: 'Edit it as SVG when the drawing must change: move a duct, add a branch, resize a zone box. Keep the viewBox and the panel size. Insert re-applies it, so the drawing stays editable for the next round.',
-    also: 'image_data holds the same artwork as a data URL; when you edit image_svg, Insert draws the edited markup and ignores that image_data. Move an object only together with the part of the drawing it sits on.'
+    also: 'image_data holds the same artwork as a picture. Carry both through unchanged and Insert keeps that picture; when ' +
+      'you edit image_svg, Insert draws the edited markup and ignores image_data (a drawing taken from the picture is stamped ' +
+      'data-iwdie-drawing, which is how Insert tells). Move an object only together with the part of the drawing it sits on.'
   };
   return env;
 }
@@ -1378,6 +1463,11 @@ function iwdieCheckFile(text, opts) {
       }
     }
   }
+  // v1.65.0: what keeps the drawing from opening in VectorCraft as the layers it means - not asked of the picture's own,
+  // which VectorCraft itself saved
+  if (res.doc && typeof res.doc.image_svg === 'string' && res.doc.image_svg && !iwdieKeepsOwnPicture(res.doc)) {
+    out.warnings = out.warnings.concat(iwdieSvgVectorFindings(res.doc.image_svg).warnings);
+  }
   if (!out.errors.length) out.warnings = out.warnings.concat(iwdieCheckPanelGeometry(res.doc, out.notes, out.details));
 
   var so = (res.doc && Array.isArray(res.doc.single_objects)) ? res.doc.single_objects : [];
@@ -1413,7 +1503,12 @@ function iwdieCheckFile(text, opts) {
   if (summary.layout && summary.layout.duct_lines && summary.layout.duct_lines.length) {
     f.push(summary.layout.duct_lines.length + ' straight duct run(s) in the artwork.');
   }
-  if (res.doc && res.doc.image_svg) f.push('Background: authored SVG artwork (panel.image_svg), ' + iwdieCountSvgShapes(res.doc.image_svg) + ' shapes.');
+  if (iwdieKeepsOwnPicture(res.doc)) f.push('Background: the panel\'s own picture, with the drawing it was made from (panel.image_svg, ' +
+    iwdieCountSvgShapes(res.doc.image_svg) + ' shapes) for Edit in VectorCraft.');
+  else if (res.doc && res.doc.image_svg) {
+    f.push('Background: authored SVG artwork (panel.image_svg), ' + iwdieCountSvgShapes(res.doc.image_svg) + ' shapes - drawn by Insert into the panel\'s ' +
+      'picture as a sync from VectorCraft makes it: a PNG that keeps the drawing, uploaded to the plant\'s pictures.');
+  }
   else if (iwdieDocHasBackground(res.doc)) f.push('Background: embedded picture (image_data).');
   else f.push('Background: none — Insert takes it, Compile renders no picture behind the objects.');
   if (summary.extent && summary.extent.objects_outside_canvas) f.push(summary.extent.objects_outside_canvas + ' object(s) outside the canvas.');
@@ -1428,7 +1523,7 @@ function iwdieCheckFile(text, opts) {
     linked: summary.linking.linked_to_a_parameter, unlinked: summary.linking.unlinked,
     units: summary.units_referenced.map(function (u) { return u.unit_id + ' (' + u.objects + ')'; }),
     prefixes: prefixes,
-    background: (res.doc && res.doc.image_svg) ? 'SVG artwork' : iwdieDocHasBackground(res.doc) ? 'embedded picture' : 'none',
+    background: iwdieKeepsOwnPicture(res.doc) ? 'picture with its drawing' : (res.doc && res.doc.image_svg) ? 'SVG artwork' : iwdieDocHasBackground(res.doc) ? 'embedded picture' : 'none',
     sections: (summary.layout && summary.layout.sections || []).map(function (h) { return h.title || '(untitled)'; }),
     roles: (summary.roles || []).map(function (r) { return r.objects + ' ' + r.role; }),
     ducts: (summary.layout && summary.layout.duct_lines) ? summary.layout.duct_lines.length : 0
@@ -1780,6 +1875,7 @@ var IWDIE_DRAWING_STYLE = {
   canvas: '1400 x 750 on a standard panel. Ventilasjon and Maskin keep x 1145-1400 for the settings or information column and the drawing left of it; an Oversikt plan uses the full width.',
   scope: 'For a picture you are asked to draw on a type that has artwork. This plant\'s own colours, pipes, pills and text are in overview.style: use them first. duct, duct_colours, zone_box, exchanger and settings_band are the Ventilasjon house construction, for a drawn Ventilasjon picture the user asks for or the plant already has.',
   layers: 'Top-level groups, each a layer when the panel is edited in VectorCraft: <g id="Bakgrunn" data-name="Bakgrunn"> (ground, panels), <g id="Ror" data-name="Rør"> (pipes, ducts), Former (equipment, boxes), Tekst (fixed text). An export\'s overview.style has this plant\'s own colours, pipe widths, pills and text.',
+  editable: 'Every element at the top is one of those groups, with an id and no opacity, filter or mask: one thing loose there and VectorCraft opens the whole drawing as one layer. Each piece of equipment is a group with its own id beside its data-name (VectorCraft names only what has an id), or a house symbol. Text stays <text>, never outlines; hide with display="none"; an arrowhead is a path, not a marker; declare xmlns:xlink if you write xlink:href. Insert then makes the drawing the panel\'s picture as a sync from VectorCraft does, so it stays vectors in VectorCraft and in Illustrator.',
   duct: 'Not a solid bar: a WHITE casing 16 wide with round caps, and a 2 wide coloured core on the same centre line. Draw both from one path so they stay together.',
   duct_colours: { avtrekk: '#F3C96A', tilluft: '#F79E7A', uteluft: '#B0E0EF' },
   zone_box: 'Rounded rectangle, fill #CDD2D7, white border 5 wide, rx 16. One per zone at the end of the runs.',
@@ -2242,6 +2338,13 @@ function iwdieValidateSvg(svg) {
     errors.push('"image_svg" needs a viewBox (or width+height) so it scales to the panel.');
   }
   if (/<script/i.test(s)) errors.push('"image_svg" must not contain <script>.');
+  // v1.65.0: a prefix used and not declared - xlink:href without xmlns:xlink - is no XML a browser draws
+  var undeclared = iwdieSvgUndeclaredPrefixes(s);
+  if (undeclared.length) {
+    errors.push('"image_svg" uses the prefix ' + undeclared.map(function (p) { return p + ':'; }).join(', ') + ' without declaring it on <svg> (' +
+      undeclared.map(function (p) { return 'xmlns:' + p + '="' + (p === 'xlink' ? 'http://www.w3.org/1999/xlink' : '…') + '"'; }).join(' ') +
+      '): the browser does not draw such a drawing, and VectorCraft does not open it.');
+  }
   return errors;
 }
 
@@ -2879,6 +2982,78 @@ function iwdieTraceWorkerInputs(code) {
   return Object.keys(found).sort();
 }
 
+/* ---------- the picture's own drawing (v1.64.4) ---------- */
+
+/** The largest drawing Export hands over beside its picture, in characters: past it, Edit in VectorCraft still opens
+ *  the drawing from the picture, and the export keeps its coarse trace instead. */
+var IWDIE_DRAWING_MAX = 3000000;
+
+/** A 32-bit FNV-1a of a string, as 8 hex digits. */
+function iwdieHash32(s) {
+  var h = 0x811c9dc5;
+  s = String(s == null ? '' : s);
+  for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return ('0000000' + h.toString(16)).slice(-8);
+}
+
+/** An SVG document as panel.image_svg takes it: from its <svg> on, without the XML declaration, doctype or comments
+ *  before it. -> string | null */
+function iwdieSvgFromDocument(text) {
+  var t = String(text == null ? '' : text), at = t.search(/<svg\b/i);
+  if (at < 0) return null;
+  var head = t.slice(0, at).replace(/<\?xml[\s\S]*?\?>|<!DOCTYPE[^>]*>|<!--[\s\S]*?-->|\s+/gi, '');
+  return head ? null : t.slice(at).replace(/\s+$/, '');
+}
+
+/** A drawing without its stamp. */
+function iwdieSvgUnstamp(svg) {
+  return String(svg == null ? '' : svg).replace(/(<svg\b[^>]*?)\s+data-iwdie-drawing="[0-9a-f]{8}"/i, '$1');
+}
+
+/** The picture's own drawing as Export hands it over (v1.64.4): its root stamped with a hash of itself, so that Insert
+ *  can tell it came back unchanged. */
+function iwdieSvgStamp(svg) {
+  var s = iwdieSvgUnstamp(svg);
+  return s.replace(/<svg\b/i, '<svg data-iwdie-drawing="' + iwdieHash32(s) + '"');
+}
+
+/** Whether a drawing is as Export stamped it: the picture's own, unchanged. */
+function iwdieSvgStampIntact(svg) {
+  var m = /<svg\b[^>]*?\sdata-iwdie-drawing="([0-9a-f]{8})"/i.exec(String(svg == null ? '' : svg));
+  return !!m && iwdieHash32(iwdieSvgUnstamp(svg)) === m[1];
+}
+
+/** Whether Insert keeps a file's picture rather than drawing its image_svg (v1.64.4): the image_svg is the picture's own
+ *  drawing, as Export stamped it and unchanged, and the picture it came from is there - a PNG or JPEG data URL. */
+function iwdieKeepsOwnPicture(doc) {
+  return !!doc && typeof doc.image_svg === 'string' && iwdieSvgStampIntact(doc.image_svg) &&
+    /^data:image\/(png|jpe?g)[;,]/i.test(String(doc.image_data || ''));
+}
+
+/** A panel file's size as Insert applies it, panel_width and panel_height in pixels (v1.65.0). -> {w, h} | null */
+function iwdiePanelSizeOf(doc) {
+  var w = parseInt(doc && doc.panel_width, 10), h = parseInt(doc && doc.panel_height, 10);
+  return w > 0 && h > 0 && w <= 20000 && h <= 20000 ? { w: w, h: h } : null;
+}
+
+/** The namespace prefixes a drawing uses on its elements and attributes without declaring them (v1.65.0): such a
+ *  drawing is not well-formed XML, so the browser does not draw it and VectorCraft does not open it. */
+function iwdieSvgUndeclaredPrefixes(svg) {
+  var s = String(svg == null ? '' : svg), declared = { xml: 1, xmlns: 1 }, used = [], m;
+  var re = /<([A-Za-z_][\w.-]*)(?::([\w.-]+))?((?:\s+[^\s=\/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'))?)*)\s*\/?>/g;
+  var note = function (p) { if (used.indexOf(p) < 0) used.push(p); };
+  while ((m = re.exec(s))) {
+    if (m[2]) note(m[1]);
+    var ar = /([^\s=\/>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'))?/g, a;
+    while ((a = ar.exec(m[3] || ''))) {
+      var k = /^xmlns:(.+)$/.exec(a[1]), p = /^([^:]+):/.exec(a[1]);
+      if (k) declared[k[1]] = 1;
+      else if (p) note(p[1]);
+    }
+  }
+  return used.filter(function (p) { return !declared[p]; });
+}
+
 function iwdieNormalizeTraceSvg(svg) {
   var s = String(svg == null ? '' : svg).trim();
   if (!s || iwdieValidateSvg(s).length > 0 || !/<\/svg>\s*$/i.test(s)) return null;
@@ -2918,19 +3093,39 @@ function iwdiePrepareExportTrace(env, deps) {
     });
   }
 
-  if (typeof deps.traceRaster !== 'function') return Promise.reject(new Error('Background tracer is unavailable.'));
-  return Promise.resolve().then(function () {
-    return deps.traceRaster(bg);
-  }).then(function (svg) {
-    svg = iwdieNormalizeTraceSvg(svg);
-    if (!svg) throw new Error('Vector trace did not produce valid SVG.');
-    env.image_svg_trace = svg;
-    iwdieNoteTraceInAiGuide(env);
-    return {
-      env: env,
-      traceNote: ' + vector structure (' + ((svg.match(/<path\b/g) || []).length) + ' paths)'
-    };
+  // the picture's own drawing (v1.64.4): a PNG VectorCraft saved holds the SVG it was drawn from. Handed over as
+  // panel.image_svg, stamped, it is the picture as vectors for an agent and for VectorCraft; the coarse trace is then
+  // not needed. Without one, the pixels are traced as before.
+  var own = typeof deps.drawingOf === 'function'
+    ? Promise.resolve().then(function () { return deps.drawingOf(bg); }).then(null, function () { return null; })
+    : Promise.resolve(null);
+  return own.then(function (text) {
+    var drawing = text ? iwdieNormalizeTraceSvg(iwdieSvgFromDocument(text)) : null;
+    if (drawing && drawing.length <= IWDIE_DRAWING_MAX) {
+      panel.image_svg = iwdieSvgStamp(drawing);
+      iwdieNoteArtworkInAiGuide(env, drawing);
+      return { env: env, traceNote: ' + its own drawing (' + iwdieCountSvgShapes(drawing) + ' shapes)' };
+    }
+    return null;
+  }).then(function (done) {
+    if (done) return done;
+    if (typeof deps.traceRaster !== 'function') throw new Error('Background tracer is unavailable.');
+    return traced();
   });
+  function traced() {
+    return Promise.resolve().then(function () {
+      return deps.traceRaster(bg);
+    }).then(function (svg) {
+      svg = iwdieNormalizeTraceSvg(svg);
+      if (!svg) throw new Error('Vector trace did not produce valid SVG.');
+      env.image_svg_trace = svg;
+      iwdieNoteTraceInAiGuide(env);
+      return {
+        env: env,
+        traceNote: ' + vector structure (' + ((svg.match(/<path\b/g) || []).length) + ' paths)'
+      };
+    });
+  }
 }
 
 function iwdieCompleteExport(env, deps) {
@@ -5726,13 +5921,16 @@ function iwdieAiArrowLines(s) {
     iwdieAiPt(base[0] + px, base[1] + py) + ' L', 'f']);
 }
 
-/** Point text, written in the legacy form Illustrator still reads (and updates on request). */
+/** Point text, written in the legacy form Illustrator still reads (and updates on request). A drawing's text (v1.65.0)
+ *  may carry its turn (`m`, [a, b, c, d] with y up), its face (`font`, iwdieAiFontOf) and where it hangs from its point
+ *  (`anchor`: 'middle' or 'end'). */
 function iwdieAiTextLines(s, name) {
-  var st = s.st || {};
+  var st = s.st || {}, m = Array.isArray(s.m) && s.m.length === 4 && s.m.every(isFinite) ? s.m : [1, 0, 0, 1];
+  var font = /^_[A-Za-z0-9-]+$/.test(String(s.font || '')) ? s.font : '_ArialMT', ta = s.anchor === 'middle' ? 1 : s.anchor === 'end' ? 2 : 0;
   return iwdieAiStyleLines({ fill: st.fill || '#000000', op: st.op }, true).concat([
-    '0 To', '1 0 0 1 ' + iwdieAiPt(s.x, s.y) + ' 0 Tp', 'TP', '0 Tr',
-    '/_ArialMT ' + iwdieAiNum(s.size || 13) + ' Tf',
-    '0 Ts 100 Tz 0 Tt 1 TA 0 0 5 TC 100 100 200 TW 0 0 0 Ti 0 Ta 0 Tq 0 0 Tl 0 Tc 0 Tw',
+    '0 To', m.map(iwdieAiNum).join(' ') + ' ' + iwdieAiPt(s.x, s.y) + ' 0 Tp', 'TP', '0 Tr',
+    '/' + font + ' ' + iwdieAiNum(s.size || 13) + ' Tf',
+    '0 Ts 100 Tz 0 Tt 1 TA 0 0 5 TC 100 100 200 TW 0 0 0 Ti ' + ta + ' Ta 0 Tq 0 0 Tl 0 Tc 0 Tw',
     '(' + iwdieAiLatin1Text(s.text) + ') Tx', '(\\r) TX', 'TO'
   ], iwdieAiNameLines(name));
 }
@@ -5833,7 +6031,8 @@ function iwdieAiHeaderLines(o) {
 }
 
 /** The whole editing-data program: header, setup with the artboard, the layers (bottom first),
- *  trailer. A layer may carry one picture ({raster: iwdieAiRasterParts(…)}) under its lines. */
+ *  trailer. A layer may carry one picture ({raster: iwdieAiRasterParts(…)}), over its lines - or, given
+ *  `raster.at` (v1.65.0), before its line of that index, where it stands among the layer's objects. */
 function iwdieAiProgram(o) {
   var W = o.width, H = o.height;
   var setup = ['%%BeginProlog', '%%EndProlog', '%%BeginSetup',
@@ -5850,7 +6049,7 @@ function iwdieAiProgram(o) {
     var L = iwdieAiLayerLines(layer, i);
     if (layer.raster) {
       // the picture goes last in its layer, over the layer's own lines (the canvas plate)
-      var at = L.lastIndexOf('LB'), r = layer.raster;
+      var r = layer.raster, end = L.lastIndexOf('LB'), at = typeof r.at === 'number' && r.at >= 0 ? Math.min(end, 5 + r.at) : end;
       flush(text.concat(L.slice(0, at), r.head));
       chunks.push('XI\n');
       chunks.push(r.data);
@@ -5996,6 +6195,595 @@ function iwdieAiTraceShapes(svg) {
 }
 
 
+/* ===================== A drawing as Illustrator layers (v1.65.0) =====================
+   The panel's drawing - an agent's panel.image_svg, or the SVG a picture synced from VectorCraft keeps - written into
+   the .ai as Illustrator's own objects: each top-level group a layer of its name, hidden where it is hidden; each group
+   in it a group of its name; each shape a path in panel coordinates with its fill, stroke, dashes, caps and joins; each
+   text point text, which Illustrator updates to its own. Read by hand, with no DOM, so it runs in the tests as it runs
+   here. What Illustrator's art program cannot hold is drawn nearest and counted: a gradient as its first colour, an
+   arrowhead marker as Draw's arrowhead; clip paths, masks and filters are left off. A picture in the drawing goes in
+   as a picture, one to a layer. */
+
+/** XML text with its entities and character references read. */
+function iwdieSvgEntities(s) {
+  return String(s).replace(/&(#x[0-9a-f]+|#\d+|lt|gt|amp|quot|apos);/gi, function (m, e) {
+    var k = e.toLowerCase();
+    if (k.charAt(0) !== '#') return { lt: '<', gt: '>', amp: '&', quot: '"', apos: '\'' }[k];
+    var c = k.charAt(1) === 'x' ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10);
+    return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : '';
+  });
+}
+
+/** An SVG document as a tree of elements {tag, a: {name: value}, kids: [...]} and texts {tag: '#text', text}, read by
+ *  hand: comments, processing instructions and the doctype left out, CDATA kept as text, `svg:` prefixes dropped.
+ *  -> its root <svg> element, or null */
+function iwdieSvgTree(svg) {
+  var s = String(svg == null ? '' : svg);
+  var re = /<!--[\s\S]*?-->|<!\[CDATA\[([\s\S]*?)\]\]>|<\?[\s\S]*?\?>|<!DOCTYPE(?:[^>\[]|\[[\s\S]*?\])*>|<(\/?)([A-Za-z_][\w:.-]*)((?:\s+[^\s=\/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'))?)*)\s*(\/?)>|([^<]+)/gi;
+  var top = { tag: '#root', a: {}, kids: [] }, stack = [top], m, n = 0;
+  while ((m = re.exec(s)) && ++n < 400000) {
+    var at = stack[stack.length - 1];
+    if (m[1] !== undefined) { at.kids.push({ tag: '#text', text: m[1] }); continue; }
+    if (m[6] !== undefined) { at.kids.push({ tag: '#text', text: iwdieSvgEntities(m[6]) }); continue; }
+    if (!m[3]) continue;
+    var tag = m[3].replace(/^svg:/i, '');
+    if (m[2]) {
+      for (var k = stack.length - 1; k > 0; k--) if (stack[k].tag === tag) { stack.length = k; break; }
+      continue;
+    }
+    var el = { tag: tag, a: {}, kids: [] }, ar = /([^\s=\/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/g, am;
+    while ((am = ar.exec(m[4] || ''))) el.a[am[1]] = iwdieSvgEntities(am[2] !== undefined ? am[2] : am[3] !== undefined ? am[3] : '');
+    at.kids.push(el);
+    if (!m[5] && stack.length < 256) stack.push(el);
+  }
+  for (var i = 0; i < top.kids.length; i++) if (top.kids[i].tag === 'svg') return top.kids[i];
+  return null;
+}
+
+/** A length in px: px, pt, pc, mm, cm, in, em and ex, a percentage of `ref`. -> number | null */
+function iwdieSvgLen(v, ref, fontSize) {
+  var m = /^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)\s*(px|pt|pc|mm|cm|in|em|ex|%)?\s*$/i.exec(String(v == null ? '' : v));
+  if (!m) return null;
+  var n = parseFloat(m[1]), u = (m[2] || '').toLowerCase(), fs = fontSize || 16;
+  return u === 'pt' ? n * 4 / 3 : u === 'pc' ? n * 16 : u === 'mm' ? n * 96 / 25.4 : u === 'cm' ? n * 96 / 2.54 : u === 'in' ? n * 96
+    : u === 'em' ? n * fs : u === 'ex' ? n * fs / 2 : u === '%' ? n * (ref || 0) / 100 : n;
+}
+
+/** The numbers in a list ("1, 2 3e1"). */
+function iwdieSvgNums(v) {
+  return (String(v == null ? '' : v).match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) || []).map(parseFloat);
+}
+
+/** Two matrices [a, b, c, d, e, f] as one: B first, then A. */
+function iwdieSvgMul(A, B) {
+  return [A[0] * B[0] + A[2] * B[1], A[1] * B[0] + A[3] * B[1], A[0] * B[2] + A[2] * B[3], A[1] * B[2] + A[3] * B[3],
+    A[0] * B[4] + A[2] * B[5] + A[4], A[1] * B[4] + A[3] * B[5] + A[5]];
+}
+
+/** An SVG transform list as one matrix. */
+function iwdieSvgTransform(t) {
+  var M = [1, 0, 0, 1, 0, 0], re = /(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)/gi, m;
+  while ((m = re.exec(String(t == null ? '' : t)))) {
+    var v = iwdieSvgNums(m[2]), k = m[1].toLowerCase(), L = null, rad = Math.PI / 180;
+    if (k === 'matrix' && v.length >= 6) L = v.slice(0, 6);
+    else if (k === 'translate') L = [1, 0, 0, 1, v[0] || 0, v[1] || 0];
+    else if (k === 'scale') { var sx = v.length ? v[0] : 1; L = [sx, 0, 0, v.length > 1 ? v[1] : sx, 0, 0]; }
+    else if (k === 'rotate') {
+      var c = Math.cos((v[0] || 0) * rad), s = Math.sin((v[0] || 0) * rad), cx = v[1] || 0, cy = v[2] || 0;
+      L = [c, s, -s, c, cx - c * cx + s * cy, cy - s * cx - c * cy];
+    }
+    else if (k === 'skewx') L = [1, 0, Math.tan((v[0] || 0) * rad), 1, 0, 0];
+    else if (k === 'skewy') L = [1, Math.tan((v[0] || 0) * rad), 0, 1, 0, 0];
+    if (L && L.every(isFinite)) M = iwdieSvgMul(M, L);
+  }
+  return M;
+}
+
+/** The colours CSS names that a drawing is likely to use. */
+var IWDIE_SVG_NAMED = { black: '#000000', white: '#ffffff', red: '#ff0000', green: '#008000', lime: '#00ff00', blue: '#0000ff',
+  yellow: '#ffff00', orange: '#ffa500', gray: '#808080', grey: '#808080', silver: '#c0c0c0', navy: '#000080', teal: '#008080',
+  maroon: '#800000', purple: '#800080', olive: '#808000', aqua: '#00ffff', cyan: '#00ffff', fuchsia: '#ff00ff', magenta: '#ff00ff',
+  darkgray: '#a9a9a9', darkgrey: '#a9a9a9', lightgray: '#d3d3d3', lightgrey: '#d3d3d3', dimgray: '#696969', dimgrey: '#696969',
+  gainsboro: '#dcdcdc', whitesmoke: '#f5f5f5', brown: '#a52a2a', pink: '#ffc0cb', gold: '#ffd700', darkred: '#8b0000',
+  darkgreen: '#006400', darkblue: '#00008b', lightblue: '#add8e6', skyblue: '#87ceeb', steelblue: '#4682b4', slategray: '#708090',
+  slategrey: '#708090', darkslategray: '#2f4f4f', coral: '#ff7f50', tomato: '#ff6347', salmon: '#fa8072', khaki: '#f0e68c',
+  beige: '#f5f5dc', ivory: '#fffff0', tan: '#d2b48c', crimson: '#dc143c', indigo: '#4b0082', violet: '#ee82ee',
+  turquoise: '#40e0d0', lightyellow: '#ffffe0', lightgreen: '#90ee90', darkorange: '#ff8c00' };
+
+/** A paint: {hex, alpha}, {url: id} for url(#id), or null for none (and for what is no colour). */
+function iwdieSvgPaint(v, color) {
+  v = String(v == null ? '' : v).trim();
+  if (!v || v === 'none' || v === 'transparent') return null;
+  var u = /^url\(\s*['"]?#([^'")\s]+)['"]?\s*\)/i.exec(v);
+  if (u) return { url: u[1] };
+  if (/^currentcolor$/i.test(v)) return color && !/^currentcolor$/i.test(color) ? iwdieSvgPaint(color, null) : { hex: '#000000', alpha: 1 };
+  var m = /^#([0-9a-f]{3,8})$/i.exec(v);
+  if (m) {
+    var h = m[1];
+    if (h.length === 3 || h.length === 4) h = h.replace(/./g, '$&$&');
+    if (h.length !== 6 && h.length !== 8) return null;
+    return { hex: '#' + h.slice(0, 6).toLowerCase(), alpha: h.length === 8 ? parseInt(h.slice(6), 16) / 255 : 1 };
+  }
+  m = /^rgba?\(\s*([\d.]+%?)\s*[,\s]\s*([\d.]+%?)\s*[,\s]\s*([\d.]+%?)\s*(?:[,\/]\s*([\d.]+%?)\s*)?\)$/i.exec(v);
+  if (m) {
+    var ch = function (t) {
+      var x = parseFloat(t) * (/%$/.test(t) ? 2.55 : 1);
+      x = Math.max(0, Math.min(255, Math.round(x)));
+      return (x < 16 ? '0' : '') + x.toString(16);
+    };
+    var al = m[4] === undefined ? 1 : parseFloat(m[4]) / (/%$/.test(m[4]) ? 100 : 1);
+    return { hex: '#' + ch(m[1]) + ch(m[2]) + ch(m[3]), alpha: Math.max(0, Math.min(1, isFinite(al) ? al : 1)) };
+  }
+  var nm = IWDIE_SVG_NAMED[v.toLowerCase()];
+  return nm ? { hex: nm, alpha: 1 } : null;
+}
+
+/** The properties a drawing's elements pass on to their children, and those that stay their own. */
+var IWDIE_SVG_INHERITED = ['fill', 'stroke', 'stroke-width', 'fill-opacity', 'stroke-opacity', 'stroke-dasharray', 'stroke-linecap',
+  'stroke-linejoin', 'fill-rule', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor', 'visibility', 'color',
+  'marker-start', 'marker-mid', 'marker-end'];
+var IWDIE_SVG_OWN = ['opacity', 'display', 'clip-path', 'mask', 'filter'];
+
+/** A <style> sheet's rules of simple selectors - tag, .class, #id, tag.class, comma lists - as
+ *  [{tag, cls: [], id, spec, at, decl: {prop: value}}]. Anything else in it is passed over. */
+function iwdieSvgCssRules(css) {
+  var out = [], re = /([^{}]+)\{([^}]*)\}/g, m, at = 0;
+  css = String(css || '').replace(/\/\*[\s\S]*?\*\//g, '');
+  while ((m = re.exec(css))) {
+    var decl = iwdieSvgDecls(m[2]);
+    m[1].split(',').forEach(function (sel) {
+      sel = sel.trim();
+      var p = /^([A-Za-z][\w-]*)?((?:\.[\w-]+)*)(#[\w-]+)?((?:\.[\w-]+)*)$/.exec(sel);
+      if (!sel || !p || /^@/.test(sel)) return;
+      var cls = (p[2] + p[4]).split('.').filter(Boolean);
+      out.push({ tag: p[1] || '', cls: cls, id: p[3] ? p[3].slice(1) : '', spec: (p[3] ? 100 : 0) + cls.length * 10 + (p[1] ? 1 : 0), at: at++, decl: decl });
+    });
+  }
+  return out;
+}
+
+/** "fill: #fff; stroke-width: 2" as {fill: '#fff', 'stroke-width': '2'}. */
+function iwdieSvgDecls(text) {
+  var out = {};
+  String(text || '').split(';').forEach(function (d) {
+    var k = d.indexOf(':');
+    if (k > 0) out[d.slice(0, k).trim().toLowerCase()] = d.slice(k + 1).replace(/!important/i, '').trim();
+  });
+  return out;
+}
+
+/** An element's own properties: its presentation attributes, then the sheet's rules that match it (the more specific
+ *  later), then its style attribute. */
+function iwdieSvgOwnProps(el, rules) {
+  var p = {}, names = IWDIE_SVG_INHERITED.concat(IWDIE_SVG_OWN);
+  names.forEach(function (k) { if (el.a[k] !== undefined) p[k] = el.a[k]; });
+  if (rules && rules.length) {
+    var cls = String(el.a['class'] || '').split(/\s+/).filter(Boolean), id = el.a.id || '';
+    rules.filter(function (r) {
+      return (!r.tag || r.tag === el.tag) && (!r.id || r.id === id) && r.cls.every(function (c) { return cls.indexOf(c) >= 0; });
+    }).sort(function (a, b) { return a.spec - b.spec || a.at - b.at; }).forEach(function (r) {
+      Object.keys(r.decl).forEach(function (k) { p[k] = r.decl[k]; });
+    });
+  }
+  var st = iwdieSvgDecls(el.a.style);
+  Object.keys(st).forEach(function (k) { p[k] = st[k]; });
+  return p;
+}
+
+/** SVG path data as absolute subpaths [{segs: [['M', x, y], ['L', x, y], ['C', x1, y1, x2, y2, x, y]], closed}]: relative
+ *  commands made absolute, H and V lines, S, Q and T cubics, each arc cubics of at most a quarter turn. */
+function iwdieSvgPathSubs(d) {
+  var s = String(d == null ? '' : d), i = 0, n = s.length, subs = [], cur = null, cmd = '', last = '';
+  var x = 0, y = 0, sx = 0, sy = 0, c2x = 0, c2y = 0, qx = 0, qy = 0, NUM = /[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/y;
+  var skip = function () { while (i < n && /[\s,]/.test(s.charAt(i))) i++; };
+  var num = function () { skip(); NUM.lastIndex = i; var m = NUM.exec(s); if (!m) return null; i = NUM.lastIndex; return parseFloat(m[0]); };
+  var flag = function () { skip(); var c = s.charAt(i); if (c === '0' || c === '1') { i++; return c === '1'; } return null; };
+  var start = function (px, py) { cur = { segs: [['M', px, py]], closed: false }; subs.push(cur); sx = px; sy = py; };
+  var ensure = function () { if (!cur) start(x, y); };
+  var arc = function (rx, ry, phi, large, sweep, x2, y2) {
+    var x1 = x, y1 = y;
+    rx = Math.abs(rx); ry = Math.abs(ry);
+    if (!(rx > 0) || !(ry > 0) || (x1 === x2 && y1 === y2)) { cur.segs.push(['L', x2, y2]); return; }
+    var p = phi * Math.PI / 180, cp = Math.cos(p), sp = Math.sin(p);
+    var dx = (x1 - x2) / 2, dy = (y1 - y2) / 2, xp = cp * dx + sp * dy, yp = -sp * dx + cp * dy;
+    var lam = xp * xp / (rx * rx) + yp * yp / (ry * ry);
+    if (lam > 1) { rx *= Math.sqrt(lam); ry *= Math.sqrt(lam); }
+    var num2 = rx * rx * ry * ry - rx * rx * yp * yp - ry * ry * xp * xp, den = rx * rx * yp * yp + ry * ry * xp * xp;
+    var co = (large === sweep ? -1 : 1) * Math.sqrt(Math.max(0, den ? num2 / den : 0));
+    var cxp = co * rx * yp / ry, cyp = -co * ry * xp / rx;
+    var cx = cp * cxp - sp * cyp + (x1 + x2) / 2, cy = sp * cxp + cp * cyp + (y1 + y2) / 2;
+    var ang = function (ux, uy, vx, vy) {
+      var a = Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+      return a;
+    };
+    var t1 = ang(1, 0, (xp - cxp) / rx, (yp - cyp) / ry), dt = ang((xp - cxp) / rx, (yp - cyp) / ry, (-xp - cxp) / rx, (-yp - cyp) / ry);
+    if (!sweep && dt > 0) dt -= 2 * Math.PI;
+    else if (sweep && dt < 0) dt += 2 * Math.PI;
+    var parts = Math.max(1, Math.ceil(Math.abs(dt) / (Math.PI / 2) - 1e-9)), dd = dt / parts, k = 4 / 3 * Math.tan(dd / 4);
+    var pt = function (ux, uy) { return [cx + rx * cp * ux - ry * sp * uy, cy + rx * sp * ux + ry * cp * uy]; };
+    for (var j = 0; j < parts; j++) {
+      var a0 = t1 + j * dd, a1 = a0 + dd, c0 = Math.cos(a0), s0 = Math.sin(a0), c1 = Math.cos(a1), s1 = Math.sin(a1);
+      var p1 = pt(c0 - k * s0, s0 + k * c0), p2 = pt(c1 + k * s1, s1 - k * c1), p3 = j === parts - 1 ? [x2, y2] : pt(c1, s1);
+      cur.segs.push(['C', p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]]);
+    }
+  };
+  var guard = 0;
+  while (++guard < 2000000) {
+    skip();
+    if (i >= n) break;
+    var ch = s.charAt(i);
+    if (/[A-Za-z]/.test(ch)) { cmd = ch; i++; if (cmd === 'Z' || cmd === 'z') { if (cur) { cur.closed = true; x = sx; y = sy; cur = null; } last = 'Z'; continue; } }
+    else if (!cmd || cmd === 'Z' || cmd === 'z') break;
+    var rel = cmd === cmd.toLowerCase(), C = cmd.toUpperCase(), ox = rel ? x : 0, oy = rel ? y : 0, a, b, c, e, f, g, h;
+    if (C === 'M') {
+      a = num(); b = num();
+      if (a === null || b === null) break;
+      x = ox + a; y = oy + b; start(x, y);
+      cmd = rel ? 'l' : 'L';            // pairs after the first are lines
+    } else if (C === 'L') {
+      a = num(); b = num();
+      if (a === null || b === null) break;
+      ensure(); x = ox + a; y = oy + b; cur.segs.push(['L', x, y]);
+    } else if (C === 'H') {
+      a = num();
+      if (a === null) break;
+      ensure(); x = ox + a; cur.segs.push(['L', x, y]);
+    } else if (C === 'V') {
+      a = num();
+      if (a === null) break;
+      ensure(); y = (rel ? y : 0) + a; cur.segs.push(['L', x, y]);
+    } else if (C === 'C') {
+      a = num(); b = num(); c = num(); e = num(); f = num(); g = num();
+      if (g === null) break;
+      ensure(); cur.segs.push(['C', ox + a, oy + b, ox + c, oy + e, ox + f, oy + g]);
+      c2x = ox + c; c2y = oy + e; x = ox + f; y = oy + g;
+    } else if (C === 'S') {
+      c = num(); e = num(); f = num(); g = num();
+      if (g === null) break;
+      ensure();
+      var r1x = (last === 'C' || last === 'S') ? 2 * x - c2x : x, r1y = (last === 'C' || last === 'S') ? 2 * y - c2y : y;
+      cur.segs.push(['C', r1x, r1y, ox + c, oy + e, ox + f, oy + g]);
+      c2x = ox + c; c2y = oy + e; x = ox + f; y = oy + g;
+    } else if (C === 'Q' || C === 'T') {
+      if (C === 'Q') { a = num(); b = num(); }
+      f = num(); g = num();
+      if (g === null || (C === 'Q' && b === null)) break;
+      ensure();
+      var px = C === 'Q' ? ox + a : (last === 'Q' || last === 'T') ? 2 * x - qx : x;
+      var py = C === 'Q' ? oy + b : (last === 'Q' || last === 'T') ? 2 * y - qy : y;
+      var ex = ox + f, ey = oy + g;
+      cur.segs.push(['C', x + 2 / 3 * (px - x), y + 2 / 3 * (py - y), ex + 2 / 3 * (px - ex), ey + 2 / 3 * (py - ey), ex, ey]);
+      qx = px; qy = py; x = ex; y = ey;
+    } else if (C === 'A') {
+      a = num(); b = num(); c = num(); e = flag(); f = flag(); g = num(); h = num();
+      if (h === null || e === null || f === null) break;
+      ensure(); arc(a, b, c, e, f, ox + g, oy + h); x = ox + g; y = oy + h;
+    } else break;
+    last = C;
+  }
+  return subs.filter(function (sp) { return sp.segs.length > 1 || sp.closed; });
+}
+
+/** A basic shape's outline as subpaths, as iwdieSvgPathSubs gives them; `vp` {w, h} for percentages. */
+function iwdieSvgShapeSubs(el, vp) {
+  var a = el.a, K = 0.5522847498, L = function (k, ref) { var v = iwdieSvgLen(a[k], ref); return v === null ? 0 : v; };
+  var diag = Math.sqrt((vp.w * vp.w + vp.h * vp.h) / 2);
+  if (el.tag === 'path') return iwdieSvgPathSubs(a.d);
+  if (el.tag === 'rect') {
+    var x = L('x', vp.w), y = L('y', vp.h), w = L('width', vp.w), h = L('height', vp.h);
+    if (!(w > 0) || !(h > 0)) return [];
+    var rx = iwdieSvgLen(a.rx, vp.w), ry = iwdieSvgLen(a.ry, vp.h);
+    if (rx === null && ry !== null) rx = ry;
+    if (ry === null && rx !== null) ry = rx;
+    rx = Math.max(0, Math.min(rx || 0, w / 2)); ry = Math.max(0, Math.min(ry || 0, h / 2));
+    if (!(rx > 0) || !(ry > 0)) return [{ closed: true, segs: [['M', x, y], ['L', x + w, y], ['L', x + w, y + h], ['L', x, y + h]] }];
+    var kx = rx * K, ky = ry * K;
+    return [{ closed: true, segs: [['M', x + rx, y], ['L', x + w - rx, y], ['C', x + w - rx + kx, y, x + w, y + ry - ky, x + w, y + ry],
+      ['L', x + w, y + h - ry], ['C', x + w, y + h - ry + ky, x + w - rx + kx, y + h, x + w - rx, y + h],
+      ['L', x + rx, y + h], ['C', x + rx - kx, y + h, x, y + h - ry + ky, x, y + h - ry],
+      ['L', x, y + ry], ['C', x, y + ry - ky, x + rx - kx, y, x + rx, y]] }];
+  }
+  if (el.tag === 'circle' || el.tag === 'ellipse') {
+    var cx = L('cx', vp.w), cy = L('cy', vp.h), erx, ery;
+    if (el.tag === 'circle') { erx = ery = L('r', diag); }
+    else {
+      erx = iwdieSvgLen(a.rx, vp.w); ery = iwdieSvgLen(a.ry, vp.h);
+      if (erx === null) erx = ery;
+      if (ery === null) ery = erx;
+    }
+    if (!(erx > 0) || !(ery > 0)) return [];
+    return [{ closed: true, segs: [['M', cx + erx, cy], ['C', cx + erx, cy + ery * K, cx + erx * K, cy + ery, cx, cy + ery],
+      ['C', cx - erx * K, cy + ery, cx - erx, cy + ery * K, cx - erx, cy], ['C', cx - erx, cy - ery * K, cx - erx * K, cy - ery, cx, cy - ery],
+      ['C', cx + erx * K, cy - ery, cx + erx, cy - ery * K, cx + erx, cy]] }];
+  }
+  if (el.tag === 'line') return [{ closed: false, segs: [['M', L('x1', vp.w), L('y1', vp.h)], ['L', L('x2', vp.w), L('y2', vp.h)]] }];
+  if (el.tag === 'polyline' || el.tag === 'polygon') {
+    var v = iwdieSvgNums(a.points), segs = [];
+    for (var k = 0; k + 1 < v.length; k += 2) segs.push([segs.length ? 'L' : 'M', v[k], v[k + 1]]);
+    return segs.length > 1 ? [{ closed: el.tag === 'polygon', segs: segs }] : [];
+  }
+  return [];
+}
+
+/** Subpaths through a matrix, as Draw path data (absolute M, L, C, Z). */
+function iwdieSvgSubsD(subs, M) {
+  var f = function (v) { return iwdieAiNum(v); }, pt = function (px, py) { return f(M[0] * px + M[2] * py + M[4]) + ' ' + f(M[1] * px + M[3] * py + M[5]); };
+  return subs.map(function (sp) {
+    return sp.segs.map(function (g) {
+      return g[0] === 'C' ? 'C' + pt(g[1], g[2]) + ' ' + pt(g[3], g[4]) + ' ' + pt(g[5], g[6]) : g[0] + pt(g[1], g[2]);
+    }).join(' ') + (sp.closed ? ' Z' : '');
+  }).join(' ');
+}
+
+/** The SVG elements that are never drawn where they stand. */
+var IWDIE_SVG_UNDRAWN = { defs: 1, symbol: 1, clipPath: 1, mask: 1, marker: 1, pattern: 1, linearGradient: 1, radialGradient: 1, filter: 1,
+  style: 1, script: 1, title: 1, desc: 1, metadata: 1, foreignObject: 1 };
+
+/** A drawing as the layers of an Illustrator document (v1.65.0), its root's viewBox fitted to `size` {w, h} - the panel:
+ *  {layers: [{name, visible, locked, items}], counts: {layers, groups, shapes, texts, pictures},
+ *   approx: {gradient, marker, clip, mask, filter, picture, use, unknown}} - `items` are Draw shapes in panel coordinates
+ *  ({t: 'd' | 'text' | 'group' | 'image'}), which iwdieSvgAiLayerLines writes. Top-level groups are the layers (named
+ *  by data-name, inkscape:label or id); what stands at the top outside one goes on a layer of its own. null when it is
+ *  no SVG. */
+function iwdieSvgAiLayers(svg, size) {
+  var root = iwdieSvgTree(svg);
+  if (!root) return null;
+  var W = Math.max(1, Number(size && size.w) || 0) || 1400, H = Math.max(1, Number(size && size.h) || 0) || 750;
+  var ids = {}, sheet = '', approx = { gradient: 0, marker: 0, clip: 0, mask: 0, filter: 0, picture: 0, use: 0, unknown: 0 };
+  var counts = { layers: 0, groups: 0, shapes: 0, texts: 0, pictures: 0 }, budget = 200000;
+  (function index(el) {
+    if (el.a && el.a.id && !ids[el.a.id]) ids[el.a.id] = el;
+    if (el.tag === 'style') el.kids.forEach(function (k) { if (k.tag === '#text') sheet += k.text + '\n'; });
+    (el.kids || []).forEach(function (k) { if (k.tag !== '#text') index(k); });
+  })(root);
+  var rules = iwdieSvgCssRules(sheet);
+  // the root's viewBox onto the panel: preserveAspectRatio's xMidYMid meet unless it says none
+  var vb = iwdieSvgNums(root.a.viewBox), base = [1, 0, 0, 1, 0, 0];
+  if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
+    var none = /^\s*none/i.test(root.a.preserveAspectRatio || ''), kx = W / vb[2], ky = H / vb[3], k = Math.min(kx, ky);
+    base = none ? [kx, 0, 0, ky, -vb[0] * kx, -vb[1] * ky] : [k, 0, 0, k, (W - vb[2] * k) / 2 - vb[0] * k, (H - vb[3] * k) / 2 - vb[1] * k];
+  } else {
+    var rw = iwdieSvgLen(root.a.width, W), rh = iwdieSvgLen(root.a.height, H);
+    if (rw > 0 && rh > 0 && (Math.abs(rw - W) > 0.5 || Math.abs(rh - H) > 0.5)) base = [W / rw, 0, 0, H / rh, 0, 0];
+  }
+  var vp0 = vb.length === 4 && vb[2] > 0 && vb[3] > 0 ? { w: vb[2], h: vb[3] } : { w: W, h: H };
+  var nameOf = function (el) {
+    return String(el.a['data-name'] || el.a['inkscape:label'] || (el.a.id ? iwdieAiName(el.a.id) : '') || '').trim().slice(0, 120);
+  };
+  var inherit = function (parent, own) {
+    var p = {};
+    IWDIE_SVG_INHERITED.forEach(function (k) { if (parent[k] !== undefined) p[k] = parent[k]; });
+    Object.keys(own).forEach(function (k) { if (own[k] !== 'inherit') p[k] = own[k]; });
+    return p;
+  };
+  var gradColour = function (id, depth) {
+    var g = ids[id];
+    if (!g || depth > 4) return null;
+    var stops = g.kids.filter(function (k) { return k.tag === 'stop'; });
+    if (!stops.length) {
+      var href = g.a.href || g.a['xlink:href'];
+      return href && href.charAt(0) === '#' ? gradColour(href.slice(1), depth + 1) : null;
+    }
+    var sp = iwdieSvgOwnProps(stops[0], rules), dec = iwdieSvgDecls(stops[0].a.style);
+    var col = iwdieSvgPaint(dec['stop-color'] || stops[0].a['stop-color'] || sp['stop-color'] || '#000000', null);
+    if (!col || col.url) return null;
+    var so = parseFloat(dec['stop-opacity'] !== undefined ? dec['stop-opacity'] : stops[0].a['stop-opacity']);
+    if (isFinite(so)) col.alpha *= Math.max(0, Math.min(1, so));
+    return col;
+  };
+  var paintOf = function (v, color) {
+    var p = iwdieSvgPaint(v, color);
+    if (p && p.url) {
+      var g = ids[p.url];
+      if (g && /Gradient$/.test(g.tag)) { approx.gradient++; return gradColour(p.url, 0); }
+      if (g && g.tag === 'pattern') approx.gradient++;
+      return null;
+    }
+    if (!p && v && !/^(none|transparent)$/i.test(String(v).trim())) approx.unknown++;
+    return p;
+  };
+  var opacity = function (v) { var o = parseFloat(v); return isFinite(o) ? Math.max(0, Math.min(1, o)) : 1; };
+  var styleOf = function (p, M, op) {
+    var s = Math.sqrt(Math.abs(M[0] * M[3] - M[1] * M[2])) || 1;
+    var fill = paintOf(p.fill === undefined ? '#000000' : p.fill, p.color), stroke = paintOf(p.stroke, p.color);
+    var sw = iwdieSvgLen(p['stroke-width'], Math.sqrt((vp0.w * vp0.w + vp0.h * vp0.h) / 2));
+    sw = (sw === null ? 1 : Math.max(0, sw)) * s;
+    var st = { fill: fill ? fill.hex : null, stroke: stroke && sw > 0 ? stroke.hex : null, sw: stroke && sw > 0 ? sw : 0 };
+    var o = op * (fill ? fill.alpha * opacity(p['fill-opacity']) : stroke ? stroke.alpha * opacity(p['stroke-opacity']) : 1);
+    if (o < 1) st.op = Math.round(o * 1000) / 1000;
+    if (st.stroke) {
+      var da = /^\s*none\s*$/i.test(p['stroke-dasharray'] || '') ? [] : iwdieSvgNums(p['stroke-dasharray']).filter(function (v) { return v >= 0; });
+      if (da.length && da.some(function (v) { return v > 0; })) st.da = da.map(function (v) { return v * s; });
+      if (p['stroke-linecap'] === 'round' || p['stroke-linecap'] === 'square') st.cap = p['stroke-linecap'];
+      if (p['stroke-linejoin'] === 'round' || p['stroke-linejoin'] === 'bevel') st.join = p['stroke-linejoin'];
+      if (p['marker-end'] && p['marker-end'] !== 'none') { st.arrow = true; approx.marker++; }
+      else if (p['marker-start'] && p['marker-start'] !== 'none') approx.marker++;
+    }
+    return st;
+  };
+  var shown = function (p) { return p.display !== 'none' && p.visibility !== 'hidden' && p.visibility !== 'collapse'; };
+  // one element and what is in it, as Draw shapes; `M` takes its parent's space to the panel, `op` its parent's opacity
+  var walk = function (el, parent, M, op, vp, depth, out) {
+    if (--budget < 0 || depth > 64 || el.tag === '#text' || IWDIE_SVG_UNDRAWN[el.tag] || el.tag.indexOf(':') >= 0) return;
+    var own = iwdieSvgOwnProps(el, rules), p = inherit(parent, own);
+    if (own.display === 'none') return;
+    if (own['clip-path'] && own['clip-path'] !== 'none') approx.clip++;
+    if (own.mask && own.mask !== 'none') approx.mask++;
+    if (own.filter && own.filter !== 'none') approx.filter++;
+    var m2 = el.a.transform ? iwdieSvgMul(M, iwdieSvgTransform(el.a.transform)) : M, o = op * opacity(own.opacity), name = nameOf(el);
+    if (el.tag === 'g' || el.tag === 'a' || el.tag === 'switch' || el.tag === 'svg' || el.tag === 'use') {
+      var inner = [], kids = el.kids, vp2 = vp;
+      if (el.tag === 'svg' || el.tag === 'use') {
+        var ux = iwdieSvgLen(el.a.x, vp.w) || 0, uy = iwdieSvgLen(el.a.y, vp.h) || 0;
+        m2 = iwdieSvgMul(m2, [1, 0, 0, 1, ux, uy]);
+        if (el.tag === 'use') {
+          var href = el.a.href || el.a['xlink:href'] || '', ref = href.charAt(0) === '#' ? ids[href.slice(1)] : null;
+          if (!ref || depth > 16) { approx.use++; return; }
+          if (!name) name = nameOf(ref);
+          if (ref.tag === 'symbol' || ref.tag === 'svg') {
+            var sw2 = iwdieSvgLen(el.a.width, vp.w), sh2 = iwdieSvgLen(el.a.height, vp.h), svb = iwdieSvgNums(ref.a.viewBox);
+            if (svb.length === 4 && svb[2] > 0 && svb[3] > 0) {
+              var tw = sw2 > 0 ? sw2 : svb[2], th = sh2 > 0 ? sh2 : svb[3], sk = Math.min(tw / svb[2], th / svb[3]);
+              m2 = iwdieSvgMul(m2, [sk, 0, 0, sk, (tw - svb[2] * sk) / 2 - svb[0] * sk, (th - svb[3] * sk) / 2 - svb[1] * sk]);
+              vp2 = { w: svb[2], h: svb[3] };
+            }
+            kids = ref.kids;
+            var rp = inherit(p, iwdieSvgOwnProps(ref, rules));
+            if (ref.a.transform && ref.tag !== 'symbol') m2 = iwdieSvgMul(m2, iwdieSvgTransform(ref.a.transform));
+            kids.forEach(function (k) { walk(k, rp, m2, o, vp2, depth + 1, inner); });
+          } else {
+            walk(ref, p, m2, o, vp, depth + 1, inner);
+          }
+        } else {
+          var nvb = iwdieSvgNums(el.a.viewBox), nw = iwdieSvgLen(el.a.width, vp.w), nh = iwdieSvgLen(el.a.height, vp.h);
+          if (nvb.length === 4 && nvb[2] > 0 && nvb[3] > 0 && nw > 0 && nh > 0) {
+            var nk = Math.min(nw / nvb[2], nh / nvb[3]);
+            m2 = iwdieSvgMul(m2, [nk, 0, 0, nk, (nw - nvb[2] * nk) / 2 - nvb[0] * nk, (nh - nvb[3] * nk) / 2 - nvb[1] * nk]);
+            vp2 = { w: nvb[2], h: nvb[3] };
+          }
+          kids.forEach(function (k) { walk(k, p, m2, o, vp2, depth + 1, inner); });
+        }
+      } else {
+        kids.forEach(function (k) { walk(k, p, m2, o, vp2, depth + 1, inner); });
+      }
+      if (!inner.length) return;
+      if (inner.length === 1 && !name && el.tag !== 'g') { out.push(inner[0]); return; }
+      counts.groups++;
+      out.push({ t: 'group', name: name, items: inner });
+      return;
+    }
+    if (!shown(p)) return;
+    if (el.tag === 'text') {
+      var runs = iwdieSvgTextRuns(el, p, rules, vp);
+      runs.forEach(function (r) {
+        var fill = paintOf(r.p.fill === undefined ? '#000000' : r.p.fill, r.p.color);
+        if (!fill || !r.text) return;
+        var tm = iwdieSvgMul(m2, [1, 0, 0, 1, r.x, r.y]), sc = Math.sqrt(Math.abs(tm[0] * tm[3] - tm[1] * tm[2])) || 1;
+        var size0 = iwdieSvgLen(r.p['font-size'], 16) || 16, t = { t: 'text', x: tm[4], y: tm[5], text: r.text, size: Math.round(size0 * sc * 100) / 100,
+          st: { fill: fill.hex }, font: iwdieAiFontOf(r.p['font-weight'], r.p['font-style']), anchor: r.p['text-anchor'] === 'middle' ? 'middle' : r.p['text-anchor'] === 'end' ? 'end' : '' };
+        var to = o * fill.alpha * opacity(r.p['fill-opacity']);
+        if (to < 1) t.st.op = Math.round(to * 1000) / 1000;
+        if (Math.abs(tm[0] - sc) > 1e-6 || Math.abs(tm[1]) > 1e-6 || Math.abs(tm[2]) > 1e-6 || Math.abs(tm[3] - sc) > 1e-6) {
+          t.m = [tm[0] / sc, -tm[1] / sc, -tm[2] / sc, tm[3] / sc].map(function (v) { return Math.round(v * 1e6) / 1e6 || 0; });
+        }
+        if (name && runs.length === 1) t.name = name;
+        counts.texts++;
+        out.push(t);
+      });
+      return;
+    }
+    if (el.tag === 'image') {
+      var src = String(el.a.href || el.a['xlink:href'] || '');
+      var iw = iwdieSvgLen(el.a.width, vp.w), ih = iwdieSvgLen(el.a.height, vp.h);
+      if (!/^data:image\/(png|jpe?g|gif|webp)[;,]/i.test(src) || !(iw > 0) || !(ih > 0)) { approx.picture++; return; }
+      var ix = iwdieSvgLen(el.a.x, vp.w) || 0, iy = iwdieSvgLen(el.a.y, vp.h) || 0, xs = [], ys = [];
+      [[ix, iy], [ix + iw, iy], [ix, iy + ih], [ix + iw, iy + ih]].forEach(function (q) {
+        xs.push(m2[0] * q[0] + m2[2] * q[1] + m2[4]); ys.push(m2[1] * q[0] + m2[3] * q[1] + m2[5]);
+      });
+      var bx = Math.min.apply(null, xs), by = Math.min.apply(null, ys);
+      counts.pictures++;
+      out.push({ t: 'image', href: src, x: bx, y: by, w: Math.max.apply(null, xs) - bx, h: Math.max.apply(null, ys) - by, name: name || 'Bilde', op: o });
+      return;
+    }
+    var subs = iwdieSvgShapeSubs(el, vp);
+    if (!subs.length) return;
+    var st = styleOf(p, m2, o), sh = { t: 'd', d: iwdieSvgSubsD(subs, m2), st: st };
+    if (/^evenodd$/i.test(p['fill-rule'] || '')) sh.rule = 'evenodd';
+    if (st.arrow && subs[subs.length - 1].closed) delete st.arrow;
+    if (name) sh.name = name;
+    counts.shapes++;
+    out.push(sh);
+  };
+  var rootP = inherit({}, iwdieSvgOwnProps(root, rules));
+  var rootM = root.a.transform ? iwdieSvgMul(base, iwdieSvgTransform(root.a.transform)) : base;
+  var layers = [], loose = null;
+  root.kids.forEach(function (el) {
+    if (el.tag === '#text' || IWDIE_SVG_UNDRAWN[el.tag] || el.tag.indexOf(':') >= 0) return;
+    if (el.tag === 'g') {
+      loose = null;
+      var own = iwdieSvgOwnProps(el, rules), p = inherit(rootP, own), items = [];
+      var M = el.a.transform ? iwdieSvgMul(rootM, iwdieSvgTransform(el.a.transform)) : rootM, o = opacity(own.opacity);
+      // a hidden layer is written hidden, its contents as they are
+      var hidden = own.display === 'none' || p.visibility === 'hidden';
+      var p2 = {};
+      Object.keys(p).forEach(function (k) { p2[k] = p[k]; });
+      if (hidden) delete p2.visibility;
+      el.kids.forEach(function (k) { walk(k, p2, M, o, vp0, 1, items); });
+      layers.push({ name: nameOf(el) || 'Layer ' + (layers.length + 1), visible: !hidden,
+        locked: /^(1|true|yes)$/i.test(el.a['sodipodi:insensitive'] || el.a['data-locked'] || el.a['data-iwdie-locked'] || ''), items: items });
+      return;
+    }
+    if (!loose) { loose = { name: 'Layer ' + (layers.length + 1), visible: true, locked: false, items: [] }; layers.push(loose); }
+    walk(el, rootP, rootM, 1, vp0, 1, loose.items);
+  });
+  counts.layers = layers.length;
+  return { layers: layers, counts: counts, approx: approx, width: W, height: H };
+}
+
+/** A <text>'s runs: [{x, y, text, p}] - one for the text and one more for each <tspan> that says where it starts;
+ *  a tspan that does not goes on the run before it. White space collapsed, as SVG does without xml:space. */
+function iwdieSvgTextRuns(el, p, rules, vp) {
+  var runs = [], first = function (v, ref) { var n = iwdieSvgNums(v); return n.length ? iwdieSvgLen(String(v).trim().split(/[\s,]+/)[0], ref) : null; };
+  var tx = first(el.a.x, vp.w) || 0, ty = first(el.a.y, vp.h) || 0;
+  tx += first(el.a.dx, vp.w) || 0; ty += first(el.a.dy, vp.h) || 0;
+  var cur = { x: tx, y: ty, text: '', p: p };
+  runs.push(cur);
+  (function add(node, np) {
+    node.kids.forEach(function (k) {
+      if (k.tag === '#text') { cur.text += k.text; return; }
+      if (k.tag !== 'tspan' && k.tag !== 'a') return;
+      var kp = {};
+      Object.keys(np).forEach(function (n) { kp[n] = np[n]; });
+      var own = iwdieSvgOwnProps(k, rules);
+      Object.keys(own).forEach(function (n) { kp[n] = own[n]; });
+      if (own.display === 'none') return;
+      var nx = first(k.a.x, vp.w), ny = first(k.a.y, vp.h), ddx = first(k.a.dx, vp.w) || 0, ddy = first(k.a.dy, vp.h) || 0;
+      if (nx !== null || ny !== null || ddx || ddy) {
+        cur = { x: (nx !== null ? nx : cur.x) + ddx, y: (ny !== null ? ny : cur.y) + ddy, text: '', p: kp };
+        runs.push(cur);
+      } else if (!cur.text.trim()) cur.p = kp;
+      add(k, kp);
+    });
+  })(el, p);
+  return runs.map(function (r) { r.text = r.text.replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').trim(); return r; }).filter(function (r) { return r.text; });
+}
+
+/** The PostScript name of the Arial face for a weight and style, as legacy text names its font: Illustrator puts
+ *  any face it lacks right with one choice. */
+function iwdieAiFontOf(weight, style) {
+  var w = String(weight == null ? '' : weight).trim().toLowerCase(), bold = w === 'bold' || w === 'bolder' || parseInt(w, 10) >= 600;
+  var it = /^(italic|oblique)/i.test(String(style == null ? '' : style).trim());
+  return '_Arial' + (bold && it ? '-BoldItalicMT' : bold ? '-BoldMT' : it ? '-ItalicMT' : 'MT');
+}
+
+/** A layer of iwdieSvgAiLayers as its art lines, and where among them its picture goes - the art program holds one to
+ *  a layer: {lines, picture: {at, img} | null, more: pictures past the first, left out}. */
+function iwdieSvgAiLayerLines(layer) {
+  var MARK = '%iwdie-picture', picture = null, more = 0;
+  var add = function (out, list) { for (var i = 0; i < list.length; i++) out.push(list[i]); };
+  var put = function (items) {
+    var out = [];
+    items.forEach(function (it) {
+      if (it.t === 'image') {
+        if (picture) more++;
+        else { picture = { img: it }; out.push(MARK); }
+        return;
+      }
+      if (it.t === 'group') {
+        var inner = put(it.items || []);
+        if (inner.length) { add(out, ['0 A', '0 Xw', 'u']); add(out, inner); out.push('U'); add(out, iwdieAiNameLines(it.name)); }
+        return;
+      }
+      add(out, iwdieAiShapeLines(it, it.name));
+    });
+    return out;
+  };
+  var lines = put(layer.items || []), at = lines.indexOf(MARK);
+  if (at >= 0) { lines.splice(at, 1); picture.at = at; }
+  return { lines: lines, picture: picture, more: more };
+}
+
+
 /* ===================== Edit in VectorCraft (v1.35.0): the pure part =====================
    VectorCraft (an open-source Illustrator in Rust, MIT OR Apache-2.0) runs as an
    unmodified official web build on https://hapnes-dev.github.io/iwmac-vector/app/. This
@@ -6007,6 +6795,8 @@ function iwdieAiTraceShapes(svg) {
 
 /** Where the editor lives. */
 var IWDIE_VC_URL = 'https://hapnes-dev.github.io/iwmac-vector/app/';
+/** Where the editor's Open IWMAC JSON… hands a panel file to the Designer's tab of its edit (v1.65.0). */
+var IWDIE_VC_INSERT_KEY = 'iwdie.vc.insert';
 /** Private PNG chunk with the VectorCraft SVG: ancillary, private, safe to copy. */
 var IWDIE_VC_CHUNK = 'iwVc';
 /** Where the component library is kept (v1.36.0): Tampermonkey's storage, which the Designer and
@@ -10501,6 +11291,79 @@ function iwdieVcAuthored(svg, size) {
   return s.slice(0, open.index) + tag + s.slice(open.index + open[0].length);
 }
 
+/** A drawing given as SVG as Insert makes it the panel's picture (v1.65.0): as a VectorCraft job takes one
+ *  (iwdieVcAuthored), its root marked data-iwdie-given - so that Edit in VectorCraft, finding it in the picture, opens it
+ *  as given: its layers, nothing locked. VectorCraft's own save has no such mark. null when it is no SVG. */
+function iwdieVcGiven(svg, size) {
+  var s = iwdieVcAuthored(String(svg == null ? '' : svg).replace(/(<svg\b[^>]*?)\s+data-iwdie-given="1"/i, '$1'), size);
+  return s ? s.replace(/<svg\b/i, '<svg data-iwdie-given="1"') : s;
+}
+
+/** Whether a drawing is one given as SVG that Insert made the panel's picture (v1.65.0). */
+function iwdieVcIsGiven(svg) {
+  return /<svg\b[^>]*\sdata-iwdie-given="1"/i.test(String(svg || ''));
+}
+
+/** What keeps a drawing from opening in VectorCraft as the layers it means (v1.65.0), as VectorCraft's importer reads an
+ *  SVG: anything at its top but a group with an id (or text) puts the whole drawing on one layer, and so does opacity, a
+ *  filter, a mask or a blend on a layer; a group without an id gets no name, and one holding a single thing is dissolved
+ *  into it; visibility="hidden" loses what it hides (display="none" hides it); a marker comes in as loose paths; a
+ *  picture is pixels. -> {warnings: [...]} */
+function iwdieSvgVectorFindings(svg) {
+  var warnings = [], root = iwdieSvgTree(svg);
+  if (!root) return { warnings: warnings };
+  var top = root.kids.filter(function (k) { return k.tag !== '#text' && !IWDIE_SVG_UNDRAWN[k.tag] && k.tag.indexOf(':') < 0; });
+  var loose = top.filter(function (k) { return !(k.tag === 'g' && k.a.id) && k.tag !== 'text'; });
+  if (loose.length) {
+    warnings.push('image_svg has ' + iwdieN(loose.length, 'element', 'elements') + ' at its top level that ' + (loose.length === 1 ? 'is' : 'are') +
+      ' not a group with an id (' + loose.slice(0, 4).map(function (k) { return '<' + k.tag + (k.a.id ? ' id="' + k.a.id + '"' : '') + '>'; }).join(', ') +
+      (loose.length > 4 ? ', …' : '') + '): VectorCraft then opens the whole drawing as one layer. Put everything inside the layer groups, each with an ' +
+      'id and a data-name: Bakgrunn, Ror (Rør), Former, Tekst.');
+  }
+  var flat = top.filter(function (k) {
+    if (k.tag !== 'g' || !k.a.id) return false;
+    var p = iwdieSvgOwnProps(k, null), op = parseFloat(p.opacity);
+    return (isFinite(op) && op < 1) || (!!p.filter && p.filter !== 'none') || (!!p.mask && p.mask !== 'none') || !!k.a['mix-blend-mode'] ||
+      /mix-blend-mode/i.test(k.a.style || '');
+  });
+  if (flat.length) {
+    warnings.push('image_svg sets opacity, a filter, a mask or a blend on the layer group' + (flat.length > 1 ? 's ' : ' ') +
+      flat.slice(0, 4).map(function (k) { return k.a.id; }).join(', ') + ': VectorCraft then opens the whole drawing as one layer. Set it on the shapes inside instead.');
+  }
+  var n = { noid: 0, hidden: 0, marker: 0, picture: 0 }, named = [];
+  (function walk(el, depth) {
+    el.kids.forEach(function (k) {
+      if (k.tag === '#text' || IWDIE_SVG_UNDRAWN[k.tag] || depth > 64) return;
+      var st = k.a.style || '';
+      if (k.tag === 'g' && depth > 0 && !k.a.id && (k.a['data-name'] || k.a['data-iwdie-symbol'])) {
+        n.noid++;
+        if (named.length < 4) named.push(k.a['data-name'] || k.a['data-iwdie-symbol']);
+      }
+      if (k.a.visibility === 'hidden' || /visibility\s*:\s*hidden/i.test(st)) n.hidden++;
+      if ((k.a['marker-end'] && k.a['marker-end'] !== 'none') || (k.a['marker-start'] && k.a['marker-start'] !== 'none') ||
+        /marker-(start|mid|end)\s*:\s*url/i.test(st)) n.marker++;
+      if (k.tag === 'image') n.picture++;
+      walk(k, depth + 1);
+    });
+  })(root, 0);
+  if (n.noid) {
+    warnings.push('image_svg has ' + iwdieN(n.noid, 'named group', 'named groups') + ' without an id (' + named.join(', ') + (n.noid > named.length ? ', …' : '') +
+      '): VectorCraft names only what has an id, and dissolves such a group of one thing into it. Give each an id of its own beside its data-name (Former_MT1).');
+  }
+  if (n.hidden) {
+    warnings.push('image_svg hides ' + iwdieN(n.hidden, 'element', 'elements') + ' with visibility="hidden", which VectorCraft drops when it opens the drawing: hide with display="none".');
+  }
+  if (n.marker) {
+    warnings.push('image_svg draws ' + iwdieN(n.marker, 'arrowhead', 'arrowheads') + (n.marker === 1 ? ' as a marker, which VectorCraft opens as a loose path'
+      : ' as markers, which VectorCraft opens as loose paths') + ' without a name: draw each arrowhead as a small path of its own, in the group of its pipe.');
+  }
+  if (n.picture) {
+    warnings.push('image_svg holds ' + iwdieN(n.picture, 'picture', 'pictures') + ' (<image>): pixels, nothing in ' + (n.picture === 1 ? 'it' : 'them') +
+      ' edited as shapes. Draw it instead, or place a house symbol.');
+  }
+  return { warnings: warnings };
+}
+
 /* ===================== Vectorize image (v1.61.0) =====================
    A panel's picture, where no .ai of it is to be had, turned into vectors that VectorCraft edits as shapes:
    - its flat colours read from it (iwdieVzPalette), and each pixel read as one of them, or as a blend of two
@@ -11482,6 +12345,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-t-sub{margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,.25);font-size:11px;letter-spacing:.03em;text-transform:uppercase;opacity:.8}',
       '.iwdie-t-findings{margin-top:3px}',
       '.iwdie-t-foot{margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,.25);font-size:12px;opacity:.85}',
+      '.iwdie-t-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}',
+      '.iwdie-t-act{height:26px;padding:0 13px;border:1px solid rgba(255,255,255,.7);border-radius:13px;background:rgba(255,255,255,.14);color:#fff;font:600 12px Arial,sans-serif;cursor:pointer}',
+      '.iwdie-t-act:hover{background:rgba(255,255,255,.28)}',
       '.iwdie-t-x{position:absolute;top:6px;right:8px;width:24px;height:24px;border:none;background:transparent;color:#fff;opacity:.75;font:18px/24px Arial,sans-serif;cursor:pointer;padding:0;border-radius:4px}',
       '.iwdie-t-x:hover{opacity:1;background:rgba(255,255,255,.15)}',
       '.iwdie-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2147483647}',
@@ -11721,10 +12587,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           (lines.length ? list(lines, 'iwdie-t-lines') : '') +
           (findings.length ? '<div class="iwdie-t-sub">From the check — about the file, not the insert</div>' +
             list(findings, 'iwdie-t-lines iwdie-t-findings') : '') +
-          (out.footer ? '<div class="iwdie-t-foot">' + iwdieEscHtml(out.footer) + '</div>' : '');
+          (out.footer ? '<div class="iwdie-t-foot">' + iwdieEscHtml(out.footer) + '</div>' : '') +
+          // what to do next, as buttons (v1.65.0)
+          ((out.actions || []).length ? '<div class="iwdie-t-acts">' + out.actions.map(function (a, i) {
+            return '<button class="iwdie-t-act" data-i="' + i + '"' + (a.title ? ' title="' + iwdieEscHtml(a.title) + '"' : '') + '>' + iwdieEscHtml(a.label) + '</button>';
+          }).join('') + '</div>' : '');
         t.querySelector('.iwdie-t-x').addEventListener('click', function () {
           t.remove();
           if (liveToast === t) liveToast = null;
+        });
+        Array.prototype.forEach.call(t.querySelectorAll('.iwdie-t-act'), function (b) {
+          b.addEventListener('click', function () {
+            var a = out.actions[+b.getAttribute('data-i')];
+            t.remove();
+            if (liveToast === t) liveToast = null;
+            if (a && typeof a.run === 'function') a.run();
+          });
         });
         showToastEl(t, out.tone === 'good' ? Math.min(30000, 8000 + 1500 * (lines.length + findings.length)) : 60000);
       } catch (e) {
@@ -12400,6 +13278,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (iwdieCountDocItems(env.panel) === 0) return exportBackgroundOnly(env);
         return iwdieCompleteExport(env, {
           decodeUtf8: function (bytes) { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); },
+          // the drawing a PNG VectorCraft saved holds (v1.64.4), without VectorCraft's own copy of the document
+          drawingOf: function (bg) {
+            var parsed = iwdieParseDataUrl(bg);
+            if (!parsed || !parsed.bytes) return null;
+            return vcDocumentOf(parsed.bytes).then(function (svg) { return svg ? iwdieVcStripEditing(svg) : null; });
+          },
           traceRaster: traceRasterBackground,
           download: downloadEnvelope
         });
@@ -12600,27 +13484,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!url) { toast('This panel has no background image. Load a panel with one (Retrieve → Load) first.', true); return; }
       var plant = currentPlantId(), panel = currentPanelName();
 
-      /* SVG background: already vector — hand Illustrator the .svg itself
-         (File → Open edits it natively; a PDF re-wrap would rasterize it). */
-      if (iwdieIsSvgBackground(url)) {
-        var deliverSvg = function (bytes) {
-          var name = iwdieBuildBackgroundFilename(plant, panel, 'svg');
-          downloadBytes(bytes, name, 'image/svg+xml');
-          hostOk('Background is SVG — vector already. Saved ' + name + '; open it directly in Illustrator (File → Open).');
-        };
-        if (url.indexOf('data:') === 0) {
-          var parsed = iwdieParseDataUrl(url);
-          if (parsed) { deliverSvg(parsed.bytes); return; }
-          toast('Could not decode the SVG background data URL.', true);
-          return;
-        }
-        fetch(url, { credentials: 'same-origin' }).then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.arrayBuffer();
-        }).then(function (ab) { deliverSvg(new Uint8Array(ab)); })
-          .catch(function (e) { toast('Could not fetch the SVG background: ' + e, true); });
-        return;
-      }
+      /* SVG background: already vector. Since v1.65.0 the dialog offers it as Illustrator's own layers (.ai) or as the .svg
+         itself (File → Open edits it natively; a PDF re-wrap would rasterize it), as it offers the drawing a PNG keeps. */
+      var svgBackground = iwdieIsSvgBackground(url);
 
       /* Raster background: a PNG has no vectors to carry over, so offer the
          deliveries in a proper dialog (v1.6.0; used to be a bare confirm) —
@@ -12718,7 +13584,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       img.src = url;
       };
       openExportDialog(url, plant, panel, {
-        svg: IWDIE_TRACER ? function () { startRasterExport(true); } : null,
+        svg: IWDIE_TRACER && !svgBackground ? function () { startRasterExport(true); } : null,
         raw: saveVerbatim
       });
     }
@@ -14120,6 +14986,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // one button for the panel's Illustrator file (v1.49.0), opened as it is (v1.55.0)
         [{ act: 'ai', label: 'Open plant .ai…', title: 'The panel’s own Illustrator file - found in the plant’s folder once that is connected - opened here as it is, ' +
           'as File › Open opens it. Then you are asked whether to add the panel’s IWMAC objects to it.' },
+        { act: 'json', label: 'Open IWMAC JSON…', title: 'A panel file - exported, or written by Copilot - inserted in the Designer’s tab as Insert JSON… ' +
+          'inserts it, with its check and its questions there; then the panel opens here again: its drawing as layers, its objects as placeholders.' },
         { html: '<button class="iwdie-vcb-l" data-act="trace" title="A copy whose picture is enlarged and set to its own flat colours, ' +
           'so Image Trace makes clean shapes of it">Image Trace copy</button>' }]);
       var note = ui.note;
@@ -14403,6 +15271,54 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
       var plantFolder = vcPlantFolder(job, ui, useAi, function () { input.click(); });
       ui.on('ai', function () { if (!busy) plantFolder.pick(); });
+      // Open IWMAC JSON… (v1.65.0): a panel file handed to the Designer's tab this edit began in, inserted there as Insert
+      // JSON… inserts it, and the panel opened here again once it is in: its drawing as layers, its objects as placeholders
+      var jsonIn = document.createElement('input'), jsonWait = null;
+      jsonIn.type = 'file';
+      jsonIn.accept = '.json,application/json';
+      jsonIn.style.display = 'none';
+      ui.el.appendChild(jsonIn);
+      jsonIn.addEventListener('change', function () {
+        var f = jsonIn.files && jsonIn.files[0];
+        jsonIn.value = '';
+        if (!f) return;
+        var fr = new FileReader();
+        fr.onerror = function () { note('<b>' + esc2(f.name) + '</b> could not be read.', true); };
+        fr.onload = function () {
+          var text = String(fr.result || ''), ok = false;
+          try { var j = JSON.parse(text); ok = !!j && typeof j === 'object' && (!!j.panel || Array.isArray(j.single_objects)); } catch (e) { ok = false; }
+          if (!ok) { note('<b>' + esc2(f.name) + '</b> is no IWMAC panel file.', true); return; }
+          try { GM_setValue(IWDIE_VC_INSERT_KEY, { job: job.id, name: f.name, text: text, at: Date.now() }); }
+          catch (e) { note('It could not be handed to the Designer: ' + esc2(String((e && e.message) || e)), true); return; }
+          note('Handing <b>' + esc2(f.name) + '</b> to the Designer…', false, true);
+          if (jsonWait) clearTimeout(jsonWait);
+          jsonWait = setTimeout(function () {
+            note('No Designer tab took <b>' + esc2(f.name) + '</b>: in the tab this edit began in (' + esc2(job.panel || 'its panel') +
+              (job.plant ? ', plant ' + esc2(job.plant) : '') + '), use Insert JSON… - or Edit in VectorCraft… there again first.', true, true);
+          }, 8000);
+        };
+        fr.readAsText(f);
+      });
+      ui.on('json', function () { if (!busy) jsonIn.click(); });
+      if (typeof GM_addValueChangeListener === 'function') {
+        GM_addValueChangeListener('iwdie.vc.reopen.' + job.id, function (key, old, val) {
+          if (!val || !val.state) return;
+          if (jsonWait) { clearTimeout(jsonWait); jsonWait = null; }
+          if (val.state === 'staged') {
+            note('In the Designer’s tab now, with its check: press <b>Insert</b> there, and the panel opens here again with it.', false, true);
+            return;
+          }
+          try { GM_deleteValue(key); } catch (e) {}
+          if (val.state === 'open' && /^[A-Za-z0-9_-]+$/.test(String(val.id || ''))) {
+            note('Inserted - opening the panel again…', false, true);
+            // the new edit, in this tab as it is: its job by its hash, VectorCraft loaded again
+            location.replace('#job=' + val.id);
+            location.reload();
+            return;
+          }
+          note(esc2(String(val.message || 'The Designer could not open the panel again here.')), true, true);
+        });
+      }
       var sharpening = false;
       ui.on('trace', function () {
         if (sharpening) return;
@@ -15002,14 +15918,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /* ---------- Edit in VectorCraft (v1.35.0): the Designer's side ---------- */
     /** Edit in VectorCraft… on the sidebar (v1.36.0, in place of Draw background…): the panel
-     *  straight into the editor, in a new tab. */
-    function doEditInVectorCraft() {
+     *  straight into the editor, in a new tab - or (v1.65.0) in the editor's tab `given`, one that Open IWMAC JSON… came from. */
+    function doEditInVectorCraft(given) {
       if (!hostReady()) { toast('IWMAC Designer not ready yet — host functions missing.', true); return; }
       if (typeof GM_setValue !== 'function' || typeof GM_addValueChangeListener !== 'function') {
         toast('This needs Tampermonkey’s storage (GM_setValue) - update Tampermonkey and the script.', true, 8000);
         return;
       }
-      var tab = W.open('about:blank', '_blank');          // opened now, inside the click, or the browser blocks it
+      var tab = given && typeof given.location === 'object' ? given : W.open('about:blank', '_blank');   // opened now, inside the click, or the browser blocks it
       if (!tab) { toast('The browser blocked the new tab - allow pop-ups for this page, then try again.', true, 10000); return; }
       try { tab.opener = null; } catch (e) {}             // the editor's page gets no handle on this one
       libMigrate();
@@ -15096,6 +16012,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var given = iwdieVcAuthored(iwdieUtf8Decode(info.bg.bytes), size);
           if (given) { info.authored = true; return given; }
         }
+        // a drawing Insert made the panel's picture (v1.65.0) is given all the same: opened as it is, nothing locked
+        if (doc && iwdieVcIsGiven(doc)) info.authored = true;
         return doc;
       }).then(function (doc) {
         // a background from VectorCraft (v1.48.0): go on with its drawing, or read the picture it came
@@ -16870,6 +17788,45 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }, function () { return svg; });
     }
 
+    /** A drawing drawn at the panel's size as VectorCraft means it (v1.58.0): its font sizes with their unit, the fonts it
+     *  names written in - or, should the browser not draw that, as it came - over `fill`. -> Promise<PNG bytes> */
+    function vcRenderPng(svg, size, fill) {
+      var draw = function (text) {
+        var url = URL.createObjectURL(new Blob([iwdieVcSized(text, size.w, size.h)], { type: 'image/svg+xml' }));
+        return loadPicture(url).then(function (img) { URL.revokeObjectURL(url); return img; }, function (e) { URL.revokeObjectURL(url); throw e; });
+      };
+      return vcRenderFonts(iwdieVcCssLengths(svg)).then(function (drawable) {
+        return drawable === svg ? draw(svg) : draw(drawable).then(null, function () { return draw(svg); });
+      }).then(function (img) {
+        var c = document.createElement('canvas');
+        c.width = size.w; c.height = size.h;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = fill;
+        ctx.fillRect(0, 0, size.w, size.h);
+        ctx.drawImage(img, 0, 0, size.w, size.h);
+        return new Promise(function (resolve, reject) {
+          c.toBlob(function (blob) {
+            if (!blob) { reject(new Error('the browser would not encode the PNG')); return; }
+            blob.arrayBuffer().then(function (ab) { resolve(new Uint8Array(ab)); }, reject);
+          }, 'image/png');
+        });
+      });
+    }
+
+    /** A drawing made the panel's picture as a sync from VectorCraft makes it (v1.65.0): sized to the panel and marked as
+     *  given (iwdieVcGiven), drawn with the fonts it names over the panel's colour, and kept in the PNG - so Edit in
+     *  VectorCraft opens its layers again, and Export hands it back. -> Promise<{bytes, dataUrl, name, w, h, lean}> */
+    function vcDrawingPicture(svg, size) {
+      var doc = iwdieVcGiven(svg, size);
+      if (!doc) return Promise.reject(new Error('it is no SVG'));
+      return vcRenderPng(doc, size, grabBackgroundFillColor() || '#ffffff').then(function (png) {
+        return vcPack(doc).then(function (pack) {
+          var withDoc = iwdieVcEmbed(png, pack.data, pack.type);
+          return { bytes: withDoc, dataUrl: 'data:image/png;base64,' + iwdieBytesToBase64(withDoc), name: 'iwdie-drawing.png', w: size.w, h: size.h, lean: pack.lean };
+        });
+      });
+    }
+
     function vcApplyResult(val, info, ack) {
       ack = ack || function () {};
       var svg = String(val.svg || '');
@@ -16895,28 +17852,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       ph.found.forEach(function (f) { if (f.ref) f.ref = nameOf(f.ref) || '-' + f.ref; });
       var sent = (info.sent || []).map(nameOf).filter(Boolean);
       var placed = (info.placed || []).filter(function (p) { return p.el && p.el.parentNode; }).map(function (p) { return { name: p.el.getAttribute('name'), obj_id: p.obj_id }; });
-      // drawn as VectorCraft means it (v1.58.0): its font sizes with their unit, the fonts it names written in - or, should
-      // the browser not draw that, as it came. The SVG kept in the PNG for the next edit stays as VectorCraft saved it.
-      var draw = function (text) {
-        var url = URL.createObjectURL(new Blob([iwdieVcSized(text, size.w, size.h)], { type: 'image/svg+xml' }));
-        return loadPicture(url).then(function (img) { URL.revokeObjectURL(url); return img; }, function (e) { URL.revokeObjectURL(url); throw e; });
-      };
-      return vcRenderFonts(iwdieVcCssLengths(svg)).then(function (drawable) {
-        return drawable === svg ? draw(svg) : draw(drawable).then(null, function () { return draw(svg); });
-      }).then(function (img) {
-        var c = document.createElement('canvas');
-        c.width = size.w; c.height = size.h;
-        var ctx = c.getContext('2d');
-        ctx.fillStyle = grabBackgroundFillColor() || '#ffffff';
-        ctx.fillRect(0, 0, size.w, size.h);
-        ctx.drawImage(img, 0, 0, size.w, size.h);
-        return new Promise(function (resolve, reject) {
-          c.toBlob(function (blob) {
-            if (!blob) { reject(new Error('the browser would not encode the PNG')); return; }
-            blob.arrayBuffer().then(function (ab) { resolve(new Uint8Array(ab)); }, reject);
-          }, 'image/png');
-        });
-      }).then(function (pngBytes) {
+      // drawn as VectorCraft means it (vcRenderPng, v1.58.0). The SVG kept in the PNG for the next edit stays as VectorCraft saved it.
+      return vcRenderPng(svg, size, grabBackgroundFillColor() || '#ffffff').then(function (pngBytes) {
         return vcPack(svg).then(function (pack) { return { png: pngBytes, pack: pack }; });
       }).then(function (r) {
         // the parameters the placeholders' names give (v1.63.0), read against the plant before anything changes
@@ -17050,6 +17987,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       closeExportDialog();
       var esc2 = iwdieEscHtml, size = exportPanelSize(), objects = exportPanelObjects();
       fetchBackgroundBytes(url).then(null, function () { return null; }).then(function (bg) {
+        // the drawing the background is (v1.65.0): an SVG background's own, or the one a PNG from VectorCraft or Insert keeps
+        var asSvg = !!bg && iwdieSniffMime(bg.bytes) === 'image/svg+xml';
+        return (asSvg ? Promise.resolve(iwdieUtf8Decode(bg.bytes)) : vcDocumentOf(bg && bg.bytes)).then(null, function () { return null; })
+          .then(function (drawing) { return { bg: bg, drawing: drawing }; });
+      }).then(function (got) {
+        var bg = got.bg, drawing = got.drawing, conv = null;
+        try { conv = drawing ? iwdieSvgAiLayers(drawing, size) : null; } catch (e) { conv = null; }
+        if (conv && !conv.layers.length) conv = null;
+        var names = conv ? conv.layers.map(function (L) { return L.name; }) : [];
         var found = (bg && iwdieSniffMime(bg.bytes) === 'image/png') ? iwdieDrawExtract(bg.bytes) : null;
         var nShapes = found ? found.drawing.shapes.length : 0;
         var back = document.createElement('div');
@@ -17068,18 +18014,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             '<span>' + label + (note ? ' <small>' + note + '</small>' : '') + '</span></label>';
         };
         var sub = ['<b>' + esc2(panelName || 'This panel') + '</b>', size.w + ' × ' + size.h + ' px'];
-        if (nShapes) sub.push('a drawing of ' + iwdieN(nShapes, 'shape', 'shapes'));
+        if (conv) sub.push('a drawing of ' + iwdieN(conv.layers.length, 'layer', 'layers') + ', ' + iwdieN(conv.counts.shapes + conv.counts.texts, 'object', 'objects'));
+        else if (nShapes) sub.push('a drawing of ' + iwdieN(nShapes, 'shape', 'shapes'));
         if (objects.length) sub.push(iwdieN(objects.length, 'object', 'objects'));
         dlg.innerHTML = [
           '<h2>Export Background</h2>',
           '<div class="iwdie-vc-sub">' + sub.join(' · ') + '</div>',
           '<div class="iwdie-vc-cards" role="radiogroup">',
+          conv ? card('ai', 'Illustrator document (.ai)',
+            'The drawing as Illustrator’s own: its layers (' + esc2(names.slice(0, 6).join(', ') + (names.length > 6 ? ', …' : '')) + '), each shape a path and each ' +
+            'text type, to select and edit. The panel’s objects go on a hidden reference layer.',
+            opt('objects', 'Panel objects, on a hidden layer', objects.length ? '(' + objects.length + ')' : '(none found)', !!objects.length, !objects.length) +
+            opt('picture', 'The picture as the Designer shows it, on a hidden locked layer', '(to compare)', false, false),
+            true, false) :
           card('ai', 'Illustrator document (.ai)',
             'Opens in Illustrator with layers: the picture locked at the bottom, the drawing as editable shapes on top, the panel’s objects on a hidden reference layer.',
             opt('drawing', 'Drawing as editable shapes', nShapes ? '(' + iwdieN(nShapes, 'shape', 'shapes') + ')' : '(this background has none)', !!nShapes, !nShapes) +
             opt('objects', 'Panel objects, on a hidden layer', objects.length ? '(' + objects.length + ')' : '(none found)', !!objects.length, !objects.length) +
             opt('trace', 'Vector trace of the picture, on a hidden layer', IWDIE_TRACER ? '(seconds to minutes)' : '(not available here)', false, !IWDIE_TRACER),
             true, false),
+          conv ? card('svg', 'SVG — the drawing itself',
+            'The drawing as the panel keeps it, layers and all: VectorCraft and Illustrator open it with File › Open.', '', false, false) :
           card('svg', 'SVG — vector trace',
             'The picture traced to editable shapes in its own colours, grouped and named by what they are. Small text becomes outlines; retype it in Illustrator.',
             '', false, !deliver.svg),
@@ -17103,10 +18058,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var go = function () {
           var picked = dlg.querySelector('input[name=iwdie_vc_fmt]:checked'), fmt = picked ? picked.value : 'ai';
           var flag = function (k) { var el = dlg.querySelector('[data-opt="' + k + '"]'); return !!(el && el.checked && !el.disabled); };
-          var opts = { drawing: flag('drawing'), objects: flag('objects'), trace: flag('trace') };
+          var opts = { drawing: flag('drawing'), objects: flag('objects'), trace: flag('trace'), picture: flag('picture') };
           closeExportDialog();
-          if (fmt === 'svg' && deliver.svg) deliver.svg();
+          if (fmt === 'svg' && conv) exportDrawingSvg(drawing, plant, panelName);
+          else if (fmt === 'svg' && deliver.svg) deliver.svg();
           else if (fmt === 'raw') deliver.raw();
+          else if (conv) exportDrawingAi({ bg: bg, drawing: drawing, conv: conv, objects: objects, size: size, plant: plant, panel: panelName }, opts);
           else exportIllustratorDocument({ url: url, bg: bg, found: found, objects: objects, size: size, plant: plant, panel: panelName }, opts);
         };
         dlg.addEventListener('click', function (ev) {
@@ -17256,6 +18213,77 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** The drawing a background is, as an .ai of its own layers (v1.65.0): each top-level group a layer, each shape a path,
+     *  each text type, each picture in it where it stands - and, when asked, the panel's objects and the picture as the
+     *  Designer shows it on hidden layers - Illustrator's editing data in a PDF whose page shows the panel. */
+    function exportDrawingAi(info, opts) {
+      var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea', conv = info.conv, t0 = Date.now();
+      var name = iwdieBuildBackgroundFilename(info.plant, info.panel, 'ai');
+      toast('Writing the Illustrator document…', false, 4000);
+      var built = conv.layers.map(function (L) { return iwdieSvgAiLayerLines(L); });
+      // a picture's pixels, at most 4096 a side
+      var pixels = function (href) {
+        return loadPicture(href).then(function (img) {
+          var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height, k = Math.min(1, 4096 / Math.max(iw, ih, 1));
+          var c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(iw * k)); c.height = Math.max(1, Math.round(ih * k));
+          var g = c.getContext('2d');
+          g.drawImage(img, 0, 0, c.width, c.height);
+          return { rgba: g.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height };
+        });
+      };
+      var lost = 0;
+      Promise.all(built.map(function (b) {
+        if (!b.picture) return null;
+        var im = b.picture.img;
+        return pixels(im.href).then(function (px) {
+          var r = iwdieAiRasterParts(px.rgba, px.w, px.h, im.x, im.y, im.w, im.h, im.name || 'Bilde');
+          r.at = b.picture.at;
+          return r;
+        }, function () { lost++; return null; });
+      })).then(function (rasters) {
+        var layers = conv.layers.map(function (L, i) { return { name: L.name, visible: L.visible, locked: L.locked, lines: built[i].lines, raster: rasters[i] }; });
+        return exportPaint(info.bg && info.bg.bytes, info.bg && info.bg.mime, size, fill).then(function (shown) {
+          if (opts.picture) {
+            layers.unshift({ name: 'Bilde', visible: false, locked: true, lines: [],
+              raster: iwdieAiRasterParts(shown.getContext('2d').getImageData(0, 0, size.w, size.h).data, size.w, size.h, 0, 0, size.w, size.h, 'Bilde (PNG)') });
+          }
+          if (opts.objects && info.objects.length) layers.push({ name: 'Panelobjekter', visible: false, print: false, lines: iwdieAiObjectLines(info.objects) });
+          var doc = { width: size.w, height: size.h, title: name, layers: layers, artboardName: info.panel || 'Panel' };
+          var header = iwdieAiHeaderLines(doc).join('\r\n') + '\r\n';
+          return deflateBytes(iwdieAiProgram(doc)).then(function (z) {
+            var jpeg = iwdieParseDataUrl(shown.toDataURL('image/jpeg', 0.9));
+            var pdf = iwdieAiPdf({
+              width: size.w, height: size.h, meta: header, privateData: iwdieAiPrivateData(header, z),
+              preview: { width: size.w, height: size.h, filter: 'DCTDecode', data: jpeg.bytes }, title: name, version: IWDIE_VERSION
+            });
+            downloadBytes(pdf, name, 'application/pdf');
+            var a = conv.approx, more = lost + built.reduce(function (n, b) { return n + b.more; }, 0) + a.picture;
+            var nearest = [a.gradient ? iwdieN(a.gradient, 'gradient', 'gradients') + ' as their first colour' : '',
+              a.marker ? iwdieN(a.marker, 'marker', 'markers') + ' as arrowheads' : ''].filter(Boolean);
+            var left = [a.clip ? iwdieN(a.clip, 'clip path', 'clip paths') : '', a.mask ? iwdieN(a.mask, 'mask', 'masks') : '',
+              a.filter ? iwdieN(a.filter, 'filter', 'filters') : '', more ? iwdieN(more, 'picture', 'pictures') : '',
+              a.use ? iwdieN(a.use, 'reference', 'references') + ' to nothing' : ''].filter(Boolean);
+            hostOk('Illustrator document saved in ' + Math.max(1, Math.round((Date.now() - t0) / 100) / 10) + ' s → ' + name + ' (' + Math.round(pdf.length / 1024) +
+              ' kB): the drawing’s ' + iwdieN(conv.layers.length, 'layer', 'layers') + ' (' + conv.layers.map(function (L) { return L.name; }).join(', ') + '), ' +
+              iwdieN(conv.counts.shapes, 'shape', 'shapes') + ', ' + iwdieN(conv.counts.texts, 'text', 'texts') + ' and ' + iwdieN(conv.counts.groups, 'group', 'groups') +
+              ' as Illustrator’s own' + (nearest.length ? '; drawn nearest: ' + nearest.join(', ') : '') + (left.length ? '; left out: ' + left.join(', ') : '') +
+              '. Illustrator asks to update the text the first time - choose Update.');
+          });
+        });
+      }).then(null, function (e) {
+        toast('The Illustrator document could not be written: ' + ((e && e.message) || e), true, 10000);
+      });
+    }
+
+    /** The drawing a background is, as an .svg (v1.65.0): as the panel keeps it, layers and all. */
+    function exportDrawingSvg(drawing, plant, panel) {
+      var name = iwdieBuildBackgroundFilename(plant, panel, 'svg');
+      var text = /^\s*<\?xml/.test(drawing) ? drawing : '<?xml version="1.0" encoding="UTF-8"?>\n' + drawing;
+      downloadBytes(iwdieUtf8Encode(text), name, 'image/svg+xml');
+      hostOk('The drawing saved → ' + name + ': VectorCraft and Illustrator open it with File › Open, its top-level groups as layers.');
+    }
+
     /* ---------- import modal ---------- */
     var importOverlay = null;
 
@@ -17299,9 +18327,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '    <label for="iwdie_bgonly"><input type="checkbox" id="iwdie_bgonly"><span>Background picture only — insert no objects</span></label>',
         '    <div class="iwdie-hint">Takes nothing from the file but its background artwork: everything on the canvas stays where it is, and there is no replace-or-add question and no driver-id rebinding. Use it to slide re-drawn artwork in under an existing panel.</div>',
         '  </div>',
-        '  <label for="iwdie_bgfile">Background image (PNG/JPG) — pick it before the .json</label>',
-        '  <input type="file" id="iwdie_bgfile" accept="image/png,image/jpeg,image/gif">',
-        '  <div class="iwdie-hint">Only needed when the file carries no background of its own; a picture picked here replaces the file’s.</div>',
+        '  <label for="iwdie_bgfile">Background image (PNG/JPG) or drawing (SVG) — pick it before the .json</label>',
+        '  <input type="file" id="iwdie_bgfile" accept="image/png,image/jpeg,image/gif,image/svg+xml,.svg">',
+        '  <div class="iwdie-hint">Only needed when the file carries no background of its own; a picture or drawing picked here replaces the file’s. A drawing becomes the panel’s picture as a sync from VectorCraft makes it.</div>',
         '</details>',
         '</div>',
         '<div id="iwdie_review" style="display:none"></div>'
@@ -17754,8 +18782,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var f = inp && inp.files && inp.files[0];
       if (!f) { cb(null); return; }
       var fr = new FileReader();
-      fr.onload = function () { cb({ dataUrl: String(fr.result), name: f.name }); };
       fr.onerror = function () { toast('Could not read the background image — inserting without it.', true); cb(null); };
+      // an SVG is a drawing (v1.65.0): its text, drawn as the file's own drawing is
+      if (/^image\/svg\+xml$/i.test(f.type || '') || /\.svg$/i.test(f.name || '')) {
+        fr.onload = function () { cb({ svg: String(fr.result || ''), name: f.name }); };
+        fr.readAsText(f);
+        return;
+      }
+      fr.onload = function () { cb({ dataUrl: String(fr.result), name: f.name }); };
       fr.readAsDataURL(f);
     }
 
@@ -17815,11 +18849,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       applyImportDoc(res.doc, v, pendingBg, false, 0, bgOnly);
     }
 
-    function applyImportDoc(rawDoc, v, pendingBg, replace, existing, bgOnly) {
-      var doc = iwdieNormalizeDoc(rawDoc);
+    function applyImportDoc(rawDoc, v, pendingBg, replace, existing, bgOnly, made) {
+      var doc = iwdieNormalizeDoc(rawDoc), picked = pendingBg;
       // AI-authored artwork: panel.image_svg (raw SVG text) -> embedded background.
-      // A file picked in the modal takes precedence over the JSON's SVG.
+      // A file picked in the modal takes precedence over the JSON's SVG - an SVG picked there (v1.65.0) as its drawing.
       var symbols = null;
+      if (pendingBg && typeof pendingBg.svg === 'string') { doc.image_svg = pendingBg.svg; pendingBg = null; }
+      // the picture's own drawing, as Export handed it over and unchanged (v1.64.4): the picture it came from stays the
+      // background - drawn from that very drawing, with its fonts - and Edit in VectorCraft opens the drawing from it
+      if (!pendingBg && iwdieKeepsOwnPicture(doc)) delete doc.image_svg;
       if (!pendingBg && doc.image_svg) {
         var svgErrors = iwdieValidateSvg(doc.image_svg);
         if (svgErrors.length) { showErrors(svgErrors, v.warnings); return; }
@@ -17829,8 +18867,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           symbols = iwdieSymExpand(doc.image_svg, kept ? kept.items : []);
           doc.image_svg = symbols.svg;
         }
-        var svgUrl = iwdieSvgToDataUrl(doc.image_svg);
+        // the drawing made the panel's picture as a sync from VectorCraft makes it (v1.65.0): drawn into a PNG that keeps it,
+        // then the insert goes on with that PNG, which goes to the plant's pictures once it is the background. Should it not
+        // draw here, the drawing is the background as SVG, as before
+        if (made === undefined) {
+          toast('Drawing the picture from the file’s drawing…', false, 15000);
+          vcDrawingPicture(doc.image_svg, iwdiePanelSizeOf(doc) || exportPanelSize()).then(function (pic) {
+            applyImportDoc(rawDoc, v, picked, replace, existing, bgOnly, pic);
+          }, function (e) {
+            applyImportDoc(rawDoc, v, picked, replace, existing, bgOnly, { failed: String((e && e.message) || e) });
+          });
+          return;
+        }
+        var svgUrl = made && made.dataUrl ? made.dataUrl : iwdieSvgToDataUrl(doc.image_svg);
         if (svgUrl) { doc = iwdieAttachBackground(doc, svgUrl, doc.org_image_name || 'ai-background.svg'); }
+        if (made && made.dataUrl) doc.org_image_name = made.name;
       }
       delete doc.image_svg;
       // image_svg_trace is AI-reading material written by Export (the vector
@@ -17862,14 +18913,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return;
         }
         closeImportPanel();
-        outcomeToast({
-          tone: 'good',
-          title: '✅ Background applied',
-          lines: [
-            (doc.org_image_name ? doc.org_image_name + ' is the panel’s background now.' : 'The file’s artwork is the panel’s background now.'),
-            'No objects were inserted, and nothing already on the canvas moved.'
-          ],
-          footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.'
+        madeLines(true).then(function (m) {
+          outcomeToast({
+            tone: m.bad ? 'caution' : 'good',
+            title: '✅ Background applied',
+            lines: [
+              (made && made.dataUrl ? 'The file’s drawing is the panel’s background now.'
+                : doc.org_image_name ? doc.org_image_name + ' is the panel’s background now.' : 'The file’s artwork is the panel’s background now.'),
+              'No objects were inserted, and nothing already on the canvas moved.'
+            ].concat(m.lines),
+            footer: 'Nothing is saved yet — use the designer’s own Save when you are happy.',
+            actions: editAction()
+          });
+          vcAfterForward();
         });
         return;
       }
@@ -17990,16 +19046,96 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var inserted = doc.single_objects.length + doc.containers.length + loadedGraphics;
         var expected = (replace ? 0 : existing) + inserted;
         countAfterInsert(expected, function (found) {
-          outcomeToast(iwdieInsertOutcome({
+          var out = iwdieInsertOutcome({
             summary: iwdieCountPhrase(doc.single_objects.length, doc.containers.length, loadedGraphics),
             inserted: inserted, expected: expected, found: found, countFailed: found === null,
             cleared: cleared, rebound: rebindNote, background: bgStatus, backgroundError: bgError,
             graphicsSkipped: skippedGraphics, graphicsReason: graphicsReason, foreign: foreign.length,
             warnings: (v && v.warnings) || [], notes: (v && v.notes) || [], details: (v && v.details) || {},
             quick: !!(v && v.quick), symbols: symbols ? { placed: symbols.placed, missing: symbols.missing } : null
-          }));
+          });
+          madeLines(bgStatus === 'applied').then(function (m) {
+            out.lines = out.lines.concat(m.lines);
+            if (m.bad && out.tone === 'good') out.tone = 'caution';
+            out.actions = editAction();
+            outcomeToast(out);
+            vcAfterForward();
+          });
         });
       }
+
+      // the picture made from the drawing (v1.65.0), once it is the background: to the plant's pictures as a sync's goes,
+      // named on the panel as Set background names it. -> Promise<{lines, bad}>
+      function madeLines(applied) {
+        if (!made) return Promise.resolve({ lines: [], bad: false });
+        if (made.failed) {
+          return Promise.resolve({ lines: ['The drawing could not be drawn into a PNG here (' + made.failed + '), so it is the background as SVG: ' +
+            'Edit in VectorCraft and Ctrl+S there make its PNG.'], bad: true });
+        }
+        if (!applied) return Promise.resolve({ lines: [], bad: false });
+        var first = 'The drawing is the panel’s picture, as a sync from VectorCraft makes it: a PNG of ' + Math.round(made.bytes.length / 1024) +
+          ' kB that keeps the drawing, so Edit in VectorCraft opens its layers and Background → Illustrator writes them.';
+        return vcUploadPng(made.bytes, { plant: currentPlantId(), panel: currentPanelName() }).then(function (up) {
+          if (up.ok) {
+            try {
+              if (typeof W.imagesetValue === 'function') W.imagesetValue(up.name, made.w, made.h, made.dataUrl);
+              else W.$('#main_image').attr('org_image_name', up.name);
+            } catch (e) {}
+          }
+          return { lines: [first, up.ok ? 'Its PNG is in the plant’s pictures on the server as ' + up.name + '.'
+            : 'Its PNG was not uploaded to the plant’s pictures: ' + up.message + '. The background is set all the same.'], bad: !up.ok };
+        }, function (e) {
+          return { lines: [first, 'Its PNG was not uploaded to the plant’s pictures: ' + ((e && e.message) || e) + '.'], bad: true };
+        });
+      }
+
+      function editAction() {
+        return [{ label: 'Edit in VectorCraft…', title: 'The panel in VectorCraft, in a new tab: its drawing as layers, its objects as placeholders. Ctrl+S there brings it back.',
+          run: function () { doEditInVectorCraft(); } }];
+      }
+    }
+
+    /* ---------- Open IWMAC JSON… in VectorCraft (v1.65.0): the file inserted here, the panel opened there again ---------- */
+    var vcForward = null;
+
+    /** The editor's answer about a file it handed over, to its tab of job `id`. */
+    function vcForwardPost(id, val) {
+      val.at = Date.now();
+      try { GM_setValue('iwdie.vc.reopen.' + id, val); } catch (e) {}
+    }
+
+    /** A panel file from the editor's tab of an edit begun here: into Insert JSON…'s check, its questions answered here. */
+    function vcListenForFiles() {
+      if (typeof GM_addValueChangeListener !== 'function') return;
+      GM_addValueChangeListener(IWDIE_VC_INSERT_KEY, function (key, old, val) {
+        if (!val || !val.job || !vcLive[val.job] || typeof val.text !== 'string') return;
+        try { GM_deleteValue(key); } catch (e) {}
+        var info = vcLive[val.job];
+        if (!vcShowing(info)) {
+          vcForwardPost(val.job, { state: 'failed', message: 'The Designer has another panel open: open “' + (info.panel || 'the panel') + '” there, then Open IWMAC JSON… again.' });
+          return;
+        }
+        vcForward = { job: val.job, text: val.text };
+        vcForwardPost(val.job, { state: 'staged' });
+        openImportPanel();
+        stageImportText(val.text, val.name || 'the file from VectorCraft');
+        toast('A panel file came from VectorCraft: check it here and press Insert - the panel then opens there again with it.', false, 12000);
+      });
+    }
+
+    /** After an insert: when its file came from the editor's tab, the panel opened there again - a new edit, in that tab. */
+    function vcAfterForward() {
+      if (!vcForward || vcForward.text !== stagedText) return;
+      var id = vcForward.job;
+      vcForward = null;
+      var tab = { closed: false, location: {}, close: function () {
+        vcForwardPost(id, { state: 'failed', message: 'The Designer could not open the panel again here: use Edit in VectorCraft… in its tab.' });
+      } };
+      Object.defineProperty(tab.location, 'href', { set: function (u) {
+        var m = /#job=([A-Za-z0-9_-]+)/.exec(String(u));
+        vcForwardPost(id, m ? { state: 'open', id: m[1] } : { state: 'failed', message: 'The Designer made no edit of it.' });
+      } });
+      doEditInVectorCraft(tab);
     }
 
     /* ---------- Excel (.xlsx) writer ----------------------------------------
@@ -18510,6 +19646,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // the VectorCraft edits of this plant begun in another tab, or before this one was reloaded (v1.56.0)
     try { vcAdoptJobs(); } catch (e) {}
+    // a panel file from the editor's Open IWMAC JSON… (v1.65.0)
+    try { vcListenForFiles(); } catch (e) {}
 
     var installTimer = setInterval(function () {
       ensureParamExportButton();
@@ -18762,6 +19900,26 @@ if (typeof module !== 'undefined' && module.exports) {
     cbPortsOf: iwdieCbPortsOf,
     cbStrayArrows: iwdieCbStrayArrows,
     ovAiMarks: iwdieOvAiMarks,
+    hash32: iwdieHash32,
+    svgFromDocument: iwdieSvgFromDocument,
+    svgStamp: iwdieSvgStamp,
+    svgStampIntact: iwdieSvgStampIntact,
+    keepsOwnPicture: iwdieKeepsOwnPicture,
+    svgTree: iwdieSvgTree,
+    svgTransform: iwdieSvgTransform,
+    svgPathSubs: iwdieSvgPathSubs,
+    svgPaint: iwdieSvgPaint,
+    svgCssRules: iwdieSvgCssRules,
+    svgAiLayers: iwdieSvgAiLayers,
+    svgAiLayerLines: iwdieSvgAiLayerLines,
+    aiFontOf: iwdieAiFontOf,
+    svgVectorFindings: iwdieSvgVectorFindings,
+    svgUndeclaredPrefixes: iwdieSvgUndeclaredPrefixes,
+    vcGiven: iwdieVcGiven,
+    vcIsGiven: iwdieVcIsGiven,
+    panelSizeOf: iwdiePanelSizeOf,
+    panelJsonSchema: iwdiePanelJsonSchema,
+    DRAWING_RULES: IWDIE_DRAWING_RULES,
     cbPorts: iwdieCbPorts,
     cbRoute: iwdieCbRoute,
     cbPathD: iwdieCbPathD,
