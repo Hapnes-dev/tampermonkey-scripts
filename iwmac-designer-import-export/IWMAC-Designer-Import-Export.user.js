@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.57.0
+// @version      1.58.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.57.0';
+var IWDIE_VERSION = '1.58.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6056,6 +6056,84 @@ function iwdieVcSized(svg, w, h) {
   return s.slice(0, m.index) + tag + s.slice(m.index + m[0].length);
 }
 
+/** An SVG made fit for a browser to draw (v1.58.0). VectorCraft's style sheets give font sizes and letter spacing
+ *  as bare numbers (`font-size:12`), which CSS does not take: a browser drew such text at its own size - 16 px in an
+ *  image - so a synced panel's labels came out bigger and ran into each other. Those numbers get px; and a family
+ *  named without a generic fallback gets sans-serif, for a machine without that font. In style sheets and style
+ *  attributes alike; presentation attributes (`font-size="12"`), which take bare numbers, are left as they are. */
+function iwdieVcCssLengths(svg) {
+  var generic = /(^|,)\s*(serif|sans-serif|monospace|cursive|fantasy|system-ui)\s*$/i, keyword = /^(inherit|initial|unset|revert|revert-layer)$/i;
+  var fix = function (css) {
+    // an @font-face block names the one family it defines, and is left as it is
+    return css.split(/(@font-face\s*\{[^}]*\})/i).map(function (part, i) {
+      return i % 2 ? part : part
+        .replace(/((?:^|[;{\s])(?:font-size|letter-spacing|word-spacing)\s*:\s*)(-?(?:\d+(?:\.\d*)?|\.\d+))(?=\s*(?:;|\}|!|$))/g, '$1$2px')
+        .replace(/((?:^|[;{\s])font-family\s*:\s*)((?:&#?\w+;|[^;}!])+)/g, function (all, at, fam) {
+          var f = fam.replace(/\s+$/, '');
+          return generic.test(f) || keyword.test(f) ? all : at + f + ', sans-serif' + fam.slice(f.length);
+        });
+    }).join('');
+  };
+  return String(svg || '')
+    .replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, function (all, open, css, close) { return open + fix(css) + close; })
+    .replace(/(\sstyle\s*=\s*")([^"]*)(")/g, function (all, open, css, close) { return open + fix(css) + close; });
+}
+
+/** The font families an SVG names - in its style sheets, then its style attributes, then its font-family attributes -
+ *  the first of each list, unquoted, once each (v1.58.0). One it brings along in an @font-face of its own is left out. */
+function iwdieVcFontFamilies(svg) {
+  var s = String(svg || ''), seen = {}, own = {}, out = [], css = [], m;
+  var first = function (list) {
+    return String(list).replace(/&quot;|&#0*34;|&#x0*22;/gi, '"').replace(/&apos;|&#0*39;|&#x0*27;/gi, "'")
+      .split(',')[0].trim().replace(/^['"]|['"]$/g, '').trim();
+  };
+  var add = function (list) {
+    var f = first(list), k = f.toLowerCase();
+    if (!f || /^(serif|sans-serif|monospace|cursive|fantasy|system-ui|inherit|initial|unset|revert|revert-layer)$/i.test(f) || seen[k] || own[k]) return;
+    seen[k] = 1;
+    out.push(f);
+  };
+  var sheets = /<style\b[^>]*>([\s\S]*?)<\/style>/gi, attrs = /\sstyle\s*=\s*"([^"]*)"/g, fams = /\sfont-family\s*=\s*"([^"]*)"/g;
+  while ((m = sheets.exec(s))) {
+    css.push(m[1].replace(/@font-face\s*\{([^}]*)\}/gi, function (all, body) {
+      var x = /font-family\s*:\s*((?:&#?\w+;|[^;}])+)/i.exec(body);
+      if (x) own[first(x[1]).toLowerCase()] = 1;
+      return '';
+    }));
+  }
+  while ((m = attrs.exec(s))) css.push(m[1]);
+  css.forEach(function (c) {
+    var r = /font-family\s*:\s*((?:&#?\w+;|[^;}!])+)/g, x;
+    while ((x = r.exec(c))) add(x[1]);
+  });
+  while ((m = fams.exec(s))) add(m[1]);
+  return out;
+}
+
+/** Google Fonts' CSS for a family (its css2 API, as a browser asks for it), cut to the latin and latin-ext faces
+ *  (v1.58.0): [{weight, style, range, url}] - each face's own woff2 on fonts.gstatic.com. One file Google serves for
+ *  several weights is a variable font (Roboto, Source Sans 3): one face, its weights a range (`400 700`). */
+function iwdieVcGoogleFaces(css) {
+  var out = [], at = {}, re = /\/\*\s*([\w-]+)\s*\*\/\s*@font-face\s*\{([^}]*)\}/g, m;
+  while ((m = re.exec(String(css || '')))) {
+    if (!/^latin(-ext)?$/.test(m[1])) continue;
+    var body = m[2];
+    var get = function (k) { var x = new RegExp('(?:^|;)\\s*' + k + '\\s*:\\s*([^;]+)').exec(body); return x ? x[1].trim() : ''; };
+    var url = /url\((https:\/\/fonts\.gstatic\.com\/[^)\s]+\.woff2)\)/.exec(body);
+    if (!url) continue;
+    var face = { weight: get('font-weight') || '400', style: get('font-style') || 'normal', range: get('unicode-range'), url: url[1] };
+    var key = face.url + '|' + face.style + '|' + face.range, had = at[key];
+    if (had) {
+      var ws = (had.weight + ' ' + face.weight).split(/\s+/).map(Number);
+      had.weight = Math.min.apply(null, ws) + ' ' + Math.max.apply(null, ws);
+      continue;
+    }
+    at[key] = face;
+    out.push(face);
+  }
+  return out;
+}
+
 /** A VectorCraft SVG with Draw's shapes added as a layer of their own, for a drawing made in
  *  the Designer over a background that came from VectorCraft. VectorCraft then reads the
  *  visible art (its stored document no longer matches), layers and all. */
@@ -6701,6 +6779,9 @@ var IWDIE_VC_JOBS_KEY = 'iwdie.vc.jobs', IWDIE_VC_JOBS_TTL = 24 * 3600e3;
 /** Auto-sync (v1.56.0): on or off, kept for the next edits; and how long the drawing is left alone after a
  *  change before it is synced. */
 var IWDIE_VC_AUTO_KEY = 'iwdie.vc.autosync', IWDIE_VC_AUTO_IDLE = 2000;
+/** The fonts a synced drawing names that the machine lacks, fetched from Google Fonts for drawing it (v1.58.0), kept
+ *  a month; and how many families one drawing may fetch. */
+var IWDIE_VC_FONTS_KEY = 'iwdie.vc.fonts', IWDIE_VC_FONTS_TTL = 30 * 864e5, IWDIE_VC_FONTS_MAX = 4;
 /** What each role of the catalogue is called in the library. */
 var IWDIE_VC_OBJ_ROLES = {
   header: 'Headers', label: 'Labels', value: 'Values', value_conn: 'Values with connector', value_tag: 'Values with tag',
@@ -12430,6 +12511,87 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
     }
 
+    /* ---------- the fonts a synced drawing names (v1.58.0) ----------
+       An image draws with the machine's own fonts only. Where one a drawing names is missing - Roboto, the IWMAC
+       drawings' font, is no Windows font - another, wider one took its place in the panel's picture. Such a family
+       is fetched from Google Fonts (its latin faces, regular and bold), kept in Tampermonkey's storage, and written
+       into the SVG drawn as @font-face. One Google Fonts does not have is drawn with sans-serif. */
+
+    /** Whether the machine has font family `f`: text set in it measures neither as the fallback after it. A web font
+     *  of the page's own measures so too, but no image draws with it: such a family counts as missing. */
+    function vcHasFont(f) {
+      try {
+        var name = String(f).replace(/"/g, ''), web = false;
+        if (document.fonts && document.fonts.forEach) {
+          document.fonts.forEach(function (ff) { if (String(ff.family).replace(/^["']|["']$/g, '').toLowerCase() === name.toLowerCase()) web = true; });
+        }
+        if (web) return false;
+        var c = document.createElement('canvas').getContext('2d'), t = 'mmmmmmmmmmlli 0123456789 Consumer Ref %';
+        var w = function (font) { c.font = '40px ' + font; return c.measureText(t).width; };
+        var q = '"' + name + '"';
+        return w(q + ', monospace') !== w('monospace') || w(q + ', serif') !== w('serif');
+      } catch (e) { return true; }
+    }
+
+    /** A URL fetched within 6 s. -> Promise<Response> */
+    function vcFetchSoon(url) {
+      var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+      var timer = ctl ? setTimeout(function () { ctl.abort(); }, 6000) : null;
+      return fetch(url, { credentials: 'omit', signal: ctl ? ctl.signal : undefined }).then(function (r) {
+        if (timer) clearTimeout(timer);
+        if (!r.ok) throw new Error(r.status + ' ' + url);
+        return r;
+      }, function (e) { if (timer) clearTimeout(timer); throw e; });
+    }
+
+    /** Family `f`'s latin faces from Google Fonts, regular and bold, as base64. -> Promise<[{weight, style, range, b64}]>
+     *  ([] when Google Fonts has no such family) */
+    function vcFetchFaces(f) {
+      var css = 'https://fonts.googleapis.com/css2?family=' + encodeURIComponent(f).replace(/%20/g, '+') + ':wght@400;700&display=block';
+      return vcFetchSoon(css).then(function (r) { return r.text(); }, function (e) {
+        // no such family is a 400; anything else is tried again at the next sync
+        if (/^400 /.test(String(e && e.message))) return '';
+        throw e;
+      }).then(function (text) {
+        var faces = iwdieVcGoogleFaces(text);
+        return Promise.all(faces.map(function (fc) {
+          return vcFetchSoon(fc.url).then(function (r) { return r.arrayBuffer(); }).then(function (ab) {
+            return { weight: fc.weight, style: fc.style, range: fc.range, b64: iwdieBytesToBase64(new Uint8Array(ab)) };
+          });
+        }));
+      });
+    }
+
+    /** The SVG with @font-face for each family it names that the machine lacks, fetched once and kept a month.
+     *  -> Promise<svg> */
+    function vcRenderFonts(svg) {
+      var fams = iwdieVcFontFamilies(svg).filter(function (f) { return !vcHasFont(f); }).slice(0, IWDIE_VC_FONTS_MAX);
+      if (!fams.length) return Promise.resolve(svg);
+      var kept = {};
+      try { kept = GM_getValue(IWDIE_VC_FONTS_KEY, {}) || {}; } catch (e) { kept = {}; }
+      return Promise.all(fams.map(function (f) {
+        var k = kept[f];
+        if (k && (k.faces || k.none) && Date.now() - (+k.at || 0) < IWDIE_VC_FONTS_TTL) return k;
+        return vcFetchFaces(f).then(function (faces) {
+          var rec = faces.length ? { at: Date.now(), faces: faces } : { at: Date.now(), none: true };
+          kept[f] = rec;
+          try { GM_setValue(IWDIE_VC_FONTS_KEY, kept); } catch (e) {}
+          return rec;
+        }, function () { return null; });
+      })).then(function (recs) {
+        var css = [];
+        recs.forEach(function (r, i) {
+          ((r && r.faces) || []).forEach(function (fc) {
+            css.push('@font-face{font-family:"' + fams[i].replace(/"/g, '') + '";font-style:' + fc.style + ';font-weight:' + fc.weight +
+              ';src:url(data:font/woff2;base64,' + fc.b64 + ') format("woff2")' + (fc.range ? ';unicode-range:' + fc.range : '') + '}');
+          });
+        });
+        var m = /<svg\b[^>]*>/i.exec(svg);
+        if (!css.length || !m) return svg;
+        return svg.slice(0, m.index + m[0].length) + '<defs><style>' + css.join('\n') + '</style></defs>' + svg.slice(m.index + m[0].length);
+      }, function () { return svg; });
+    }
+
     function vcApplyResult(val, info, ack) {
       ack = ack || function () {};
       var svg = String(val.svg || '');
@@ -12453,10 +12615,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       ph.found.forEach(function (f) { if (f.ref) f.ref = nameOf(f.ref) || '-' + f.ref; });
       var sent = (info.sent || []).map(nameOf).filter(Boolean);
       var placed = (info.placed || []).filter(function (p) { return p.el && p.el.parentNode; }).map(function (p) { return { name: p.el.getAttribute('name'), obj_id: p.obj_id }; });
-      var sized = iwdieVcSized(svg, size.w, size.h);
-      var url = URL.createObjectURL(new Blob([sized], { type: 'image/svg+xml' }));
-      return loadPicture(url).then(function (img) {
-        URL.revokeObjectURL(url);
+      // drawn as VectorCraft means it (v1.58.0): its font sizes with their unit, the fonts it names written in - or, should
+      // the browser not draw that, as it came. The SVG kept in the PNG for the next edit stays as VectorCraft saved it.
+      var draw = function (text) {
+        var url = URL.createObjectURL(new Blob([iwdieVcSized(text, size.w, size.h)], { type: 'image/svg+xml' }));
+        return loadPicture(url).then(function (img) { URL.revokeObjectURL(url); return img; }, function (e) { URL.revokeObjectURL(url); throw e; });
+      };
+      return vcRenderFonts(iwdieVcCssLengths(svg)).then(function (drawable) {
+        return drawable === svg ? draw(svg) : draw(drawable).then(null, function () { return draw(svg); });
+      }).then(function (img) {
         var c = document.createElement('canvas');
         c.width = size.w; c.height = size.h;
         var ctx = c.getContext('2d');
@@ -14135,6 +14302,9 @@ if (typeof module !== 'undefined' && module.exports) {
     VC_CHUNK: IWDIE_VC_CHUNK,
     vcSvg: iwdieVcSvg,
     vcSized: iwdieVcSized,
+    vcCssLengths: iwdieVcCssLengths,
+    vcFontFamilies: iwdieVcFontFamilies,
+    vcGoogleFaces: iwdieVcGoogleFaces,
     vcMergeShapes: iwdieVcMergeShapes,
     xmlTop: iwdieXmlTop,
     xmlEnd: iwdieXmlEnd,

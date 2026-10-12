@@ -1513,6 +1513,28 @@ VectorCraft offers no way in other than its own Save, so the sync uses it:
 - If it still does not save, the dialogs it opened are closed again, and the banner says *Not
   synced* with **Try again**: nothing is left to finish by hand (v1.57.0).
 
+**Labels at their own size, in their own font (v1.58.0).** After a sync of the plant's `.ai`, the
+panel's labels came out bigger and ran into each other. VectorCraft styles the SVG's text with
+classes like `font-family:Roboto;font-size:12`. CSS takes no bare number for a font size, so the
+browser that drew the panel's picture used its own size instead: 16 px in an image. And Roboto,
+the drawings' font, is no Windows font. So the Designer now draws the synced SVG like this:
+
+- The font sizes and letter spacing get their unit (`12px`), and a family without a generic
+  fallback gets `sans-serif`.
+- A font the machine lacks is fetched from Google Fonts: its latin faces, regular and bold. It is
+  kept a month in Tampermonkey's storage and written into the SVG as `@font-face` before it is
+  drawn. A family Google Fonts does not have is drawn with `sans-serif`. A web font of the
+  Designer page's own counts as missing, since no image draws with it, and a font the SVG
+  brings along itself is not fetched.
+- Should the browser not draw the SVG so changed, it is drawn as it came.
+- The SVG kept in the PNG for the next edit stays as VectorCraft saved it.
+
+Measured in the stub host, whose machine has no Roboto: 2349's labels came out at 12 px in
+Roboto, as the plant's own picture shows them (*Pc Bar*, *Run Cap. %* and *Capacity %* side by
+side again). The first sync fetched Roboto and Source Sans 3: four files, about 160 kB, since
+Google serves both weights of each in one file. Later syncs take them from the storage. A panel
+synced before v1.58.0 is drawn right at its next sync.
+
 **The PNG on the server (v1.42.0).** Each sync also uploads the background's PNG to the plant's
 pictures, as Manage Images' *Upload to server* does. It is the same request
 (`designer_site/iw_upload_image.php`, field `userfile`), read the same way. The panel then
