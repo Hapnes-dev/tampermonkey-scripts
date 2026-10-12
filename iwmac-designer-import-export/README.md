@@ -187,6 +187,8 @@ brings them again. Nothing is uploaded.
 **Open plant .ai…** (since v1.50.0; *Plant .ai…* in v1.49.0, *Components from .ai…* before,
 *Import .ai…* until v1.39.0), in the banner of the editor's tab, reads a `.ai` file - see *One button for the panel's .ai* below.
 Since v1.55.0 it only opens the file; the components row then offers to read its components.
+Since v1.59.0 they are read as it opens and pasted around its artboard, where the file keeps
+them (see *The components around the artboard* below); Libraries get them when asked.
 Every visible object
 lying wholly outside its artboard becomes a component. The new set replaces the one kept, and
 goes into Libraries at once.
@@ -1307,7 +1309,8 @@ the card and for **Open plant .ai…** alike:
 
 1. VectorCraft opens the file as a document, as its File › Open does. Nothing is read, saved,
    converted or merged. Its components are not read either: the components row offers that,
-   *read them from 2349_Maskin.ai*.
+   *read them from 2349_Maskin.ai*. (Since v1.59.0 they are read, and go around its artboard:
+   see below.)
 2. A question in VectorCraft's look: **Add the panel's 6 objects** (Enter) or **Just the
    drawing** (Esc).
 3. Added, the file's drawing is locked (Select All, then Object › Lock › Selection), the objects
@@ -1461,7 +1464,7 @@ places differ much; elsewhere the redrawn vectors differ by 1.2 on average (out 
 second edit put the three frames left back into their placeholders.
 
 Your components from Illustrator arrive in VectorCraft's **Libraries** panel; once **Open
-plant .ai…** has opened another file, the components row offers to read its own (v1.55.0). The Designer's own objects arrive there too, as
+plant .ai…** has opened another file, the components row offers to read its own (v1.55.0), and since v1.59.0 that file's lie around its artboard as well. The Designer's own objects arrive there too, as
 **IWMAC-objekter** (v1.40.0), and have a menu of their own in the bar, **IWMAC** (v1.41.0,
 below). See [Komponenter](#komponenter-components-from-illustrator-v1330-in-vectorcrafts-libraries-since-v1370).
 The banner sits at the drawing's top left. It folds into a one-line tab 20 seconds after the
@@ -1534,6 +1537,30 @@ Roboto, as the plant's own picture shows them (*Pc Bar*, *Run Cap. %* and *Capac
 side again). The first sync fetched Roboto and Source Sans 3: four files, about 160 kB, since
 Google serves both weights of each in one file. Later syncs take them from the storage. A panel
 synced before v1.58.0 is drawn right at its next sync.
+
+**The components around the artboard (v1.59.0).** Thomas asked for the objects of an `.ai`
+outside its artboard to be there in VectorCraft too, so they are easy to pick. VectorCraft's own
+`.ai` reader leaves that art out: `2349_Maskin.ai` comes in as its PDF page, and its 386
+components were only in Libraries, twelve pages of them. Now the `.ai` opened from the card or
+with **Open plant .ai…** gets them where the file keeps them, as Illustrator shows them:
+
+- They are read while the question about the IWMAC objects waits. After it is answered, either
+  way, they are pasted on a new layer over the rest, nothing locked. Each is a group of its own,
+  so a click takes one: drag it onto the drawing, or Alt+drag a copy. Then **Fit All in Window**
+  shows the artboard with all of them; **Ctrl+0** fits the artboard again.
+- VectorCraft pastes SVG centred on the view, so two hidden squares at opposite corners, off the
+  artboard, centre the paste on the artboard's centre and each component lands where it was.
+- VectorCraft's Save As SVG keeps the artboard as its viewBox but writes everything, the art
+  around it too. So the Designer leaves out of what it keeps every component still wholly off
+  the panel's picture, measured as the panel draws it. One moved onto the drawing, if only
+  partly, stays and is drawn.
+- The components row says how many are around the artboard; **into Libraries too** puts them
+  there as before.
+
+Measured in the stub host with `2349_Maskin.ai`: the 386 components were in place 1.7 s after
+*Just the drawing* and 2.8 s after *Add*, objects included. One dragged onto the drawing was a
+single group of 53 x 53 pt. The save VectorCraft made was 536-539 kB with all 386. What the
+panel's PNG kept was 107-110 kB of SVG (24-25 kB packed), with only the one dragged on.
 
 **The PNG on the server (v1.42.0).** Each sync also uploads the background's PNG to the plant's
 pictures, as Manage Images' *Upload to server* does. It is the same request

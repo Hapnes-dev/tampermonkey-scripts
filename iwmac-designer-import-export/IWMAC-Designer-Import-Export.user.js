@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.58.0
+// @version      1.59.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -32,7 +32,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.58.0';
+var IWDIE_VERSION = '1.59.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -4459,8 +4459,11 @@ function iwdieDrawLibItems(list) {
     if (!it || typeof it !== 'object') return null;
     var shapes = iwdieDrawShapes(it.shapes);
     if (!shapes.length) return null;
-    var w = iwdieDrawNum(it.w), h = iwdieDrawNum(it.h);
-    return { name: str(it.name), layer: str(it.layer), w: w > 0 ? w : 0, h: h > 0 ? h : 0, shapes: shapes };
+    var w = iwdieDrawNum(it.w), h = iwdieDrawNum(it.h), x = iwdieDrawNum(it.x), y = iwdieDrawNum(it.y);
+    var one = { name: str(it.name), layer: str(it.layer), w: w > 0 ? w : 0, h: h > 0 ? h : 0, shapes: shapes };
+    // its place by the artboard it came from (v1.59.0), where it has one
+    if (x !== null && y !== null) { one.x = x; one.y = y; }
+    return one;
   }).filter(Boolean);
 }
 
@@ -5419,12 +5422,14 @@ function iwdieAiPathD(d) {
 }
 
 /** The visible objects of a parsed .ai that lie wholly outside its artboard(s),
- *  as a Draw library: {items: [{name, layer, w, h, shapes}], hidden} - items in
- *  their own coordinates (top-left 0, 0, y down), colours converted by
- *  `color(c, m, y, k)`; `hidden` counts the objects outside the artboard that
- *  were left out for being hidden in Illustrator. Groups bigger than `maxSize`
- *  are opened into their children, so a sheet of components becomes the
- *  components. */
+ *  as a Draw library: {items: [{name, layer, w, h, x, y, shapes}], hidden, board,
+ *  boards} - items in their own coordinates (top-left 0, 0, y down), each with
+ *  its place (x, y: its top left, from the artboard's, v1.59.0), colours
+ *  converted by `color(c, m, y, k)`; `hidden` counts the objects outside the
+ *  artboard that were left out for being hidden in Illustrator; `board` is the
+ *  artboard's size, {w, h} (null with none), and `boards` how many there are.
+ *  Groups bigger than `maxSize` are opened into their children, so a sheet of
+ *  components becomes the components. */
 function iwdieAiLibrary(parsed, color, maxSize) {
   maxSize = maxSize || 700;
   var abs = parsed.artboards.length ? parsed.artboards : [];
@@ -5484,12 +5489,12 @@ function iwdieAiLibrary(parsed, color, maxSize) {
     if (c.hid) { hidden++; return; }
     var shape = iwdieDrawMap(c.shape, 1, -c.box.x0, 1, -c.box.y0);
     lib.push({ name: (shape.t === 'group' && shape.name) || '', layer: layerName, w: Math.round(w * 100) / 100, h: Math.round(h * 100) / 100,
-      shapes: shape.t === 'group' ? shape.items : [shape] });
+      x: Math.round(c.box.x0 * 100) / 100, y: Math.round(c.box.y0 * 100) / 100, shapes: shape.t === 'group' ? shape.items : [shape] });
   };
   parsed.layers.forEach(function (l) {
     l.items.forEach(function (it) { take(conv(it, l.visible === false), l.name); });
   });
-  return { items: lib, hidden: hidden };
+  return { items: lib, hidden: hidden, board: abs.length ? { w: art.x1, h: art.y1 } : null, boards: abs.length };
 }
 
 /* ===================== Illustrator export (v1.34.0): a real .ai =====================
@@ -6730,6 +6735,39 @@ function iwdieVcLiftObjects(svg, board, opts) {
     '" viewBox="0 0 ' + r4(to.w) + ' ' + r4(to.h) + '">\n' + (defs.length ? defs.join('\n') + '\n' : '') + '<g id="IWMAC-objekter" data-name="IWMAC-objekter">\n' + frame + '\n' +
     lifted.join('\n') + '\n</g>\n</svg>\n';
   return { base: base, paste: paste, count: lifted.length };
+}
+
+/** An Illustrator file's components - iwdieAiLibrary's items, each with its place by the artboard - as SVG to paste
+ *  around the artboard VectorCraft has open, where the file keeps them (v1.59.0): each a group of its own, so a click
+ *  takes one, marked data-iwdie-comp, so a sync leaves out those still off the artboard. VectorCraft pastes SVG centred
+ *  on the view's centre, which is the artboard's once fitted (Ctrl+0), and in place there; two hidden squares at
+ *  opposite corners around them all, each off the artboard and marked data-iwdie-comp="frame", put the centre of what
+ *  is pasted on the artboard's. `board`: {w, h}, the artboard, in points. An item without a place is left out.
+ *  -> {svg, count} | null with none to place */
+function iwdieVcAroundBoard(items, board) {
+  var w = board ? +board.w : 0, h = board ? +board.h : 0;
+  if (!(w > 0) || !(h > 0)) return null;
+  var cx = w / 2, cy = h / 2, dx = cx, dy = cy, groups = [], all = [];
+  (Array.isArray(items) ? items : []).forEach(function (it) {
+    var x = it ? iwdieDrawNum(it.x) : null, y = it ? iwdieDrawNum(it.y) : null;
+    if (x === null || y === null || !it.shapes || !it.shapes.length) return;
+    var shapes = it.shapes.map(function (s) { return iwdieDrawMap(s, 1, x, 1, y); });
+    dx = Math.max(dx, Math.abs(x - cx), Math.abs(x + (+it.w || 0) - cx));
+    dy = Math.max(dy, Math.abs(y - cy), Math.abs(y + (+it.h || 0) - cy));
+    all.push.apply(all, shapes);
+    groups.push('<g data-iwdie-comp="1"' + (it.name ? ' data-name="' + iwdieDrawEsc(it.name) + '"' : '') + '>' +
+      shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</g>');
+  });
+  if (!groups.length) return null;
+  // 20 points clear of them all, more than half the widest stroke a component has
+  var r = iwdieDrawFmt, rx = Math.ceil(dx) + 20, ry = Math.ceil(dy) + 20, defs = iwdieDrawDefsSvg(all);
+  var square = function (x, y) {
+    return '<path data-iwdie-comp="frame" d="M' + r(x) + ' ' + r(y) + 'h1v1h-1z" fill="#000000" fill-opacity="0" display="none"/>';
+  };
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + r(w) + '" height="' + r(h) + '" viewBox="0 0 ' + r(w) + ' ' + r(h) + '">\n' +
+    (defs ? '<defs>' + defs + '</defs>\n' : '') + '<g id="IWMAC-komponenter" data-name="IWMAC-komponenter">\n' +
+    square(cx - rx, cy - ry) + '\n' + square(cx + rx - 1, cy + ry - 1) + '\n' + groups.join('\n') + '\n</g>\n</svg>\n';
+  return { svg: svg, count: groups.length };
 }
 
 /** The VectorCraft document a PNG keeps: {type: 'iwVz' (compressed) | 'iwVc' (plain), data}, the
@@ -9332,7 +9370,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function libStore(lib) {
       GM_setValue(IWDIE_LIB_KEY, { v: 1, file: lib.file, imported: lib.imported, hidden: lib.hidden, noArtboard: lib.noArtboard,
-        items: lib.items.map(function (it) { return { name: it.name, layer: it.layer, w: it.w, h: it.h, shapes: it.shapes }; }) });
+        items: lib.items.map(function (it) { return { name: it.name, layer: it.layer, w: it.w, h: it.h, x: it.x, y: it.y, shapes: it.shapes }; }) });
       GM_setValue(IWDIE_LIB_META_KEY, { file: lib.file, imported: lib.imported, count: lib.items.length });
     }
 
@@ -9394,7 +9432,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** The components of an Illustrator file: its visible objects wholly outside the
-     *  artboard. `step(html)` hears each stage. -> Promise<{file, imported, hidden, noArtboard, items}> */
+     *  artboard, each with its place by it (v1.59.0). `step(html)` hears each stage.
+     *  -> Promise<{file, imported, hidden, noArtboard, board, boards, items}> */
     function libRead(file, step) {
       var esc2 = iwdieEscHtml, name = String(file.name || 'the file'), box = null;
       step('Reading <b>' + esc2(name) + '</b>…');
@@ -9415,7 +9454,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return libNextFrame().then(function () {
           var color = (r[1] && iwdieIccCmykConverter(r[1])) || iwdieCmykNaive;
           var parsed = iwdieAiParse(iwdieLatin1(r[0])), res = iwdieAiLibrary(parsed, color);
-          return { file: name, imported: new Date().toISOString(), hidden: res.hidden, noArtboard: !parsed.artboards.length, items: iwdieDrawLibItems(res.items) };
+          return { file: name, imported: new Date().toISOString(), hidden: res.hidden, noArtboard: !parsed.artboards.length, board: res.board,
+            boards: res.boards, items: iwdieDrawLibItems(res.items) };
         });
       });
     }
@@ -10259,6 +10299,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           .then(function (ok) { pasted = ok; key('a', 'KeyA', { ctrl: true, shift: true }); return step(); })
           .then(function () { return end(pasted); }, function () { return end(false); });
       };
+      // an .ai's components pasted around its artboard, where it keeps them (v1.59.0): on a new layer over the rest (Ctrl+L),
+      // nothing locked; the artboard fitted (Ctrl+0) for the paste to land in place, and let go of (Ctrl+Shift+A); then Fit
+      // All in Window (Ctrl+Alt+0), so they show. -> Promise<pasted>
+      var pasteAround = function (paste) {
+        if (busy || !paste) return Promise.resolve(false);
+        busy = true;
+        var guard = document.createElement('div');
+        guard.className = 'iwdie-vcs-g';
+        document.body.appendChild(guard);
+        state.guarding = true;
+        var end = function (v) { state.guarding = false; if (guard.parentNode) guard.parentNode.removeChild(guard); busy = false; return v; };
+        var step = function () { return settle(150, 8); }, pasted = false;
+        key('l', 'KeyL', { ctrl: true });
+        return step().then(function () { key('0', 'Digit0', { ctrl: true }); return step(); })
+          .then(function () { return pasteInPlace(paste); })
+          .then(function (ok) { pasted = ok; key('a', 'KeyA', { ctrl: true, shift: true }); return step(); })
+          .then(function () { if (pasted) { key('0', 'Digit0', { ctrl: true, alt: true }); return step(); } })
+          .then(function () { return end(pasted); }, function () { return end(false); });
+      };
       // a question in VectorCraft's own look, as the chooser asks (v1.55.0): `lead`, a line of HTML; `opts` [{act, title,
       // text (HTML)}], the first chosen to begin with. Enter takes the one chosen, Esc the last. -> Promise<act>
       var ask = function (title, lead, opts) {
@@ -10313,6 +10372,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         prime: prime,
         capture: capture,
         lockAndPaste: lockAndPaste,
+        pasteAround: pasteAround,
         ask: ask,
         // a sync as Ctrl+S starts one; `quiet` for one that starts by itself (v1.56.0)
         sync: sync,
@@ -10638,16 +10698,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var note = ui.note;
       // each row's how and why, on its label and its text alike
       var tip = function (cls, text) { var v = ui.el.querySelector('.' + cls); v.title = text; v.previousElementSibling.title = text; };
-      tip('iwdie-vcb-c', 'An Illustrator file’s components: the objects around its artboard, where Maskin files keep them. They come in pages, as ' +
-        'VectorCraft’s Libraries panel does not scroll: choose a page in the list at its top. Drag one onto the drawing, or double-click it. ' +
-        'The IWMAC menu up top has them all, by layer. Read from the plant’s .ai only when asked: opening it reads nothing.');
-      // what the components row says: where they are, or how to get them
+      tip('iwdie-vcb-c', 'An Illustrator file’s components: the objects around its artboard, where Maskin files keep them. The plant’s .ai opened here ' +
+        'has them around its artboard too, as Illustrator shows them (v1.59.0): on a layer of their own, unlocked, so a click takes one. Drag one onto ' +
+        'the drawing, or Alt+drag a copy; Ctrl+0 fits the artboard again. What is still around the artboard at a sync stays out of the panel’s ' +
+        'picture. Into Libraries too, when asked: there they come in pages, as VectorCraft’s Libraries panel does not scroll - choose a page in the ' +
+        'list at its top. The IWMAC menu up top has those, by layer.');
+      // what the components row says: those around the artboard (v1.59.0), then those in Libraries, or how to get them
+      var compAround = '', compLib = '', compBad = false;
       var comp = function (html, bad) {
         var c = ui.el.querySelector('.iwdie-vcb-c');
+        compLib = html || '';
+        compBad = !!bad;
         c.className = 'iwdie-vcb-c' + (bad ? ' iwdie-vcb-e' : '');
-        c.innerHTML = html;
+        c.innerHTML = (compAround ? compAround + (compLib ? '<br>' : '') : '') + compLib;
       };
-      comp(lib ? '<b>' + lib.items.length + '</b> from ' + esc2(lib.file || 'an Illustrator file') : 'none yet - read from the plant’s .ai, once it is open here');
+      var around = function (html) { compAround = html || ''; comp(compLib, compBad); };
+      comp(lib ? '<b>' + lib.items.length + '</b> from ' + esc2(lib.file || 'an Illustrator file') : 'none yet - they come with the plant’s .ai, around its artboard');
       // the Designer's own objects, as placeholders that become them when saved back (v1.40.0)
       var looks = null;
       try { looks = (GM_getValue(IWDIE_VC_LOOKS_KEY, null) || {}).items || null; } catch (e) { looks = null; }
@@ -10686,10 +10752,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       input.accept = '.ai,.pdf,.eps,application/pdf,application/postscript,application/illustrator';
       input.style.display = 'none';
       ui.el.appendChild(input);
+      // a file's components, read once (v1.59.0): for around its artboard and for Libraries alike
+      var compRead = null;
+      var readComp = function (f, step) {
+        if (!compRead || compRead.f !== f) compRead = { f: f, p: libRead(f, step || function (html) { comp(html); }) };
+        return compRead.p;
+      };
       // the file's components into Libraries, in place of those kept (v1.33.0, v1.37.0) - when asked for (v1.55.0)
       var libraryOf = function (f) {
         var name = String(f.name || 'The file');
-        return libRead(f, function (html) { comp(html); }).then(function (got) {
+        return readComp(f).then(function (got) {
           if (!got.items.length) {
             comp('<b>' + esc2(got.file) + '</b> has none' + (got.hidden ? ' that are not hidden' : '') + (lib ? '; the ' + lib.items.length + ' kept stay' : ''), true);
             return null;
@@ -10705,10 +10777,37 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var lastAi = null;
       var offerComp = function () {
         if (!lastAi || (lib && lib.file === lastAi.name)) return;
-        var c = ui.el.querySelector('.iwdie-vcb-c'), link = '<button class="iwdie-vcb-l" data-act="comp" title="Its components - the objects around its artboard - ' +
-          'into Libraries, in place of those kept">' + (lib ? 'read ' : 'read them from ') + esc2(lastAi.name) + '</button>';
-        c.className = 'iwdie-vcb-c';
-        c.innerHTML = lib ? c.innerHTML.replace(/\s·\s<button[\s\S]*$/, '') + ' · ' + link : 'none yet - ' + link;
+        var link = '<button class="iwdie-vcb-l" data-act="comp" title="Its components - the objects around its artboard - ' +
+          'into Libraries, in place of those kept">' + (compAround ? (lib ? 'these instead' : 'into Libraries too') : (lib ? 'read ' : 'read them from ') + esc2(lastAi.name)) + '</button>';
+        comp(lib ? compLib.replace(/\s·\s<button[\s\S]*$/, '') + ' · ' + link : compAround ? link : 'none yet - ' + link);
+      };
+      // the file just opened's components pasted around its artboard, where it keeps them (v1.59.0), read meanwhile: on a
+      // layer of their own, over the rest, unlocked. -> Promise<how many are there now>
+      var placeAround = function (f) {
+        if (!syncer) { offerComp(); return Promise.resolve(0); }
+        var bad = function (html) { return '<span class="iwdie-vcb-e">' + html + '</span>'; };
+        return readComp(f, function (html) { around(html); }).then(function (got) {
+          var n = got.items.length, paste = got.boards === 1 ? iwdieVcAroundBoard(got.items, got.board) : null;
+          if (!n) {
+            around('');
+            if (!lib) comp('<b>' + esc2(got.file) + '</b> has none around its artboard' + (got.hidden ? ' that are not hidden' : ''));
+            return 0;
+          }
+          if (!paste) {
+            around('<b>' + n + '</b> in ' + esc2(got.file) + ', ' + (got.boards > 1 ? 'around its ' + got.boards + ' artboards' : 'which has no artboard') + ': not placed here');
+            offerComp();
+            return 0;
+          }
+          around('Putting <b>' + paste.count + '</b> around the artboard…');
+          return focused().then(function () { return syncer.pasteAround(paste.svg); }).then(function (ok) {
+            around(ok ? '<b>' + paste.count + '</b> around the artboard, as in ' + esc2(got.file) : bad('VectorCraft did not take the ' + paste.count + ' around the artboard'));
+            offerComp();
+            return ok ? paste.count : 0;
+          });
+        }).then(null, function (e) {
+          around(bad('<b>' + esc2(String(f.name || 'The file')) + '</b>’s components could not be read: ' + esc2(String((e && e.message) || e))));
+          return 0;
+        });
       };
       ui.on('comp', function () {
         if (!lastAi || busy) return;
@@ -10802,12 +10901,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return titled(name, 120000).then(function (ok) {
             if (!ok) { note(named + ' did not open here.', true, true); return null; }
             lastAi = f;
-            offerComp();
+            // its components read meanwhile, to go around its artboard once the IWMAC objects are seen to (v1.59.0)
+            if (syncer) readComp(f, function (html) { around(html); });
+            else offerComp();
             var n = objs ? objs.count : 0;
+            // then said, with how to go on (`q`), once they are there too
+            var finish = function (r, said, q) {
+              return placeAround(f).then(function (k) {
+                var fit = k ? (q ? ' ' : '') + '<b>Ctrl+0</b> fits the artboard.' : '';
+                note('✓ ' + said + (k ? ' Its ' + k + ' components are around the artboard, unlocked, as Illustrator shows them.' : '') +
+                  (q || fit ? '<br><span class="iwdie-vcb-q">' + (q || '') + fit + '</span>' : ''), false, true);
+                return r;
+              });
+            };
             if (!n) {
               drawLine('as');
               note('✓ ' + named + ' is open, as File › Open opens it.', false, true);
-              return { ai: true, count: 0, added: false };
+              return finish({ ai: true, count: 0, added: false }, named + ' is open, as File › Open opens it.');
             }
             return syncer.ask('Add the IWMAC objects?', named + ' is open, as File › Open opens it.', [
               { act: 'add', title: 'Add the panel’s ' + iwdieN(n, 'object', 'objects'), text: 'As placeholders where they are on the panel, on a layer of their own on top. ' +
@@ -10818,14 +10928,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               if (act !== 'add') {
                 drawLine('as');
                 note('✓ ' + named + ' is open as it is.', false, true);
-                return { ai: true, count: n, added: false };
+                return finish({ ai: true, count: n, added: false }, named + ' is open as it is.');
               }
               note('Putting the panel’s ' + iwdieN(n, 'IWMAC object', 'IWMAC objects') + ' on ' + named + '…', false, true);
               return syncer.lockAndPaste(objs.paste, true).then(function () {
                 drawLine('locked');
-                note('✓ The panel’s ' + iwdieN(n, 'IWMAC object is', 'IWMAC objects are') + ' on ' + named + ', on a layer of their own over its drawing, which is locked: ' +
-                  'only they move.<br><span class="iwdie-vcb-q"><b>Ctrl+S</b> → <b>Enter</b> syncs. To change the drawing, Unlock it under Drawing above.</span>', false, true);
-                return { ai: true, count: n, added: true };
+                return finish({ ai: true, count: n, added: true }, 'The panel’s ' + iwdieN(n, 'IWMAC object is', 'IWMAC objects are') + ' on ' + named +
+                  ', on a layer of their own over its drawing, which is locked: only they move.',
+                  '<b>Ctrl+S</b> syncs. To change the drawing, Unlock it under Drawing above.');
               });
             });
           });
@@ -11294,10 +11404,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             (got.left ? 'What ' + iwdieN(got.left, 'thing', 'things') + ' under objects the Designer draws itself (statuses, buttons, LEDs) was taken out: only the Designer draws those. ' : '') +
             'The picture as it was is on the hidden layer Bakgrunn (original).'] : [])
             .concat([what + ' - in a new tab.',
-            'Press Ctrl+S there and choose Sync to IWMAC Designer: the picture comes straight back to this background, and its PNG goes to the plant’s pictures. ' +
+            'Press Ctrl+S there: the picture comes straight back to this background, and its PNG goes to the plant’s pictures. ' +
               'An object moved, resized or relabelled there is changed here; one added there is placed here; one deleted there is taken off here.',
             'The Designer’s own objects are in its IWMAC menu, after Help, and in its Libraries panel: placed and saved back, each becomes that object here. ' +
-              'Your components from Illustrator are in Libraries too, once read.']),
+              'The plant’s .ai opened there has its components around its artboard, as Illustrator shows them; what is still there at a sync stays out of the picture.']),
           footer: 'Nothing leaves the browser. The first start downloads the editor (about 20 MB); after that it is cached.'
         });
       }).then(null, function (e) {
@@ -11383,6 +11493,35 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var out = new XMLSerializer().serializeToString(doc);
       if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
       return { svg: iwdieVcStripEditing(out), found: took.found, skipped: took.skipped, layer: layer, frames: took.frames };
+    }
+
+    /** A saved drawing without the components still around its artboard (v1.59.0): those the plant's .ai brought there
+     *  (data-iwdie-comp) that lie wholly off the panel's picture never show on the panel, and would only weigh down its
+     *  PNG. One moved onto the drawing, if only partly, stays; one that cannot be measured stays too. The hidden squares
+     *  that placed them go, and with anything gone, VectorCraft's own copy of the document, which still has it.
+     *  -> {svg, gone: components left out} */
+    function vcOffBoard(svg, size) {
+      if (!/\sdata-iwdie-comp\s*=/.test(svg)) return { svg: svg, gone: 0 };
+      var doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return { svg: svg, gone: 0 };
+      var comps = [], squares = 0, gone = 0;
+      Array.prototype.slice.call(doc.querySelectorAll('[data-iwdie-comp]')).forEach(function (el) {
+        for (var p = el.parentNode; p && p.nodeType === 1; p = p.parentNode) if (p.hasAttribute('data-iwdie-comp')) return;
+        if (el.getAttribute('data-iwdie-comp') !== 'frame') { comps.push(el); return; }
+        el.parentNode.removeChild(el);
+        squares++;
+      });
+      var boxes = comps.length ? vcMeasure(doc, comps, size) : [];
+      comps.forEach(function (el, k) {
+        var b = boxes[k];
+        if (!b || b.hidden || !(b.x + b.w < 0 || b.y + b.h < 0 || b.x > size.w || b.y > size.h)) return;
+        el.parentNode.removeChild(el);
+        gone++;
+      });
+      if (!gone && !squares) return { svg: svg, gone: 0 };
+      var out = new XMLSerializer().serializeToString(doc);
+      if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
+      return { svg: iwdieVcStripEditing(out), gone: gone };
     }
 
     /** The panel's objects moved, resized and relabelled as their placeholders were (v1.46.0): on
@@ -12604,6 +12743,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!vcShowing(info)) { vcTake(info.job, val, info); return Promise.resolve(); }
       ack('received');
       var size = exportPanelSize(), ph;
+      // the components still around the artboard left out (v1.59.0): they never show on the panel
+      try { svg = vcOffBoard(svg, size).svg; } catch (e) {}
       try { ph = vcPlaceholders(svg, size); } catch (e) {
         toast('The IWMAC objects in the VectorCraft save could not be read, so nothing was changed: ' + ((e && e.message) || e), true, 10000);
         ack('failed', 'The Designer could not read the IWMAC objects in it: ' + ((e && e.message) || e));
@@ -14311,6 +14452,7 @@ if (typeof module !== 'undefined' && module.exports) {
     aiArtboard: iwdieAiArtboard,
     vcStripHelpers: iwdieVcStripHelpers,
     vcLiftObjects: iwdieVcLiftObjects,
+    vcAroundBoard: iwdieVcAroundBoard,
     vcEmbed: iwdieVcEmbed,
     vcExtract: iwdieVcExtract,
     vcSubpaths: iwdieVcSubpaths,
