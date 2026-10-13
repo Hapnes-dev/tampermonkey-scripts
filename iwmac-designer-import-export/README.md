@@ -338,6 +338,23 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### Labels in their place in the .ai, updated or not (v1.65.3)
+
+Thomas exported the overview with **Background → Illustrator** and opened it in Illustrator.
+Every centred or right-aligned label began at its point instead of being centred on it or
+ending there. The `.ai` writes text in Illustrator's legacy form, and Illustrator shows legacy
+text from where it starts, whatever its alignment, until **Update** converts it. Converted, it
+was right; not converted, it looked broken.
+
+- A centred or right-aligned text is now written left-aligned from where it starts. Its width
+  is measured in Arial (`iwdieAiTextWidth`; Arial shares Helvetica's metrics, regular and bold,
+  with the Latin-1 letters a panel uses), and a turned text moves back along its own baseline.
+- It shows in its place before **Update** and after. Checked in Illustrator over COM, both ways,
+  on a whole overview.
+- VectorCraft's own *Save As › PDF-compatible .ai* is still not the way to Illustrator. That
+  file is a PDF with no layers of the drawing's, and with Roboto missing on the web it breaks the
+  text's letters.
+
 ### The house font again, and the background locked in the .ai too (v1.65.2)
 
 - **1.65.1's font change is undone.** It named `Source Sans 3` without quotes. In CSS a family

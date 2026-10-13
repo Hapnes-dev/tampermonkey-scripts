@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.65.2
+// @version      1.65.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.65.2';
+var IWDIE_VERSION = '1.65.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -5921,14 +5921,54 @@ function iwdieAiArrowLines(s) {
     iwdieAiPt(base[0] + px, base[1] + py) + ' L', 'f']);
 }
 
+
+/** Arial's advance widths, per 1000 of the size (v1.65.3): Arial is metric-compatible with Helvetica, whose widths
+ *  these are (Adobe's core font metrics), regular and bold; italic has the regular's. Printable ASCII from the space,
+ *  then the Latin-1 letters and signs a panel's labels use. */
+var IWDIE_AI_ARIAL = {
+  regular: [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556,
+    556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833,
+    722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556,
+    278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584],
+  bold: [278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556,
+    556, 556, 556, 333, 333, 584, 584, 584, 611, 975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722,
+    778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556, 333, 556, 611, 556, 611, 556, 333,
+    611, 611, 278, 278, 556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584],
+  latin1: { '°': [400, 400], 'Æ': [1000, 1000], 'Ø': [778, 778], 'Å': [667, 722], 'æ': [889, 889], 'ø': [611, 611],
+    'å': [556, 556], 'Ä': [667, 722], 'Ö': [778, 778], 'Ü': [722, 722], 'ä': [556, 556], 'ö': [556, 611], 'ü': [556, 611],
+    'é': [556, 556], 'É': [667, 667], '²': [333, 333], '³': [333, 333], 'µ': [556, 611], '±': [584, 584], '×': [584, 584],
+    '·': [278, 278], '\u00a0': [278, 278] }
+};
+
+/** How wide `text` sets in Arial at `size` (`font` an iwdieAiFontOf name), as the .ai writes it. -> points */
+function iwdieAiTextWidth(text, size, font) {
+  var bold = /Bold/.test(String(font || '')), sum = 0;
+  var map = { '→': '->', '←': '<-', '–': '-', '—': '-', '‘': "'", '’': "'", '“': '"', '”': '"', '•': '*', '…': '...', '€': 'EUR' };
+  String(text == null ? '' : text).replace(/[\r\n\t]+/g, ' ').split('').forEach(function (ch) {
+    (map[ch] || ch).split('').forEach(function (c) {
+      var k = c.charCodeAt(0), l1 = IWDIE_AI_ARIAL.latin1[c];
+      sum += k >= 32 && k <= 126 ? IWDIE_AI_ARIAL[bold ? 'bold' : 'regular'][k - 32] : l1 ? l1[bold ? 1 : 0] : 556;
+    });
+  });
+  return sum * (+size || 13) / 1000;
+}
+
 /** Point text, written in the legacy form Illustrator still reads (and updates on request). A drawing's text (v1.65.0)
  *  may carry its turn (`m`, [a, b, c, d] with y up), its face (`font`, iwdieAiFontOf) and where it hangs from its point
- *  (`anchor`: 'middle' or 'end'). */
+ *  (`anchor`: 'middle' or 'end'). Illustrator shows legacy text from where it starts, whatever its alignment, until it is
+ *  updated: so a centred or right-hung text is written left-aligned from where it starts (v1.65.3), its width measured
+ *  in Arial, and shows in its place either way. */
 function iwdieAiTextLines(s, name) {
   var st = s.st || {}, m = Array.isArray(s.m) && s.m.length === 4 && s.m.every(isFinite) ? s.m : [1, 0, 0, 1];
-  var font = /^_[A-Za-z0-9-]+$/.test(String(s.font || '')) ? s.font : '_ArialMT', ta = s.anchor === 'middle' ? 1 : s.anchor === 'end' ? 2 : 0;
+  var font = /^_[A-Za-z0-9-]+$/.test(String(s.font || '')) ? s.font : '_ArialMT', ta = 0, x = s.x, y = s.y;
+  var k = s.anchor === 'middle' ? 0.5 : s.anchor === 'end' ? 1 : 0;
+  if (k) {
+    // back along its baseline (y up in `m`, down here) by the part of its width that hangs before its point
+    var w = k * iwdieAiTextWidth(s.text, s.size || 13, font);
+    x -= w * m[0]; y += w * m[1];
+  }
   return iwdieAiStyleLines({ fill: st.fill || '#000000', op: st.op }, true).concat([
-    '0 To', m.map(iwdieAiNum).join(' ') + ' ' + iwdieAiPt(s.x, s.y) + ' 0 Tp', 'TP', '0 Tr',
+    '0 To', m.map(iwdieAiNum).join(' ') + ' ' + iwdieAiPt(x, y) + ' 0 Tp', 'TP', '0 Tr',
     '/' + font + ' ' + iwdieAiNum(s.size || 13) + ' Tf',
     '0 Ts 100 Tz 0 Tt 1 TA 0 0 5 TC 100 100 200 TW 0 0 0 Ti ' + ta + ' Ta 0 Tq 0 0 Tl 0 Tc 0 Tw',
     '(' + iwdieAiLatin1Text(s.text) + ') Tx', '(\\r) TX', 'TO'
@@ -19814,6 +19854,8 @@ if (typeof module !== 'undefined' && module.exports) {
     aiRasterParts: iwdieAiRasterParts,
     aiHeaderLines: iwdieAiHeaderLines,
     aiProgram: iwdieAiProgram,
+    aiTextLines: iwdieAiTextLines,
+    aiTextWidth: iwdieAiTextWidth,
     aiPdf: iwdieAiPdf,
     aiPrivateData: iwdieAiPrivateData,
     aiObjectLines: iwdieAiObjectLines,
