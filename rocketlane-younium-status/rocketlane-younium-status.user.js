@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.68.0
+// @version      1.69.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, and chat macros (type / in a chat).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2126,6 +2126,7 @@
   // Rocketlane is a client-routed SPA — re-evaluate on every navigation so the
   // button re-injects (if the nav was rebuilt) and re-points at the new project.
   function onRouteChange() {
+    try { rlNcNoteVisit(); rlNcSchedulePass(); } catch (_) {}
     try {
       rlProjectLinksCache.clear();
       delete document.documentElement.dataset.rlPabNoMount;
@@ -6304,6 +6305,575 @@
       const box = document.getElementById(RL_MC_POPUP_ID);
       if (box && !box.contains(ev.target)) rlMcClose();
     }, true);
+  });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 5d+++. Notifications column (v1.69.0). On the Projects list the column of
+  //     the "Demo" project field is shown as "Notifications" (Thomas: "rename
+  //     the Demo column to Notifications … display unread notifications for
+  //     each project"). Each cell shows, for that project:
+  //       💬 n — unread messages in the project's chats the user is in, from
+  //              Rocketlane's own per-chat count (reading the chat clears it);
+  //       🔔 n — bell entries for the project newer than both the bell's last
+  //              look and the user's last visit to the project.
+  //     A click on 💬 opens the chat, on 🔔 the project; Ctrl/middle-click opens
+  //     a new tab. Only the display changes: "Demo" is a yes/no field another
+  //     user made in 2024 (fieldId 1241605) and keeps its name and values in
+  //     Rocketlane. Every pointer and editing key on its cells is taken before
+  //     the grid sees it, so that value cannot be changed from here by mistake,
+  //     and a click on the header does not sort the list by it.
+  //     What Rocketlane gives (read 2026-10-13, GET only):
+  //       - GET /projects/{id}/project-conversations: each chat's
+  //         partOfConversation, isHidden and unreadMessages for the user.
+  //       - GET /notifications/groups?status=New…: the bell. Entries stay New
+  //         until cleared, so New is not unread — 920 sat there on Thomas's
+  //         account, 529 of them chat messages.
+  //       - GET /notifications/last-seen-at: { lastSeenAt }, when the bell was
+  //         last opened; the bell's own badge counts from it.
+  //       - The list is AG Grid, grouped by owner: a project row's row-id is
+  //         "<ownerUserId>_<projectId>", a custom field's col-id is its
+  //         fieldName without the underscore, first letter lower-cased
+  //         ("Demo_1241605" → "demo1241605").
+  //     Visits are kept in GM rlNotifColVisits, shared by every tab: entering or
+  //     leaving a project, or hiding its tab, counts as having seen it.
+  // ════════════════════════════════════════════════════════════════════════
+  // @@rlNotifColHelpers:start
+  const RL_NC_LABEL = "Notifications";
+
+  /** The column this feature takes over: its header reads "Demo", or already "Notifications". */
+  function rlNcIsOurHeader(text) {
+    const t = String(text || "").trim().toLowerCase();
+    return t === "demo" || t === "notifications";
+  }
+
+  /** Project id from a Projects-list row id, "192062_1489145" (owner_project) → "1489145"; else "". */
+  function rlNcPidFromRowId(rowId) {
+    const m = /^\d+_(\d+)$/.exec(String(rowId || "").trim());
+    return m ? m[1] : "";
+  }
+
+  /** A project's chats (GET /projects/{id}/project-conversations) → what is unread for the user. */
+  function rlNcChatUnread(convs) {
+    const chats = [];
+    for (const c of Array.isArray(convs) ? convs : []) {
+      if (!c || c.isHidden === true || c.partOfConversation === false) continue;
+      const named = String(c.conversationName || "").split(" : ")[0].trim();
+      chats.push({
+        id: String(c.conversationId ?? ""),
+        private: !!c.private,
+        name: named || (c.private ? "Private chat" : "General chat"),
+        unread: Math.max(0, Math.floor(Number(c.unreadMessages) || 0)),
+      });
+    }
+    return { total: chats.reduce((n, c) => n + c.unread, 0), chats };
+  }
+
+  const RL_NC_EVENT_LABELS = {
+    UserMentioned: "You were mentioned",
+    NotifyThroughAutomation: "Automation",
+    TaskDueDateOverdue: "Task overdue",
+    TaskDueDateReminder: "Task due soon",
+    TaskStartDateReminder: "Task starts soon",
+    ProjectFolderAttachmentAdded: "File added",
+    MessageCreated: "New comment",
+    MessageReplyAdded: "New reply",
+  };
+  /** "ProjectPhaseStatusChanged" → "Project phase status changed"; a few get their own words. */
+  function rlNcEventLabel(eventType) {
+    const ev = String(eventType || "");
+    if (RL_NC_EVENT_LABELS[ev]) return RL_NC_EVENT_LABELS[ev];
+    const words = ev.replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+    return words ? words.charAt(0) + words.slice(1).toLowerCase() : "Update";
+  }
+
+  /** One bell entry as a line: what happened, to which task or phase, and the change. */
+  function rlNcUpdateText(meta, group) {
+    const m = meta && typeof meta === "object" ? meta : {};
+    const parts = [rlNcEventLabel(m.eventType)];
+    const subject = String(group?.task?.name || m.phaseName || "").trim();
+    if (subject) parts.push(subject);
+    const side = (v) => (v && typeof v === "object" ? String(v.label ?? v.value ?? "").trim() : "");
+    const to = side(m.to);
+    const from = side(m.from);
+    if (to) parts.push((from ? from + " → " : "→ ") + to);
+    return parts.join(" · ");
+  }
+
+  /**
+   * The bell's feed (GET /notifications/groups) sorted out per project (pure):
+   *   updates — Map projectId → [{ id, ms, by, text }], newest first: everything but chat
+   *             (the chat's own unread count covers it) and timesheets, and nothing the
+   *             user did;
+   *   latest  — Map conversationId → { ms, by, text }: the newest chat message by someone else.
+   * `toText` turns a message's HTML into text.
+   */
+  function rlNcFeedDigest(groups, userId, toText) {
+    const me = String(userId || "");
+    const plain = typeof toText === "function"
+      ? toText
+      : (h) => String(h || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    const updates = new Map();
+    const latest = new Map();
+    for (const g of Array.isArray(groups) ? groups : []) {
+      const type = String(g?.key?.type || "");
+      if (type === "users" || g?.timesheet) continue;
+      const isChat = type === "project-conversations" || !!g?.conversation;
+      for (const n of Array.isArray(g?.notifications) ? g.notifications : []) {
+        const meta = n?.meta && typeof n.meta === "object" ? n.meta : {};
+        const by = meta.by && typeof meta.by === "object" ? meta.by : {};
+        if (me && String(by.userId ?? "") === me) continue;
+        const ms = Date.parse(n?.timestamp || "");
+        if (!Number.isFinite(ms)) continue;
+        const who = [by.firstName, by.lastName].filter(Boolean).join(" ").trim() || String(by.userName || "").trim();
+        if (isChat) {
+          const conv = String(g?.conversation?.conversationId ?? g?.key?.projectConversationId ?? "");
+          const msg = meta.message || meta.reply;
+          if (!conv || !msg) continue;
+          const cur = latest.get(conv);
+          if (!cur || cur.ms < ms) latest.set(conv, { ms, by: who, text: String(plain(msg.content) || "").slice(0, 160) });
+          continue;
+        }
+        const pid = String(meta.projectId ?? g?.project?.id ?? g?.task?.project?.id ?? "").trim();
+        if (!pid) continue;
+        if (!updates.has(pid)) updates.set(pid, []);
+        updates.get(pid).push({ id: String(n?.id ?? ""), ms, by: who, text: rlNcUpdateText(meta, g) });
+      }
+    }
+    for (const list of updates.values()) list.sort((a, b) => b.ms - a.ms);
+    return { updates, latest };
+  }
+
+  /** When the user last saw a project's updates: the later of the bell's last look and their last visit. */
+  function rlNcSeenAt(lastSeenMs, visits, pid) {
+    return Math.max(Number(lastSeenMs) || 0, Number(visits && visits[pid]) || 0);
+  }
+
+  /** Record a visit (pure): a new map holding at most `max` projects, the latest visits kept. */
+  function rlNcRecordVisit(visits, pid, ms, max) {
+    const out = { ...(visits && typeof visits === "object" ? visits : {}) };
+    if (pid) out[String(pid)] = Number(ms) || 0;
+    const keys = Object.keys(out);
+    const cap = max || 400;
+    if (keys.length > cap) {
+      keys.sort((a, b) => out[a] - out[b]).slice(0, keys.length - cap).forEach((k) => { delete out[k]; });
+    }
+    return out;
+  }
+
+  /**
+   * What one project's cell shows (pure). `chat` is rlNcChatUnread's result, or null while
+   * not read yet; `updates` the project's list from rlNcFeedDigest; `seenMs` from
+   * rlNcSeenAt; `latest` the digest's newest chat message per conversation.
+   */
+  function rlNcCellModel(chat, updates, seenMs, latest) {
+    const fresh = (Array.isArray(updates) ? updates : []).filter((u) => u.ms > (Number(seenMs) || 0));
+    const chats = (chat && Array.isArray(chat.chats) ? chat.chats : [])
+      .filter((c) => c.unread > 0)
+      .map((c) => ({ ...c, latest: latest && typeof latest.get === "function" ? latest.get(c.id) || null : null }))
+      .sort((a, b) => b.unread - a.unread);
+    return {
+      known: !!chat,
+      chat: chat ? Number(chat.total) || 0 : 0,
+      chatTo: chats.length ? chats[0].id : "",
+      chats,
+      updates: fresh.length,
+      recent: fresh.slice(0, 6),
+    };
+  }
+
+  function rlNcAgo(ms, now) {
+    const s = Math.max(0, Math.round(((Number(now) || Date.now()) - Number(ms)) / 1000));
+    if (s < 60) return "just now";
+    const m = Math.round(s / 60);
+    if (m < 60) return m + " min ago";
+    const h = Math.round(m / 60);
+    if (h < 24) return h + " h ago";
+    return Math.round(h / 24) + " d ago";
+  }
+
+  /** The cell's tooltip (pure): each unread chat with its newest message, then the bell entries. */
+  function rlNcTitle(model, now) {
+    const lines = [];
+    if (model.chat) {
+      lines.push(model.chat + " unread chat message" + (model.chat === 1 ? "" : "s"));
+      for (const c of model.chats) {
+        let line = "  " + c.name + ": " + c.unread;
+        const l = c.latest;
+        if (l) {
+          const said = l.text ? ": “" + l.text.slice(0, 90) + (l.text.length > 90 ? "…" : "") + "”" : "";
+          line += " — newest " + (l.by ? "from " + l.by + ", " : "") + rlNcAgo(l.ms, now) + said;
+        }
+        lines.push(line);
+      }
+    }
+    if (model.updates) {
+      lines.push(model.updates + " new in the bell since you last opened the project");
+      for (const u of model.recent) lines.push("  " + u.text + (u.by ? " — " + u.by : "") + ", " + rlNcAgo(u.ms, now));
+      if (model.updates > model.recent.length) lines.push("  …and " + (model.updates - model.recent.length) + " more");
+    }
+    if (!lines.length) return model.known ? "Nothing unread" : "Checking…";
+    lines.push("", model.chat ? "Click 💬 for the chat" + (model.updates ? ", 🔔 for the project." : ".") : "Click 🔔 for the project.");
+    return lines.join("\n");
+  }
+
+  /**
+   * What a Pusher event on the user's own channel means for the column (pure):
+   *   feed    — a new bell entry: read the feed again;
+   *   project — that project's chats changed: read its unread counts again.
+   */
+  function rlNcEventEffect(eventName, payload) {
+    const none = { feed: false, project: "" };
+    const ev = String(eventName || "");
+    if (!ev || ev.startsWith("pusher")) return none;
+    const p = payload && typeof payload === "object" ? payload : null;
+    if (!p) return none;
+    const type = String(p.objectType || "");
+    if (type === "NOTIFICATION") {
+      const meta = p.data && typeof p.data === "object" ? p.data.meta : null;
+      return { feed: true, project: meta && meta.projectId != null ? String(meta.projectId) : "" };
+    }
+    if (type === "CONVERSATION_COMMENT" || type === "PROJECT_CONVERSATIONS") {
+      return { feed: false, project: p.projectId != null ? String(p.projectId) : "" };
+    }
+    return none;
+  }
+  // @@rlNotifColHelpers:end
+
+  const RL_NC_GM_VISITS = "rlNotifColVisits";
+  const RL_NC_FEED_TTL_MS = 90 * 1000;
+  const RL_NC_CHAT_TTL_MS = 60 * 1000;
+  const RL_NC_STYLE_ID = "rlNotifColStyles";
+  const RL_NC_HEADER_TIP =
+    "Notifications (Rocketlane improvements): 💬 unread messages in the project's chats you are in, " +
+    "🔔 bell entries for the project since you last opened it or the bell. Shown in place of the " +
+    "“Demo” field, which keeps its name and values in Rocketlane.";
+  const rlNc = {
+    col: "",              // the column's col-id, once its header has been seen
+    feed: null,           // rlNcFeedDigest of the bell
+    feedAt: 0,
+    feedBusy: false,
+    lastSeen: 0,          // the bell's lastSeenAt, ms
+    chats: new Map(),     // projectId → { at, data } (data: rlNcChatUnread, null when unreadable)
+    chatBusy: new Set(),
+    rowPid: new Map(),    // row-id → project id
+    visits: {},
+    curProject: "",
+    root: null,
+    observer: null,
+    passTimer: null,
+    userCh: null,
+    userFn: null,
+    eventTimer: null,
+  };
+
+  function rlNcOnListPage() {
+    return /^\/projects\/?$/.test(location.pathname || "");
+  }
+  function rlNcReadVisits() {
+    try { return JSON.parse(GM_getValue(RL_NC_GM_VISITS, "{}") || "{}") || {}; } catch (_) { return {}; }
+  }
+  /** The project being left and the one entered both count as seen now (route change, tab hidden). */
+  function rlNcNoteVisit() {
+    const m = /^\/projects\/(\d+)(?:\/|$)/.exec(location.pathname || "");
+    const here = m ? m[1] : "";
+    const ids = [...new Set([rlNc.curProject, here].filter(Boolean))];
+    rlNc.curProject = here;
+    if (!ids.length) return;
+    let visits = rlNcReadVisits();
+    for (const id of ids) visits = rlNcRecordVisit(visits, id, Date.now(), 400);
+    rlNc.visits = visits;
+    try { GM_setValue(RL_NC_GM_VISITS, JSON.stringify(visits)); } catch (_) {}
+  }
+
+  function rlNcEnsureStyles() {
+    const col = String(rlNc.col).replace(/["\\]/g, "\\$&");
+    let st = document.getElementById(RL_NC_STYLE_ID);
+    if (st && st.dataset.col === rlNc.col) return;
+    if (!st) {
+      st = document.createElement("style");
+      st.id = RL_NC_STYLE_ID;
+      document.documentElement.appendChild(st);
+    }
+    st.dataset.col = rlNc.col;
+    st.textContent = `
+      .ag-cell[col-id="${col}"] { font-size: 0 !important; color: transparent !important; }
+      .ag-cell[col-id="${col}"] > :not(.rlNcBox) { display: none !important; }
+      .rlNcBox { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle;
+        font: 600 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1f2937; }
+      .rlNcPill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px;
+        cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .rlNcPill.chat { background: #2563eb; color: #fff; }
+      .rlNcPill.upd { background: #fff7ed; color: #9a3412; box-shadow: inset 0 0 0 1px #fdba74; }
+      .rlNcPill:hover { filter: brightness(.92); }
+      .rlNcWait { color: #94a3b8; font-weight: 400; }
+    `;
+  }
+
+  function rlNcPidForRow(row) {
+    const rid = row ? row.getAttribute("row-id") || "" : "";
+    if (!rid) return "";
+    if (rlNc.rowPid.has(rid)) return rlNc.rowPid.get(rid);
+    let pid = rlNcPidFromRowId(rid);
+    if (!pid) {
+      // Another view's ids: the project name cell links to the project.
+      for (const r of document.querySelectorAll('.ag-row[row-id="' + CSS.escape(rid) + '"]')) {
+        const a = r.querySelector('a[href*="/projects/"]');
+        const m = a && /\/projects\/(\d+)/.exec(a.getAttribute("href") || "");
+        if (m) { pid = m[1]; break; }
+      }
+    }
+    if (pid) rlNc.rowPid.set(rid, pid);
+    return pid;
+  }
+
+  function rlNcPill(kind, label, pid, conv) {
+    const b = document.createElement("span");
+    b.className = "rlNcPill " + kind;
+    b.textContent = label;
+    b.dataset.pid = pid;
+    if (conv) b.dataset.conv = conv;
+    b.setAttribute("role", "link");
+    return b;
+  }
+
+  function rlNcRenderCell(cell, pid) {
+    let box = cell.querySelector(":scope > .rlNcBox");
+    if (!pid) { if (box) box.remove(); return; }
+    if (!box) {
+      box = document.createElement("span");
+      box.className = "rlNcBox";
+      cell.appendChild(box);
+    }
+    const entry = rlNc.chats.get(pid);
+    const model = rlNcCellModel(
+      entry ? entry.data : null,
+      rlNc.feed ? rlNc.feed.updates.get(pid) : [],
+      rlNcSeenAt(rlNc.lastSeen, rlNc.visits, pid),
+      rlNc.feed ? rlNc.feed.latest : null
+    );
+    const waiting = !entry || !rlNc.feed;
+    const key = [pid, model.chat, model.chatTo, model.updates, model.recent[0]?.id || "", waiting ? 1 : 0].join("|");
+    const now = Date.now();
+    if (box.dataset.key === key && now - (Number(box.dataset.titleAt) || 0) < 30000) return;
+    box.title = rlNcTitle({ ...model, known: !waiting }, now);
+    box.dataset.titleAt = String(now);
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.textContent = "";
+    if (model.chat > 0) box.appendChild(rlNcPill("chat", "💬 " + model.chat, pid, model.chatTo));
+    if (model.updates > 0) box.appendChild(rlNcPill("upd", "🔔 " + model.updates, pid, ""));
+    if (!model.chat && !model.updates && waiting) {
+      const s = document.createElement("span");
+      s.className = "rlNcWait";
+      s.textContent = "…";
+      box.appendChild(s);
+    }
+  }
+
+  /** "Demo" in the Manage columns dialog, which lives outside the grid, reads "Notifications" too. */
+  function rlNcRelabelDialogs() {
+    for (const dlg of document.querySelectorAll(".ant-modal-content, [role='dialog']")) {
+      if (!String(dlg.textContent || "").includes("Manage columns")) continue;
+      const walker = document.createTreeWalker(dlg, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (/^\s*Demo\s*$/.test(n.nodeValue || "")) n.nodeValue = n.nodeValue.replace("Demo", RL_NC_LABEL);
+      }
+    }
+  }
+
+  async function rlNcLoadFeed() {
+    rlNc.feedBusy = true;
+    try {
+      const [seen, groups] = await Promise.all([
+        gmRocketlaneGet("/notifications/last-seen-at").catch(() => null),
+        gmRocketlaneGet("/notifications/groups", {
+          status: "New", count: "40", start: String(Date.now() * 1000), groupSize: "10", filter: "All", exclusions: "",
+        }),
+      ]);
+      const ls = Date.parse(seen?.lastSeenAt || "");
+      if (Number.isFinite(ls)) rlNc.lastSeen = ls;
+      rlNc.feed = rlNcFeedDigest(Array.isArray(groups) ? groups : groups?.data, rlHpReadCurrentUserId(), rlCnHtmlToText);
+      rlNc.feedAt = Date.now();
+    } catch (e) {
+      console.warn("[Rocketlane improvements] notifications column: bell feed failed:", e?.message || e);
+      rlNc.feedAt = Date.now() - RL_NC_FEED_TTL_MS + 20000;   // again in 20 s
+    } finally {
+      rlNc.feedBusy = false;
+      rlNcSchedulePass();
+    }
+  }
+
+  async function rlNcLoadChats(pids) {
+    for (const pid of pids) rlNc.chatBusy.add(pid);
+    try {
+      await rlZdMapWithConcurrency(pids, 4, async (pid) => {
+        try {
+          const r = await gmRocketlaneGet("/projects/" + encodeURIComponent(pid) + "/project-conversations");
+          rlNc.chats.set(pid, { at: Date.now(), data: rlNcChatUnread(Array.isArray(r) ? r : r?.data) });
+        } catch (_) {
+          // Not a member, or gone: nothing to show, and no asking again every pass.
+          rlNc.chats.set(pid, { at: Date.now(), data: { total: 0, chats: [] } });
+        } finally {
+          rlNc.chatBusy.delete(pid);
+        }
+      });
+    } finally {
+      rlNcSchedulePass();
+    }
+  }
+
+  function rlNcRefresh(pids) {
+    if (document.visibilityState === "hidden") return;
+    const now = Date.now();
+    if (!rlNc.feedBusy && now - rlNc.feedAt >= RL_NC_FEED_TTL_MS) void rlNcLoadFeed();
+    const stale = pids.filter((pid) => !rlNc.chatBusy.has(pid) && now - (rlNc.chats.get(pid)?.at || 0) >= RL_NC_CHAT_TTL_MS);
+    if (stale.length) void rlNcLoadChats(stale);
+  }
+
+  /** Listen on the user's own channel while the list is open: bell entries and chat changes arrive there. */
+  function rlNcBindUser() {
+    const inst = rlCnPusher();
+    if (!inst) return;
+    const me = rlHpReadCurrentUserId();
+    const all = inst.channels && typeof inst.channels.all === "function" ? inst.channels.all() : [];
+    const ch = all.find((c) => c && rlCnIsUserChannel(c.name, me));
+    if (!ch || typeof ch.bind_global !== "function" || rlNc.userCh === ch) return;
+    rlNcUnbindUser();
+    const fn = (event, data) => {
+      const fx = rlNcEventEffect(event, data);
+      if (fx.feed) rlNc.feedAt = 0;
+      if (fx.project && rlNc.chats.has(fx.project)) rlNc.chats.get(fx.project).at = 0;
+      if (!fx.feed && !fx.project) return;
+      clearTimeout(rlNc.eventTimer);
+      rlNc.eventTimer = setTimeout(rlNcSchedulePass, 1200);   // Rocketlane's own count settles first
+    };
+    ch.bind_global(fn);
+    rlNc.userCh = ch;
+    rlNc.userFn = fn;
+  }
+  function rlNcUnbindUser() {
+    if (rlNc.userCh && rlNc.userFn) { try { rlNc.userCh.unbind_global(rlNc.userFn); } catch (_) {} }
+    rlNc.userCh = null;
+    rlNc.userFn = null;
+  }
+
+  function rlNcAttach(root) {
+    if (rlNc.root !== root || !rlNc.observer) {
+      rlNcDetach();
+      rlNc.root = root;
+      rlNc.observer = new MutationObserver(() => rlNcSchedulePass());
+      rlNc.observer.observe(root, { childList: true, subtree: true });
+    }
+    rlNcBindUser();
+  }
+  function rlNcDetach() {
+    if (rlNc.observer) { rlNc.observer.disconnect(); rlNc.observer = null; }
+    rlNc.root = null;
+    rlNcUnbindUser();
+  }
+
+  function rlNcPass() {
+    rlNc.passTimer = null;
+    if (!rlNcOnListPage()) { if (rlNc.root) rlNcDetach(); return; }
+    const root = document.querySelector(".ag-root-wrapper");
+    if (!root) return;
+    rlNcAttach(root);
+    for (const h of document.querySelectorAll(".ag-header-cell[col-id]")) {
+      const col = h.getAttribute("col-id") || "";
+      const label = h.querySelector(".ag-header-cell-text");
+      if (!label || (col !== rlNc.col && !rlNcIsOurHeader(label.textContent))) continue;
+      if (rlNc.col !== col) { rlNc.col = col; rlNcEnsureStyles(); }
+      if (label.textContent !== RL_NC_LABEL) label.textContent = RL_NC_LABEL;
+      if (!h.classList.contains("rlNcHeader")) { h.classList.add("rlNcHeader"); h.title = RL_NC_HEADER_TIP; }
+    }
+    rlNcRelabelDialogs();
+    if (!rlNc.col) return;
+    rlNcEnsureStyles();
+    rlNc.visits = rlNcReadVisits();
+    const pids = new Set();
+    const sel = '.ag-row[row-id] > .ag-cell[col-id="' + CSS.escape(rlNc.col) + '"]';
+    for (const cell of document.querySelectorAll(sel)) {
+      const pid = rlNcPidForRow(cell.parentElement);
+      rlNcRenderCell(cell, pid);
+      if (pid) pids.add(pid);
+    }
+    rlNcRefresh([...pids]);
+  }
+  function rlNcSchedulePass() {
+    if (rlNc.passTimer) return;
+    rlNc.passTimer = setTimeout(() => {
+      try { rlNcPass(); } catch (e) { console.warn("[Rocketlane improvements] notifications column:", e?.message || e); }
+    }, 120);
+  }
+
+  function rlNcCellOf(el) {
+    if (!rlNc.col || !(el instanceof Element)) return null;
+    return el.closest('.ag-cell[col-id="' + CSS.escape(rlNc.col) + '"]');
+  }
+  function rlNcOpen(pill, newTab) {
+    const pid = pill && pill.dataset.pid;
+    if (!pid) return;
+    const url = "/projects/" + encodeURIComponent(pid) + (pill.dataset.conv ? "/chat/" + encodeURIComponent(pill.dataset.conv) : "");
+    if (newTab) { window.open(url, "_blank", "noopener"); return; }
+    rlHpOpenProject(url);
+  }
+  /**
+   * Pointer events on the column never reach the grid: the hidden "Demo" value stays as it
+   * is, and a click on the header does not sort the list by it. A pill's click is ours.
+   */
+  function rlNcPointerGuard(ev) {
+    if (!rlNc.col || !rlNcOnListPage()) return;
+    const t = ev.target instanceof Element ? ev.target : null;
+    if (!t) return;
+    if (rlNcCellOf(t)) {
+      ev.stopPropagation();
+      if (/^(mousedown|pointerdown|dblclick|contextmenu)$/.test(ev.type)) ev.preventDefault();
+      const pill = t.closest(".rlNcPill");
+      if (pill && ev.type === "click" && ev.button === 0) {
+        ev.preventDefault();
+        rlNcOpen(pill, ev.ctrlKey || ev.metaKey || ev.shiftKey);
+      } else if (pill && ev.type === "auxclick" && ev.button === 1) {
+        ev.preventDefault();
+        rlNcOpen(pill, true);
+      }
+      return;
+    }
+    if (ev.type === "click" && t.closest(".ag-header-cell.rlNcHeader") && !t.closest(".ag-header-cell-resize")) {
+      ev.stopPropagation();
+      ev.preventDefault();
+    }
+  }
+  /** Keys on a focused cell of the column: moving on is allowed, editing is not; Enter opens. */
+  function rlNcKeyGuard(ev) {
+    const cell = rlNcCellOf(document.activeElement);
+    if (!cell || !rlNcOnListPage()) return;
+    if (/^(Arrow(Up|Down|Left|Right)|Tab|Home|End|PageUp|PageDown|Escape|Shift|Control|Alt|Meta)$/.test(ev.key || "")) return;
+    ev.stopPropagation();
+    ev.preventDefault();
+    if (ev.key === "Enter") rlNcOpen(cell.querySelector(".rlNcPill"), ev.ctrlKey || ev.metaKey);
+  }
+
+  rlWhenDomReady(() => {
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click", "auxclick", "dblclick", "contextmenu"]) {
+      window.addEventListener(type, rlNcPointerGuard, true);
+    }
+    window.addEventListener("keydown", rlNcKeyGuard, true);
+    window.addEventListener("paste", (ev) => {
+      if (rlNcCellOf(document.activeElement)) { ev.stopPropagation(); ev.preventDefault(); }
+    }, true);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") rlNcNoteVisit();
+      else rlNcSchedulePass();
+    });
+    window.addEventListener("pagehide", () => { try { rlNcNoteVisit(); } catch (_) {} });
+    // The Manage columns dialog opens on a click and filters on typing; it is not in the grid.
+    document.addEventListener("click", () => {
+      if (rlNcOnListPage()) [80, 350, 900].forEach((d) => setTimeout(rlNcSchedulePass, d));
+    }, true);
+    document.addEventListener("input", () => { if (rlNcOnListPage()) setTimeout(rlNcSchedulePass, 80); }, true);
+    document.addEventListener("scroll", () => { if (rlNcOnListPage()) rlNcSchedulePass(); }, true);
+    rlNcNoteVisit();
+    setInterval(() => { if (rlNcOnListPage() || rlNc.root) rlNcSchedulePass(); }, 2000);
   });
 
   // ════════════════════════════════════════════════════════════════════════
