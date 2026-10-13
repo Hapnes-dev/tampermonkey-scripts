@@ -338,6 +338,26 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### The background locked in VectorCraft (v1.65.1)
+
+Thomas: the background should always be locked. A drawing that opens in VectorCraft as it is -
+an agent's drawing that Insert made the panel's picture, or a picture vectorized - now opens with
+Bakgrunn's objects locked and every other layer free to edit. The Drawing row in the banner says
+*Bakgrunn locked*, and its **Unlock** frees them (Object › Unlock All).
+
+- **How.** VectorCraft reads no lock from an SVG and has no key for a layer's own lock. So the
+  drawing opens with the other layers' objects hidden. Select All (Ctrl+A) then takes Bakgrunn's
+  objects alone, and Lock (Ctrl+2) locks them. Show All (Ctrl+Alt+3) brings the rest back, and
+  Deselect (Ctrl+Shift+A) lets go.
+- **Not done** when the drawing has no visible Bakgrunn layer or anything loose at its top. It is
+  not done either when the drawing already hides an object, which Show All would bring back.
+- **Text in a font VectorCraft carries.** VectorCraft takes a text's first font family only, and
+  on the web it has only its own fonts. A label in Roboto therefore showed as a missing font, and
+  VectorCraft's own `.ai`/PDF export broke its letters. The Claude bridge's labels now name
+  Source Sans 3 first, as the IWMAC placeholders already did, and the kit's guide asks an agent's
+  drawing to do the same. For Illustrator, **Background → Illustrator** in the Designer stays the
+  way: VectorCraft's `.ai` is a PDF whose layers Illustrator does not keep.
+
 ### Every drawing stays vectors, from Copilot to Illustrator (v1.65.0)
 
 Thomas wants every panel file Copilot writes to end as if he had drawn it in VectorCraft: a

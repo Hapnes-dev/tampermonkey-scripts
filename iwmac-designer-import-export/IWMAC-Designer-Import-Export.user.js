@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.65.0
+// @version      1.65.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.65.0';
+var IWDIE_VERSION = '1.65.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -7553,6 +7553,40 @@ function iwdieVcLiftObjects(svg, board, opts) {
   return { base: base, paste: paste, count: lifted.length };
 }
 
+/** A drawing given to VectorCraft as it is (v1.65.1), made ready to have its background locked: each object of its other
+ *  layers - every visible top-level group but Bakgrunn - hidden (display="none") as it opens, so that VectorCraft's Select
+ *  All takes Bakgrunn's objects alone, to lock them; Show All then brings the rest back. VectorCraft reads no lock from an
+ *  SVG and has no key for a layer's own lock, so the lock is on each of the layer's objects. Not for a drawing without a
+ *  visible Bakgrunn layer, with anything loose at its top, or hiding an object below its layers already: Show All would
+ *  bring that back too. -> {svg, hidden: how many objects it hides} | null */
+function iwdieVcGroundFirst(svg) {
+  var s = String(svg || ''), root = /<svg\b[^>]*>/i.exec(s), end = s.lastIndexOf('</svg>');
+  if (!root || end < root.index) return null;
+  var off = root.index + root[0].length, body = s.slice(off, end);
+  var attr = function (tag, a) { var x = new RegExp('\\s' + a + '\\s*=\\s*"([^"]*)"').exec(tag); return x ? x[1] : ''; };
+  var hides = function (tag) { return attr(tag, 'display') === 'none' || /(^|;)\s*display\s*:\s*none/.test(attr(tag, 'style')); };
+  var tops = iwdieXmlTop(body), ground = null, layers = [];
+  for (var i = 0; i < tops.length; i++) {
+    var t = tops[i];
+    if (/^<(defs|style|title|desc|metadata)\b/i.test(t.tag)) continue;
+    if (!/^<g\b/i.test(t.tag)) return null;
+    if (hides(t.tag) || /\/\s*>$/.test(t.tag)) continue;
+    if (/^(bakgrunn|background|backround|00_background_locked)$/i.test(attr(t.tag, 'data-name') || attr(t.tag, 'id'))) { if (!ground) ground = t; }
+    else layers.push(t);
+  }
+  if (!ground) return null;
+  var inside = function (t) { return [t.start + t.tag.length, body.lastIndexOf('</', t.end - 1)]; };
+  var hidden = /<[A-Za-z][\w:.-]*\b[^>]*(\sdisplay\s*=\s*"none"|\sstyle\s*=\s*"[^"]*display\s*:\s*none)/;
+  if ([ground].concat(layers).some(function (t) { var r = inside(t); return hidden.test(body.slice(r[0], r[1])); })) return null;
+  var at = [];
+  layers.forEach(function (t) {
+    var r = inside(t);
+    iwdieXmlTop(body.slice(r[0], r[1])).forEach(function (k) { at.push(r[0] + k.start + /^<[A-Za-z][\w:.-]*/.exec(k.tag)[0].length); });
+  });
+  for (var j = at.length - 1; j >= 0; j--) body = body.slice(0, at[j]) + ' display="none"' + body.slice(at[j]);
+  return { svg: s.slice(0, off) + body + s.slice(end), hidden: at.length };
+}
+
 /** An Illustrator file's components - iwdieAiLibrary's items, each with its place by the artboard - as SVG to paste
  *  around the artboard VectorCraft has open, where the file keeps them (v1.59.0): each a group of its own, so a click
  *  takes one, marked data-iwdie-comp, so a sync leaves out those still off the artboard. VectorCraft pastes SVG centred
@@ -10260,7 +10294,7 @@ function iwdieCbMarkup(s, cid, looks, used) {
     return '<path d="' + iwdieCbPathD(s.pts) + '" fill="none" stroke="' + esc(s.colour) + '" stroke-width="' + f(s.width) + '"' + c + '/>';
   }
   if (s.kind === 'text') {
-    return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Roboto, Arial, sans-serif" font-size="' + f(s.size) + '" fill="' + esc(s.colour) + '"' +
+    return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Source Sans 3, Roboto, Arial, sans-serif" font-size="' + f(s.size) + '" fill="' + esc(s.colour) + '"' +
       (s.anchor && s.anchor !== 'start' ? ' text-anchor="' + s.anchor + '"' : '') + c + '>' + esc(s.text) + '</text>';
   }
   return '';
@@ -14608,6 +14642,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           .then(function () { if (pasted) { key('0', 'Digit0', { ctrl: true, alt: true }); return step(); } })
           .then(function () { return end(pasted); }, function () { return end(false); });
       };
+      // the background locked, the rest left to edit (v1.65.1): with the other layers' objects hidden as the drawing opened
+      // (iwdieVcGroundFirst), Select All (Ctrl+A) takes Bakgrunn's alone and Object › Lock › Selection (Ctrl+2) locks them;
+      // Object › Show All (Ctrl+Alt+3) brings the rest back, and Deselect (Ctrl+Shift+A) lets go of it. -> Promise<done>
+      var lockGround = function () {
+        if (busy) return Promise.resolve(false);
+        busy = true;
+        var guard = document.createElement('div');
+        guard.className = 'iwdie-vcs-g';
+        document.body.appendChild(guard);
+        state.guarding = true;
+        var end = function (v) { state.guarding = false; if (guard.parentNode) guard.parentNode.removeChild(guard); busy = false; return v; };
+        var step = function () { return settle(150, 8); };
+        key('a', 'KeyA', { ctrl: true });
+        return step().then(function () { key('2', 'Digit2', { ctrl: true }); return step(); })
+          .then(function () { key('3', 'Digit3', { ctrl: true, alt: true }); return step(); })
+          .then(function () { key('a', 'KeyA', { ctrl: true, shift: true }); return step(); })
+          .then(function () { return end(true); }, function () { return end(false); });
+      };
       // a question in VectorCraft's own look, as the chooser asks (v1.55.0): `lead`, a line of HTML; `opts` [{act, title,
       // text (HTML)}], the first chosen to begin with. Enter takes the one chosen, Esc the last. -> Promise<act>
       var ask = function (title, lead, opts) {
@@ -14662,6 +14714,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         prime: prime,
         capture: capture,
         lockAndPaste: lockAndPaste,
+        lockGround: lockGround,
         pasteAround: pasteAround,
         ask: ask,
         // a sync as Ctrl+S starts one; `quiet` for one that starts by itself (v1.56.0)
@@ -15031,7 +15084,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         d.className = 'iwdie-vcb-d' + (how === 'missing' ? ' iwdie-vcb-e' : '');
         d.innerHTML = how === 'locked' ? 'locked - only the IWMAC objects move · <button class="iwdie-vcb-l" data-act="unlock">Unlock</button>'
           : how === 'missing' ? 'locked, without the IWMAC objects · <button class="iwdie-vcb-l" data-act="again">Put them on</button>'
-          : how === 'unlocked' ? 'unlocked - <b>Ctrl+2</b> locks what is selected' : how === 'as' ? 'as it is - nothing locked' : esc2(how || '');
+          : how === 'unlocked' ? 'unlocked - <b>Ctrl+2</b> locks what is selected' : how === 'as' ? 'as it is - nothing locked'
+          : how === 'ground' ? 'as it is - Bakgrunn locked · <button class="iwdie-vcb-l" data-act="unlock">Unlock</button>' : esc2(how || '');
       };
       drawLine('opening…');
       ui.on('unlock', function () {
@@ -15135,22 +15189,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var name = job.name || 'panel.svg';
         // a picture made vectors (v1.61.0), or a drawing given as SVG (v1.62.0), is there to be edited: opened as it is, nothing locked
         try { lifted = syncer && !job.vector && !job.authored ? iwdieVcLiftObjects(job.svg, null, { under: true }) : null; } catch (e) { lifted = null; }
-        try { vcDropFile(lifted ? lifted.base : job.svg, name, 'image/svg+xml', title && title !== 'VectorCraft' ? 'menu' : 'center'); }
+        // its background locked once it is open, the rest left to edit (v1.65.1)
+        var ground = null;
+        try { ground = syncer && !lifted ? iwdieVcGroundFirst(job.svg) : null; } catch (e) { ground = null; }
+        try { vcDropFile(lifted ? lifted.base : ground ? ground.svg : job.svg, name, 'image/svg+xml', title && title !== 'VectorCraft' ? 'menu' : 'center'); }
         catch (e) { note('The panel could not be opened here: ' + esc2(String((e && e.message) || e)), true); return Promise.resolve(null); }
         if (!lifted) {
-          drawLine('as');
+          drawLine(ground ? 'locking Bakgrunn…' : 'as');
           // a picture made vectors (v1.61.0): what it is, and that it is there to be edited
           if (job.vector) {
             note('✓ The panel’s picture, vectorized: its shapes on the layers Bakgrunn, Rør, Former and Tekst, each figure and each word a group, ' +
-              'nothing locked - click one to edit it.<br><span class="iwdie-vcb-q"><b>Ctrl+S</b> syncs. The picture as it was is on the hidden layer ' +
+              (ground ? 'Bakgrunn locked and the rest not' : 'nothing locked') + ' - click one to edit it.<br><span class="iwdie-vcb-q"><b>Ctrl+S</b> syncs. The picture as it was is on the hidden layer ' +
               'Bakgrunn (original).</span>', false, true);
           } else if (job.authored) {
             // a drawing given as SVG (v1.62.0): an agent's, set as the background by Insert
             note('✓ The panel’s drawing, as its SVG: its groups as layers - Bakgrunn, Rør, Former and Tekst, as it names them - and the panel’s ' +
-              'IWMAC objects over them, nothing locked - click a shape to edit it.<br><span class="iwdie-vcb-q"><b>Ctrl+S</b> syncs: the drawing ' +
+              'IWMAC objects over them, ' + (ground ? 'Bakgrunn locked and the rest not' : 'nothing locked') + ' - click a shape to edit it.<br><span class="iwdie-vcb-q"><b>Ctrl+S</b> syncs: the drawing ' +
               'becomes the panel’s picture, and is kept in it for the next edit.</span>', false, true);
           }
-          return Promise.resolve({ panel: true, count: 0, pasted: false });
+          if (!ground) return Promise.resolve({ panel: true, count: 0, pasted: false });
+          saves.hold = 'Wait a moment: Bakgrunn is being locked.';
+          return titled(name, 60000).then(function () { return focused(); }).then(function () { return syncer.lockGround(); }).then(function (done) {
+            saves.hold = '';
+            drawLine(done ? 'ground' : 'as');
+            return { panel: true, count: 0, pasted: false };
+          });
         }
         saves.hold = 'Wait a moment: the IWMAC objects are being put on the drawing.';
         return titled(name, 60000).then(function () {
@@ -19766,6 +19829,7 @@ if (typeof module !== 'undefined' && module.exports) {
     aiArtboard: iwdieAiArtboard,
     vcStripHelpers: iwdieVcStripHelpers,
     vcLiftObjects: iwdieVcLiftObjects,
+    vcGroundFirst: iwdieVcGroundFirst,
     vcAroundBoard: iwdieVcAroundBoard,
     cssTiles: iwdieCssTiles,
     vzFlat: iwdieVzFlat,
