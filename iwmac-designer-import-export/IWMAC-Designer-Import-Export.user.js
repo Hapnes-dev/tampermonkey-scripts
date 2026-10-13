@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.65.3
+// @version      1.66.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.65.3';
+var IWDIE_VERSION = '1.66.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -5768,6 +5768,9 @@ function iwdieAiXmlId(name) {
   for (var i = 0; i < s.length; i++) {
     var ch = s.charAt(i), c = s.charCodeAt(i);
     if (ch === ' ') out += '_';
+    // beyond Latin-1 escaped as an ASCII one is (v1.66.0): its UTF-8 bytes - an ellipsis's hold 0x80 - made Illustrator
+    // refuse the whole file
+    else if (c > 255) out += '_x' + c.toString(16).toUpperCase() + '_';
     else if (c > 127) out += ch;
     else if (/[A-Za-z0-9_.\-]/.test(ch) && !(i === 0 && /[0-9.\-]/.test(ch))) out += ch;
     else out += '_x' + c.toString(16).toUpperCase() + '_';
@@ -6188,6 +6191,21 @@ function iwdieAiObjectLines(objects) {
     out = out.concat(['0 A', '0 Xw', 'u'], box, txt, ['U'], iwdieAiNameLines(label));
   });
   return out;
+}
+
+/** The layers of an Illustrator document of a drawing (v1.66.0), for Background → Illustrator and for Save .ai for
+ *  Illustrator in VectorCraft alike: iwdieSvgAiLayers' layers (`conv`) as iwdieSvgAiLayerLines built them (`built`), each
+ *  with its picture's raster parts (`rasters`, or null), an emptied IWMAC-objekter layer left out; then the panel's objects
+ *  ({posLeft, posTop, posWidth, posHeight, obj_id, alias_text}) as a hidden reference layer that does not print. */
+function iwdieAiDrawingLayers(conv, built, rasters, objects) {
+  var layers = [];
+  ((conv && conv.layers) || []).forEach(function (L, i) {
+    var b = built[i] || { lines: [] }, r = (rasters && rasters[i]) || null;
+    if (/^IWMAC-objekter$/i.test(L.name) && !b.lines.length && !r) return;
+    layers.push({ name: L.name, visible: L.visible, locked: L.locked, lines: b.lines, raster: r });
+  });
+  if (objects && objects.length) layers.push({ name: 'Panelobjekter', visible: false, print: false, lines: iwdieAiObjectLines(objects) });
+  return layers;
 }
 
 /** ImageTracer's path data (M, L, Q, Z, absolute) as Draw path data: the quadratic
@@ -15084,6 +15102,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           'as File › Open opens it. Then you are asked whether to add the panel’s IWMAC objects to it.' },
         { act: 'json', label: 'Open IWMAC JSON…', title: 'A panel file - exported, or written by Copilot - inserted in the Designer’s tab as Insert JSON… ' +
           'inserts it, with its check and its questions there; then the panel opens here again: its drawing as layers, its objects as placeholders.' },
+        { act: 'aiout', label: 'Save .ai for Illustrator', title: 'The drawing as it stands here, as an Illustrator file of its own layers - Bakgrunn locked, every text Arial type in its place, the IWMAC objects on a hidden layer - as Background → Illustrator writes it. VectorCraft’s own Save As › .ai keeps none of the layers and breaks the letters of a font it lacks. Nothing is synced.' },
         { html: '<button class="iwdie-vcb-l" data-act="trace" title="A copy whose picture is enlarged and set to its own flat colours, ' +
           'so Image Trace makes clean shapes of it">Image Trace copy</button>' }]);
       var note = ui.note;
@@ -15406,6 +15425,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         fr.readAsText(f);
       });
       ui.on('json', function () { if (!busy) jsonIn.click(); });
+      // Save .ai for Illustrator (v1.66.0): the drawing as it stands here, written as Background → Illustrator writes one -
+      // VectorCraft's own Save As › PDF-compatible .ai keeps none of its layers and breaks the letters of a font it lacks.
+      // VectorCraft saves it for this script (as Ctrl+S does, once that is ready); nothing is synced.
+      ui.on('aiout', function () {
+        if (busy) return;
+        if (!syncer) { note('VectorCraft is not ready yet: try again in a moment.', true); return; }
+        busy = true;
+        note('Writing the Illustrator file…', false, true);
+        syncer.prime().then(function (ok) { return ok ? syncer.capture() : null; }).then(function (got) {
+          if (!got || !got.svg) throw new Error('VectorCraft did not hand the drawing over');
+          var sized = /<svg\b[^>]*\sviewBox\s*=\s*"\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(job.svg);
+          return vcIllustratorFile(got.svg, sized ? { w: Math.round(+sized[1]), h: Math.round(+sized[2]) } : { w: 1400, h: 750 }, job);
+        }).then(function (file) {
+          downloadBytes(file.bytes, file.name, 'application/pdf');
+          note('✓ <b>' + esc2(file.name) + '</b> is in Downloads: the drawing’s ' + iwdieN(file.layers, 'layer', 'layers') + ' as Illustrator’s own, ' +
+            'Bakgrunn locked' + (file.objects ? ', the ' + iwdieN(file.objects, 'IWMAC object', 'IWMAC objects') + ' on the hidden layer Panelobjekter' : '') +
+            '. Illustrator asks to update the text: either way it stands where it should. Nothing was synced.', false, true);
+        }, function (e) {
+          note('The Illustrator file could not be written: ' + esc2(String((e && e.message) || e)), true);
+        }).then(function () { busy = false; });
+      });
       if (typeof GM_addValueChangeListener === 'function') {
         GM_addValueChangeListener('iwdie.vc.reopen.' + job.id, function (key, old, val) {
           if (!val || !val.state) return;
@@ -17933,6 +17973,66 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** The drawing open in VectorCraft as an Illustrator file (v1.66.0), as Background → Illustrator writes a drawing: its
+     *  own layers - Bakgrunn locked, an emptied IWMAC-objekter left out - every shape a path, every text Arial type in its
+     *  place, a picture where it stands, the IWMAC objects on a hidden reference layer, and a page that shows the drawing to
+     *  other viewers. VectorCraft's own Save As › PDF-compatible .ai has none of the drawing's layers, and breaks the
+     *  letters of a font it lacks - Roboto, on the web. `svg`: the drawing as VectorCraft saves it; `size`: the panel's.
+     *  -> Promise<{bytes, name, conv, objects}> */
+    function vcIllustratorFile(svg, size, job) {
+      var ph = vcPlaceholders(vcOffBoard(svg, size).svg, size), drawing = ph.svg;
+      var conv = iwdieSvgAiLayers(drawing, size);
+      if (!conv || !conv.layers.length) return Promise.reject(new Error('the drawing has no layer to write'));
+      var built = conv.layers.map(function (L) { return iwdieSvgAiLayerLines(L); });
+      var objects = (ph.found || []).map(function (f) {
+        // what it is: its parameter when it is bound, else its kind and which of the panel's objects it is - not the words
+        // its look shows ("Value Only")
+        return { posLeft: f.x, posTop: f.y, posWidth: f.w, posHeight: f.h, obj_id: f.id,
+          alias_text: f.label || f.bind || (f.ref ? f.id + ' (' + f.ref + ')' : f.id) };
+      });
+      var name = iwdieBuildBackgroundFilename(job.plant, job.panel, 'ai');
+      // a picture's pixels, at most 4096 a side, as Background → Illustrator takes them
+      var pixels = function (href) {
+        return loadPicture(href).then(function (img) {
+          var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height, k = Math.min(1, 4096 / Math.max(iw, ih, 1));
+          var c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(iw * k)); c.height = Math.max(1, Math.round(ih * k));
+          var g = c.getContext('2d');
+          g.drawImage(img, 0, 0, c.width, c.height);
+          return { rgba: g.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height };
+        });
+      };
+      return Promise.all(built.map(function (b) {
+        if (!b.picture) return null;
+        var im = b.picture.img;
+        return pixels(im.href).then(function (px) {
+          var r = iwdieAiRasterParts(px.rgba, px.w, px.h, im.x, im.y, im.w, im.h, im.name || 'Bilde');
+          r.at = b.picture.at;
+          return r;
+        }, function () { return null; });
+      })).then(function (rasters) {
+        var layers = iwdieAiDrawingLayers(conv, built, rasters, objects);
+        var doc = { width: size.w, height: size.h, title: name, layers: layers, artboardName: job.panel || 'Panel' };
+        var header = iwdieAiHeaderLines(doc).join('\r\n') + '\r\n';
+        return Promise.all([deflateBytes(iwdieAiProgram(doc)), vcRenderPng(drawing, size, '#ffffff')]).then(function (r) {
+          // the page other viewers show: the drawing, as a JPEG
+          var url = URL.createObjectURL(new Blob([r[1]], { type: 'image/png' }));
+          return loadPicture(url).then(function (img) {
+            URL.revokeObjectURL(url);
+            var c = document.createElement('canvas');
+            c.width = size.w; c.height = size.h;
+            c.getContext('2d').drawImage(img, 0, 0, size.w, size.h);
+            var jpeg = iwdieParseDataUrl(c.toDataURL('image/jpeg', 0.9));
+            var pdf = iwdieAiPdf({
+              width: size.w, height: size.h, meta: header, privateData: iwdieAiPrivateData(header, r[0]),
+              preview: { width: size.w, height: size.h, filter: 'DCTDecode', data: jpeg.bytes }, title: name, version: IWDIE_VERSION
+            });
+            return { bytes: pdf, name: name, conv: conv, layers: layers.length - (objects.length ? 1 : 0), objects: objects.length };
+          });
+        });
+      });
+    }
+
     function vcApplyResult(val, info, ack) {
       ack = ack || function () {};
       var svg = String(val.svg || '');
@@ -18348,13 +18448,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return r;
         }, function () { lost++; return null; });
       })).then(function (rasters) {
-        var layers = conv.layers.map(function (L, i) { return { name: L.name, visible: L.visible, locked: L.locked, lines: built[i].lines, raster: rasters[i] }; });
+        var layers = iwdieAiDrawingLayers(conv, built, rasters, opts.objects ? info.objects : null);
         return exportPaint(info.bg && info.bg.bytes, info.bg && info.bg.mime, size, fill).then(function (shown) {
           if (opts.picture) {
             layers.unshift({ name: 'Bilde', visible: false, locked: true, lines: [],
               raster: iwdieAiRasterParts(shown.getContext('2d').getImageData(0, 0, size.w, size.h).data, size.w, size.h, 0, 0, size.w, size.h, 'Bilde (PNG)') });
           }
-          if (opts.objects && info.objects.length) layers.push({ name: 'Panelobjekter', visible: false, print: false, lines: iwdieAiObjectLines(info.objects) });
           var doc = { width: size.w, height: size.h, title: name, layers: layers, artboardName: info.panel || 'Panel' };
           var header = iwdieAiHeaderLines(doc).join('\r\n') + '\r\n';
           return deflateBytes(iwdieAiProgram(doc)).then(function (z) {
@@ -19854,6 +19953,7 @@ if (typeof module !== 'undefined' && module.exports) {
     aiRasterParts: iwdieAiRasterParts,
     aiHeaderLines: iwdieAiHeaderLines,
     aiProgram: iwdieAiProgram,
+    aiDrawingLayers: iwdieAiDrawingLayers,
     aiTextLines: iwdieAiTextLines,
     aiTextWidth: iwdieAiTextWidth,
     aiPdf: iwdieAiPdf,

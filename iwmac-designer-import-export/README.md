@@ -338,6 +338,27 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### Save .ai for Illustrator, from VectorCraft's banner (v1.66.0)
+
+Thomas: make the button in the VectorCraft banner. VectorCraft's own *Save As › PDF-compatible
+.ai* keeps none of the drawing's layers, and with the house font missing on the web it breaks the
+text's letters.
+
+- **The banner has a Save .ai for Illustrator button.** It writes the drawing open in the editor
+  as Background → Illustrator writes one:
+  - the drawing's own layers, with Bakgrunn locked;
+  - every shape as a path and every text as Arial type in its place, before or after Update;
+  - a picture where it stands;
+  - the IWMAC objects on a hidden reference layer, Panelobjekter;
+  - a page that shows the drawing in other viewers.
+- **How.** The button makes Ctrl+S ready if it is not yet. VectorCraft then saves the drawing for
+  the script, the placeholders are taken out as a sync takes them, and the file goes to Downloads.
+  Nothing is synced to the Designer.
+- **Background → Illustrator** builds its layers the same way (`iwdieAiDrawingLayers`), and an
+  emptied IWMAC-objekter layer is now left out of either file.
+- **An object id beyond Latin-1 is escaped**, as an ASCII one is. A placeholder labelled
+  *CO2 Alarm…* put the ellipsis's UTF-8 bytes into an id, and Illustrator refused the whole file.
+
 ### Labels in their place in the .ai, updated or not (v1.65.3)
 
 Thomas exported the overview with **Background → Illustrator** and opened it in Illustrator.
