@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.163
+// @version      4.164
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2160,7 +2160,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.163';
+    const SCRIPT_VERSION   = '4.164';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -6047,14 +6047,14 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const hit = cand.slice().sort((x, y) => rank(x) - rank(y) || x.taskName.length - y.taskName.length)[0];
                 if (hit) out = { taskId: hit.taskId, taskName: hit.taskName };
                 else {
-                    // "<plant id> - <plant name>" (Thomas: "the subtask should display plant id and plant name").
-                    const known = (GM_getValue(KEY_PLANT_NAMES, {}) || {})[String(plantId)];
-                    const nm = String(plantName || '').trim();
-                    const label = nm && nm !== String(plantId) ? nm : String(known || '').trim();
+                    // "<plant id> - <plant name>" (Thomas: "the subtask should display plant id and plant name"),
+                    // and the plant's ID and name in its Description from the start (v4.164).
+                    const label = plantLabel(plantId, plantName);
                     const name = label ? `${plantId} - ${label}` : String(plantId);
-                    let r = await rlFetch('POST', '/tasks', { taskName: name, project: { projectId }, parent: { taskId: pid }, parentTask: pid, parentTaskId: pid });
+                    const taskDescription = bucketDescriptionHtml(plantId, plantName);
+                    let r = await rlFetch('POST', '/tasks', { taskName: name, taskDescription, project: { projectId }, parent: { taskId: pid }, parentTask: pid, parentTaskId: pid });
                     if (!(r.status === 200 || r.status === 201))
-                        r = await rlFetch('POST', '/tasks', { taskName: name, projectId, parentTask: pid, parentTaskId: pid });
+                        r = await rlFetch('POST', '/tasks', { taskName: name, taskDescription, projectId, parentTask: pid, parentTaskId: pid });
                     const t = r.json && (r.json.taskId ? r.json : (r.json.data && r.json.data.taskId ? r.json.data : null));
                     if ((r.status === 200 || r.status === 201) && t && t.taskId) {
                         out = { taskId: t.taskId, taskName: name };
@@ -6094,7 +6094,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // client posts task comments as POST /projects/{project}/tasks/{task}/comments with
     // { comment: { content: HTML, private, commentGuid } } and reads them from …/conversations
     // ({ comments: [{ messageType: 'USER_MESSAGE', content, … }] }), both read off the web app 2026-10-13.
-    // The comment is internal (private), like the hand-written one on "8243 - Matpartner Melhus".
+    // The comment is public (v4.164, Thomas: "and public"; 4.162–4.163 posted it internal).
     // Idempotent: a comment that already carries this date and title is not posted again; healing an entry
     // that was already on the sheet looks only for the date and category. Any failure only logs — the time
     // entry is already booked and must not be affected. Returns true only when a comment was posted.
@@ -6116,7 +6116,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const said = ((g.json && g.json.comments) || []).filter(c => c && c.messageType === 'USER_MESSAGE').map(c => String(c.content || ''));
             if (g.status !== 200) { LOG('book: comment skipped — conversation unreadable', g.status); return false; }
             if (said.some(c => c.includes(mark))) return false;
-            const comment = { content: bucketCommentHtml(iso, act, notes, minutes), private: true, commentGuid: newCommentGuid() };
+            const comment = { content: bucketCommentHtml(iso, act, notes, minutes), private: false, commentGuid: newCommentGuid() };
             const r = await rlFetch('POST', `/projects/${projectId}/tasks/${taskId}/comments`, { comment });
             if (r.status === 200 || r.status === 201) { LOG('book: comment +', taskId, isoToNorwegianDate(iso), act); return true; }
             LOG('book: comment POST failed', r.status, String(r.raw || r.error || '').slice(0, 140));
@@ -6128,6 +6128,42 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     let _commentChain = Promise.resolve();
     function bucketSubtaskComment(projectId, taskId, iso, act, notes, minutes, heal) {
         const p = _commentChain.then(() => _bucketSubtaskCommentNow(projectId, taskId, iso, act, notes, minutes, !!heal));
+        _commentChain = p.catch(() => {});
+        return p;
+    }
+    // The subtask's Description says which plant it is (v4.164, Thomas chose "Plant ID + name"):
+    // "Plant ID: 4845 / Plant name: Kristian Augusts gate 23". Sent with the create, and written when the tool
+    // books onto a subtask whose Description is empty. A Description with anything in it — his own text, or
+    // the dated log ≤4.161 wrote there (39 of the 76 Aftermarket subtasks on 2026-10-13) — is never touched.
+    // PUT /tasks/{id} with just taskDescription is a partial update (measured in 4.108). Failures only log.
+    function plantLabel(plantId, plantName) {
+        const known = (GM_getValue(KEY_PLANT_NAMES, {}) || {})[String(plantId)];
+        const nm = String(plantName || '').trim();
+        return nm && nm !== String(plantId) ? nm : String(known || '').trim();
+    }
+    function bucketDescriptionHtml(plantId, plantName) {
+        const label = plantLabel(plantId, plantName);
+        return `<p><b>Plant ID:</b> ${escapeHtml(String(plantId))}${label ? `<br><b>Plant name:</b> ${escapeHtml(label)}` : ''}</p>`;
+    }
+    const _bucketDescribed = new Set(); // subtasks whose Description was settled this session
+    async function _describeBucketSubtaskNow(taskId, plantId, plantName) {
+        if (_bucketDescribed.has(String(taskId))) return false;
+        try {
+            const g = await rlFetch('GET', `/tasks/${taskId}`);
+            const t = g.json && (g.json.taskId ? g.json
+                : g.json.data && g.json.data.taskId ? g.json.data
+                : g.json.task && g.json.task.taskId ? g.json.task : null);
+            if (!t) { LOG('book: description skipped — no task json', g.status); return false; }
+            const said = String(t.taskDescription || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim();
+            if (said) { _bucketDescribed.add(String(taskId)); return false; }
+            const r = await rlFetch('PUT', `/tasks/${taskId}`, { taskDescription: bucketDescriptionHtml(plantId, plantName) });
+            if (r.status === 200 || r.status === 201) { _bucketDescribed.add(String(taskId)); LOG('book: description = plant', taskId, plantId); return true; }
+            LOG('book: description PUT failed', r.status, String(r.raw || r.error || '').slice(0, 140));
+        } catch (err) { LOG('book: description failed', String(err)); }
+        return false;
+    }
+    function describeBucketSubtask(taskId, plantId, plantName) {
+        const p = _commentChain.then(() => _describeBucketSubtaskNow(taskId, plantId, plantName));
         _commentChain = p.catch(() => {});
         return p;
     }
@@ -6744,7 +6780,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 if (prior) {
                     e.status = 'already-booked';
                     // The entry exists but its comment may not (booked before v4.162) — heal it, once per date and category.
-                    if (prior.task && (prior.task.taskId || prior.task.id)) await bucketSubtaskComment(projectId, prior.task.taskId || prior.task.id, iso, e.activityName, e.notes, e.minutes, true);
+                    if (prior.task && (prior.task.taskId || prior.task.id)) {
+                        await bucketSubtaskComment(projectId, prior.task.taskId || prior.task.id, iso, e.activityName, e.notes, e.minutes, true);
+                        await describeBucketSubtask(prior.task.taskId || prior.task.id, e.plant_id, e.plant);
+                    }
                     onProgress && onProgress(e); continue;
                 }
                 // The bucket has a container for plant subtasks — "Aftermarket" in Team Kulde Oppgaver (v4.162),
@@ -6807,8 +6846,12 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 const err0 = (r.json && r.json.errors && r.json.errors[0]) || {};
                 e.error = err0.errorMessage || err0.reason || (r.json && r.json.message) || ('HTTP ' + r.status);
             }
-            // Bucket-subtask entries say what was done in a comment on the subtask (v4.162; the Description until then).
-            if (e.status === 'booked' && isFallback && taskId) await bucketSubtaskComment(projectId, taskId, iso, e.activityName, e.notes, e.minutes);
+            // Bucket-subtask entries say what was done in a public comment on the subtask (v4.162, public since
+            // v4.164; the Description until 4.161), and an empty Description gets the plant's ID and name (v4.164).
+            if (e.status === 'booked' && isFallback && taskId) {
+                await bucketSubtaskComment(projectId, taskId, iso, e.activityName, e.notes, e.minutes);
+                await describeBucketSubtask(taskId, e.plant_id, e.plant);
+            }
             onProgress && onProgress(e);
         }
         _rlWeekCache.clear(); // fresh dedupe data on the next plan build — we just changed the sheet
