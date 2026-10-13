@@ -338,6 +338,26 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### The Maskin template from Insert's check (v1.67.0)
+
+Thomas inserted a drawing the Copilot agent made, and its 56 house symbols came in as red dashed
+boxes with their names. Insert draws a symbol placed by name from the component library kept in
+the browser, and his browser kept none. The only way to keep one was to open the template in Edit
+in VectorCraft as the panel's `.ai`, where a sync could make it the panel's picture.
+
+- **The check offers the template.** A file that places house symbols the kept library cannot draw
+  gets **Import the Maskin template (.ai)…** beside Insert, with a note of how many would be boxes.
+- **Pick the Maskin template's `.ai` once.** It is read as Libraries reads an `.ai`, its components
+  named by the table and kept in this browser, in place of any kept before. The same file is then
+  checked again, and Insert draws every symbol. Nothing leaves the browser, and the template is
+  never opened as a drawing.
+- **The template stays out of this repository.** It is internal, so the script carries only the
+  names of its components, never their drawings. `maskin-light-template.ai` comes with the
+  Copilot kit and the Maskin artwork.
+- **A missing symbol's name is readable.** Its box wrote the name in `Source Sans 3`, unquoted. A
+  family with a digit in it must be quoted, so browsers drew it in their serif. It is now
+  `Roboto, Arial, sans-serif`.
+
 ### Save .ai for Illustrator, from VectorCraft's banner (v1.66.0)
 
 Thomas: make the button in the VectorCraft banner. VectorCraft's own *Save As › PDF-compatible
