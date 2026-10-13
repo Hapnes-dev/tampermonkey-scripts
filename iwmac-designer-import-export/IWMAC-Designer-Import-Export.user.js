@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.65.1
+// @version      1.65.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.65.1';
+var IWDIE_VERSION = '1.65.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6709,8 +6709,11 @@ function iwdieSvgAiLayers(svg, size) {
       Object.keys(p).forEach(function (k) { p2[k] = p[k]; });
       if (hidden) delete p2.visibility;
       el.kids.forEach(function (k) { walk(k, p2, M, o, vp0, 1, items); });
+      // a lock the drawing writes; else Bakgrunn locked, as VectorCraft opens it (v1.65.2)
+      var lock = el.a['sodipodi:insensitive'] || el.a['data-locked'] || el.a['data-iwdie-locked'] || '';
       layers.push({ name: nameOf(el) || 'Layer ' + (layers.length + 1), visible: !hidden,
-        locked: /^(1|true|yes)$/i.test(el.a['sodipodi:insensitive'] || el.a['data-locked'] || el.a['data-iwdie-locked'] || ''), items: items });
+        locked: /^(1|true|yes)$/i.test(lock) || (!/^(0|false|no)$/i.test(lock) && /^(bakgrunn|background|backround|00_background_locked)$/i.test(nameOf(el) || el.a.id || '')),
+        items: items });
       return;
     }
     if (!loose) { loose = { name: 'Layer ' + (layers.length + 1), visible: true, locked: false, items: [] }; layers.push(loose); }
@@ -10294,7 +10297,7 @@ function iwdieCbMarkup(s, cid, looks, used) {
     return '<path d="' + iwdieCbPathD(s.pts) + '" fill="none" stroke="' + esc(s.colour) + '" stroke-width="' + f(s.width) + '"' + c + '/>';
   }
   if (s.kind === 'text') {
-    return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Source Sans 3, Roboto, Arial, sans-serif" font-size="' + f(s.size) + '" fill="' + esc(s.colour) + '"' +
+    return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Roboto, Arial, sans-serif" font-size="' + f(s.size) + '" fill="' + esc(s.colour) + '"' +
       (s.anchor && s.anchor !== 'start' ? ' text-anchor="' + s.anchor + '"' : '') + c + '>' + esc(s.text) + '</text>';
   }
   return '';

@@ -338,6 +338,18 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### The house font again, and the background locked in the .ai too (v1.65.2)
+
+- **1.65.1's font change is undone.** It named `Source Sans 3` without quotes. In CSS a family
+  name with a digit in it must be quoted, so browsers threw the whole font list away and drew
+  the text in their default serif. Thomas also preferred the look before. The Claude bridge's
+  labels are `Roboto, Arial, sans-serif` again, and so is the kit's guide. VectorCraft still
+  marks Roboto as a missing font, and its own `.ai` breaks such text. So an Illustrator file
+  comes from **Background → Illustrator**, which sets the text in Arial.
+- **Bakgrunn is locked in the `.ai` as well.** Background → Illustrator writes a layer named
+  Bakgrunn locked, as VectorCraft opens it. A lock the drawing writes itself still wins
+  (`data-iwdie-locked="0"` leaves it unlocked).
+
 ### The background locked in VectorCraft (v1.65.1)
 
 Thomas: the background should always be locked. A drawing that opens in VectorCraft as it is -
