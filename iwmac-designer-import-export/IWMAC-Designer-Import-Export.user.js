@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.68.0
+// @version      1.68.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.68.0';
+var IWDIE_VERSION = '1.68.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -353,7 +353,8 @@ function iwdiePanelJsonSchema() {
     title: 'IWMAC Designer panel file',
     description: 'The file Insert JSON… takes and Export JSON writes (format ' + IWDIE_FORMAT + ', version ' + IWDIE_FORMAT_VERSION + '), made by the ' +
       'userscript from the same tables its in-file guide writes. An agent returns one such file per panel, raw JSON, counts equal to the array ' +
-      'lengths; for a new picture, its drawing in panel.image_svg and the same drawing beside it as an .svg.',
+      'lengths; for a new picture, its drawing in panel.image_svg. That one file is the whole answer: no .svg, .ai, .png or archive ' +
+      'beside it - Insert makes the picture from image_svg, and Background → Illustrator writes the .svg and the .ai.',
     type: 'object',
     required: needed(file, 'key'),
     properties: top,

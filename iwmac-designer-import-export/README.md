@@ -338,6 +338,16 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### One file is the whole answer (v1.68.1)
+
+Thomas: the Copilot agent should generate only one JSON file. It had answered with the panel JSON
+and a zip of the JSON and its drawing as `.svg`, because the panel file's schema - and the
+Copilot kit after it - asked for the drawing beside the JSON as an `.svg`. That file has had no
+use since 1.65.0: Insert makes the picture from `panel.image_svg`, Edit in VectorCraft opens the
+drawing with its layers, and Background → Illustrator or *Save .ai for Illustrator* writes the
+`.svg` and the `.ai`. The schema's description now says that one file is the whole answer, with
+no `.svg`, `.ai`, `.png` or archive beside it.
+
 ### The Maskin template built in: nothing to import (v1.68.0)
 
 Thomas: make it so you don't have to upload `maskin-light-template.ai`. 1.67.0's check could
