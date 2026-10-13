@@ -338,6 +338,26 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### The Maskin template built in: nothing to import (v1.68.0)
+
+Thomas: make it so you don't have to upload `maskin-light-template.ai`. 1.67.0's check could
+import the template; now the script carries it. By his decision, this replaces 1.67.0's "the
+template stays out of this repository".
+
+- **Every house symbol is drawn, with nothing kept.** The script carries the Maskin template's 418
+  components (`IWDIE_LIB_BUILTIN`, zstd in base64, about 63 kB). It reads them with its own zstd
+  reader the first time a symbol is drawn, in about 50 ms.
+- **A kept library comes first.** A plant's own `.ai` keeps most of the template, not all. Its
+  drawings are used where it has them, and the template fills in the names it lacks.
+- **Where it is used.** Insert and its check, the export's list of symbols for an agent, and the
+  Claude bridge. Insert's outcome says *drawn from the Maskin template built into the script*.
+- **Where it is not.** Looking for components in a panel's picture at Edit in VectorCraft, and
+  VectorCraft's Libraries, still go by a library you kept. Otherwise every panel with a picture
+  would be searched, and every opening would fill Libraries with 418 components.
+- **The import button stays**, for a name the template does not have.
+- **Written, not edited.** The Copilot kit's `tests/builtin-library.js` writes the block from the
+  template, and a kit test holds the block to it.
+
 ### The Maskin template from Insert's check (v1.67.0)
 
 Thomas inserted a drawing the Copilot agent made, and its 56 house symbols came in as red dashed
