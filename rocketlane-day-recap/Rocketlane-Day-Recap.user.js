@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.162
+// @version      4.163
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2160,7 +2160,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.162';
+    const SCRIPT_VERSION   = '4.163';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -6037,10 +6037,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // v4.162: the plant number, then a dash, colon or dot — or just a space: "8847 Extra Tverlandet -
                 // deviation" is 8847's subtask too. A longer number never matches ("27940" is not 2794).
                 const pidRe = new RegExp('^\\s*' + String(plantId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:\\s*[-–—:.]|\\s)');
-                const cand = tasks.filter(t => t.taskId !== pid && pidRe.test(t.taskName));
-                // Best first: a child of the container before a stray left top-level by ≤4.107, an open subtask
-                // before a done one, and the plant's own "<id> - <name>" before a longer, job-specific name.
-                const rank = t => (String(t.parentTask || '') === String(pid) ? 0 : 2) + (t.done ? 1 : 0);
+                // A DONE subtask is a finished job — on the live list "8847 Extra Tverlandet - deviation" and
+                // "4874 Extra Selbu - maskinbildet" — so new work never lands on it; with no open subtask left the
+                // plant gets a fresh "<id> - <name>" one (v4.163; ≤4.162 reused done ones too).
+                const cand = tasks.filter(t => t.taskId !== pid && !t.done && pidRe.test(t.taskName));
+                // Best first: a child of the container before a stray left top-level by ≤4.107, and the plant's
+                // own "<id> - <name>" before a longer, job-specific name.
+                const rank = t => String(t.parentTask || '') === String(pid) ? 0 : 1;
                 const hit = cand.slice().sort((x, y) => rank(x) - rank(y) || x.taskName.length - y.taskName.length)[0];
                 if (hit) out = { taskId: hit.taskId, taskName: hit.taskName };
                 else {
