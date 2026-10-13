@@ -338,6 +338,19 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### No template to import at Insert's check (v1.68.2)
+
+Thomas: remove *Import the Maskin template (.ai)…*, since the template is in the code. From
+1.68.0 the script draws every name the template has, so the button showed only for a name the
+template lacks, and importing the template could not help with that one.
+
+- **The check counts the boxes.** A file that places a name that neither the template nor a library
+  kept in this browser has gets a note under the buttons: how many symbols Insert draws as red
+  dashed boxes with their names, to swap by hand. The check's warning names them and says to use
+  the template's names.
+- **A plant's own `.ai`** is still kept from Components in *Edit in VectorCraft…*. Its drawings
+  come first, and the template fills in the rest.
+
 ### One file is the whole answer (v1.68.1)
 
 Thomas: the Copilot agent should generate only one JSON file. It had answered with the panel JSON

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.68.1
+// @version      1.68.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.68.1';
+var IWDIE_VERSION = '1.68.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1456,11 +1456,10 @@ function iwdieCheckFile(text, opts) {
         var lack = order.filter(function (n) { return have.indexOf(iwdieSymKey(n)) < 0; });
         if (lack.length) {
           out.warnings.push(opts.symbols.length
-            ? 'image_svg places ' + iwdieN(lack.length, 'symbol', 'symbols') + ' the component library kept in this browser does not have (' + lack.slice(0, 6).join(', ') +
-              (lack.length > 6 ? ', …' : '') + '): Insert draws each as a red dashed box with its name, to swap by hand - or import a library that has ' +
-              'them first, with Import the Maskin template (.ai)… here.'
-            : 'image_svg places house symbols by name, but no component library is kept in this browser: Insert draws each as a red dashed box with its name. ' +
-              'Import the Maskin template\'s .ai (or the plant\'s own) first, with Import the Maskin template (.ai)… here - once, for this browser.');
+            ? 'image_svg places ' + iwdieN(lack.length, 'symbol', 'symbols') + ' the Maskin template does not have (' + lack.slice(0, 6).join(', ') +
+              (lack.length > 6 ? ', …' : '') + '): Insert draws each as a red dashed box with its name, to swap by hand. Use the names the template has.'
+            : 'image_svg places house symbols by name, but no component library could be read here, not even the Maskin template built into the ' +
+              'script: Insert draws each as a red dashed box with its name.');
         }
       }
     }
@@ -18687,7 +18686,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        diagnosis produces. */
     var stagedText = '';
     var stagedName = '';
-    // how many of its house symbols the kept library cannot draw (v1.67.0): the check then offers the template's import
+    // how many of its house symbols no library here can draw (v1.67.0): the check's note counts them
     var stagedLack = 0;
 
     function readFileAndStage(file) {
@@ -18769,27 +18768,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
       var picked = pickedBackgroundName();
       if (!refused && picked) foot.push('Background: your picture ' + picked + ', not the file’s.');
-      // its house symbols drawn rather than boxed (v1.67.0): the Maskin template's components kept in this browser first, from here
-      var needLib = !refused && stagedLack > 0;
-      if (needLib) {
-        foot.push(iwdieN(stagedLack, 'house symbol is', 'house symbols are') + ' not in a component library kept in this browser, so Insert would ' +
-          'draw ' + (stagedLack === 1 ? 'it' : 'them') + ' as red dashed boxes. Import the Maskin template’s .ai first - once, for this browser - ' +
-          'and the check runs again.');
+      // house symbols no library here draws (v1.68.2): the template is built in, so there is nothing to import from here
+      if (!refused && stagedLack > 0) {
+        foot.push(iwdieN(stagedLack, 'house symbol is', 'house symbols are') + ' not in the Maskin template, so Insert draws ' +
+          (stagedLack === 1 ? 'it as a red dashed box with its name' : 'them as red dashed boxes with their names') + ', to swap by hand.');
       }
       var html = report.html +
         '<div class="iwdie-review-foot"><div class="iwdie-actions">' +
-        (needLib ? '<button class="iwdie-btn iwdie-secondary" id="iwdie_lib_import" title="Its components - the objects around its artboard - are ' +
-          'kept in this browser, in place of any kept before: Insert draws the house symbols from them, and VectorCraft’s Libraries offer them. ' +
-          'Nothing leaves the browser.">Import the Maskin template (.ai)…</button>' +
-          '<input type="file" id="iwdie_lib_file" accept=".ai,.pdf,application/pdf,application/postscript,application/illustrator" ' +
-          'style="display:none">' : '') +
         (!refused ? '<button class="iwdie-btn" id="iwdie_insert_now">' +
           esc(bgOnly ? 'Apply the background only' : 'Insert ' + iwdieCountPhrase(ov.objects, ov.containers, ov.graphics)) + '</button>' : '') +
         (refused && diag && diag.aiPrompt ? '<button class="iwdie-btn" id="iwdie_copy_fix">📋 Copy the fix for the AI</button>' : '') +
         '<button class="iwdie-btn iwdie-secondary" id="iwdie_check_copy">📋 Copy report for the AI</button>' +
         '<button class="iwdie-link" id="iwdie_back">← Choose another file</button>' +
-        '</div>' + (foot.length ? '<div class="iwdie-foot-note">' + foot.map(esc).join('<br>') + '</div>' : '') +
-        (needLib ? '<div class="iwdie-foot-note" id="iwdie_lib_say"></div>' : '') + '</div>';
+        '</div>' + (foot.length ? '<div class="iwdie-foot-note">' + foot.map(esc).join('<br>') + '</div>' : '') + '</div>';
       var review = showReview(report.className, html);
       if (!review) return;
       review.querySelector('#iwdie_check_copy').addEventListener('click', function () {
@@ -18799,31 +18790,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (fix) fix.addEventListener('click', function () { copyToClipboard(diag.aiPrompt); });
       var ins = review.querySelector('#iwdie_insert_now');
       if (ins) ins.addEventListener('click', function () { importFromText(stagedText, { bgOnly: bgOnly }); });
-      // the template read as Libraries reads an .ai, named by the table and kept; then the same file checked again
-      var libBtn = review.querySelector('#iwdie_lib_import'), libFile = review.querySelector('#iwdie_lib_file');
-      if (libBtn && libFile) {
-        var libSay = function (html) { var el = review.querySelector('#iwdie_lib_say'); if (el) el.innerHTML = html; };
-        libBtn.addEventListener('click', function () { libFile.value = ''; libFile.click(); });
-        libFile.addEventListener('change', function () {
-          var f = libFile.files && libFile.files[0], text = stagedText, name = stagedName;
-          if (!f) return;
-          libBtn.disabled = true;
-          libRead(f, libSay).then(function (got) {
-            got.items = iwdieSymName(got.items);
-            if (!got.items.length) {
-              libSay('<b>' + esc(got.file) + '</b> has no components around its artboard' + (got.hidden ? ' that are not hidden' : '') + ': nothing was kept.');
-              libBtn.disabled = false;
-              return;
-            }
-            libStore(got);
-            toast(got.items.length + ' components kept from ' + got.file + ': Insert draws the house symbols from them.', false, 6000);
-            if (stagedText === text) stageImportText(text, name);
-          }, function (e) {
-            libSay('<b>' + esc(String(f.name || 'The file')) + '</b> could not be read: ' + esc(String((e && e.message) || e)));
-            libBtn.disabled = false;
-          });
-        });
-      }
     }
 
     /** opts.quick (v1.31.0): Insert without checking — see applyImportCore.
