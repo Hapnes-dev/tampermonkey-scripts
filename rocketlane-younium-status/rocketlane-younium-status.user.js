@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.69.0
+// @version      1.70.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, and chat macros (type / in a chat).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2126,7 +2126,7 @@
   // Rocketlane is a client-routed SPA — re-evaluate on every navigation so the
   // button re-injects (if the nav was rebuilt) and re-points at the new project.
   function onRouteChange() {
-    try { rlNcNoteVisit(); rlNcSchedulePass(); } catch (_) {}
+    try { rlNcNoteVisit(); rlNcSchedulePass(); rlCrTick(); } catch (_) {}
     try {
       rlProjectLinksCache.clear();
       delete document.documentElement.dataset.rlPabNoMount;
@@ -6336,6 +6336,21 @@
   //         ("Demo_1241605" → "demo1241605").
   //     Visits are kept in GM rlNotifColVisits, shared by every tab: entering or
   //     leaving a project, or hiding its tab, counts as having seen it.
+  //
+  //     v1.70.0 — opening a chat reads it (Thomas: "When opening a chat, the
+  //     unread notifications for that chat should automatically disappear. on
+  //     all chats"). Rocketlane's chat view reports a message as seen only once
+  //     its comment list has shown it (lastSeenUpdateCallback → POST
+  //     /projects/{id}/project-conversations/{conv}/members/lastSeen
+  //     { commentId }, read from its bundle 2026-10-14). A chat with many unread
+  //     opens at the "new messages" line, so the newest is never shown and the
+  //     chat stays unread: 1061623's General chat kept 27. Now, whenever a chat
+  //     is on screen — its page, or the timeline's floating chat panel, which
+  //     embeds that page in one iframe per chat — and Rocketlane still counts it
+  //     unread, its newest message is sent as seen with that same call. Again
+  //     every minute while it stays on screen in a focused window. A chat
+  //     opened in a background tab, a collapsed panel or the panel's other tab
+  //     is not on screen and stays unread.
   // ════════════════════════════════════════════════════════════════════════
   // @@rlNotifColHelpers:start
   const RL_NC_LABEL = "Notifications";
@@ -6537,6 +6552,36 @@
     }
     return none;
   }
+
+  /** A project's cached chat counts need reading again: too old, or the project was opened since. */
+  function rlNcChatStale(at, visitMs, now, ttl) {
+    const t = Number(at) || 0;
+    if (!t) return true;
+    return Number(now) - t >= Number(ttl) || (Number(visitMs) || 0) > t;
+  }
+
+  /** "/projects/1061623/chat/12051773" → { pid, conv }; any other path null. */
+  function rlCrChatRoute(pathname) {
+    const m = /^\/projects\/(\d+)\/chat\/(\d+)(?:\/|$)/.exec(String(pathname || ""));
+    return m ? { pid: m[1], conv: m[2] } : null;
+  }
+
+  /**
+   * The newest message of a chat (GET …/conversations → comments): by createdAt, then
+   * commentId; 0 if none. Only people's messages: Rocketlane refuses a join notice
+   * (CONTROL_MESSAGE) as "Invalid comment id passed while updating last seen" (400).
+   */
+  function rlCrNewestCommentId(comments) {
+    let best = null;
+    for (const c of Array.isArray(comments) ? comments : []) {
+      const id = Number(c?.commentId);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      if (c.messageType && c.messageType !== "USER_MESSAGE") continue;
+      const at = Number(c?.createdAt) || 0;
+      if (!best || at > best.at || (at === best.at && id > best.id)) best = { id, at };
+    }
+    return best ? best.id : 0;
+  }
   // @@rlNotifColHelpers:end
 
   const RL_NC_GM_VISITS = "rlNotifColVisits";
@@ -6726,7 +6771,8 @@
     if (document.visibilityState === "hidden") return;
     const now = Date.now();
     if (!rlNc.feedBusy && now - rlNc.feedAt >= RL_NC_FEED_TTL_MS) void rlNcLoadFeed();
-    const stale = pids.filter((pid) => !rlNc.chatBusy.has(pid) && now - (rlNc.chats.get(pid)?.at || 0) >= RL_NC_CHAT_TTL_MS);
+    const stale = pids.filter((pid) => !rlNc.chatBusy.has(pid) &&
+      rlNcChatStale(rlNc.chats.get(pid)?.at, rlNc.visits[pid], now, RL_NC_CHAT_TTL_MS));
     if (stale.length) void rlNcLoadChats(stale);
   }
 
@@ -6853,6 +6899,99 @@
     if (ev.key === "Enter") rlNcOpen(cell.querySelector(".rlNcPill"), ev.ctrlKey || ev.metaKey);
   }
 
+  // ── Opening a chat reads it (v1.70.0) ───────────────────────────────────
+  const RL_CR_OPEN_DELAY_MS = 1500;
+  const RL_CR_RECHECK_MS = 60 * 1000;
+  const rlCr = { key: "", lastCheck: 0, timer: null, inflight: new Set() };
+
+  /**
+   * The chat this window shows is in front of the user: the tab is visible and, inside the
+   * floating panel's iframe, this chat's frame is the one shown (the other one sits at
+   * opacity 0, and a collapsed panel hides both).
+   */
+  function rlCrOnScreen() {
+    if (document.visibilityState !== "visible") return false;
+    if (window.top === window.self) return true;
+    try {
+      const fe = window.frameElement;
+      if (!fe) return false;
+      // The panel's other chat: pointer-events none at once, while its opacity is still fading.
+      if (getComputedStyle(fe).pointerEvents === "none") return false;
+      if (typeof fe.checkVisibility === "function") {
+        return fe.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+      }
+      const r = fe.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && getComputedStyle(fe).opacity !== "0";
+    } catch (_) {
+      return false;
+    }
+  }
+  function rlCrHasFocus() {
+    try { return window.top.document.hasFocus(); } catch (_) { return document.hasFocus(); }
+  }
+
+  /** Mark the chat read if Rocketlane still counts it unread: the newest message, sent as seen. */
+  async function rlCrMarkRead(pid, conv) {
+    const base = "/projects/" + encodeURIComponent(pid) + "/project-conversations";
+    const list = async () => {
+      const r = await gmRocketlaneGet(base);
+      return Array.isArray(r) ? r : Array.isArray(r?.data) ? r.data : [];
+    };
+    let convs = await list();
+    const chat = convs.find((c) => String(c?.conversationId) === String(conv));
+    if (chat && Number(chat.unreadMessages) > 0) {
+      const r = await gmRocketlaneGet(base + "/" + encodeURIComponent(conv) + "/conversations");
+      const newest = rlCrNewestCommentId(Array.isArray(r?.comments) ? r.comments : []);
+      if (!newest) return;
+      await gmRocketlaneRequest("POST", base + "/" + encodeURIComponent(conv) + "/members/lastSeen", null, { commentId: newest });
+      try {
+        convs = await list();
+      } catch (_) {
+        convs = convs.map((c) => (String(c?.conversationId) === String(conv) ? { ...c, unreadMessages: 0 } : c));
+      }
+      // A visit after the read: a Projects list in another tab reads this project's chats again.
+      rlNcNoteVisit();
+    }
+    rlNc.chats.set(String(pid), { at: Date.now(), data: rlNcChatUnread(convs) });
+  }
+
+  async function rlCrCheck(key) {
+    const route = rlCrChatRoute(location.pathname);
+    if (!route || route.pid + "/" + route.conv !== key || !rlCrOnScreen()) return;
+    if (rlCr.inflight.has(key)) return;
+    rlCr.inflight.add(key);
+    rlCr.lastCheck = Date.now();
+    try {
+      await rlCrMarkRead(route.pid, route.conv);
+    } catch (e) {
+      console.warn("[Rocketlane improvements] marking the chat read failed:", e?.message || e);
+    } finally {
+      rlCr.inflight.delete(key);
+    }
+  }
+
+  /**
+   * Runs on route changes, focus, visibility and a slow timer. A chat that comes on screen is
+   * read after a moment (if it is still the one shown); one that stays on screen in a focused
+   * window is looked at again every minute, for the messages that arrived meanwhile.
+   */
+  function rlCrTick() {
+    let route = null;
+    let onScreen = false;
+    try {
+      route = rlCrChatRoute(location.pathname);
+      onScreen = !!route && rlCrOnScreen();
+    } catch (_) {}
+    const key = onScreen ? route.pid + "/" + route.conv : "";
+    if (key !== rlCr.key) {
+      rlCr.key = key;
+      clearTimeout(rlCr.timer);
+      if (key) rlCr.timer = setTimeout(() => { void rlCrCheck(key); }, RL_CR_OPEN_DELAY_MS);
+      return;
+    }
+    if (key && rlCrHasFocus() && Date.now() - rlCr.lastCheck >= RL_CR_RECHECK_MS) void rlCrCheck(key);
+  }
+
   rlWhenDomReady(() => {
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click", "auxclick", "dblclick", "contextmenu"]) {
       window.addEventListener(type, rlNcPointerGuard, true);
@@ -6864,7 +7003,10 @@
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") rlNcNoteVisit();
       else rlNcSchedulePass();
+      rlCrTick();
     });
+    window.addEventListener("focus", () => rlCrTick());
+    setInterval(rlCrTick, 1500);
     window.addEventListener("pagehide", () => { try { rlNcNoteVisit(); } catch (_) {} });
     // The Manage columns dialog opens on a click and filters on typing; it is not in the grid.
     document.addEventListener("click", () => {
