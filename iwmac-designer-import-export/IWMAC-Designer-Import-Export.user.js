@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.68.2
+// @version      1.68.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.68.2';
+var IWDIE_VERSION = '1.68.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8178,24 +8178,38 @@ function iwdieVcDesignerObjects(found, existing) {
  *  drawing parsed as XML; `measure(groups)` gives each one's box in panel pixels ({x, y, w, h}),
  *  {hidden: true} for a hidden one, which stays as it is, or null, in order. One without a box
  *  goes too, and is counted. The art its object stands on stays (v1.47.0, iwdieVcKeepUnder).
+ *  `job` (v1.68.3): the edit the sync is for. When some of the panel's placeholders say they are that edit's
+ *  (data-iwdie-job), one of the panel's that does not is an older edit's - the IWMAC objects a plant's .ai kept from the
+ *  edit it was saved in, under the names the panel had then - and goes from the picture, art and all, as nothing.
  *  -> {found: [{id, x, y, w, h, text, bind, label}], skipped, layer: whether the layer IWMAC-objekter is in it,
- *  frames: placeholders whose art stayed} - `bind` the parameter its name writes after the obj_id, `label` what that was
- *  when the panel's object was sent (v1.63.0) */
-function iwdieVcTakePlaceholders(doc, measure) {
-  var groups = doc.getElementsByTagName('g'), picked = [], layer = false;
+ *  frames: placeholders whose art stayed, stale: an older edit's left out} - `bind` the parameter its name writes after
+ *  the obj_id, `label` what that was when the panel's object was sent (v1.63.0) */
+function iwdieVcTakePlaceholders(doc, measure, job) {
+  var groups = doc.getElementsByTagName('g'), picked = [], layer = false, stale = [];
+  var mine = !!job && Array.prototype.some.call(groups, function (g) {
+    return !!g.getAttribute('data-iwdie-ref') && g.getAttribute('data-iwdie-job') === job;
+  });
+  var under = function (g, list) {
+    for (var p = g.parentNode; p && p.nodeType === 1; p = p.parentNode) {
+      for (var j = 0; j < list.length; j++) if ((list[j].g || list[j]) === p) return true;
+    }
+    return false;
+  };
   for (var i = 0; i < groups.length; i++) {
     var g = groups[i], obj = g.getAttribute('data-iwdie-obj');
     if (g.getAttribute('id') === 'IWMAC-objekter' || g.getAttribute('data-name') === 'IWMAC-objekter') layer = true;
     // one of the panel's own (v1.46.0) is one by what it says it is, its obj_id known here or not
     var id = iwdieVcObjectId(g.getAttribute('data-name') || g.getAttribute('id')) || (obj && /^[\w.-]+$/.test(obj) && g.getAttribute('data-iwdie-ref') ? obj : null);
     if (!id) continue;
-    var inner = false;
-    for (var p = g.parentNode; p && p.nodeType === 1 && !inner; p = p.parentNode) {
-      for (var j = 0; j < picked.length; j++) if (picked[j].g === p) { inner = true; break; }
+    if (mine && g.getAttribute('data-iwdie-ref') && g.getAttribute('data-iwdie-job') !== job) {
+      if (!under(g, stale)) stale.push(g);
+      continue;
     }
-    if (!inner) picked.push({ g: g, id: id });
+    if (!under(g, picked) && !under(g, stale)) picked.push({ g: g, id: id });
   }
-  if (!picked.length) return { found: [], skipped: 0, layer: layer, frames: 0 };
+  // an older edit's out of the picture once all are read: the objects they stood for are this edit's placeholders now
+  stale.forEach(function (g) { if (g.parentNode) g.parentNode.removeChild(g); });
+  if (!picked.length) return { found: [], skipped: 0, layer: layer, frames: 0, stale: stale.length };
   var boxes = measure(picked.map(function (q) { return q.g; })) || [], found = [], skipped = 0, frames = 0;
   picked.forEach(function (q, k) {
     var box = boxes[k], texts = q.g.getElementsByTagName('text'), words = [], was = null;
@@ -8223,7 +8237,7 @@ function iwdieVcTakePlaceholders(doc, measure) {
     if (iwdieVcKeepUnder(q.g, box && box.w > 0 && box.h > 0 ? box : null, was, k)) { frames++; return; }
     if (q.g.parentNode) q.g.parentNode.removeChild(q.g);
   });
-  return { found: found, skipped: skipped, layer: layer, frames: frames };
+  return { found: found, skipped: skipped, layer: layer, frames: frames, stale: stale.length };
 }
 
 /** A placeholder's art (v1.47.0) - what its object stands on in the picture, marked data-iwdie-under -
@@ -8345,6 +8359,15 @@ function iwdieVcPanelSent(objects) {
     return ob && ob.name && /^[\w.-]+$/.test(String(ob.obj_id || '')) && isFinite(parseFloat(ob.posLeft)) && isFinite(parseFloat(ob.posTop)) &&
       parseFloat(ob.posWidth) > 0 && parseFloat(ob.posHeight) > 0;
   }).map(function (ob) { return String(ob.name); });
+}
+
+/** The panel's placeholders in a job's SVG marked as that job's (v1.68.3): data-iwdie-job on each group that says which of
+ *  the panel's objects it is (data-iwdie-ref). VectorCraft keeps it through a paste and a save, as it keeps the ref; a sync
+ *  then changes objects by these alone (iwdieVcTakePlaceholders). -> the SVG */
+function iwdieVcTagJob(svg, id) {
+  var s = String(svg || '');
+  if (!id) return s;
+  return s.replace(/<g\b(?=[^>]*\sdata-iwdie-ref=")(?![^>]*\sdata-iwdie-job=)/g, '<g data-iwdie-job="' + iwdieDrawEsc(String(id)) + '"');
 }
 
 /** A VectorCraft SVG - a background that came from VectorCraft - with the panel's objects added
@@ -15595,7 +15618,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           pending = null;
           try { GM_deleteValue(key); } catch (e) {}
           if (val.state === 'applied') {
-            var placed = +val.placed || 0, already = +val.already || 0, skipped = +val.skipped || 0;
+            var placed = +val.placed || 0, already = +val.already || 0, skipped = +val.skipped || 0, stale = +val.stale || 0;
             var mov = +val.moved || 0, rem = +val.removed || 0, held = +val.held || 0, linkd = +val.linked || 0;
             // what changed, on one line; what went wrong, a line each under it (v1.50.0)
             var did = [placed ? placed + ' placed' : '', mov ? mov + ' changed' : '', linkd ? linkd + ' linked' : '', rem ? rem + ' removed' : ''].filter(Boolean);
@@ -15603,6 +15626,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               (val.linkFailed || []).length ? 'Not linked: ' + esc2((val.linkFailed || []).join('; ')) : '',
               held ? iwdieN(held, 'object', 'objects') + ' without a placeholder stayed in the panel: ' + esc2(String(val.holdWhy || '')) : '',
               skipped ? iwdieN(skipped, 'placeholder', 'placeholders') + ' without a size (hidden?) became no object' : '',
+              stale ? iwdieN(stale, 'IWMAC placeholder', 'IWMAC placeholders') + ' the .ai kept from an older edit left out: only those added now change the panel' : '',
               val.objError ? 'The IWMAC objects were not placed: ' + esc2(String(val.objError)) + ' - sync again' : '',
               val.uploadError ? 'The PNG was not uploaded: ' + esc2(String(val.uploadError)) : ''
             ].filter(Boolean);
@@ -16339,6 +16363,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
       build.then(function (svg) {
         var id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        // its placeholders marked as this edit's (v1.68.3): a sync then tells them from an older edit's, a plant .ai's own
+        svg = iwdieVcTagJob(svg, id);
         var safe = String(info.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
         var job = { id: id, svg: svg, name: 'iwmac-' + (info.plant || 'plant') + '-' + safe + '.svg', panel: info.panel || '', plant: info.plant || '', at: Date.now(), version: IWDIE_VERSION,
           vector: !!info.vector, authored: !!info.authored, params: vcJobParams(info.params) };
@@ -16471,21 +16497,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  has none. With them gone it is kept without VectorCraft's own copy of the document, which
      *  still has them (and whose check of the drawing no longer matches it), so the next edit
      *  opens what is left. -> {svg, found, skipped} */
-    function vcPlaceholders(svg, size) {
+    function vcPlaceholders(svg, size, job) {
       // what a paste of the objects leaves (v1.55.0): the frame came with them, so their layer is in the save; the anchor
       // marks a drawing whose objects come only so - one without the frame did not get them. Neither stays in the picture.
       var framed = /\s(?:id|data-name)\s*=\s*"IWMAC-ramme"/.test(svg), anchored = /\s(?:id|data-name)\s*=\s*"IWMAC-anker"/.test(svg);
       if (framed || anchored) svg = iwdieVcStripEditing(iwdieVcStripHelpers(svg));
-      var none = { svg: svg, found: [], skipped: 0, layer: framed, frames: 0 };
+      var none = { svg: svg, found: [], skipped: 0, layer: framed, frames: 0, stale: 0 };
       if (!/IWMAC[ _]/.test(svg)) return none;
       var doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
       if (!doc || !doc.documentElement || doc.getElementsByTagName('parsererror').length) return none;
-      var took = iwdieVcTakePlaceholders(doc, function (groups) { return vcMeasure(doc, groups, size); });
+      var took = iwdieVcTakePlaceholders(doc, function (groups) { return vcMeasure(doc, groups, size); }, job);
       var layer = framed || (took.layer && !anchored);
-      if (!took.found.length && !took.skipped && !took.frames) return { svg: svg, found: [], skipped: 0, layer: layer, frames: 0 };
+      if (!took.found.length && !took.skipped && !took.frames && !took.stale) return { svg: svg, found: [], skipped: 0, layer: layer, frames: 0, stale: 0 };
       var out = new XMLSerializer().serializeToString(doc);
       if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
-      return { svg: iwdieVcStripEditing(out), found: took.found, skipped: took.skipped, layer: layer, frames: took.frames };
+      return { svg: iwdieVcStripEditing(out), found: took.found, skipped: took.skipped, layer: layer, frames: took.frames, stale: took.stale };
     }
 
     /** A saved drawing without the components still around its artboard (v1.59.0): those the plant's .ai brought there
@@ -18067,7 +18093,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  letters of a font it lacks - Roboto, on the web. `svg`: the drawing as VectorCraft saves it; `size`: the panel's.
      *  -> Promise<{bytes, name, conv, objects}> */
     function vcIllustratorFile(svg, size, job) {
-      var ph = vcPlaceholders(vcOffBoard(svg, size).svg, size), drawing = ph.svg;
+      var ph = vcPlaceholders(vcOffBoard(svg, size).svg, size, job && job.id), drawing = ph.svg;
       var conv = iwdieSvgAiLayers(drawing, size);
       if (!conv || !conv.layers.length) return Promise.reject(new Error('the drawing has no layer to write'));
       var built = conv.layers.map(function (L) { return iwdieSvgAiLayerLines(L); });
@@ -18134,7 +18160,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var size = exportPanelSize(), ph;
       // the components still around the artboard left out (v1.59.0): they never show on the panel
       try { svg = vcOffBoard(svg, size).svg; } catch (e) {}
-      try { ph = vcPlaceholders(svg, size); } catch (e) {
+      try { ph = vcPlaceholders(svg, size, info.job); } catch (e) {
         toast('The IWMAC objects in the VectorCraft save could not be read, so nothing was changed: ' + ((e && e.message) || e), true, 10000);
         ack('failed', 'The Designer could not read the IWMAC objects in it: ' + ((e && e.message) || e));
         return;
@@ -18206,8 +18232,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           gone.slice(0, 6).join(', ') + (gone.length > 6 ? ', …' : '') + '). Delete them here if they should go.');
         if (ph.frames) lines.push('The art under ' + iwdieN(ph.frames, 'object', 'objects') + ' - its frame, its pill - is in the picture where its placeholder left it.');
         if (ph.skipped) lines.push(iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.');
+        if (ph.stale) lines.push(iwdieN(ph.stale, 'placeholder', 'placeholders') + ' from an older edit left out - the IWMAC objects the plant’s .ai kept ' +
+          'from the edit it was saved in. They stood for the objects as they were then; the ones added in this edit are the panel’s.');
         // the editor's tab told at once (v1.56.0): the background and the objects are set; the PNG still goes up
-        var applied = { placed: objs.placed, already: objs.already, skipped: ph.skipped, objError: objs.error || mv.error || rm.error || rl.error,
+        var applied = { placed: objs.placed, already: objs.already, skipped: ph.skipped, stale: ph.stale || 0, objError: objs.error || mv.error || rm.error || rl.error,
           moved: mv.moved + rl.relinked, removed: rm.removed.length, held: hold ? gone.length : 0, holdWhy: hold, uploading: true,
           linked: ch.fresh.filter(function (f) { return f.link; }).length + rl.relinked, linkFailed: links.failed.slice(0, 6) };
         if (info.adopted) lines.push('This tab took the edit over from the tab it began in: objects deleted in VectorCraft are not taken off here - delete them by hand.');
@@ -20176,6 +20204,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcPanelPlaceholderSvg: iwdieVcPanelPlaceholderSvg,
     vcPanelObjectsLayer: iwdieVcPanelObjectsLayer,
     vcPanelSent: iwdieVcPanelSent,
+    vcTagJob: iwdieVcTagJob,
     vcAddPanelObjects: iwdieVcAddPanelObjects,
     vcObjectChanges: iwdieVcObjectChanges,
     vcPlaceholderName: iwdieVcPlaceholderName,

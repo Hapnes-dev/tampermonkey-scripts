@@ -338,6 +338,27 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### This edit's placeholders alone (v1.68.3)
+
+Thomas: editing in VectorCraft did not sync to the Designer on Ctrl+S. Measured on plant 10266 with
+Playwright:
+- **A plain edit synced.** The panel's drawing opened, its objects moved and a text added, and both
+  arrived.
+- **An edit after Open plant .ai… did not.** It moved 16 of the 39 objects onto the places of
+  others and placed 31 again as copies.
+
+What went wrong, and what changed:
+- **Why.** A plant's `.ai` keeps the IWMAC objects of the edit it was saved in, under the names the
+  panel had then. Open plant .ai… added the panel's objects again, so the save held two sets.
+  - The older set, first in the drawing, took the objects by name. The panel had since given those
+    names to other objects.
+  - The newer set found its names taken and became new objects.
+- **The fix.** The panel's placeholders are marked with the edit they belong to
+  (`data-iwdie-job`), and a sync changes objects by those alone.
+  - An older edit's placeholders are left out of the picture and change nothing.
+  - The Designer and the editor's tab say how many were left out.
+- **Not changed.** A placeholder moved by a pixel or less still counts as where it was.
+
 ### No template to import at Insert's check (v1.68.2)
 
 Thomas: remove *Import the Maskin template (.ai)…*, since the template is in the code. From
