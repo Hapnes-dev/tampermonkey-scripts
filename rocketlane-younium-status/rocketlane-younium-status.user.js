@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.70.0
+// @version      1.71.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, and chat macros (type / in a chat).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -6351,6 +6351,14 @@
   //     every minute while it stays on screen in a focused window. A chat
   //     opened in a background tab, a collapsed panel or the panel's other tab
   //     is not on screen and stays unread.
+  //
+  //     v1.71.0 — the bell's entries for that chat are cleared as well (Thomas:
+  //     "yes clear the bell entries too when opening a chat"), with the bell's
+  //     own per-chat clear: PATCH /notifications?container=/project-conversations/
+  //     {conv}&filter=All { status: "Cleared" } (its "unclear" sends status New).
+  //     Asked first (GET /notifications?container=…&status=New&count=1), so a
+  //     chat with nothing in the bell costs one read and no write. Cleared
+  //     entries stay in the bell's Cleared list.
   // ════════════════════════════════════════════════════════════════════════
   // @@rlNotifColHelpers:start
   const RL_NC_LABEL = "Notifications";
@@ -6558,6 +6566,11 @@
     const t = Number(at) || 0;
     if (!t) return true;
     return Number(now) - t >= Number(ttl) || (Number(visitMs) || 0) > t;
+  }
+
+  /** The bell's container for a chat, as its groups name it (key.uri). */
+  function rlCrBellContainer(conv) {
+    return "/project-conversations/" + String(conv || "").trim();
   }
 
   /** "/projects/1061623/chat/12051773" → { pid, conv }; any other path null. */
@@ -6955,6 +6968,18 @@
     rlNc.chats.set(String(pid), { at: Date.now(), data: rlNcChatUnread(convs) });
   }
 
+  /** Clear the bell's New entries for this chat; how many went (the PATCH answers with the count). */
+  async function rlCrClearBell(conv) {
+    const container = rlCrBellContainer(conv);
+    const r = await gmRocketlaneGet("/notifications", {
+      container, status: "New", count: "1", start: String(Date.now() * 1000), filter: "All",
+    });
+    const fresh = Array.isArray(r) ? r : Array.isArray(r?.data) ? r.data : [];
+    if (!fresh.length) return 0;
+    const n = await gmRocketlaneRequest("PATCH", "/notifications", { container, filter: "All" }, { status: "Cleared" });
+    return Number(n) || 0;
+  }
+
   async function rlCrCheck(key) {
     const route = rlCrChatRoute(location.pathname);
     if (!route || route.pid + "/" + route.conv !== key || !rlCrOnScreen()) return;
@@ -6962,9 +6987,16 @@
     rlCr.inflight.add(key);
     rlCr.lastCheck = Date.now();
     try {
-      await rlCrMarkRead(route.pid, route.conv);
-    } catch (e) {
-      console.warn("[Rocketlane improvements] marking the chat read failed:", e?.message || e);
+      try {
+        await rlCrMarkRead(route.pid, route.conv);
+      } catch (e) {
+        console.warn("[Rocketlane improvements] marking the chat read failed:", e?.message || e);
+      }
+      try {
+        await rlCrClearBell(route.conv);
+      } catch (e) {
+        console.warn("[Rocketlane improvements] clearing the chat's bell entries failed:", e?.message || e);
+      }
     } finally {
       rlCr.inflight.delete(key);
     }
