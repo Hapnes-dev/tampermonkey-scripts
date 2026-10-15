@@ -482,6 +482,23 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Waits that last on a fast display (v1.73.3)
+
+Thomas, after Ctrl+S in the Designer: *VectorCraft did not take the panel's objects in: VectorCraft did not save the
+drawing, so it could not be read*. Reproduced in his own Chrome through the Playwright MCP on plant 4798's 315.001: the
+editor's tab, brought to the front, gave up 2.1 s after it began. His display draws 242 frames a second. The script's
+waits for VectorCraft were counted in frames - 480 for a save - which is 8 s at the 60 a second the headless tests run at,
+but 2 s on his display, and VectorCraft needs longer than that to save a drawing as big as his panel's.
+
+- A wait counted in frames now lasts at least as long as those frames take at 60 a second, however fast the display
+  draws: 480 frames are never less than 8 s. Every wait for VectorCraft goes through it: the Designer's objects coming
+  in, Ctrl+S's first Save As, a sync's save.
+- A drawing VectorCraft did not save when the Designer's objects came is tried once more, 1.5 s later, before the
+  Designer is told it failed.
+- Checked: the stub host's push and sync runs, and the edit-file run, as before. The live run waits for this version to
+  be installed in Tampermonkey. During the live test the Designer's picture upload was blocked, nothing was synced from
+  VectorCraft, and nothing was saved.
+
 ### Ctrl+S in the Designer never opens the browser's Save page (v1.73.2)
 
 Thomas: Ctrl+S in the Designer still asked to save the page as .html. It did so whenever no edit of the shown panel was

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.73.2
+// @version      1.73.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.73.2';
+var IWDIE_VERSION = '1.73.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -15005,13 +15005,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return new Promise(function (resolve) { var left = n; (function tick() { if (--left < 0) resolve(); else raf(tick); })(); });
         });
       };
-      // true as soon as test() holds, false after `n` frames
+      // true as soon as test() holds; false once `n` frames have passed and the time they take at 60 a second (v1.73.3): a
+      // display drawing 240 a second ran through 480 frames in 2 s, before VectorCraft had saved a big drawing
       var until = function (test, n) {
         return new Promise(function (resolve) {
-          var left = n;
+          var left = n, end = Date.now() + n * 1000 / 60;
           (function tick() {
             if (test()) resolve(true);
-            else if (--left < 0) resolve(false);
+            else if (--left < 0 && Date.now() >= end) resolve(false);
             else raf(tick);
           })();
         });
@@ -16110,8 +16111,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             ' The drawing is as it was here; <b>Ctrl+S</b> syncs it back. The version before is in its own tab.', false, true);
         }, function (e) {
           var msg = String((e && e.message) || e);
-          // VectorCraft busy saving or syncing: once more in a moment
-          if (/saving or syncing|not ready/.test(msg)) { fromDesigner = fromDesigner || p; setTimeout(bringIn, 1500); return; }
+          // VectorCraft busy saving or syncing: once more in a moment; one that did not save the drawing, once more (v1.73.3)
+          var busyNow = /saving or syncing|not ready/.test(msg), unsaved = /did not save the drawing/.test(msg) && !p.again;
+          if (busyNow || unsaved) {
+            if (unsaved) p.again = true;
+            fromDesigner = fromDesigner || p;
+            setTimeout(bringIn, 1500);
+            return;
+          }
           designerAck('failed', { message: msg });
           note('The panel’s objects from the Designer could not be brought in: ' + esc2(msg), true, true);
         });
