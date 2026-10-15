@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.69.0
+// @version      1.70.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.69.0';
+var IWDIE_VERSION = '1.70.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6932,6 +6932,31 @@ function iwdieLibWithBuiltin(lib) {
   Object.keys(lib).forEach(function (k) { out[k] = lib[k]; });
   out.items = lib.items.concat(extra);
   out.filled = extra.length;
+  return out;
+}
+
+/** The template's families an IWMAC object shows (v1.70.0): an alarm bell, "no connection", a switch, a clock, a state
+ *  pill, an LED. The Copilot kit's maskin-symbols.json marks the same ones object_instead, and its
+ *  test-named-components.js holds this list to that one. A drawing is never offered them, and VectorCraft's Libraries
+ *  leave them out: the IWMAC menu places the live object instead. */
+var IWDIE_SYM_OBJECT_FAMILIES = ['Alarm', 'NoConnection', 'Bryter3Av', 'Bryter3På', 'Bryter3Auto', 'Bryter2Av', 'Bryter2På',
+  'Klokke', 'KlokkeGrå', 'PilleGrå', 'PilleRød', 'PilleGrønn', 'PilleDelt', 'LedGrønn', 'LedGrå', 'LedRød'];
+
+/** The components VectorCraft offers, in Libraries and the IWMAC menu (v1.70.0): those kept from a plant's .ai, filled
+ *  in from the Maskin template built into the script - so, with nothing imported, the template's own, always - less
+ *  those an IWMAC object shows. -> a library ({..., items, filled, builtin when nothing was kept, objects: how many
+ *  were left out}) or null */
+function iwdieLibForVc(kept) {
+  var lib = iwdieLibWithBuiltin(kept);
+  if (!lib || !lib.items) return null;
+  var objects = {};
+  IWDIE_SYM_OBJECT_FAMILIES.forEach(function (n) { objects[iwdieSymKey(n)] = 1; });
+  var items = lib.items.filter(function (it) { return !(it.sym && objects[iwdieSymKey(it.sym.name)]); });
+  if (!items.length) return null;
+  var out = {};
+  Object.keys(lib).forEach(function (k) { out[k] = lib[k]; });
+  out.items = items;
+  out.objects = lib.items.length - items.length;
   return out;
 }
 
@@ -13951,10 +13976,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** The library house symbols are drawn and named from (v1.68.0): the kept one, filled in from the Maskin template
-     *  built into the script - or that template alone. Not for looking for components in a picture, nor for
-     *  VectorCraft's Libraries: those still go by a kept one (libLoad). */
+     *  built into the script - or that template alone. Not for looking for components in a picture, which still goes
+     *  by a kept one (libLoad); VectorCraft's Libraries go by libForVc (v1.70.0). */
     function libSymbols() {
       return iwdieLibWithBuiltin(libLoad());
+    }
+
+    /** The components VectorCraft offers in Libraries and its IWMAC menu (v1.70.0): the kept ones filled in from the
+     *  template built in, or that template alone - always there, imported or not - less those an IWMAC object shows. */
+    function libForVc() {
+      return iwdieLibForVc(libLoad());
     }
 
     /** A library imported in Draw (1.33.0 to 1.35.0) lives in the Designer's own storage:
@@ -15304,7 +15335,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null;
       try { job = GM_getValue('iwdie.vc.job', null); } catch (e) { job = null; }
       if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') return;
-      var esc2 = iwdieEscHtml, lib = libLoad(), busy = false;
+      var esc2 = iwdieEscHtml, lib = libForVc(), busy = false;
       // the panel's .ai, chosen in the Designer's tab instead of a trace of its picture (v1.51.0): out of
       // Tampermonkey's storage at once, and opened once the editor is ready, as Open plant .ai… opens one
       var given = null;
@@ -15350,7 +15381,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var note = ui.note;
       // each row's how and why, on its label and its text alike
       var tip = function (cls, text) { var v = ui.el.querySelector('.' + cls); v.title = text; v.previousElementSibling.title = text; };
-      tip('iwdie-vcb-c', 'An Illustrator file’s components: the objects around its artboard, where Maskin files keep them. The plant’s .ai opened here ' +
+      tip('iwdie-vcb-c', 'The house components are always in Libraries and the IWMAC menu, built into the script: the Maskin template’s own, or a ' +
+        'plant’s .ai read here filled in from it - never those an IWMAC object shows (an LED, an alarm, a state pill, a switch, a clock), which the ' +
+        'IWMAC menu places as live objects. An Illustrator file’s components: the objects around its artboard, where Maskin files keep them. The plant’s .ai opened here ' +
         'has them around its artboard too, as Illustrator shows them (v1.59.0): on a layer of their own, unlocked, so a click takes one. Drag one onto ' +
         'the drawing, or Alt+drag a copy; Ctrl+0 fits the artboard again. What is still around the artboard at a sync stays out of the panel’s ' +
         'picture. Into Libraries too, when asked: there they come in pages, as VectorCraft’s Libraries panel does not scroll - choose a page in the ' +
@@ -15365,7 +15398,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         c.innerHTML = (compAround ? compAround + (compLib ? '<br>' : '') : '') + compLib;
       };
       var around = function (html) { compAround = html || ''; comp(compLib, compBad); };
-      comp(lib ? '<b>' + lib.items.length + '</b> from ' + esc2(lib.file || 'an Illustrator file') : 'none yet - they come with the plant’s .ai, around its artboard');
+      // where they come from: the plant's .ai kept here, filled in from the house template built in - or that alone (v1.70.0)
+      var compFrom = function (l) {
+        return '<b>' + l.items.length + '</b> ' + (l.builtin ? 'from the house template, built in'
+          : 'from ' + esc2(l.file || 'an Illustrator file') + (l.filled ? ' and the house template' : ''));
+      };
+      comp(lib ? compFrom(lib) : 'none yet - they come with the plant’s .ai, around its artboard');
       // the Designer's own objects, as placeholders that become them when saved back (v1.40.0)
       var looks = null;
       try { looks = (GM_getValue(IWDIE_VC_LOOKS_KEY, null) || {}).items || null; } catch (e) { looks = null; }
@@ -15417,12 +15455,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var name = String(f.name || 'The file');
         return readComp(f).then(function (got) {
           if (!got.items.length) {
-            comp('<b>' + esc2(got.file) + '</b> has none' + (got.hidden ? ' that are not hidden' : '') + (lib ? '; the ' + lib.items.length + ' kept stay' : ''), true);
+            comp('<b>' + esc2(got.file) + '</b> has none' + (got.hidden ? ' that are not hidden' : '') + (lib ? '; the ' + lib.items.length + ' offered stay' : ''), true);
             return null;
           }
           libStore(got);
-          lib = got;
-          return new Promise(function (resolve) { vcWhenReady(resolve, note); }).then(function () { return vcSendLibrary(got, comp); });
+          // kept, then offered as always: filled in from the house template, less what an IWMAC object shows (v1.70.0)
+          var offered = libForVc() || got;
+          lib = offered;
+          return new Promise(function (resolve) { vcWhenReady(resolve, note); }).then(function () { return vcSendLibrary(offered, comp); });
         }).then(null, function (e) {
           comp('<b>' + esc2(name) + '</b> could not be read: ' + esc2(String((e && e.message) || e)), true);
         });
@@ -20445,6 +20485,8 @@ if (typeof module !== 'undefined' && module.exports) {
     symLack: iwdieSymLack,
     libBuiltin: iwdieLibBuiltin,
     libWithBuiltin: iwdieLibWithBuiltin,
+    libForVc: iwdieLibForVc,
+    SYM_OBJECT_FAMILIES: IWDIE_SYM_OBJECT_FAMILIES,
     symExpand: iwdieSymExpand,
     symAvailable: iwdieSymAvailable,
     CB_PORT: IWDIE_CB_PORT,

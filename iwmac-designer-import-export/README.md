@@ -169,6 +169,13 @@ VectorCraft's **Libraries** panel (the third tab on the right), as *Komponenter 
   the selected layer as a group with the component's name, and every path in it can be
   edited like any other.
 
+**Always there (v1.70.0).** With nothing imported, Libraries and the IWMAC menu still offer the
+house components: the Maskin template's, built into this script. Of its 418, 386 are offered. Left
+out are those an IWMAC object shows: LEDs, alarm bells, state pills, switches, clocks and *no
+connection*. The IWMAC menu places the live object instead. A plant's `.ai` read here comes first;
+the template fills in the names it lacks. The banner says where they came from: *386 from the house
+template, built in*, or *N from 2349_Maskin.ai and the house template*.
+
 **How they get there.** VectorCraft keeps reusable art in libraries: a `.vclibrary` file
 (JSON) whose graphics are each a VectorCraft document with a PNG thumbnail. The script
 writes one:
@@ -338,6 +345,27 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### The house components always in VectorCraft (v1.70.0)
+
+Thomas, with the Advansor 772 Maskin `.ai` he imports: make all the components permanent in
+VectorCraft, every one that is not available as an IWMAC object. His file holds 417 components, and
+every one is drawn exactly as one of the template's 418 built into the script (1.68.0). So nothing had
+to be added to the script. What was missing was VectorCraft: its Libraries and IWMAC menu offered only
+a library kept in this browser, so with none imported they were empty.
+
+- **Libraries and the IWMAC menu always have them.** Edit in VectorCraft offers the kept components
+  filled in from the template built in. With none kept, it offers the template's own: 386 in Libraries,
+  in 11 pages with the IWMAC objects' pages, and in the IWMAC menu by layer. Measured in the real
+  VectorCraft web build with nothing kept: Libraries filled about 6 s after the editor opened.
+- **Never what an IWMAC object shows.** Sixteen of the template's families are drawn copies of what
+  an IWMAC object shows live: an alarm bell, *no connection*, five switches, two clocks, four state
+  pills and three LEDs (`IWDIE_SYM_OBJECT_FAMILIES`). The template draws them 32 times, and those 32
+  stay out of Libraries and the menu. Pipe pieces and colour samples are no IWMAC objects, so they stay
+  in. The Copilot kit's `maskin-symbols.json` marks the same sixteen `object_instead`, and a kit test
+  holds the two lists together.
+- **Unchanged.** Looking for components in a panel's picture still goes by a library you kept.
+  Reading a plant's `.ai` in the banner still keeps its components, and they then come first.
+
 ### Copilot's edits, by file (v1.69.0)
 
 Thomas asked whether the Copilot agent could draw in VectorCraft through MCP, as Claude does. It
@@ -440,7 +468,8 @@ template stays out of this repository".
   Claude bridge. Insert's outcome says *drawn from the Maskin template built into the script*.
 - **Where it is not.** Looking for components in a panel's picture at Edit in VectorCraft, and
   VectorCraft's Libraries, still go by a library you kept. Otherwise every panel with a picture
-  would be searched, and every opening would fill Libraries with 418 components.
+  would be searched, and every opening would fill Libraries with 418 components. (1.70.0 puts them
+  in Libraries all the same, at Thomas's request; the picture search still goes by a kept one.)
 - **The import button stays**, for a name the template does not have.
 - **Written, not edited.** The Copilot kit's `tests/builtin-library.js` writes the block from the
   template, and a kit test holds the block to it.
