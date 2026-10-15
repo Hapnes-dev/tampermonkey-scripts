@@ -173,8 +173,10 @@ VectorCraft's **Libraries** panel (the third tab on the right), as *Komponenter 
 house components: the Maskin template's, built into this script. Of its 418, 386 are offered. Left
 out are those an IWMAC object shows: LEDs, alarm bells, state pills, switches, clocks and *no
 connection*. The IWMAC menu places the live object instead. A plant's `.ai` read here comes first;
-the template fills in the names it lacks. The banner says where they came from: *386 from the house
-template, built in*, or *N from 2349_Maskin.ai and the house template*.
+the template fills in the names it lacks. Since v1.72.0 the Oversikt template's floor plan kit is
+built in too: 585 in all, its own on the pages *Oversikt kjøl*, *Oversikt frys* and *Oversikt*. The
+banner says where they came from: *585 from the house templates, built in*, or *N from
+2349_Maskin.ai and the house templates*.
 
 **How they get there.** VectorCraft keeps reusable art in libraries: a `.vclibrary` file
 (JSON) whose graphics are each a VectorCraft document with a PNG thumbnail. The script
@@ -395,6 +397,34 @@ Thomas: make sure Claude, through the MCP bridge, and the Copilot agent can use 
 - **Copilot.** The kit keeps a copy of the catalogue, `reference_data/vc-object-catalogue.json`. It is written from
   this script, and a test holds it to it. The edit skill's files place exactly these objects, and the overview skill
   places any of them by `obj_id`.
+
+### The Oversikt template's components, built in (v1.72.0)
+
+Thomas, with the house's Oversikt template (`xxxx_oversikt-v6_dato.ai`): add the components around its artboard as
+the Maskin template's were, so VectorCraft always has them, and make them easy for Copilot and Claude's MCP to use.
+
+- **What the template holds.** 224 components around its artboard: a store's floor plan kit. The case pieces come in
+  light blue for cooling and dark blue for freezer: modules, island ends, squares, rooms, a slim front row with its
+  ends, an angled run, curves, ring, round, diamond and oval islands. The rest is a door, trolley signs, condensing
+  units, condensers, a plug-in case's plug, a pin, a dishwasher and a car wash. 24 of the 224 are only the dashed
+  frames round the template's three sections, and are left out.
+- **Named.** `IWDIE_SYMBOLS` names the 200 after the Maskin families, in 66 families: `KjølDisk`, `FrysDisk`,
+  `KjølGavl`, `KjølRom`, `FrysSirkel` … for the cases, then `Inngang`, `Handlevogn`, `Aggregat`, `Kondensator3`,
+  `Plugg`, `Nål` and the rest. Each family says which template it comes from (`set`: Maskin or Oversikt). A drawing
+  places them by name, as it places the Maskin ones, and Insert draws them from the script:
+  `<use data-iwdie-symbol="KjølDisk" x="300" y="200" width="69" height="29"/>`.
+- **Always in VectorCraft.** The built-in library carries both templates, 618 components, the Oversikt ones on three
+  layers of their own. Libraries offers 585 of them, in pages: *Oversikt kjøl 1/2*, *2/2*, *Oversikt frys 1/2*, *2/2*,
+  *Oversikt 1/2*, *2/2*. The IWMAC menu lists them under those headings. Both offer them beside a plant's own Maskin
+  `.ai` too. The menu now lists a component the template draws many times over once: the Oversikt template draws its
+  case module 25 times. Measured on the hosted VectorCraft with nothing kept: *585 in Libraries (17 pages)*.
+- **Never the value pill.** The template's white pill (`PilleHvitKant`) is the box an Oversikt's value object draws
+  itself, so it joins what an IWMAC object shows and is not offered.
+- **For agents.** An Oversikt's export lists its components in `parts.components.symbols`, with a note on placing
+  them. Any other panel's export lists the Maskin ones, as before. The Claude bridge tells MCP each symbol's template.
+  The MCP server 1.4.0's `iwmac_find` shows it in a `set` column and keeps one template's with `set: "Oversikt"`. The
+  Copilot kit lists them (`reference_data/oversikt-symbols.json`). The overview skill's Oversikt builder draws cases
+  and rooms in the template's colours and places any of them from its spec.
 
 ### Copilot's edits, by file (v1.69.0)
 
