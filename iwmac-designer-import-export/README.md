@@ -482,6 +482,28 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The PNG upload tried again, and what a failed one means (v1.73.6)
+
+Thomas: *sometimes this error message pops up, but it still works* - VectorCraft's banner said *The PNG was not
+uploaded: Failed to fetch* under *✓ Synced*.
+
+*Failed to fetch* is the browser saying that no answer came at all: the connection dropped on the way, or something
+in the browser held the request back. It is not the server refusing. One such hold-back was this project's own: the
+live test on plant 4798 blocked `iw_upload_image.php` in the Designer tab it drove, so the test could never write to
+the plant, and syncs from that tab failed this way until the test's connection was gone. It *still worked* only on
+the screen. The Designer sets the drawing as the background before the upload, so the panel looks right, but the
+plant's pictures keep the last PNG that got through. A panel saved then shows the older picture live.
+
+- **Tried again.** An upload that got no answer, or the gateway's 502, 503 or 504, is made again after 1.5 s, and once
+  more after 4 s: three tries in all. It is the same file under the same name, so a try that did arrive is only
+  written again. A refusal from the server, or a minute without an answer, is not tried again.
+- **Said plainly.** When all three fail, the Designer's toast and the editor's banner say that the plant keeps the
+  last PNG that got through. The banner's *Sync again* sends the drawing once more; sync before you save the panel.
+- Checked in the stub host. Insert of a drawing, its upload answered by plan: dropped, dropped, OK uploaded on the
+  third try; 502, OK on the second; dropped every time gave three tries and the message; a refusal was said at once.
+  With Ctrl+S in VectorCraft and every try dropped, the banner showed the message with *Sync again*; that button, with
+  the server answering again, uploaded the PNG and left a plain *✓ Synced*. Not run in the live Designer.
+
 ### VectorCraft's Recover Documents answered for you (v1.73.5)
 
 Thomas: *sometimes it does not populate all the IWMAC objects to VectorCraft; a second time it works*, and then: *I

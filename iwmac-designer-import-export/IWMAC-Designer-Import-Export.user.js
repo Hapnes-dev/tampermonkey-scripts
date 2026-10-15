@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.73.5
+// @version      1.73.6
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.73.5';
+var IWDIE_VERSION = '1.73.6';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16305,6 +16305,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var saves = { caught: 0, editing: false, download: 0, syncing: false, other: 0, priming: false, primed: false, want: null, hold: '', auto: false };
       // a document restored from another edit, in front: not synced into this panel (v1.73.5)
       saves.foreign = function () { return iwdieVcRecoveredOther(title, job.name); };
+      // a PNG that did not reach the plant's pictures (v1.73.6): the Designer shows the drawing all the same, so what that
+      // means is said, and a sync again is a click away
+      var pngLost = function (why) {
+        return 'The PNG did not reach the plant’s pictures: ' + esc2(String(why)) + '. The plant keeps the last one that got through - ' +
+          '<button class="iwdie-vcb-l" data-act="resync">Sync again</button> before you save the panel.';
+      };
       // the last sync's line, for the PNG's news to go under; auto-sync stopped until the next Ctrl+S (v1.56.0)
       var lastNote = '', autoPaused = false;
       if (canAck) {
@@ -16330,7 +16336,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               skipped ? iwdieN(skipped, 'placeholder', 'placeholders') + ' without a size (hidden?) became no object' : '',
               stale ? iwdieN(stale, 'IWMAC placeholder', 'IWMAC placeholders') + ' the .ai kept from an older edit left out: only those added now change the panel' : '',
               val.objError ? 'The IWMAC objects were not placed: ' + esc2(String(val.objError)) + ' - sync again' : '',
-              val.uploadError ? 'The PNG was not uploaded: ' + esc2(String(val.uploadError)) : ''
+              val.uploadError ? pngLost(val.uploadError) : ''
             ].filter(Boolean);
             lastNote = '<span title="' + esc2('The panel’s background is updated' + (val.uploading ? ', and its PNG is on its way to the plant’s pictures' : '') +
               (already ? '; ' + iwdieN(already, 'object was', 'objects were') + ' in the panel already' : '') + '.') + '">✓ Synced ' + hhmm() +
@@ -16339,7 +16345,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             note(lastNote, false, wrong.length > 0);
           } else if (val.state === 'uploaded') {
             // the PNG on the server, after the panel was set (v1.56.0): said only when it did not get there
-            if (val.uploadError) note(lastNote + '<div class="iwdie-vcb-e">The PNG was not uploaded: ' + esc2(String(val.uploadError)) + '</div>', false, true);
+            if (val.uploadError) note(lastNote + '<div class="iwdie-vcb-e">' + pngLost(val.uploadError) + '</div>', false, true);
           } else if (val.state === 'queued') {
             note('Waiting: ' + esc2(String(val.msg || 'the Designer has another panel open')), false, true);
           } else {
@@ -17644,7 +17650,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** The background's PNG uploaded to the plant's pictures, as Manage Images' Upload to server
      *  does it: the same request, read the same way. Its name is chosen at the first sync of an
-     *  edit (iwdieVcUploadName) and written over by the later ones. -> Promise<{ok, name, message}> */
+     *  edit (iwdieVcUploadName) and written over by the later ones. A try that got no answer - the
+     *  connection dropped on the way - or the gateway's 502, 503 or 504 is made again, three tries
+     *  in all (v1.73.6): the same file under the same name, so one that did arrive is only written
+     *  again. -> Promise<{ok, name, message, tries}> */
     function vcUploadPng(bytes, info) {
       var cust = vcCustId();
       if (!cust) return Promise.resolve({ ok: false, name: '', message: 'the plant is not known here' });
@@ -17662,15 +17671,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return info.uploadName;
           });
       return naming.then(function (name) {
-        var form = new FormData();
-        form.append('userfile', new Blob([bytes], { type: 'image/png' }), name);
-        var ctl = typeof AbortController === 'function' ? new AbortController() : null;
-        var timer = ctl ? setTimeout(function () { ctl.abort(); }, 60000) : null;
-        return fetch(vcDesignerUrl('designer_site/iw_upload_image.php?cust_id=' + encodeURIComponent(cust)),
-          { method: 'POST', body: form, credentials: 'same-origin', signal: ctl ? ctl.signal : undefined })
-          .then(function (r) { return r.text(); })
-          .then(function (text) {
-            var reply = iwdieVcUploadReply(text);
+        var url = vcDesignerUrl('designer_site/iw_upload_image.php?cust_id=' + encodeURIComponent(cust));
+        // one try: the server's answer and its status, or why none came
+        var once = function () {
+          var form = new FormData();
+          form.append('userfile', new Blob([bytes], { type: 'image/png' }), name);
+          var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+          var timer = ctl ? setTimeout(function () { ctl.abort(); }, 60000) : null;
+          var done = function () { if (timer) clearTimeout(timer); };
+          return fetch(url, { method: 'POST', body: form, credentials: 'same-origin', signal: ctl ? ctl.signal : undefined })
+            .then(function (r) { return r.text().then(function (text) { return { status: r.status, text: text }; }); })
+            .then(function (got) { done(); return got; }, function (e) { done(); throw e; });
+        };
+        var tries = 0;
+        var again = function () {
+          return new Promise(function (resolve) { setTimeout(resolve, tries === 1 ? 1500 : 4000); }).then(attempt);
+        };
+        var attempt = function () {
+          tries++;
+          return once().then(function (got) {
+            var gate = got.status === 502 || got.status === 503 || got.status === 504;
+            if (gate && tries < 3) return again();
+            var reply = gate ? { ok: false, message: 'the server’s gateway answered ' + got.status + ', ' + iwdieN(tries, 'try', 'tries') } : iwdieVcUploadReply(got.text);
             if (reply.ok) {
               try {
                 var all = kept(), list = Array.isArray(all[cust]) ? all[cust] : [];
@@ -17679,11 +17701,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 GM_setValue(IWDIE_VC_UPLOADS_KEY, all);
               } catch (e) {}
             }
-            return { ok: reply.ok, name: name, message: reply.message };
+            return { ok: reply.ok, name: name, message: reply.message, tries: tries };
           }, function (e) {
-            return { ok: false, name: name, message: (e && e.name === 'AbortError') ? 'the server did not answer within a minute' : String((e && e.message) || e) };
-          })
-          .then(function (r) { if (timer) clearTimeout(timer); return r; });
+            if (e && e.name === 'AbortError') return { ok: false, name: name, message: 'the server did not answer within a minute', tries: tries };
+            if (tries < 3) return again();
+            return { ok: false, name: name, tries: tries,
+              message: 'no answer came from the server, ' + iwdieN(tries, 'try', 'tries') + ' - the connection dropped (' + String((e && e.message) || e) + ')' };
+          });
+        };
+        return attempt();
       });
     }
 
@@ -19346,7 +19372,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             } catch (e) {}
             lines.push('Its PNG is in the plant’s pictures on the server as ' + up.name + '.');
           } else {
-            lines.push('Its PNG was not uploaded to the plant’s pictures: ' + up.message + '. The background is set all the same.');
+            lines.push('Its PNG did not reach the plant’s pictures: ' + up.message + '. The panel shows the new drawing here, but the plant keeps ' +
+              'the last PNG that got through: sync again before you save the panel.');
           }
           outcomeToast({
             tone: objs.error || mv.error || rm.error || rl.error || links.failed.length || hold || !up.ok ? 'caution' : 'good',
@@ -20510,7 +20537,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             } catch (e) {}
           }
           return { lines: [first, up.ok ? 'Its PNG is in the plant’s pictures on the server as ' + up.name + '.'
-            : 'Its PNG was not uploaded to the plant’s pictures: ' + up.message + '. The background is set all the same.'], bad: !up.ok };
+            : 'Its PNG did not reach the plant’s pictures: ' + up.message + '. The panel shows the drawing here, but the plant keeps its last ' +
+              'picture until the PNG gets there: Edit in VectorCraft, then Ctrl+S there, uploads it again.'], bad: !up.ok };
         }, function (e) {
           return { lines: [first, 'Its PNG was not uploaded to the plant’s pictures: ' + ((e && e.message) || e) + '.'], bad: true };
         });
