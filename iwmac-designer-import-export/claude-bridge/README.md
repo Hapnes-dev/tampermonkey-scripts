@@ -62,7 +62,7 @@ join, which object shows which parameter, and the binding grammar.
 | `iwmac_status` | Whether a tab is attached, and its plant, panel, library and units |
 | `iwmac_scene` | The drawing as rows (`cid, kind, name, x, y, w, h, note`), filtered by layer, kind, area or words; `facts: true` adds the drawing's own layout: rows of like symbols and their spacing, the information column, circuits, value offsets, text style |
 | `iwmac_preview` | A JPEG of the drawing, or of a box of it |
-| `iwmac_find` | House symbols (sizes, ports), object kinds, the plant's parameters with the exact binding text |
+| `iwmac_find` | Every component VectorCraft offers, with sizes and ports: the house symbols, pipe pieces and colour samples (`all: true` adds what an IWMAC object shows). The IWMAC menu's objects. The plant's parameters, with the exact binding text |
 | `iwmac_edit` | A batch of ops: `symbol`, `bank`, `object`, `value`, `pill`, `box` (an object's empty anchor, or a panel of the information column), `pipe`, `connect`, `text`, `move`, `delete`, `set_text`, `bind`, `align`, `distribute`; `dry_run` plans only |
 | `iwmac_check` | Objects off the panel or on each other, symbols missing or standing in for objects, values without pills, overlaps, diagonal pipes, flow arrows not on a pipe running their way, drawn numbers, bindings to nothing |
 | `iwmac_undo` | Opens the version before Claude's last edit again |
@@ -87,6 +87,13 @@ server; the editor's **Open IWMAC JSON…** makes such a file (the userscript's 
 
 Claude reads tables, not SVG: a scene of a full Maskin is a few kilobytes, and an edit
 sends only its ops.
+
+Since server 1.3.0 and userscript 1.71.0, Claude and Copilot place the same things as the
+user:
+- every component VectorCraft offers;
+- the 107 objects of the IWMAC menu, among them the CO2 compressor and the animated fans.
+
+An object outside the menu is refused by the planner, and by the Copilot skill before it.
 
 ## Safety
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.70.0
+// @version      1.71.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.70.0';
+var IWDIE_VERSION = '1.71.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1036,7 +1036,7 @@ var IWDIE_OBJECT_FIELDS = ['obj_id', 'name', 'id', 'posWidth', 'posHeight', 'pos
 var IWDIE_OBJECT_CATALOGUE = {
   how_to_use: 'Pick ids from here; never invent one. Text goes in tag_text and the signal in alias_text, except on equipment, where tag_text is the short name (JV401) and alias_text the description. signal_to_object says which id a given parameter row wants.',
   sizes: 'The size after each id is the palette default. Production stretches headers, banners and duct pieces to the run they cover and leaves symbols at their own size - number_v3_header_grey75 is 60x25 in the palette and 250x20 on every panel that uses it. When this file already has an object in the role you are adding, copy its size. The three V3_akpc_* state strips are placed 81 x 21, not at their 80 x 80 palette size.',
-  uses: 'uses counts that id across the 22 compiled production panels. A high count is the house habit for the role; uses=0 means legal but rare, and most of those are ventilation pieces that only appear on duct drawings.',
+  uses: 'uses counts that id across the 22 compiled production panels (those added in 1.71.0: across the 266 of the Copilot kit\'s object catalogue). A high count is the house habit for the role; uses=0 means legal but rare, and most of those are ventilation pieces that only appear on duct drawings.',
   by_role: {
     header: [
       'number_v3_header_grey75 60x25 uses=6 - header_grey75',
@@ -1048,6 +1048,8 @@ var IWDIE_OBJECT_CATALOGUE = {
       'number_v3_label_8px_norm 77x20 uses=7 - 8px Normal',
       'number_v3_label_11px_bold 77x20 uses=2 - 11px Bold',
       'number_v3_label_10px_norm 77x20 uses=0 - 10px Normal',
+      'number_v3_label_9px_bold 77x20 uses=5 - 9px Bold',
+      'number_v3_label_12px_norm 77x20 uses=85 - 12px Normal',
     ],
     value: [
       'number_v3_value_only 50x20 uses=419 - Value Only',
@@ -1057,6 +1059,9 @@ var IWDIE_OBJECT_CATALOGUE = {
       'number_v3_60px_no_conn_no_tag 50x20 uses=9 - 60px  Box , No Tag',
       'number_v3_60px_dark_no_conn 61x21 uses=8 - 60px Dark  No connector',
       'number_v3_60px_no_conn 61x21 uses=8 - 60px No connector',
+      'number_v3_40px_no_conn 41x21 uses=46 - 40px no connector',
+      'number_v3_80px_no_conn 81x20 uses=1 - 80px No connector',
+      'number_v3_110px_no_conn 111x20 uses=2 - 110px No connector',
     ],
     value_conn: [
       'number_v3_R_45px_con_down 45x38 uses=27 - 45px Conn - down',
@@ -1064,6 +1069,7 @@ var IWDIE_OBJECT_CATALOGUE = {
       'number_v3_R_45px_con_top 45x38 uses=18 - 45px Conn - top',
       'number_v3_R_45px_con_right 62x20 uses=17 - 45px Conn - Right',
       'number_v3_40px_dark_con_down 41x26 uses=4 - dark reference box, connector down; the cascade setpoint on a duct',
+      'number_v3_40px_dark_con_top 41x28 uses=1 - 40px Conn - top',
     ],
     value_tag: [
       'number_v3_R_45px_no_conn_tag_up_center 45x20 uses=27 - 45px No conn up center tag',
@@ -1072,6 +1078,11 @@ var IWDIE_OBJECT_CATALOGUE = {
       'number_v3_R_60px_no_conn_tag_up_center 60x20 uses=11 - 60px No conn up center tag',
       'number_v3_R_40px_no_conn_tag_up_left 41x21 uses=4 - 40px No conn up left tag',
       'number_v3_R_45px_no_conn_tag_up_left 45x20 uses=0 - 45px No conn up left tag',
+      'number_v3_R_40px_no_conn_tag_up_right 41x21 uses=14 - 40px No conn up right tag',
+      'number_v3_R_40px_no_conn_tag_bott_center 41x21 uses=5 - 40px No conn center tag',
+      'number_v3_R_110px_no_conn_tag_bott_center 110x20 uses=4 - 110px No conn bott center tag',
+      'number_v3_R_60px_no_conn_tag_up_left 60x20 uses=6 - 60px No conn up left tag',
+      'number_v3_R_60px_no_conn_tag_bott_right 60x20 uses=1 - 60px No conn bott right tag',
     ],
     enum: [
       'number_v3_custom_json_obj 61x21 uses=21 - Free width JSON Obj box',
@@ -1083,6 +1094,7 @@ var IWDIE_OBJECT_CATALOGUE = {
       'V3_R_28px_circular_defrost_nrm 28x28 uses=152 - 28px Circular Defrost icon',
       'V3_R_24px_anim_rg_alarm_nrm 24x24 uses=18 - 24px anim/grey alarmbell',
       'V3_ok_alarm_nrm 60x20 uses=10 - CO2 Alarm Normal',
+      'V3_ok_alarm_inv 60x20 uses=2 - CO2 Alarm Inverted',
     ],
     led: [
       'V3_led_13px_circ_grey_green 13x13 uses=20 - 13px Grey-Green',
@@ -1090,19 +1102,33 @@ var IWDIE_OBJECT_CATALOGUE = {
       'V3_led_16px_circ_grey_red 16x16 uses=2 - 16px Grey-Red',
       'V3_led_16px_circ_grey_yellow 16x16 uses=0 - 16px Grey-Yellow',
       'V3_led_18px_circ_grey_red 18x18 uses=0 - 18px Grey-Red',
+      'V3_led_13px_circ_grey_red 13x13 uses=15 - 13px Grey-Red',
+      'V3_led_21px_circ_green_red_nrm 21x21 uses=6 - 21px Green-Red',
+      'V3_led_18px_circ_green_red_nrm 18x18 uses=6 - 18px Green-Red',
+      'V3_led_21px_circ_grey_red 21x21 uses=46 - 21px Grey-Red',
+      'V3_led_16px_circ_grey_green 16x16 uses=3 - 16px Grey-Green',
+      'V3_led_21px_circ_red_grey 21x21 uses=1 - 21px Red-Grey',
+      'V3_led_13px_circ_green_grey 13x13 uses=1 - 13px -Green-Grey',
+      'V3_led_21px_circ_green_red_inv 21x21 uses=1 - 21px Red-Green',
     ],
     fan: [
       'V3_58px_fan_left_nrm 59x59 uses=8 - 58px Fan - Left',
       'V3_58px_fan_right_nrm 59x59 uses=4 - 58px Fan -Right',
+      'V3_25px_anim_fan_nrm 25x25 uses=0 - 25px animert vifte - NRM',
+      'V3_32px_anim_fan_nrm 32x32 uses=1 - 32px animert vifte - NRM',
     ],
     pump: [
       'V3_21px_single_pump_grey_green_down 21x21 uses=21 - 21px Single pump down',
       'V3_21px_single_pump_grey_green_left 21x21 uses=12 - 21px Single pump left',
       'V3_21px_single_pump_grey_green_up 21x21 uses=7 - 21px Single pump Up',
+      'number_v3_dummy_21x21_1x_pump_right 21x21 uses=2 - Dummy 1X pump-right 21x21',
     ],
     valve: [
       'number_v3_dummy_3way_motor_right 30x19 uses=0 - Dummy 3-way motor right',
       'v3_3w_valve_right_down_nrm 22x18 uses=0 - 3Way-Valve Digital',
+      'V3_solenoid_28x18_grey_green_up 28x18 uses=3 - Up pos 17px Circular LED',
+      'V3_solenoid_18x28_grey_green_right 18x28 uses=1 - Right pos 17px  Circular LED',
+      'V3_solenoid_20x34_grey_green_down 20x34 uses=0 - Down pos 20px Circular LED',
     ],
     coil: [
       'number_v3_cooler_2-way 38x132 uses=0 - Cooler 2-Way',
@@ -1135,6 +1161,7 @@ var IWDIE_OBJECT_CATALOGUE = {
       'number_360_room 100x339 uses=0 - Room',
       'number_360_vb 37x52 uses=0 - heating coil',
       'number_360_vg_rot 60x324 uses=0 - VG Roterende',
+      'number_360_kb 37x52 uses=10 - cooling coil',
     ],
     sensor: [
       'number_v3_rc_temp_48 49x21 uses=4 - 48px temperature',
@@ -1144,9 +1171,19 @@ var IWDIE_OBJECT_CATALOGUE = {
       'V3_akpc_772_781_781A_783_contr 80x80 uses=40 - Controller Groups state 0-8',
       'V3_akpc_782A_suct 80x80 uses=18 - Suction Groups',
       'V3_akpc_783_781A_782A_cond 80x80 uses=8 - Condensing Group',
+      'V3_akpc_772_781_781A_783_suct 80x80 uses=21 - Suction Groups',
+      'V3_akpc_772_781_cond 80x80 uses=3 - Condensing Group',
     ],
     button: [
       'V3_81x21_enebled_disabled_nrm 80x21 uses=10 - Enebled - Disabled',
+      'V3_61x21_runn_stoped_nrm 61x21 uses=7 - Running - Stopped',
+      'sub_page_link_btn_up 38x38 uses=3 - link button up',
+    ],
+    compressor: [
+      'V3_co2_compressor_31x35_nrm 31x35 uses=34 - Normal Compressor NRM',
+      'V3_compressor_21x21_up_nrm 21x21 uses=8 - Compressor Up NRM',
+      'V3_compressor_21x21_down_nrm 21x21 uses=6 - Compressor Down NRM',
+      'V3_compressor_21x21_right_nrm 21x21 uses=2 - Compressor Right NRM',
     ],
   }
 };
@@ -1446,7 +1483,7 @@ function iwdieCheckFile(text, opts) {
       out.facts.push('image_svg places ' + iwdieN(refs.length, 'house symbol', 'house symbols') + ' by name: ' +
         order.slice(0, 8).map(function (n) { return n + (count[n] > 1 ? ' ×' + count[n] : ''); }).join(', ') + (order.length > 8 ? ', …' : '') + '.');
       // a bell, an LED, a state pill or a switch is an IWMAC object on a live panel, never part of its picture
-      var st = iwdieSymTable(), live = order.filter(function (n) { var f = st.families[st.byKey[iwdieSymKey(n)]]; return f && !f.list; });
+      var live = order.filter(iwdieSymIsObject);
       if (live.length) {
         out.warnings.push('image_svg draws ' + live.slice(0, 6).join(', ') + ', which ' + (live.length === 1 ? 'is' : 'are') +
           ' shown by IWMAC objects on a live panel: place the object over the picture instead, or the panel shows a frozen state.');
@@ -6942,6 +6979,13 @@ function iwdieLibWithBuiltin(lib) {
 var IWDIE_SYM_OBJECT_FAMILIES = ['Alarm', 'NoConnection', 'Bryter3Av', 'Bryter3På', 'Bryter3Auto', 'Bryter2Av', 'Bryter2På',
   'Klokke', 'KlokkeGrå', 'PilleGrå', 'PilleRød', 'PilleGrønn', 'PilleDelt', 'LedGrønn', 'LedGrå', 'LedRød'];
 
+/** Whether a family is one an IWMAC object shows (v1.71.0): one of IWDIE_SYM_OBJECT_FAMILIES. Pipe pieces and colour
+ *  samples are offered to no drawing by the template's table, but they are no IWMAC object: a drawing may place them. */
+function iwdieSymIsObject(name) {
+  var k = iwdieSymKey(name);
+  return IWDIE_SYM_OBJECT_FAMILIES.some(function (n) { return iwdieSymKey(n) === k; });
+}
+
 /** The components VectorCraft offers, in Libraries and the IWMAC menu (v1.70.0): those kept from a plant's .ai, filled
  *  in from the Maskin template built into the script - so, with nothing imported, the template's own, always - less
  *  those an IWMAC object shows. -> a library ({..., items, filled, builtin when nothing was kept, objects: how many
@@ -7827,7 +7871,8 @@ var IWDIE_VC_FONTS_KEY = 'iwdie.vc.fonts', IWDIE_VC_FONTS_TTL = 30 * 864e5, IWDI
 var IWDIE_VC_OBJ_ROLES = {
   header: 'Headers', label: 'Labels', value: 'Values', value_conn: 'Values with connector', value_tag: 'Values with tag',
   enum: 'Lists', alarm: 'Alarms', led: 'LEDs', fan: 'Fans', pump: 'Pumps', valve: 'Valves', coil: 'Coils', filter: 'Filters',
-  damper: 'Dampers', duct: 'Ducts', zone: 'Zones', sensor: 'Sensors', akpc: 'AK-PC groups', button: 'Buttons'
+  damper: 'Dampers', duct: 'Ducts', zone: 'Zones', sensor: 'Sensors', akpc: 'AK-PC groups', button: 'Buttons',
+  compressor: 'Compressors'
 };
 /** Roles whose object shows a text of its own: the placeholder carries it, to be written over. */
 var IWDIE_VC_OBJ_TEXT = { header: 'Header', label: 'Label', value_tag: 'Tag' };
@@ -7836,8 +7881,10 @@ var IWDIE_VC_OBJ_TEXT = { header: 'Header', label: 'Label', value_tag: 'Tag' };
 var IWDIE_VC_OBJ_Z = {
   header: '5', duct: '5', button: '20', fan: '40', coil: '40', filter: '40', damper: '40', zone: '40', akpc: '40',
   value: '110', value_conn: '110', value_tag: '110', enum: '110', sensor: '110',
-  alarm: '375', led: '375', pump: '375', valve: '375', label: '1100'
+  alarm: '375', led: '375', pump: '375', valve: '375', compressor: '375', label: '1100'
 };
+/** An object whose z is not its role's (v1.71.0): the animated fans are Maskin's, in the 375 band, not a duct's 40. */
+var IWDIE_VC_OBJ_Z_BY_ID = {'V3_25px_anim_fan_nrm': '375', 'V3_32px_anim_fan_nrm': '375'};
 
 /** How each object looks and how big it is on the Designer's canvas (v1.43.0), from its own two
  *  registries (reference_data, 2026-10-10): the render definition's size, which is what production
@@ -7918,7 +7965,42 @@ var IWDIE_VC_OBJ_LOOK = {
   'V3_akpc_772_781_781A_783_contr': [81, 21, 'V3/refrigeration/status_symbols/danfoss/state_ready_grey.png', '', 0, 'picture'],
   'V3_akpc_782A_suct': [81, 21, 'V3/refrigeration/status_symbols/danfoss/normal_control.png', '', 0, 'picture'],
   'V3_akpc_783_781A_782A_cond': [81, 21, 'V3/refrigeration/status_symbols/danfoss/stopped.png', '', 0, 'picture'],
-  'V3_81x21_enebled_disabled_nrm': [81, 21, 'V3/buttons/81x21_State_Enabled.png', '', 0, 'picture']
+  'V3_81x21_enebled_disabled_nrm': [81, 21, 'V3/buttons/81x21_State_Enabled.png', '', 0, 'picture'],
+  'V3_co2_compressor_31x35_nrm': [31, 35, 'V3/compressors/31x35_Kompressor_ON.png', '', 1, 'picture'],
+  'V3_compressor_21x21_up_nrm': [21, 21, 'V3/compressors/21x21_Kompressor_Up_ON.png', '', 1, 'picture'],
+  'V3_compressor_21x21_down_nrm': [21, 21, 'V3/compressors/21x21_Kompressor_Down_ON.png', '', 1, 'picture'],
+  'V3_compressor_21x21_right_nrm': [21, 21, 'V3/compressors/21x21_Kompressor_Right_ON.png', '', 1, 'picture'],
+  'V3_25px_anim_fan_nrm': [25, 25, 'V3/fans/25x25_FanSpinning.gif', '', 1, 'picture'],
+  'V3_32px_anim_fan_nrm': [32, 32, 'V3/fans/32x32_FanSpinning.gif', '', 1, 'picture'],
+  'V3_led_13px_circ_grey_red': [13, 13, 'V3/indicators/13x13_cir_led_red.png', '', 0, 'picture'],
+  'V3_led_21px_circ_green_red_nrm': [21, 21, 'V3/indicators/21x21_cir_led_red.png', '', 0, 'picture'],
+  'V3_led_18px_circ_green_red_nrm': [19, 19, 'V3/indicators/18x18_cir_led_red.png', '', 0, 'picture'],
+  'V3_led_21px_circ_grey_red': [21, 21, 'V3/indicators/21x21_cir_led_red.png', '', 0, 'picture'],
+  'V3_led_16px_circ_grey_green': [16, 16, 'V3/indicators/16x16_cir_led_green.png', '', 0, 'picture'],
+  'V3_led_21px_circ_red_grey': [21, 21, 'V3/indicators/21x21_cir_led_grey.png', '', 0, 'picture'],
+  'V3_led_13px_circ_green_grey': [13, 13, 'V3/indicators/13x13_cir_led_grey.png', '', 0, 'picture'],
+  'V3_led_21px_circ_green_red_inv': [21, 21, 'V3/indicators/21x21_cir_led_green.png', '', 0, 'picture'],
+  'V3_akpc_772_781_781A_783_suct': [81, 21, 'V3/refrigeration/status_symbols/danfoss/stopped.png', '', 0, 'picture'],
+  'V3_akpc_772_781_cond': [81, 21, 'V3/refrigeration/status_symbols/danfoss/stopped.png', '', 0, 'picture'],
+  'number_v3_40px_no_conn': [42, 22, 'V3/textboxes/41x21_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_80px_no_conn': [82, 22, 'V3/textboxes/80px_no_conn.png', 'RT-XX', 1, 'picture'],
+  'number_v3_110px_no_conn': [112, 22, 'V3/textboxes/110px_no_conn.png', 'RT-XX', 1, 'picture'],
+  'number_v3_40px_dark_con_top': [41, 26, 'V3/textboxes/41x26_RefTemp_LineUp.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_40px_no_conn_tag_up_right': [42, 22, 'V3/textboxes/41x21_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_40px_no_conn_tag_bott_center': [42, 22, 'V3/textboxes/41x21_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_110px_no_conn_tag_bott_center': [112, 22, 'V3/textboxes/110px_no_conn.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_60px_no_conn_tag_up_left': [62, 22, 'V3/textboxes/62x22_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_R_60px_no_conn_tag_bott_right': [62, 22, 'V3/textboxes/62x22_plain_textbox.png', 'RT-XX', 1, 'picture'],
+  'number_v3_label_9px_bold': [50, 20, 'V3/assets/9pxb.png', 'Label', 1, 'label'],
+  'number_v3_label_12px_norm': [50, 20, 'V3/assets/12pxn.png', 'Label', 1, 'label'],
+  'V3_ok_alarm_inv': [61, 21, 'V3/refrigeration/status_symbols/ok.png', '', 0, 'picture'],
+  'V3_61x21_runn_stoped_nrm': [61, 21, 'V3/buttons/61x21_State_Running.png', '', 0, 'picture'],
+  'sub_page_link_btn_up': [38, 38, 'V3/link_buttons/link_button_up.png', '', 1, 'picture'],
+  'number_v3_dummy_21x21_1x_pump_right': [21, 21, 'V3/pumps/21x21_single_pump_right_off.png', '', 1, 'picture'],
+  'V3_solenoid_28x18_grey_green_up': [28, 18, 'V3/valves/28x18_ver_solenoid_right_on.png', '', 0, 'picture'],
+  'V3_solenoid_18x28_grey_green_right': [18, 28, 'V3/valves/18x28_hor_solenoid_up_on.png', '', 0, 'picture'],
+  'V3_solenoid_20x34_grey_green_down': [20, 34, 'V3/valves/20x34_hor_solenoid_down_on.png', '', 0, 'picture'],
+  'number_360_kb': [37, 70, 'V3/dummy/360_kb.png', '', 1, 'picture']
 };
 /** Where the Designer leaves the objects' looks for the editor's page: sizes and pictures. */
 var IWDIE_VC_LOOKS_KEY = 'iwdie.vc.looks';
@@ -8171,6 +8253,7 @@ function iwdieVcDesignerObjects(found, existing) {
       have.filter(function (e) { var k = known[e.obj_id]; return k && k.role === o.role && z(e); })[0];
     if (same) return z(same);
     if (o.role === 'duct' && /arrow/i.test(o.id)) return '15';
+    if (IWDIE_VC_OBJ_Z_BY_ID[o.id]) return IWDIE_VC_OBJ_Z_BY_ID[o.id];
     return IWDIE_VC_OBJ_Z[o.role] || '110';
   };
   var objects = [], already = 0;
@@ -9992,7 +10075,7 @@ function iwdieCbCheck(items, size, opts) {
   syms.forEach(function (s) {
     if (s.missing) add('error', 'CB-S01', s.symbol + ' is not in the kept library: drawn as a red dashed box', [s.cid]);
     var f = st.families[st.byKey[iwdieSymKey(s.symbol)]];
-    if (f && !f.list) add('warning', 'CB-S02', s.symbol + ' is shown by an IWMAC object on a live panel, not by the picture', [s.cid]);
+    if (f && iwdieSymIsObject(f.name)) add('warning', 'CB-S02', s.symbol + ' is shown by an IWMAC object on a live panel, not by the picture', [s.cid]);
   });
   for (var a = 0; a < syms.length; a++) for (var b2 = a + 1; b2 < syms.length; b2++) {
     if (iwdieCbHit(syms[a].box, syms[b2].box, -2)) add('warning', 'CB-S03', syms[a].symbol + ' and ' + syms[b2].symbol + ' overlap', [syms[a].cid, syms[b2].cid]);
@@ -10061,7 +10144,7 @@ function iwdieCbSymbolSizes(items) {
     if (!it || !it.sym) return;
     var f = t.families[t.byName[it.sym.name]];
     if (!f) return;
-    var o = out[f.name] = out[f.name] || { sizes: [], what: f.en, offered: f.list, inner: f.inner };
+    var o = out[f.name] = out[f.name] || { sizes: [], what: f.en, offered: f.list, inner: f.inner, object: iwdieSymIsObject(f.name) };
     var odd = (it.sym.k & 1) && !f.inner, w = r(odd ? it.h : it.w), h = r(odd ? it.w : it.h);
     if (!o.sizes.some(function (s) { return Math.abs(s[0] - w) < 0.6 && Math.abs(s[1] - h) < 0.6; })) o.sizes.push([w, h]);
   });
@@ -10305,7 +10388,7 @@ function iwdieCbPlan(ops, scene, ctx) {
     var box = place(at, sz.w, sz.h, i);
     if (!box) return null;
     var st2 = iwdieSymTable(), real = (st2.families[st2.byKey[iwdieSymKey(o.name)]] || {}).name || o.name;
-    if (st2.families[st2.byKey[iwdieSymKey(o.name)]] && !st2.families[st2.byKey[iwdieSymKey(o.name)]].list) {
+    if (iwdieSymIsObject(real)) {
       notes.push('op ' + (i + 1) + ': ' + real + ' is what an IWMAC object shows on a live panel; placed as drawing all the same');
     }
     steps.push({ 'do': 'add', kind: 'symbol', name: real, box: box, k: k, ref: ref, op: i });
@@ -11115,7 +11198,8 @@ function iwdieSymAvailable(items) {
   (items || []).forEach(function (it) {
     if (!it || !it.sym) return;
     var f = t.byName[it.sym.name], fam = t.families[f];
-    if (!fam || !fam.list) return;
+    // every family a drawing may place (v1.71.0: pipe pieces and colour samples too), never one an IWMAC object shows
+    if (!fam || iwdieSymIsObject(fam.name)) return;
     var b = by[it.sym.name] = by[it.sym.name] || { f: f, name: it.sym.name, en: fam.en, sizes: [], count: 0 };
     var odd = (it.sym.k & 1) && !fam.inner, sz = Math.round(odd ? it.h : it.w) + 'x' + Math.round(odd ? it.w : it.h);
     if (b.sizes.indexOf(sz) < 0) b.sizes.push(sz);
@@ -20404,6 +20488,8 @@ if (typeof module !== 'undefined' && module.exports) {
     VC_OBJ_LIBRARY: IWDIE_VC_OBJ_LIBRARY,
     VC_OBJ_Z: IWDIE_VC_OBJ_Z,
     vcObjectCatalog: iwdieVcObjectCatalog,
+    VC_OBJ_ROLES: IWDIE_VC_OBJ_ROLES,
+    VC_OBJ_Z_BY_ID: IWDIE_VC_OBJ_Z_BY_ID,
     vcObjectCaption: iwdieVcObjectCaption,
     vcObjectItems: iwdieVcObjectItems,
     vcObjectItem: iwdieVcObjectItem,
@@ -20486,6 +20572,7 @@ if (typeof module !== 'undefined' && module.exports) {
     libBuiltin: iwdieLibBuiltin,
     libWithBuiltin: iwdieLibWithBuiltin,
     libForVc: iwdieLibForVc,
+    symIsObject: iwdieSymIsObject,
     SYM_OBJECT_FAMILIES: IWDIE_SYM_OBJECT_FAMILIES,
     symExpand: iwdieSymExpand,
     symAvailable: iwdieSymAvailable,

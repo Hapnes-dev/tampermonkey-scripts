@@ -366,6 +366,36 @@ a library kept in this browser, so with none imported they were empty.
 - **Unchanged.** Looking for components in a panel's picture still goes by a library you kept.
   Reading a plant's `.ai` in the banner still keeps its components, and they then come first.
 
+### Every object and component for Claude and Copilot (v1.71.0)
+
+Thomas: make sure Claude, through the MCP bridge, and the Copilot agent can use all of the objects too.
+
+- **35 more objects in VectorCraft.** The IWMAC menu, the IWMAC-objekter pages in Libraries and the bridge's planner
+  place the objects of the script's catalogue, and it lacked 35 that production Maskin panels and the house pictures
+  use. Among them:
+  - the CO2 compressor and three small compressors, in a new group, *Compressors*;
+  - the animated fans, 25 and 32 px;
+  - eight more LEDs, the red 13 px one among them;
+  - the AK-PC suction and condensing strips;
+  - three solenoid valves;
+  - values without a connector at 40, 80 and 110 px, and five values with their own tag;
+  - two labels, the inverted CO2 alarm, the running/stopped button and the link button.
+
+  The catalogue now holds 107 objects in 20 groups, each with the Designer's picture and size. The animated fans take
+  Maskin's band (z 375), not a duct fan's.
+- **Pipe pieces and colour samples are components, not objects.** Only the sixteen families an IWMAC object shows are
+  treated as objects. Until now, three places also called the pipe pieces and colour samples objects: the drawing
+  check (CB-S02), the planner's notes and Insert's check. The export's list for an agent left them out. Now the export
+  lists them with the other components (98 families), and nothing warns of them.
+- **The roles these ids report.** The export's role counts and the import checks go by the catalogue, so these ids now
+  count under their own role. `number_v3_40px_no_conn` counts as a value, `sub_page_link_btn_up` as a button (it was
+  *navigation*), and the compressor as a compressor.
+- **Claude.** The MCP server 1.3.0 lists every component in `iwmac_find` symbols, pipe pieces and colour samples too.
+  `all: true` adds those an IWMAC object shows. Its objects are the IWMAC menu's.
+- **Copilot.** The kit keeps a copy of the catalogue, `reference_data/vc-object-catalogue.json`. It is written from
+  this script, and a test holds it to it. The edit skill's files place exactly these objects, and the overview skill
+  places any of them by `obj_id`.
+
 ### Copilot's edits, by file (v1.69.0)
 
 Thomas asked whether the Copilot agent could draw in VectorCraft through MCP, as Claude does. It
@@ -1652,7 +1682,7 @@ to the Designer*, and then has a row for each thing there is:
 |---|---|---|
 | Plant folder | the plant's folder by name - a link that opens it in Explorer - and its `.ai` files | where it lies in the plants' folder |
 | Components | *386 in Libraries (12 pages)* | what the components are, and how to use Libraries' pages |
-| IWMAC objects | *72 in the IWMAC menu* | how to place one, and what a sync does with it |
+| IWMAC objects | *107 in the IWMAC menu* | how to place one, and what a sync does with it |
 | Drawing (v1.55.0) | *locked - only the IWMAC objects move · Unlock* | what is locked, and how to lock or unlock it |
 
 Under them are **Open plant .ai…** and the link *Image Trace copy*, then the news, kept short:

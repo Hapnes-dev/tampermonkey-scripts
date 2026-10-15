@@ -21,7 +21,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.2.0', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.3.0', PROTOCOL = 1;
 const PORT = parseInt(process.env.IWDIE_BRIDGE_PORT || '47913', 10);
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY = 64 * 1024 * 1024;
@@ -193,10 +193,10 @@ function find(a) {
   const c = page.context, what = a.what, q = a.query || '', limit = Math.max(1, Math.min(500, a.limit || 40));
   if (what === 'symbols') {
     const syms = (c.library && c.library.symbols) || {};
-    const rows = Object.keys(syms).filter(n => !q || hits(n + ' ' + syms[n].what, q)).filter(n => a.all || syms[n].offered)
+    const rows = Object.keys(syms).filter(n => !q || hits(n + ' ' + syms[n].what, q)).filter(n => a.all || (syms[n].object === undefined ? syms[n].offered : !syms[n].object))
       .map(n => [n, syms[n].sizes.map(s => s[0] + 'x' + s[1]).join(' '), syms[n].what, Object.keys((c.ports || {})[n] || {}).join(' ')]);
     return { cols: ['name', 'sizes', 'what', 'ports (besides top bottom left right)'], rows: rows.slice(0, limit), more: Math.max(0, rows.length - limit),
-      note: Object.keys(syms).length ? undefined : 'the kept library is empty: the user imports the Maskin template\'s .ai under Components in the VectorCraft banner, then Edit in VectorCraft again' };
+      note: Object.keys(syms).length ? undefined : 'no library came with this tab: the userscript is older than 1.70.0 - the user updates it in Tampermonkey, then Edit in VectorCraft again' };
   }
   if (what === 'objects') {
     const rows = ((c.objects && c.objects.rows) || []).filter(r => !q || hits(r.join(' '), q));
@@ -300,7 +300,7 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { layer: { type: 'string' }, kind: { type: 'string' }, near: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, query: { type: 'string' }, limit: { type: 'integer' }, facts: { type: 'boolean' } }, additionalProperties: false } },
   { name: 'iwmac_preview', description: 'A picture of the drawing as it stands (JPEG): the whole panel, or box [x,y,w,h] in panel pixels to look closer. max is the longer side in pixels (1000).',
     inputSchema: { type: 'object', properties: { box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, max: { type: 'integer' } }, additionalProperties: false } },
-  { name: 'iwmac_find', description: 'Search what can be placed. what: symbols (the house symbols the kept library draws, with sizes and ports), objects (IWMAC object kinds, obj_id and size), parameters (the plant\'s rows, with the bind text a placeholder takes; unit narrows it), ports (one symbol\'s connection points, query = its name).',
+  { name: 'iwmac_find', description: 'Search what can be placed. what: symbols (every component VectorCraft offers - the house symbols, pipe pieces and colour samples - with sizes and ports; all: true adds those an IWMAC object shows, which a drawing should not place), objects (the IWMAC objects the IWMAC menu offers, with obj_id, role and size: values, labels, LEDs, alarms, compressors, fans, pumps, valves, AK-PC strips ...), parameters (the plant\'s rows, with the bind text a placeholder takes; unit narrows it), ports (one symbol\'s connection points, query = its name).',
     inputSchema: { type: 'object', properties: { what: { type: 'string', enum: ['symbols', 'objects', 'parameters', 'ports'] }, query: { type: 'string' }, unit: { type: 'string' }, limit: { type: 'integer' }, all: { type: 'boolean' } }, required: ['what'], additionalProperties: false } },
   { name: 'iwmac_edit', description: 'Change the drawing. ops, in order, each {op, ...}: symbol {name, at, w?, h?, turn?, flip?, ref?, label?}; bank {name, count, at, spacing?, axis?, refs?, labels?} (near one of a row of the same symbol, along it, it carries that row on); object {obj_id, at, bind?, text?, ref?}; value {bind, at, dark?, label?, ref?} (a value on its pill); pill {at, dark?}; box {for: target, pad?} or {at, w, h}, rx?, fill?, stroke?, layer? (the empty anchor of an object, at its size; layer Bakgrunn: a panel of the information column); pipe {points|d, circuit?, colour?, width?}; connect {from, to, circuit?} (routed between ports); text {text, at, size?, anchor?}; move {target, dx?, dy?, at?}; delete {target}; set_text {target, text}; bind {target, bind}; align {targets, how}; distribute {targets, axis, gap?}. at is {x,y} (top left), {cx,cy}, or {near: target, side: right|left|above|below|on, gap?, align?: start|center|end}; free: true finds the nearest free place. A target is {cid}, {ref} (placed earlier in this edit), {object: name} (a panel object by its own name, object_N) or {find: {kind?, symbol?, obj_id?, text?, name?, layer?, circuit?, bind?, near?: [x, y], within?}} (the one thing that matches, nearest near, within 30 px); from/to add port (in, out, branch, tip, top, bottom, left, right). circuit: HP, Liquid, MT suction, LT suction, Heat recovery. dry_run: true plans without changing anything. The result opens in VectorCraft as a new document; the version before stays in its tab.',
     inputSchema: { type: 'object', properties: { ops: { type: 'array', items: { type: 'object' } }, dry_run: { type: 'boolean' }, partial: { type: 'boolean' }, preview: { type: 'boolean' } }, required: ['ops'], additionalProperties: false } },
