@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.73.1
+// @version      1.73.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.73.1';
+var IWDIE_VERSION = '1.73.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16086,10 +16086,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (extra) Object.keys(extra).forEach(function (k) { a[k] = extra[k]; });
         try { GM_setValue('iwdie.vc.designer.ack.' + job.id, a); } catch (e) {}
       };
+      // waiting for this tab to come to the front, its title says so in the tab strip (v1.73.2): a hidden tab draws nothing,
+      // so VectorCraft can save it no drawing to bring them into
+      var plainTitle = null;
+      var waitMark = function (on) {
+        try {
+          if (on && plainTitle === null) { plainTitle = document.title; document.title = '● Objects from the Designer - ' + plainTitle; }
+          else if (!on && plainTitle !== null) { document.title = plainTitle; plainTitle = null; }
+        } catch (e) {}
+      };
       var bringIn = function () {
         if (!fromDesigner || document.visibilityState !== 'visible' || !claude || !claude.designer) return;
         var p = fromDesigner;
         fromDesigner = null;
+        waitMark(false);
         note('Bringing in the panel’s objects from the Designer…', false, true);
         claude.designer(p).then(function (r) {
           var did = [r.moved ? r.moved + ' moved' : '', r.remade ? r.remade + ' changed' : '', r.added ? r.added + ' added' : '', r.removed ? r.removed + ' taken out' : '']
@@ -16111,7 +16121,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (!val || !Array.isArray(val.objects)) return;
           try { GM_deleteValue(key); } catch (e) {}
           fromDesigner = val;
-          designerAck(document.visibilityState === 'visible' && claude ? 'received' : 'waiting');
+          var now = document.visibilityState === 'visible' && claude;
+          designerAck(now ? 'received' : 'waiting');
+          if (!now) waitMark(true);
           bringIn();
         });
         document.addEventListener('visibilitychange', function () { bringIn(); });
@@ -18765,19 +18777,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /** Ctrl+S on the Designer's page, while an edit of the panel it shows is open: the objects to VectorCraft. */
+    /** Ctrl+S on the Designer's page: the panel's objects to its edit in VectorCraft. Always this script's there (v1.73.2): the
+     *  browser's Save page (an .html of the Designer) is no use, so it never opens - without an edit of the panel open,
+     *  the toast says how to begin one. */
     function vcListenCtrlS() {
+      var busy = false;
       document.addEventListener('keydown', function (e) {
         if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || !(e.code === 'KeyS' || e.key === 's' || e.key === 'S')) return;
-        var info = null;
-        try { info = vcEditOfPanel(); } catch (err) { info = null; }
-        if (!info) return;
+        // the Designer's page only, not a file of its site opened on its own
+        if (!document.getElementById('control_container') && typeof W.DesignPanelHandler !== 'function') return;
         e.preventDefault();
         e.stopPropagation();
+        // held down, the key repeats: one send for one press
+        if (e.repeat || busy) return;
+        var info = null;
+        try { info = vcEditOfPanel(); } catch (err) { info = null; }
+        if (!info) {
+          toast('Ctrl+S here sends the panel’s objects to its edit in VectorCraft - and no edit of “' + currentPanelName() + '” is open. ' +
+            'Edit in VectorCraft… opens one; Ctrl+S in VectorCraft syncs back. Nothing was saved: the panel is kept by the Designer’s own Save.', false, 9000);
+          return;
+        }
+        busy = true;
         // after a sync from VectorCraft that is still being put on the panel
         (info.chain || Promise.resolve()).then(function () { return vcPushToEditor(info); }).then(null, function (err) {
           toast('The panel’s objects could not go to VectorCraft: ' + ((err && err.message) || err), true, 9000);
-        });
+        }).then(function () { busy = false; });
       }, true);
     }
 

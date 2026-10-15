@@ -482,6 +482,22 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Ctrl+S in the Designer never opens the browser's Save page (v1.73.2)
+
+Thomas: Ctrl+S in the Designer still asked to save the page as .html. It did so whenever no edit of the shown panel was
+found, because the script let the key through to the browser. Now Ctrl+S on the Designer's page is always the script's,
+and the browser's *Save page* never opens there.
+
+- **With an edit of the shown panel open,** it sends the panel's objects to VectorCraft as in v1.73.0, once for each
+  press: a held key repeats, and the repeats are ignored.
+- **Without one,** the toast says that no edit of the panel is open and that *Edit in VectorCraft…* begins one. Nothing
+  is saved: the Designer's own Save keeps the panel.
+- **The editor's tab in the background** cannot take the objects in until it is in front, because a hidden tab draws
+  nothing for VectorCraft to save. Its title in the tab strip now says *● Objects from the Designer -* until it is shown,
+  and the Designer's toast says the objects wait for it.
+- The edit is found by the panel the Designer's *Retrieve* list shows (`get_value()`), as the Designer's own Save names
+  it. A panel picked in that list but not loaded counts as the shown one.
+
 ### The banner's buttons, alike (v1.73.1)
 
 Thomas: the editor banner's buttons looked messy - a blue pill, outlined pills and an underlined link side by side. The
