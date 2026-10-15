@@ -482,6 +482,16 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The banner's buttons, alike (v1.73.1)
+
+Thomas: the editor banner's buttons looked messy - a blue pill, outlined pills and an underlined link side by side. The
+four are now drawn alike, as VectorCraft draws the flat buttons of its own Quick Actions: two to a row in columns of one
+width, 24 px high, a 1 px border and 3 px corners, the label centred in VectorCraft's white. They sit below a rule that
+parts them from the rows above, and reach the banner's right edge as far in as its left one. *Image Trace copy* is a
+button now, not a link. None is drawn apart from the others. Hover lightens a button, pressing darkens it, and the
+keyboard's focus shows VectorCraft's blue outline. The inline links in the rows (*Unlock*, *By itself*, *Connect…*) stay
+links.
+
 ### Copilot's edits, by file (v1.69.0)
 
 Thomas asked whether the Copilot agent could draw in VectorCraft through MCP, as Claude does. It
@@ -1771,7 +1781,8 @@ to the Designer*, and then has a row for each thing there is:
 | IWMAC objects | *107 in the IWMAC menu* | how to place one, and what a sync does with it |
 | Drawing (v1.55.0) | *locked - only the IWMAC objects move · Unlock* | what is locked, and how to lock or unlock it |
 
-Under them are **Open plant .ai…** and the link *Image Trace copy*, then the news, kept short:
+Under them, below a rule, are four buttons drawn alike, two to a row (v1.73.1): **Open plant .ai…**,
+**Open IWMAC JSON…**, **Save .ai for Illustrator** and **Image Trace copy**. Then comes the news, kept short:
 *✓ Ready to sync*, *Sending…*, *✓ Synced 18:56 · 1 placed · 2 changed · 1 removed* (the name of
 the PNG uploaded on hover), and anything that went wrong, a line each, in red.
 

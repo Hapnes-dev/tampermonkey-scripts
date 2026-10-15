@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.73.0
+// @version      1.73.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.73.0';
+var IWDIE_VERSION = '1.73.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -14420,17 +14420,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           '.iwdie-vcb .iwdie-vcb-e{color:#ff9f9f}',
           '.iwdie-vcb .iwdie-vcb-x{position:absolute;top:5px;right:6px;width:20px;height:20px;border:0;background:transparent;color:#b0b0b0;font:16px/20px Arial,sans-serif;cursor:default;padding:0}',
           '.iwdie-vcb .iwdie-vcb-x:hover{color:#ffffff}',
-          '.iwdie-vcb .iwdie-vcb-a{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}',
-          '.iwdie-vcb .iwdie-vcb-a button{height:24px;padding:0 12px;border:0;border-radius:12px;background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0;',
-          '  font:600 12px "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;cursor:default}',
-          '.iwdie-vcb .iwdie-vcb-a button:hover{background:#606060;color:#ffffff}',
-          // the one main button (v1.49.0), drawn as VectorCraft draws its own
-          '.iwdie-vcb .iwdie-vcb-a button[data-act="ai"]{background:#378ef0;color:#ffffff;box-shadow:none}',
-          '.iwdie-vcb .iwdie-vcb-a button[data-act="ai"]:hover{background:#4b9bf3}',
-          // and a link at the right of it (v1.50.0)
-          '.iwdie-vcb .iwdie-vcb-a button.iwdie-vcb-l{height:auto;padding:0;margin-left:auto;align-self:center;border-radius:0;background:none;box-shadow:none;',
-          '  color:#78b4ff;font:inherit;cursor:pointer}',
-          '.iwdie-vcb .iwdie-vcb-a button.iwdie-vcb-l:hover{background:none;color:#a9cfff}'
+          // the buttons (v1.73.1): alike, two to a row, as VectorCraft's own Quick Actions draws its flat buttons - under a rule,
+          // out to the banner's right edge as far as its left one
+          '.iwdie-vcb .iwdie-vcb-a{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:10px -16px 0 0;padding-top:10px;border-top:1px solid #4b4b4b}',
+          '.iwdie-vcb .iwdie-vcb-a button{height:24px;min-width:0;padding:0 6px;border:1px solid #646464;border-radius:3px;background:#4b4b4b;color:#ffffff;',
+          '  font:400 12.5px "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}',
+          '.iwdie-vcb .iwdie-vcb-a button:hover{background:#5a5a5a;border-color:#8a8a8a}',
+          '.iwdie-vcb .iwdie-vcb-a button:active{background:#303030;border-color:#5f5f5f}',
+          '.iwdie-vcb .iwdie-vcb-a button:focus-visible{outline:1px solid #378ef0;outline-offset:1px}'
         ].join('\n');
         var st = document.createElement('style');
         st.id = 'iwdie-vcb-style';
@@ -15695,15 +15692,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '<div class="iwdie-vcb-g"><span>Plant folder</span><span class="iwdie-vcb-p"></span><span>Components</span><span class="iwdie-vcb-c"></span>' +
         '<span>IWMAC objects</span><span class="iwdie-vcb-o"></span><span>Drawing</span><span class="iwdie-vcb-d"></span><span>Sync</span><span class="iwdie-vcb-y"></span>' +
         '<span>Claude</span><span class="iwdie-vcb-ai"></span></div>',
-        // one button for the panel's Illustrator file (v1.49.0), opened as it is (v1.55.0)
+        // the panel's Illustrator file (v1.49.0), opened as it is (v1.55.0); a panel file; the drawing as an .ai; a copy to trace - four alike (v1.73.1)
         [{ act: 'ai', label: 'Open plant .ai…', title: 'The panel’s own Illustrator file - found in the plant’s folder once that is connected - opened here as it is, ' +
           'as File › Open opens it. Then you are asked whether to add the panel’s IWMAC objects to it.' },
         { act: 'json', label: 'Open IWMAC JSON…', title: 'A panel file - exported, or written by Copilot - inserted in the Designer’s tab as Insert JSON… ' +
           'inserts it, with its check and its questions there; then the panel opens here again: its drawing as layers, its objects as placeholders. ' +
           'An edit file Copilot wrote for this panel is made here instead: what it would change is said first, and it is made as a version of its own.' },
         { act: 'aiout', label: 'Save .ai for Illustrator', title: 'The drawing as it stands here, as an Illustrator file of its own layers - Bakgrunn locked, every text Arial type in its place, the IWMAC objects on a hidden layer - as Background → Illustrator writes it. VectorCraft’s own Save As › .ai keeps none of the layers and breaks the letters of a font it lacks. Nothing is synced.' },
-        { html: '<button class="iwdie-vcb-l" data-act="trace" title="A copy whose picture is enlarged and set to its own flat colours, ' +
-          'so Image Trace makes clean shapes of it">Image Trace copy</button>' }]);
+        { act: 'trace', label: 'Image Trace copy', title: 'A copy whose picture is enlarged and set to its own flat colours, so Image Trace makes clean shapes of it' }]);
       var note = ui.note;
       // each row's how and why, on its label and its text alike
       var tip = function (cls, text) { var v = ui.el.querySelector('.' + cls); v.title = text; v.previousElementSibling.title = text; };
