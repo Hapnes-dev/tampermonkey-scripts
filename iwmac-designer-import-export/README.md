@@ -452,6 +452,36 @@ more beside the one an earlier sync had made.
   of the panel's own placeholders deleted, with the objects made anew before each save. Also checked with a second
   Designer page taking the edit over, and in the hosted VectorCraft 0.11.0. Not run in the live Designer.
 
+### Ctrl+S in the Designer brings the panel's objects into VectorCraft (v1.73.0)
+
+Thomas: Ctrl+S in VectorCraft syncs the drawing to the Designer; make Ctrl+S in the Designer sync to the edit in
+VectorCraft too, so they keep up with each other.
+
+- **What goes.** The panel's objects as they stand in the Designer: moved, resized, relabelled, linked to another
+  parameter, added or deleted there. They go to the open edit of the panel the Designer shows, through Tampermonkey's
+  storage (`iwdie.vc.designer.<job>`), each by the key it goes by in that edit. An object the edit does not know yet
+  gets a new key. Nothing is saved to the plant: the Designer's own Save and Compile stay as they are.
+- **What VectorCraft does with them.** Its tab brings them into the drawing it has open, saved or not, as a version of
+  its own (`<panel> · Designer N.svg`), once it is in front and ready. Each placeholder is paired with its object by its
+  key. A placeholder made in VectorCraft with no key is paired by the nearest object of its kind that an earlier sync
+  placed from it. A pair is moved to where its object stands. It is made again where the object's size or tag changed,
+  unless it carries the art its object stands on (a bare value's pill): then it is only moved. Its name follows the
+  parameter the object is linked to. An object the drawing lacks gets a placeholder. A placeholder of an object the
+  Designer no longer has goes. A placeholder made in VectorCraft and not synced yet stays, and so does the rest of the
+  drawing. The version before stays in its tab.
+- **Both ways.** VectorCraft says how it went, and the Designer's toast repeats it: *1 moved, 1 added, 1 taken out*.
+  From then on each placeholder carries its object's key, so the next Ctrl+S in VectorCraft finds every one. A
+  placeholder of none standing just where a sent object stands, its own placeholder gone, is now taken for that
+  object, so a version saved before the Designer's Ctrl+S does not take it off.
+- **Without an edit** of the shown panel, Ctrl+S in the Designer is the browser's, as before; the Designer has no Ctrl+S
+  of its own. If no VectorCraft tab of the edit answers within 6 s, the toast says so: Edit in VectorCraft… opens the
+  panel there again.
+- **Sync from the newest version.** A Ctrl+S in an older version's tab sends that version: what the Designer changed since
+  is undone by it.
+- Checked in the stub host on the hosted VectorCraft 0.11.0: an object moved, one deleted and one added in the Designer,
+  then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
+  panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
+
 ### Copilot's edits, by file (v1.69.0)
 
 Thomas asked whether the Copilot agent could draw in VectorCraft through MCP, as Claude does. It

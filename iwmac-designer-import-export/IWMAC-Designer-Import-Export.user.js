@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.72.1
+// @version      1.73.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.72.1';
+var IWDIE_VERSION = '1.73.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8592,7 +8592,17 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
   });
   pairs.sort(function (a, b) { return a.d - b.d; });
   pairs.forEach(function (p) { if (paired[p.i] || taken[p.e.name]) return; paired[p.i] = 1; change(news[p.i], p.e); });
-  news.forEach(function (f, i) { if (!paired[i]) fresh.push(f); });
+  // one of none standing just where one of the sent objects stands, whose own placeholder is gone, is that object (v1.73.0):
+  // a version saved before the Designer's Ctrl+S gave its placeholder a name, or one VectorCraft lost the data of
+  var wasSent = {};
+  (sent || []).forEach(function (n) { wasSent[n] = 1; });
+  news.forEach(function (f, i) {
+    if (paired[i]) return;
+    var e = f.ref ? null : have.filter(function (c) {
+      return wasSent[c.name] && !taken[c.name] && c.obj_id === f.id && near(c.posLeft, f.x) && near(c.posTop, f.y) && near(c.posWidth, f.w) && near(c.posHeight, f.h);
+    })[0];
+    if (e) { paired[i] = 1; change(f, e); } else fresh.push(f);
+  });
   var missing = (sent || []).filter(function (n) { return !taken[n] && have.some(function (c) { return c.name === n; }); });
   var dropped = mine.filter(function (e) { return !taken[e.name]; }).map(function (e) { return e.name; });
   return { moves: moves, fresh: fresh, same: same, missing: missing, orphans: orphans, dropped: dropped };
@@ -8639,6 +8649,58 @@ function iwdieVcKnownResolve(entries, existing) {
     if (hit) { used[hit.name] = 1; names[e.key] = hit.name; } else unresolved.push(e.key);
   });
   return { names: names, unresolved: unresolved };
+}
+
+/** What the Designer's Ctrl+S asks of the drawing open in VectorCraft (v1.73.0): its placeholders (`placeholders`: [{cid,
+ *  obj_id, ref, job, box: {x, y, w, h}}]) paired with the panel's objects (`objects`: [{key, obj_id, x, y, w, h, placed}]) -
+ *  by the key a placeholder of this edit carries; else, one of none or a copy, by the nearest object of its kind an earlier
+ *  sync placed from such a one. A pair is moved where the object stands, and made again where its size changed. An object
+ *  without a placeholder gets one. A placeholder of an object the panel no longer has (`gone`: [{key, obj_id, x, y, w, h}],
+ *  by its key, or one of none standing exactly where such an object stood) goes. Any other stays: made in VectorCraft and
+ *  not synced yet, or another edit's. -> {pairs: [{cid, key, object, move: [dx, dy] | null, size}], add: [object],
+ *  remove: [cid], keep: [cid]} */
+function iwdieVcDesignerPlan(placeholders, objects, gone, job) {
+  var objs = (objects || []).filter(function (o) { return o && o.key; });
+  var byKey = {}, goneKey = {}, taken = {}, pairs = [], rest = [], remove = [], keep = [];
+  objs.forEach(function (o) { byKey[o.key] = o; });
+  (gone || []).forEach(function (g) { if (g && g.key) goneKey[g.key] = g; });
+  var near = function (a, b) { return Math.abs(a - b) <= 2; };
+  var change = function (p, o) {
+    taken[o.key] = 1;
+    var dx = o.x - p.box.x, dy = o.y - p.box.y;
+    pairs.push({ cid: p.cid, key: o.key, object: o, move: Math.abs(dx) > 1 || Math.abs(dy) > 1 ? [dx, dy] : null,
+      size: Math.abs(o.w - p.box.w) > 1 || Math.abs(o.h - p.box.h) > 1 });
+  };
+  (placeholders || []).forEach(function (p) {
+    if (!p || !p.cid || !p.box) return;
+    var ours = !p.job || !job || p.job === job, o = p.ref && ours ? byKey[p.ref] : null;
+    if (o && !taken[o.key] && String(o.obj_id) === String(p.obj_id)) change(p, o);
+    else rest.push(p);
+  });
+  // one of none, or a copy of one of ours: the nearest of its kind an earlier sync placed from such a one, closest pairs first
+  var cands = [], done = {};
+  rest.forEach(function (p, i) {
+    // another edit's, or one of an object the panel no longer has: no copy
+    if (p.ref && ((p.job && job && p.job !== job) || goneKey[p.ref])) return;
+    objs.forEach(function (o) {
+      if (!o.placed || taken[o.key] || String(o.obj_id) !== String(p.obj_id)) return;
+      var dx = (o.x + o.w / 2) - (p.box.x + p.box.w / 2), dy = (o.y + o.h / 2) - (p.box.y + p.box.h / 2);
+      cands.push({ i: i, o: o, d: Math.sqrt(dx * dx + dy * dy) });
+    });
+  });
+  cands.sort(function (a, b) { return a.d - b.d; });
+  cands.forEach(function (c) { if (done[c.i] || taken[c.o.key]) return; done[c.i] = 1; change(rest[c.i], c.o); });
+  rest.forEach(function (p, i) {
+    if (done[i]) return;
+    var ours = !p.job || !job || p.job === job, g = p.ref && ours ? goneKey[p.ref] : null;
+    if (!g && !p.ref) {
+      (gone || []).forEach(function (q) {
+        if (!g && q && String(q.obj_id) === String(p.obj_id) && near(q.x, p.box.x) && near(q.y, p.box.y) && near(q.w, p.box.w) && near(q.h, p.box.h)) g = q;
+      });
+    }
+    (g ? remove : keep).push(p.cid);
+  });
+  return { pairs: pairs, add: objs.filter(function (o) { return !taken[o.key]; }), remove: remove, keep: keep };
 }
 
 /* ===================== Sync to IWMAC Designer (v1.42.0) =====================
@@ -16020,6 +16082,44 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           note(esc2(String(val.message || 'The Designer could not open the panel again here.')), true, true);
         });
       }
+      // the Designer's Ctrl+S (v1.73.0): the panel's objects as they stand there, brought into the drawing open here as a
+      // version of its own - once this tab is in front and the editor is ready; the Designer hears how it went
+      var fromDesigner = null;
+      var designerAck = function (state, extra) {
+        var a = { state: state, at: Date.now() };
+        if (extra) Object.keys(extra).forEach(function (k) { a[k] = extra[k]; });
+        try { GM_setValue('iwdie.vc.designer.ack.' + job.id, a); } catch (e) {}
+      };
+      var bringIn = function () {
+        if (!fromDesigner || document.visibilityState !== 'visible' || !claude || !claude.designer) return;
+        var p = fromDesigner;
+        fromDesigner = null;
+        note('Bringing in the panel’s objects from the Designer…', false, true);
+        claude.designer(p).then(function (r) {
+          var did = [r.moved ? r.moved + ' moved' : '', r.remade ? r.remade + ' changed' : '', r.added ? r.added + ' added' : '', r.removed ? r.removed + ' taken out' : '']
+            .filter(Boolean).join(', ') || 'nothing changed';
+          designerAck('opened', { document: r.document, keys: r.keys, gone: r.gone, moved: r.moved, remade: r.remade, added: r.added, removed: r.removed, kept: r.kept, told: did });
+          note('✓ The panel’s objects from the Designer are in, open as <b>' + esc2(r.document) + '</b>: ' + esc2(did) + '.' +
+            (r.kept ? ' ' + iwdieN(r.kept, 'placeholder', 'placeholders') + ' made here and not synced yet stayed.' : '') +
+            ' The drawing is as it was here; <b>Ctrl+S</b> syncs it back. The version before is in its own tab.', false, true);
+        }, function (e) {
+          var msg = String((e && e.message) || e);
+          // VectorCraft busy saving or syncing: once more in a moment
+          if (/saving or syncing|not ready/.test(msg)) { fromDesigner = fromDesigner || p; setTimeout(bringIn, 1500); return; }
+          designerAck('failed', { message: msg });
+          note('The panel’s objects from the Designer could not be brought in: ' + esc2(msg), true, true);
+        });
+      };
+      if (typeof GM_addValueChangeListener === 'function') {
+        GM_addValueChangeListener('iwdie.vc.designer.' + job.id, function (key, old, val) {
+          if (!val || !Array.isArray(val.objects)) return;
+          try { GM_deleteValue(key); } catch (e) {}
+          fromDesigner = val;
+          designerAck(document.visibilityState === 'visible' && claude ? 'received' : 'waiting');
+          bringIn();
+        });
+        document.addEventListener('visibilitychange', function () { bringIn(); });
+      }
       var sharpening = false;
       ui.on('trace', function () {
         if (sharpening) return;
@@ -16262,6 +16362,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           claude = vcClaude({ job: job, looks: looks, size: function () { return sized ? { w: +sized[1], h: +sized[2] } : { w: 1400, h: 750 }; },
             lib: function () { return lib; }, syncer: function () { return syncer; }, title: function () { return title; }, titled: titled, note: note,
             row: function (html) { var r = ui.el.querySelector('.iwdie-vcb-ai'); if (r) r.innerHTML = html; }, on: ui.on });
+          // what the Designer's Ctrl+S sent while the editor was getting ready (v1.73.0)
+          bringIn();
         });
       }, note);
     }
@@ -16539,7 +16641,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return notes;
       };
       var job = api.job, stem = String(job.name || 'panel.svg').replace(/\.svg$/i, '');
-      var mine = function (t) { return /\s·\s(Claude|edits)\s\d+\.svg$/.test(String(t || '').replace(/^\*/, '')); };
+      var mine = function (t) { return /\s·\s(Claude|edits|Designer)\s\d+\.svg$/.test(String(t || '').replace(/^\*/, '')); };
       // a version opened in VectorCraft as a document of its own; the tab before it closed when it is one of these and
       // holds nothing unsaved (the save that read it saved it), so the panel's own tab and the newest stay
       var reopen = function (svg, who) {
@@ -16615,6 +16717,74 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
           var resolve = plant ? function (bind) { var r = iwdieVcResolveBind(iwdieVcParseBind(bind), plant); return r.link ? '' : iwdieVcBindWhy(r, bind); } : null;
           return { document: s.title, findings: iwdieCbCheck(s.items, s.size, { resolve: resolve }) };
+        });
+      };
+      // the Designer's Ctrl+S (v1.73.0): the panel's objects as they stand there (`p`: {objects, gone}) brought into the
+      // drawing as it stands here, saved or not, as a version of its own. Each placeholder of one is moved where it stands
+      // there, or made again where its size, its tag or its parameter changed - the art it carries kept; each object the
+      // drawing lacks gets one; each one of an object the panel no longer has goes; the rest of the drawing stays as it is
+      var designer = function (p) {
+        return current().then(function (s) {
+          var jid = String(job.id || ''), doc = new DOMParser().parseFromString(s.svg, 'image/svg+xml'), phs = [];
+          s.items.forEach(function (it) {
+            if (it.kind !== 'object') return;
+            var el = byCid(doc, it.cid);
+            if (el) phs.push({ cid: it.cid, obj_id: it.obj_id, ref: el.getAttribute('data-iwdie-ref') || '', job: el.getAttribute('data-iwdie-job') || '', box: it.box });
+          });
+          var objs = (p.objects || []).filter(function (o) { return o && o.key && o.obj_id; }).map(function (o) {
+            return { key: String(o.key), obj_id: String(o.obj_id), x: parseFloat(o.posLeft), y: parseFloat(o.posTop), w: parseFloat(o.posWidth), h: parseFloat(o.posHeight),
+              placed: !!o.placed, ob: o };
+          });
+          var plan = iwdieVcDesignerPlan(phs, objs, p.gone || [], jid), used = {}, counts = { moved: 0, remade: 0, added: 0, removed: 0 };
+          Array.prototype.forEach.call(doc.getElementsByTagName('*'), function (e) { var id = e.getAttribute('id'); if (id) used[id] = 1; });
+          // one object's placeholder as Edit in VectorCraft makes it, its key for the name it goes by in this edit
+          var made = function (o) {
+            var ob = {};
+            Object.keys(o.ob).forEach(function (k) { ob[k] = o.ob[k]; });
+            ob.name = o.key;
+            return fragment(doc, iwdieVcTagJob(iwdieVcPanelPlaceholderSvg(ob, api.looks && api.looks[ob.obj_id], used, null), jid));
+          };
+          var texts = function (e) {
+            return Array.prototype.map.call(e.getElementsByTagName('text'), function (t) { return String(t.textContent || '').replace(/\s+/g, ' ').trim(); }).join('|');
+          };
+          plan.pairs.forEach(function (pr) {
+            var el = byCid(doc, pr.cid);
+            if (!el) return;
+            var fresh = made(pr.object);
+            // its size or its tag changed there: made again - unless it carries the art its object stands on (data-iwdie-under,
+            // a bare value's pill), which a placeholder made anew would leave behind: that one is moved and renamed only
+            var art = el.getElementsByTagName('*').length && Array.prototype.some.call(el.getElementsByTagName('*'), function (n) { return !!n.getAttribute('data-iwdie-under'); });
+            if (!art && (pr.size || texts(fresh) !== texts(el))) {
+              el.parentNode.replaceChild(fresh, el);
+              counts.remade++;
+              return;
+            }
+            if (pr.move) {
+              if (!plain(el)) throw new Error('a placeholder sits in a scaled group: its object cannot be moved there');
+              var t = el.getAttribute('transform');
+              el.setAttribute('transform', 'translate(' + iwdieDrawFmt(pr.move[0]) + ' ' + iwdieDrawFmt(pr.move[1]) + ')' + (t ? ' ' + t : ''));
+              counts.moved++;
+            }
+            // named for the parameter it shows there (linked again in the Designer), so a sync from here links it as it is
+            var nm = fresh.getAttribute('data-name');
+            if (nm && nm !== el.getAttribute('data-name')) {
+              el.setAttribute('data-name', nm);
+              ['data-iwdie-bind', 'data-iwdie-label'].forEach(function (a) { var v = fresh.getAttribute(a); if (v === null) el.removeAttribute(a); else el.setAttribute(a, v); });
+            }
+            el.setAttribute('data-iwdie-ref', pr.key);
+            el.setAttribute('data-iwdie-job', jid);
+          });
+          if (plan.add.length) {
+            var L = layer(doc, 'IWMAC-objekter');
+            plan.add.forEach(function (o) { L.appendChild(made(o)); counts.added++; });
+          }
+          plan.remove.forEach(function (cid) { var el = byCid(doc, cid); if (el && el.parentNode) { el.parentNode.removeChild(el); counts.removed++; } });
+          var out = new XMLSerializer().serializeToString(doc);
+          return reopen(out, 'Designer').then(function (name) {
+            read(out, name);
+            return { document: name, keys: objs.map(function (o) { return o.key; }), gone: (p.gone || []).map(function (g) { return g.key; }),
+              moved: counts.moved, remade: counts.remade, added: counts.added, removed: counts.removed, kept: plan.keep.length };
+          });
         });
       };
       // an edit file (v1.69.0): the ops Copilot wrote for this panel, planned on the drawing as it stands, said, and made
@@ -16693,7 +16863,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         line('off');
         hello();
       }
-      return { stop: function () { stopped = true; }, file: file };
+      return { stop: function () { stopped = true; }, file: file, designer: designer };
     }
 
     /* ---------- Edit in VectorCraft (v1.35.0): the Designer's side ---------- */
@@ -18442,7 +18612,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try { kept = GM_getValue('iwdie.vc.known.' + id, null); } catch (e) { kept = null; }
       var known = (kept && Array.isArray(kept.known) ? kept.known : []).filter(function (e) { return e && e.key; }).map(function (e) {
         return { key: String(e.key), name: String(e.name || ''), obj_id: String(e.obj_id || ''), x: +e.x, y: +e.y, w: +e.w, h: +e.h,
-          tag: String(e.tag == null ? '' : e.tag), sent: !!e.sent, el: null };
+          tag: String(e.tag == null ? '' : e.tag), sent: !!e.sent, pending: !!e.pending, el: null };
       });
       return (vcAdoptedInfo[id] = { job: id, plant: job.plant, panel: job.panel, known: known, record: !!kept, adopted: true });
     }
@@ -18468,7 +18638,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function vcKnownSave(id, info) {
       try {
         GM_setValue('iwdie.vc.known.' + id, { at: Date.now(), known: (info.known || []).map(function (e) {
-          return { key: e.key, name: e.name, obj_id: e.obj_id, x: e.x, y: e.y, w: e.w, h: e.h, tag: e.tag, sent: !!e.sent };
+          return { key: e.key, name: e.name, obj_id: e.obj_id, x: e.x, y: e.y, w: e.w, h: e.h, tag: e.tag, sent: !!e.sent, pending: !!e.pending };
         }) });
       } catch (e) {}
     }
@@ -18511,6 +18681,108 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
       info.known = known;
       vcKnownSave(id, info);
+    }
+
+    /* ---------- the Designer's Ctrl+S (v1.73.0): the panel's objects to its edit in VectorCraft ----------
+       Ctrl+S in VectorCraft syncs the drawing to the Designer; Ctrl+S here goes the other way. The panel's objects as they
+       stand here - moved, relabelled, linked again, added or deleted - go to the edit of this panel, and its tab brings them
+       into the drawing it has open, as a version of its own; the drawing itself, saved or not, stays as it is there. The
+       Designer had no Ctrl+S: without an edit of this panel it is the browser's, as before. Nothing is saved to the plant. */
+    var vcEditorAcks = {};
+
+    /** The newest edit of the panel this tab shows: one begun here, or one another tab of the plant noted (taken over here). */
+    function vcEditOfPanel() {
+      var jobs = vcJobsRead(), plant = String(currentPlantId() || ''), panel = currentPanelName(), best = null, at = -1;
+      var consider = function (id, info) {
+        var t = jobs[id] ? +jobs[id].at || 0 : 0;
+        if (info && vcShowing(info) && t >= at) { best = info; at = t; }
+      };
+      Object.keys(vcLive).forEach(function (id) { consider(id, vcLive[id]); });
+      Object.keys(jobs).forEach(function (id) {
+        var j = jobs[id];
+        if (!vcLive[id] && j && String(j.plant) === plant && String(j.panel) === panel) consider(id, vcAdopted(id, j));
+      });
+      return best;
+    }
+
+    /** The panel's objects as they stand, sent to the tab of edit `info`, each by the key it goes by in that edit - a new key
+     *  for one the edit does not know, made here or changed here past finding. -> Promise */
+    function vcPushToEditor(info) {
+      var id = info.job, now = exportPanelObjects(), kf = vcKnownFind(info, now), keyOf = {}, byKey = {}, elOf = {};
+      var cc = document.getElementById('control_container'), units = vcPlantUnits(), sendable = {};
+      Object.keys(kf.names).forEach(function (k) { keyOf[kf.names[k]] = k; });
+      (info.known || []).forEach(function (e) { byKey[e.key] = e; });
+      if (cc) Array.prototype.forEach.call(cc.children, function (el) { var n = el.getAttribute('name'); if (n) elOf[n] = el; });
+      iwdieVcPanelSent(now).forEach(function (n) { sendable[n] = 1; });
+      var seq = (info.known || []).reduce(function (m, e) { var k = /^added-(\d+)$/.exec(e.key); return k ? Math.max(m, +k[1] + 1) : m; }, 0);
+      var objects = now.filter(function (ob) { return ob && sendable[ob.name]; }).map(function (ob) {
+        var key = keyOf[ob.name], e = key ? byKey[key] : null;
+        if (!e) {
+          // known from now on; one the edit sent, or a sync placed, once its tab says the drawing has it
+          key = 'added-' + (seq++);
+          e = { key: key, name: String(ob.name), obj_id: String(ob.obj_id), sent: false, pending: true, el: elOf[ob.name] || null };
+          info.known = (info.known || []).concat([e]);
+        }
+        e.name = String(ob.name);
+        e.x = parseFloat(ob.posLeft); e.y = parseFloat(ob.posTop); e.w = parseFloat(ob.posWidth); e.h = parseFloat(ob.posHeight);
+        e.tag = iwdieVcTagOf(ob);
+        var c = {};
+        Object.keys(ob).forEach(function (k) { c[k] = ob[k]; });
+        c.key = key;
+        // one an earlier sync placed from a placeholder of none: the drawing knows it by where it stands, not by its key
+        c.placed = !e.sent && !e.pending;
+        if (iwdieOvBound(ob)) c.iwdieBind = { driver: String(ob.driver_id), label: iwdieVcBindLabel(ob.alias_text, ob.unit_id, units) };
+        return c;
+      });
+      var gone = kf.lost.map(function (e) { return { key: e.key, obj_id: e.obj_id, x: e.x, y: e.y, w: e.w, h: e.h }; });
+      vcKnownSave(id, info);
+      vcListenEditorAck(id, info);
+      return vcPaintObjects(objects).then(null, function () {}).then(function () {
+        clearTimeout(vcEditorAcks[id].timer);
+        vcEditorAcks[id].heard = false;
+        vcEditorAcks[id].timer = setTimeout(function () {
+          if (!vcEditorAcks[id].heard) toast('No VectorCraft tab of this panel’s edit answered - closed? Edit in VectorCraft… opens the panel there again.', true, 10000);
+        }, 6000);
+        GM_setValue('iwdie.vc.designer.' + id, { at: Date.now(), job: id, plant: info.plant, panel: info.panel, objects: objects, gone: gone });
+        toast('The panel’s objects go to VectorCraft…', false, 3000);
+      });
+    }
+
+    /** How edit `id`'s tab took what the Designer's Ctrl+S sent: once it is in, the edit knows each by its key. */
+    function vcListenEditorAck(id, info) {
+      if (vcEditorAcks[id]) return;
+      vcEditorAcks[id] = { timer: null, heard: false };
+      GM_addValueChangeListener('iwdie.vc.designer.ack.' + id, function (key, old, val) {
+        if (!val || !val.state) return;
+        vcEditorAcks[id].heard = true;
+        clearTimeout(vcEditorAcks[id].timer);
+        if (val.state === 'received') return;
+        if (val.state === 'waiting') { toast('VectorCraft has the panel’s objects: they come into the drawing once its tab is in front.', false, 8000); return; }
+        if (val.state !== 'opened') { toast('VectorCraft did not take the panel’s objects in: ' + String(val.message || val.state), true, 10000); return; }
+        var keys = {}, gone = {};
+        (val.keys || []).forEach(function (k) { keys[k] = 1; });
+        (val.gone || []).forEach(function (k) { gone[k] = 1; });
+        info.known = (info.known || []).filter(function (e) { return !gone[e.key]; });
+        (info.known || []).forEach(function (e) { if (keys[e.key]) { e.sent = true; e.pending = false; } });
+        vcKnownSave(id, info);
+        toast('✓ VectorCraft has the panel’s objects: ' + String(val.told || 'nothing changed') + ' - open there as ' + String(val.document || 'a new version') + '.', false, 9000);
+      });
+    }
+
+    /** Ctrl+S on the Designer's page, while an edit of the panel it shows is open: the objects to VectorCraft. */
+    function vcListenCtrlS() {
+      document.addEventListener('keydown', function (e) {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || !(e.code === 'KeyS' || e.key === 's' || e.key === 'S')) return;
+        var info = null;
+        try { info = vcEditOfPanel(); } catch (err) { info = null; }
+        if (!info) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // after a sync from VectorCraft that is still being put on the panel
+        (info.chain || Promise.resolve()).then(function () { return vcPushToEditor(info); }).then(null, function (err) {
+          toast('The panel’s objects could not go to VectorCraft: ' + ((err && err.message) || err), true, 9000);
+        });
+      }, true);
     }
 
     /** The syncs kept for a panel, applied once it is open in this tab: looked for every 2 s while there are any. */
@@ -20591,6 +20863,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // the VectorCraft edits of this plant begun in another tab, or before this one was reloaded (v1.56.0)
     try { vcAdoptJobs(); } catch (e) {}
+    // Ctrl+S here: the panel's objects to its edit in VectorCraft (v1.73.0)
+    try { vcListenCtrlS(); } catch (e) {}
     // a panel file from the editor's Open IWMAC JSON… (v1.65.0)
     try { vcListenForFiles(); } catch (e) {}
 
@@ -20825,6 +21099,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcAddPanelObjects: iwdieVcAddPanelObjects,
     vcObjectChanges: iwdieVcObjectChanges,
     vcKnownResolve: iwdieVcKnownResolve,
+    vcDesignerPlan: iwdieVcDesignerPlan,
     vcPlaceholderName: iwdieVcPlaceholderName,
     vcParseBind: iwdieVcParseBind,
     vcBindLabel: iwdieVcBindLabel,
