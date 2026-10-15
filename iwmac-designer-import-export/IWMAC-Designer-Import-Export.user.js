@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.73.4
+// @version      1.73.5
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.73.4';
+var IWDIE_VERSION = '1.73.5';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6895,6 +6895,10 @@ function iwdieSvgAiLayerLines(layer) {
 
 /** Where the editor lives. */
 var IWDIE_VC_URL = 'https://hapnes-dev.github.io/iwmac-vector/app/';
+/** Where VectorCraft's web build keeps its Data Recovery copies (v1.73.5): in this site's storage, each entry named
+ *  under this prefix, `<area>/…` - an area for each tab that wrote them - and each value base64. A tab that runs holds
+ *  a Web Lock named as its area is. */
+var IWDIE_VC_RECOVERY = 'vectorcraft-recovery/';
 /** Where the editor's Open IWMAC JSON… hands a panel file to the Designer's tab of its edit (v1.65.0). */
 var IWDIE_VC_INSERT_KEY = 'iwdie.vc.insert';
 /** Private PNG chunk with the VectorCraft SVG: ancillary, private, safe to copy. */
@@ -8623,6 +8627,48 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
     if (relink) mv.link = relink;
     moves.push(mv);
   }
+}
+
+/** The copies VectorCraft's Recover Documents offers as the editor starts (v1.73.5), by its own rule (the engine's
+ *  file.recovery.list): each `<area>/<file>.vectorcraft` entry whose area no tab that runs holds - neither by the Web
+ *  Lock named after it (`held`: the names of the locks held; null where the browser has none) nor by its heartbeat
+ *  (`<area>/heartbeat`, Unix seconds) within `stale` seconds of `now` (360 unless given: three of the 2-minute Data
+ *  Recovery intervals the web build always starts with). `entries`: the site's storage under IWDIE_VC_RECOVERY, by
+ *  name less the prefix, each value base64. -> [{file, title}] */
+function iwdieVcRecoveryLeft(entries, held, now, stale) {
+  var all = entries || {}, areas = {}, out = [];
+  var limit = stale == null ? 360 : stale;
+  var text = function (b64) {
+    try { return new TextDecoder('utf-8').decode(iwdieBase64ToBytes(String(b64 == null ? '' : b64))); } catch (e) { return ''; }
+  };
+  Object.keys(all).forEach(function (n) {
+    var cut = n.indexOf('/');
+    if (cut <= 0 || !/\.vectorcraft$/.test(n)) return;
+    var area = n.slice(0, cut);
+    (areas[area] = areas[area] || []).push(n.slice(0, n.length - '.vectorcraft'.length));
+  });
+  Object.keys(areas).sort().forEach(function (area) {
+    if (held && held.indexOf(IWDIE_VC_RECOVERY + area) >= 0) return;
+    var beat = parseInt(text(all[area + '/heartbeat']).trim(), 10);
+    if (isFinite(beat) && now - beat <= limit) return;
+    areas[area].sort().forEach(function (file) {
+      var meta = null;
+      try { meta = JSON.parse(text(all[file + '.json'])); } catch (e) { meta = null; }
+      out.push({ file: file, title: String((meta && meta.title) || file.slice(file.lastIndexOf('/') + 1)) });
+    });
+  });
+  return out;
+}
+
+/** The document VectorCraft has in front, when it is one its Data Recovery restored from another edit (v1.73.5):
+ *  `title` its window title (less " — VectorCraft"; a "*" before it once changed), `name` this edit's file name. This
+ *  edit's own, restored - "<stem> [Recovered]", or a version of it, "<stem> · Designer 2 [Recovered]" - are not
+ *  another's. -> the restored document's name, or '' */
+function iwdieVcRecoveredOther(title, name) {
+  var t = String(title || '').replace(/^\*/, ''), m = /^(.*) \[Recovered\]$/.exec(t);
+  if (!m) return '';
+  var stem = String(name || '').replace(/\.svg$/i, '');
+  return m[1] === stem || m[1].indexOf(stem + ' · ') === 0 ? '' : t;
 }
 
 /** The panel's objects an edit knows - those it sent as placeholders, those its syncs placed (v1.72.1) - found on the
@@ -14481,6 +14527,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
     }
 
+    /** The copies VectorCraft's Recover Documents offers as the editor starts (v1.73.5), read as it reads them: its
+     *  entries in this site's storage, and the Web Locks of its tabs that run (iwdieVcRecoveryLeft).
+     *  -> Promise<[{file, title}]> */
+    function vcRecoveryLeft() {
+      var entries = {}, n = 0;
+      try {
+        var s = W.localStorage;
+        for (var i = 0; i < s.length; i++) {
+          var k = s.key(i);
+          if (k && k.indexOf(IWDIE_VC_RECOVERY) === 0) { entries[k.slice(IWDIE_VC_RECOVERY.length)] = s.getItem(k); n++; }
+        }
+      } catch (e) { return Promise.resolve([]); }
+      if (!n) return Promise.resolve([]);
+      // no Web Locks, or none to be read: VectorCraft goes by the heartbeats alone, and so does this
+      var held = Promise.resolve(null);
+      try {
+        var locks = W.navigator.locks;
+        if (locks && typeof locks.query === 'function') {
+          held = Promise.resolve(locks.query()).then(function (q) {
+            return Array.prototype.map.call((q && q.held) || [], function (l) { return String((l && l.name) || ''); });
+          }, function () { return null; });
+        }
+      } catch (e) { held = Promise.resolve(null); }
+      return held.then(function (names) { return iwdieVcRecoveryLeft(entries, names, Date.now() / 1000); });
+    }
+
     /** `fn` once the app has started. The first start downloads the editor, which may take a while. */
     function vcWhenReady(fn, note) {
       var tries = 0;
@@ -15064,6 +15136,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (busy) return Promise.resolve(false);
         // while the IWMAC objects are being put on the drawing, a save would leave them out (v1.55.0)
         if (state.hold) { if (!quiet) say(esc2(state.hold), true); return Promise.resolve(false); }
+        // a document VectorCraft restored from another edit, in front: never synced into this panel (v1.73.5)
+        var other = state.foreign ? state.foreign() : '';
+        if (other) {
+          if (!quiet) say('<b>' + esc2(other) + '</b> is in front: a document VectorCraft restored from an edit closed earlier, not this panel’s, so ' +
+            '<b>Ctrl+S</b> does not sync it here. Click this panel’s own tab, then <b>Ctrl+S</b>; <b>Ctrl+Shift+S</b> saves the restored one as a file.', true);
+          return Promise.resolve(false);
+        }
         if (typing()) {
           if (!quiet) say('Finish what is being typed in VectorCraft first (Esc), then <b>Ctrl+S</b> again.', true);
           return Promise.resolve(false);
@@ -15384,7 +15463,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // the drawing under the objects unlocked: Object › Unlock All (Ctrl+Alt+2, v1.55.0)
         unlock: function () { key('2', 'Digit2', { ctrl: true, alt: true }); },
         // the document in front closed (v1.64.0): File › Close (Ctrl+W), which asks first only when something in it is unsaved
-        close: function () { key('w', 'KeyW', { ctrl: true }); return settle(400, 20); }
+        close: function () { key('w', 'KeyW', { ctrl: true }); return settle(400, 20); },
+        // VectorCraft's Recover Documents answered with its OK, Restore (v1.73.5): Enter - once more when `taken()`, the
+        // copies it offered moved into this tab's own, does not follow. -> Promise<taken>
+        restore: function (taken) {
+          var once = function () { key('Enter', 'Enter', {}); return until(taken, 90); };
+          return settle(150, 8).then(once).then(function (ok) { return ok || once(); });
+        }
       };
     }
 
@@ -15855,6 +15940,40 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           document.addEventListener('visibilitychange', on);
         });
       };
+      // VectorCraft's Recover Documents (v1.73.5): the copies of unsaved documents that an edit closed earlier left
+      // behind, offered once the editor starts. While that question is open VectorCraft takes no key - not the Ctrl+A,
+      // Ctrl+2 and paste that put the IWMAC objects on the drawing - so they did not arrive; and its Restore, given then,
+      // put the documents it restored in front of the panel. So it is answered first, as Thomas answers it: Restore
+      // (Enter, its OK). Once a restored one's title is heard, the panel's drop goes to the menu bar and opens it as a
+      // document of its own, after them and in front. -> Promise
+      var restoredLine = '';
+      var recover = function () {
+        if (!syncer || !syncer.restore) return Promise.resolve();
+        return vcRecoveryLeft().then(function (left) {
+          if (!left.length) return null;
+          note('VectorCraft kept ' + iwdieN(left.length, 'unsaved document', 'unsaved documents') + ' from an edit closed earlier: its ' +
+            '<b>Recover Documents</b> is being answered - Restore…', false, true);
+          var kept = function (c) { try { return W.localStorage.getItem(IWDIE_VC_RECOVERY + c.file + '.vectorcraft') !== null; } catch (e) { return true; } };
+          return focused().then(function () {
+            return syncer.restore(function () { return left.some(function (c) { return !kept(c); }); });
+          }).then(function (taken) {
+            if (!taken) return null;
+            var t0 = Date.now();
+            return new Promise(function (resolve) {
+              (function wait() { if (/ \[Recovered\]$/.test(title) || Date.now() - t0 > 3000) resolve(); else setTimeout(wait, 100); })();
+            }).then(function () {
+              // Discard or Cancel, given by hand meanwhile, restores none
+              if (!/ \[Recovered\]$/.test(title)) return;
+              var names = left.slice(0, 3).map(function (c) { return '“' + esc2(c.title) + '”'; }).join(', ') + (left.length > 3 ? ', …' : '');
+              restoredLine = '<span class="iwdie-vcb-q">VectorCraft’s Recover Documents was answered for you with Restore: ' + (left.length === 1
+                ? names + ', left unsaved by an edit closed earlier, is open again in a tab of its own. Close it if you do not need it - ' +
+                  '<b>Ctrl+W</b>, Don’t Save - or it is offered again next time.'
+                : left.length + ' documents left unsaved by edits closed earlier (' + names + ') are open again, each in a tab of its own. ' +
+                  'Close those you do not need - <b>Ctrl+W</b>, Don’t Save - or they are offered again next time.') + '</span>';
+            });
+          });
+        }).then(null, function () { return null; });
+      };
       // the panel's drawing opened without its IWMAC objects, locked, and they pasted on in place, over it (v1.55.0): only
       // they move. -> Promise<{panel: true, count, pasted} | null when it could not be opened>
       var lifted = null;
@@ -16184,6 +16303,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // and while a sync runs, when a save in another format was held back (v1.42.0); why no sync may start yet (v1.55.0);
       // whether the sync running started by itself (v1.56.0)
       var saves = { caught: 0, editing: false, download: 0, syncing: false, other: 0, priming: false, primed: false, want: null, hold: '', auto: false };
+      // a document restored from another edit, in front: not synced into this panel (v1.73.5)
+      saves.foreign = function () { return iwdieVcRecoveredOther(title, job.name); };
       // the last sync's line, for the PNG's news to go under; auto-sync stopped until the next Ctrl+S (v1.56.0)
       var lastNote = '', autoPaused = false;
       if (canAck) {
@@ -16347,7 +16468,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var file = given ? new File([iwdieBase64ToBytes(given.b64)], given.name, { type: given.type || 'application/pdf' }) : null;
         // the banner's buttons wait until all of it is done: their keys and clicks would cross these
         busy = true;
-        (file ? openAi(file, 'chosen in the Designer', job.svg) : Promise.resolve(null)).then(function (ai) {
+        // VectorCraft's Recover Documents answered first (v1.73.5): the panel opens after what it restores, in front
+        recover().then(function () {
+          return file ? openAi(file, 'chosen in the Designer', job.svg) : null;
+        }).then(function (ai) {
           return ai || openPanel();
         }).then(null, function () { return null; }).then(function (opened) {
           if (!opened) return;
@@ -16393,10 +16517,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             });
           });
         }).then(function () { busy = false; }, function () { busy = false; }).then(function () {
+          // what Recover Documents restored, under what the note says by now, kept (v1.73.5)
+          if (restoredLine) {
+            var said = ui.el.querySelector('.iwdie-vcb-n');
+            note((said && said.innerHTML ? said.innerHTML + '<br>' : '') + restoredLine, !!(said && /\biwdie-vcb-e\b/.test(said.className)), true);
+          }
           // Claude, through the iwmac-vectorcraft MCP server, once it runs (v1.64.0)
           var sized = /<svg\b[^>]*\sviewBox\s*=\s*"\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(job.svg);
           claude = vcClaude({ job: job, looks: looks, size: function () { return sized ? { w: +sized[1], h: +sized[2] } : { w: 1400, h: 750 }; },
             lib: function () { return lib; }, syncer: function () { return syncer; }, title: function () { return title; }, titled: titled, note: note,
+            foreign: saves.foreign,
             row: function (html) { var r = ui.el.querySelector('.iwdie-vcb-ai'); if (r) r.innerHTML = html; }, on: ui.on });
           // what the Designer's Ctrl+S sent while the editor was getting ready (v1.73.0)
           bringIn();
@@ -16410,7 +16540,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        the plant's parameters - then takes Claude's calls one at a time: the scene, a preview, an edit, a check, an undo. An
        edit is made on a copy of the drawing and opened in VectorCraft as a document of its own, the version before it kept
        in its tab; nothing is synced from here, and nothing reaches the Designer but by the user's Ctrl+S. */
-    /** `api`: {job, size(), lib(), syncer(), title(), titled(name, ms), note(html, bad, keep), row(html), on(act, fn), looks}.
+    /** `api`: {job, size(), lib(), syncer(), title(), titled(name, ms), note(html, bad, keep), row(html), on(act, fn), looks,
+     *  foreign() - a document restored from another edit in front, by name (v1.73.5)}.
      *  The edits themselves need no bridge (v1.69.0): an edit file Copilot wrote is made here by the same plan and the
      *  same apply, through file(name, doc). -> {stop, file} */
     function vcClaude(api) {
@@ -16558,6 +16689,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // the drawing as it stands: the last one this tab opened, unless VectorCraft marks it changed since (*) - then saved and read
       var current = function () {
         var t = api.title();
+        // a document VectorCraft restored from another edit, in front: not this panel's drawing (v1.73.5)
+        var other = api.foreign ? api.foreign() : '';
+        if (other) return Promise.reject(new Error('“' + other + '” is in front in VectorCraft - a document restored from an edit closed earlier, not this panel’s: click the panel’s own tab first'));
         if (snap && snap.title === t && !/^\*/.test(t)) return Promise.resolve(snap);
         var syncer = api.syncer();
         if (!syncer) return Promise.reject(new Error('the editor is not ready yet'));
@@ -21176,6 +21310,8 @@ if (typeof module !== 'undefined' && module.exports) {
     vcObjectChanges: iwdieVcObjectChanges,
     vcKnownResolve: iwdieVcKnownResolve,
     vcDesignerPlan: iwdieVcDesignerPlan,
+    vcRecoveryLeft: iwdieVcRecoveryLeft,
+    vcRecoveredOther: iwdieVcRecoveredOther,
     vcPlaceholderName: iwdieVcPlaceholderName,
     vcParseBind: iwdieVcParseBind,
     vcBindLabel: iwdieVcBindLabel,

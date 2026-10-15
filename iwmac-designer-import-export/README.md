@@ -482,6 +482,38 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### VectorCraft's Recover Documents answered for you (v1.73.5)
+
+Thomas: *sometimes it does not populate all the IWMAC objects to VectorCraft; a second time it works*, and then: *I
+think it's because you have to press Restore on a popup*.
+
+VectorCraft's Data Recovery keeps a copy of every document with unsaved changes in the site's storage, every 2 minutes.
+An edit tab closed with changes leaves its copy behind. The next time VectorCraft starts and finds a copy whose tab is
+gone - no Web Lock held for it, and no heartbeat from it for 6 minutes, three of its 2-minute intervals - it opens
+*Recover Documents* on its first frame. While that dialog is open VectorCraft takes no key: not the Ctrl+A, Ctrl+2 and
+paste that put the IWMAC objects on the drawing, and not the Ctrl+S that makes syncing ready (a sync then ended in
+*VectorCraft did not save the drawing*). A Restore pressed after the panel had opened put the restored documents in
+front of it. The second try worked because by then the copies belonged to the first tab, which was still running.
+
+- **Answered before the panel opens.** As the editor starts, the script reads VectorCraft's recovery entries
+  (`vectorcraft-recovery/…` in the site's storage) and the Web Locks of its running tabs, and applies VectorCraft's own
+  rule. When the dialog is open, it answers as Thomas does: Restore (Enter, the dialog's OK), confirmed by the copies
+  moving into the new tab's own area. The panel then opens after the restored documents, in front, and its IWMAC
+  objects go on as usual.
+- **The restored documents** open unsaved, each in a tab of its own, and the banner names them. Close those you do not
+  need - Ctrl+W, Don't Save - or VectorCraft offers them again next time: a restored document stays unsaved until it
+  is saved or closed.
+- **Never synced into the wrong panel.** A document restored from another edit - *<name> [Recovered]*, whose name is
+  not this edit's - is not synced by Ctrl+S, not read for Claude, and not used by the Designer's Ctrl+S; the banner
+  says to click the panel's own tab. This edit's own drawing, restored after a crash, still syncs.
+- A copy of a tab that still runs - its Web Lock held, or its heartbeat younger than 6 minutes - is left alone, as
+  VectorCraft leaves it. An editor tab opened before updating runs the old version: reload it.
+- Checked in the stub host on the hosted VectorCraft 0.11.0, with a genuine recovery copy the app wrote itself, planted
+  as a closed tab's. 1.73.4 left the dialog open over the panel, without its objects and with Ctrl+S not ready. 1.73.5
+  answered it in 0.3 s; the panel opened in front with 9 of its 9 objects, Ctrl+S on the restored document was refused,
+  and the panel's own saved. With no copy, or with a copy of a tab still running, the editor started as before. Not run
+  in the live Designer.
+
 ### Ctrl+S opens VectorCraft when no tab of the edit is open (v1.73.4)
 
 Thomas, after Ctrl+S in the Designer: *No VectorCraft tab of this panel's edit answered - closed? Edit in VectorCraft…
