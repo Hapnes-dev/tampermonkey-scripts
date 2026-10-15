@@ -426,6 +426,32 @@ the Maskin template's were, so VectorCraft always has them, and make them easy f
   Copilot kit lists them (`reference_data/oversikt-symbols.json`). The overview skill's Oversikt builder draws cases
   and rooms in the template's colours and places any of them from its spec.
 
+### A sync finds the panel's objects again after the panel was loaded again (v1.72.1)
+
+Thomas, drawing plant 4798's 315.001 Forbruksvann in VectorCraft: after a save, the panel kept an effect box he no
+longer had in VectorCraft, and a second box stood beside it. A sync knew the objects of an edit only by their elements
+on the Designer's canvas: those it sent as placeholders, and those its earlier syncs placed. The Designer makes the
+elements anew whenever the panel is loaded again: another panel opened and this one again, *Load* pressed again, or the
+page reloaded. After that, a sync took nothing off and said nothing, and a copied placeholder's object was placed once
+more beside the one an earlier sync had made.
+
+- **Known by more than the element.** The edit keeps a record of each object: its element, and its name, kind, place
+  and tag as the last sync left it. A sync finds each one by its element. Otherwise it uses the name and kind where the
+  object still stands or still reads the same. Failing that, it uses the kind where the object stands, when only one
+  object is there. It never matches by name alone, because a panel loaded again may give that name to another object.
+  The record is also kept in Tampermonkey's storage (`iwdie.vc.known.<job>`), so a Designer tab that takes the edit
+  over, the page reloaded, takes deleted objects off too. Before, such a tab took none off. An edit begun by an older
+  version has no record and still takes none off, as the toast says.
+- **A copy is the object it made.** A copied placeholder carries its original's name, so each sync took it for a new
+  object: placed again, the last one taken off, its links and Designer-side changes lost. It now takes the object an
+  earlier sync of the edit placed for it, as a placeholder of none does: kept, moved with it, taken off with it.
+- **Said, never skipped.** An object of the edit that cannot be found as the last sync left it (moved *and* relabelled
+  in the Designer since) is left on the panel and named in the toast, with what to do. The editor's banner counts it
+  with the objects that stayed.
+- Checked in the stub host with saves straight into the Designer: a copy placed, saved again, then deleted, and one
+  of the panel's own placeholders deleted, with the objects made anew before each save. Also checked with a second
+  Designer page taking the edit over, and in the hosted VectorCraft 0.11.0. Not run in the live Designer.
+
 ### Copilot's edits, by file (v1.69.0)
 
 Thomas asked whether the Copilot agent could draw in VectorCraft through MCP, as Claude does. It

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.72.0
+// @version      1.72.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.72.0';
+var IWDIE_VERSION = '1.72.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8548,8 +8548,9 @@ function iwdieVcElementEnd(s, from, tag) {
  *  sent as placeholders (`sent`: their names) whose placeholder came back as none are named
  *  (`missing`), for the sync to take off the panel. A placeholder of an object no longer on the panel
  *  (v1.46.1) places nothing. The objects an earlier sync of this edit placed (v1.47.0, `placed`:
- *  [{name, obj_id}]) each take the nearest placeholder of their kind that stands for no object: that
- *  one moves it, and one left without is `dropped`. `existing`: the panel's objects now.
+ *  [{name, obj_id}]) each take the nearest placeholder of their kind that stands for no object, or is a
+ *  copy of one that does (v1.72.1): that one moves it, and one left without is `dropped`. `existing`:
+ *  the panel's objects now.
  *  -> {moves: [{name, obj_id, x, y, w, h, text, was: {x, y, w, h, text}, link}], fresh: [found...], same, missing: [name...], orphans: [found...],
  *  dropped: [name...]} - `link` (v1.63.0) where the placeholder's renamed binding (f.link) is another parameter */
 function iwdieVcObjectChanges(found, existing, sent, placed) {
@@ -8570,6 +8571,10 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
     claimed[f.ref] = 1;
     change(f, e);
   });
+  // one whose object another placeholder took is a copy, a new object - one an earlier sync of this edit may have made
+  // already (v1.72.1): it takes that one below, as a placeholder of none does, instead of another each time. One whose
+  // object is gone from the panel (v1.46.1) places nothing: it would bring back what was deleted there
+  unmatched.forEach(function (f) { if (claimed[f.ref]) news.push(f); else orphans.push(f); });
   // what this edit placed before: each object the nearest new placeholder of its kind
   var mine = (placed || []).map(function (p) { return p && have.filter(function (c) { return c.name === p.name && c.obj_id === p.obj_id; })[0]; })
     .filter(function (e) { return e && !taken[e.name]; });
@@ -8588,9 +8593,6 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
   pairs.sort(function (a, b) { return a.d - b.d; });
   pairs.forEach(function (p) { if (paired[p.i] || taken[p.e.name]) return; paired[p.i] = 1; change(news[p.i], p.e); });
   news.forEach(function (f, i) { if (!paired[i]) fresh.push(f); });
-  // one whose object another placeholder took is a copy, a new object; one whose object is gone
-  // from the panel (v1.46.1) places nothing - it would bring back what was deleted there
-  unmatched.forEach(function (f) { if (claimed[f.ref]) fresh.push(f); else orphans.push(f); });
   var missing = (sent || []).filter(function (n) { return !taken[n] && have.some(function (c) { return c.name === n; }); });
   var dropped = mine.filter(function (e) { return !taken[e.name]; }).map(function (e) { return e.name; });
   return { moves: moves, fresh: fresh, same: same, missing: missing, orphans: orphans, dropped: dropped };
@@ -8611,6 +8613,32 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
     if (relink) mv.link = relink;
     moves.push(mv);
   }
+}
+
+/** The panel's objects an edit knows - those it sent as placeholders, those its syncs placed (v1.72.1) - found on the
+ *  panel now. By the element each had (`live`: the name that element carries now); else by its name and kind where it
+ *  still stands, or still says the same; else by its kind where it stands, when that is the only one there. Never by its
+ *  name alone: the panel loaded again may give that name to another of its objects. Each of the panel's objects stands
+ *  for one of them at most. `entries`: [{key, name, obj_id, x, y, w, h, tag, live}], `existing`: the panel's objects now.
+ *  -> {names: {key: name now}, unresolved: [key...]} */
+function iwdieVcKnownResolve(entries, existing) {
+  var have = (existing || []).filter(function (c) { return c && typeof c === 'object' && c.name; });
+  var used = {}, names = {}, unresolved = [];
+  var near = function (a, b) { var n = parseFloat(a), m = parseFloat(b); return isFinite(n) && isFinite(m) && Math.abs(n - m) <= 2; };
+  var at = function (c, e) { return near(c.posLeft, e.x) && near(c.posTop, e.y) && near(c.posWidth, e.w) && near(c.posHeight, e.h); };
+  (entries || []).forEach(function (e) {
+    if (!e || !e.key) return;
+    var kind = String(e.obj_id || ''), tag = String(e.tag == null ? '' : e.tag);
+    var mine = have.filter(function (c) { return !used[c.name] && String(c.obj_id) === kind; });
+    var hit = e.live ? mine.filter(function (c) { return c.name === e.live; })[0] : null;
+    if (!hit) hit = mine.filter(function (c) { return c.name === e.name && (at(c, e) || iwdieVcTagOf(c) === tag); })[0];
+    if (!hit) {
+      var there = mine.filter(function (c) { return at(c, e); });
+      if (there.length === 1) hit = there[0];
+    }
+    if (hit) { used[hit.name] = 1; names[e.key] = hit.name; } else unresolved.push(e.key);
+  });
+  return { names: names, unresolved: unresolved };
 }
 
 /* ===================== Sync to IWMAC Designer (v1.42.0) =====================
@@ -16702,6 +16730,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var kinds = [];
       info.objects.forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (/^[\w.-]+$/.test(k) && kinds.indexOf(k) < 0) kinds.push(k); });
       info.sent = iwdieVcPanelSent(info.objects);
+      // what this edit knows of them (v1.72.1): each by its element, and by its name, kind, place and tag - another panel
+      // opened and this one again gives them new elements, and a sync still finds them (vcKnownFind)
+      info.known = vcKnownOf(info.objects, info.sent, info.els);
       // the parameter each bound object shows, in its placeholder's name (v1.63.0); the plant's rows for the IWMAC menu's
       // Parameters and for linking by name - the edit goes on without them after 10 s
       var plantUnits = vcPlantUnits();
@@ -16877,6 +16908,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         info.job = id;
         vcLive[id] = info;
         vcJobNote(id, info);
+        vcKnownSave(id, info);
         GM_addValueChangeListener('iwdie.vc.result.' + id, function (key, old, val) {
           if (!val || !val.svg) return;
           try { GM_deleteValue(key); } catch (e) {}
@@ -17252,8 +17284,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       added.forEach(function (el, i) {
         var old = olds[i];
         if (!old) return;
-        Object.keys(info.els || {}).forEach(function (k) { if (info.els[k] === old.el) info.els[k] = el; });
-        (info.placed || []).forEach(function (p) { if (p.el === old.el) p.el = el; });
+        (info.known || []).forEach(function (e) { if (e.el === old.el) e.el = el; });
       });
       try { W.UpdateObjectWorker(); } catch (e) {}
       return { relinked: added.length, error: lost.length ? iwdieN(lost.length, 'object', 'objects') + ' (' + lost.join(', ') + ') not on the panel any more' : '' };
@@ -18363,10 +18394,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try { var j = GM_getValue(IWDIE_VC_JOBS_KEY, null); return j && typeof j === 'object' ? j : {}; } catch (e) { return {}; }
     }
 
-    /** Job `id` noted with its plant and panel; jobs older than a day go. */
+    /** Job `id` noted with its plant and panel; jobs older than a day go, with what they knew of the panel (v1.72.1). */
     function vcJobNote(id, info) {
       var all = vcJobsRead(), now = Date.now();
-      Object.keys(all).forEach(function (k) { if (!all[k] || !(now - (+all[k].at || 0) < IWDIE_VC_JOBS_TTL)) delete all[k]; });
+      Object.keys(all).forEach(function (k) {
+        if (all[k] && now - (+all[k].at || 0) < IWDIE_VC_JOBS_TTL) return;
+        delete all[k];
+        try { GM_deleteValue('iwdie.vc.known.' + k); } catch (e) {}
+      });
       all[id] = { plant: String(info.plant || ''), panel: String(info.panel || ''), at: now };
       try { GM_setValue(IWDIE_VC_JOBS_KEY, all); } catch (e) {}
     }
@@ -18398,10 +18433,84 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       info.chain = (info.chain || Promise.resolve()).then(function () { return vcApplyResult(val, info, ack); }).then(null, function () {});
     }
 
-    /** A job begun in another tab, or in this one before it was reloaded: what is known of it. Objects deleted in
-     *  VectorCraft are not taken off by such a tab - it cannot tell them from objects renamed since. */
+    /** A job begun in another tab, or in this one before it was reloaded: what is known of it - since v1.72.1 the record
+     *  of the panel's objects the tab that began it kept in Tampermonkey's storage, so objects deleted in VectorCraft are
+     *  taken off here too, those it finds as they were. A job without such a record (an older version's) takes none off. */
     function vcAdopted(id, job) {
-      return vcAdoptedInfo[id] || (vcAdoptedInfo[id] = { job: id, plant: job.plant, panel: job.panel, sent: [], els: {}, placed: [], adopted: true });
+      if (vcAdoptedInfo[id]) return vcAdoptedInfo[id];
+      var kept = null;
+      try { kept = GM_getValue('iwdie.vc.known.' + id, null); } catch (e) { kept = null; }
+      var known = (kept && Array.isArray(kept.known) ? kept.known : []).filter(function (e) { return e && e.key; }).map(function (e) {
+        return { key: String(e.key), name: String(e.name || ''), obj_id: String(e.obj_id || ''), x: +e.x, y: +e.y, w: +e.w, h: +e.h,
+          tag: String(e.tag == null ? '' : e.tag), sent: !!e.sent, el: null };
+      });
+      return (vcAdoptedInfo[id] = { job: id, plant: job.plant, panel: job.panel, known: known, record: !!kept, adopted: true });
+    }
+
+    /* ---------- what an edit knows of the panel's objects (v1.72.1) ----------
+       A sync changes the objects the edit sent as placeholders, and those its earlier syncs placed: moved, relabelled,
+       taken off when their placeholders were deleted. It knew them by their elements alone, and the Designer makes them
+       anew when the panel is loaded again - another panel opened and this one again, or the page reloaded: a sync then
+       took nothing off, and placed a copied placeholder's object once more. Now each is known by its element, and by its
+       name, kind, place and tag as the last sync left it (iwdieVcKnownResolve), kept in Tampermonkey's storage too. */
+
+    /** The panel's objects sent as placeholders, as the edit knows them: [{key, name, obj_id, x, y, w, h, tag, sent, el}]. */
+    function vcKnownOf(objects, sent, els) {
+      var keep = {};
+      (sent || []).forEach(function (n) { keep[n] = 1; });
+      return (objects || []).filter(function (ob) { return ob && keep[String(ob.name)]; }).map(function (ob) {
+        return { key: String(ob.name), name: String(ob.name), obj_id: String(ob.obj_id), x: parseFloat(ob.posLeft), y: parseFloat(ob.posTop),
+          w: parseFloat(ob.posWidth), h: parseFloat(ob.posHeight), tag: iwdieVcTagOf(ob), sent: true, el: (els && els[ob.name]) || null };
+      });
+    }
+
+    /** The record kept in Tampermonkey's storage, for a Designer tab that takes the edit over. */
+    function vcKnownSave(id, info) {
+      try {
+        GM_setValue('iwdie.vc.known.' + id, { at: Date.now(), known: (info.known || []).map(function (e) {
+          return { key: e.key, name: e.name, obj_id: e.obj_id, x: e.x, y: e.y, w: e.w, h: e.h, tag: e.tag, sent: !!e.sent };
+        }) });
+      } catch (e) {}
+    }
+
+    /** Which of the panel's objects (`now`) are the ones the edit knows, each entry then holding its element.
+     *  -> {names: {key: name}, keys: {key: 1}, sent: [name], placed: [{name, obj_id}], lost: [entry]} */
+    function vcKnownFind(info, now) {
+      var known = info.known || [], cc = document.getElementById('control_container'), elOf = {};
+      if (cc) Array.prototype.forEach.call(cc.children, function (el) { var n = el.getAttribute('name'); if (n) elOf[n] = el; });
+      var r = iwdieVcKnownResolve(known.map(function (e) {
+        return { key: e.key, name: e.name, obj_id: e.obj_id, x: e.x, y: e.y, w: e.w, h: e.h, tag: e.tag,
+          live: e.el && e.el.parentNode ? e.el.getAttribute('name') : '' };
+      }), now);
+      var keys = {}, sent = [], placed = [], lost = [];
+      known.forEach(function (e) {
+        keys[e.key] = 1;
+        var nm = r.names[e.key];
+        // its element, if it had one, is an old one: the record alone knows it now
+        if (!nm) { e.el = null; lost.push(e); return; }
+        e.el = elOf[nm] || e.el;
+        if (e.sent) sent.push(nm); else placed.push({ name: nm, obj_id: e.obj_id });
+      });
+      return { names: r.names, keys: keys, sent: sent, placed: placed, lost: lost };
+    }
+
+    /** After a sync: each object the edit knows as it stands now - those taken off gone, those placed (`els`: [{el, obj_id}])
+     *  in - and kept in Tampermonkey's storage. One not found this time stays known as it was: it may be found again. */
+    function vcKnownAfter(id, info, els) {
+      var byName = {};
+      exportPanelObjects().forEach(function (o) { if (o && o.name) byName[o.name] = o; });
+      var seq = (info.known || []).reduce(function (m, e) { var k = /^placed-(\d+)$/.exec(e.key); return k ? Math.max(m, +k[1] + 1) : m; }, 0);
+      var known = (info.known || []).filter(function (e) { return !e.el || e.el.parentNode; });
+      (els || []).forEach(function (x) { if (x && x.el) known.push({ key: 'placed-' + (seq++), el: x.el, obj_id: String(x.obj_id || ''), sent: false }); });
+      known.forEach(function (e) {
+        var o = e.el && e.el.parentNode ? byName[e.el.getAttribute('name')] : null;
+        if (!o) return;
+        e.name = String(o.name);
+        e.x = parseFloat(o.posLeft); e.y = parseFloat(o.posTop); e.w = parseFloat(o.posWidth); e.h = parseFloat(o.posHeight);
+        e.tag = iwdieVcTagOf(o);
+      });
+      info.known = known;
+      vcKnownSave(id, info);
     }
 
     /** The syncs kept for a panel, applied once it is open in this tab: looked for every 2 s while there are any. */
@@ -18661,11 +18770,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return;
       }
       svg = ph.svg;
-      // the objects as this edit knows them (v1.47.0): by their elements, whatever the panel calls them now
-      var nameOf = function (n) { var el = info.els && info.els[n]; return !el ? n : el.parentNode ? el.getAttribute('name') : null; };
-      ph.found.forEach(function (f) { if (f.ref) f.ref = nameOf(f.ref) || '-' + f.ref; });
-      var sent = (info.sent || []).map(nameOf).filter(Boolean);
-      var placed = (info.placed || []).filter(function (p) { return p.el && p.el.parentNode; }).map(function (p) { return { name: p.el.getAttribute('name'), obj_id: p.obj_id }; });
+      // the objects as this edit knows them (v1.47.0): by their elements, whatever the panel calls them now - and (v1.72.1)
+      // by their name, kind, place and tag where the panel made them anew, or another tab took the edit over (vcKnownFind)
+      var kf = vcKnownFind(info, exportPanelObjects()), inSave = {};
+      var nameOf = function (n) { return Object.prototype.hasOwnProperty.call(kf.names, n) ? kf.names[n] : kf.keys[n] ? null : n; };
+      ph.found.forEach(function (f) { if (f.ref) { inSave[f.ref] = 1; f.ref = nameOf(f.ref) || '-' + f.ref; } });
+      var sent = kf.sent, placed = kf.placed;
+      // one it knew but cannot find as the last sync left it, its placeholder not in the save (or one an earlier sync placed):
+      // left on the panel, and said so - never taken off unseen
+      var lost = kf.lost.filter(function (e) { return !e.sent || !inSave[e.key]; });
       // drawn as VectorCraft means it (vcRenderPng, v1.58.0). The SVG kept in the PNG for the next edit stays as VectorCraft saved it.
       return vcRenderPng(svg, size, grabBackgroundFillColor() || '#ffffff').then(function (pngBytes) {
         return vcPack(svg).then(function (pack) { return { png: pngBytes, pack: pack }; });
@@ -18693,7 +18806,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         else if (gone.length > 10 && gone.length > (sent.length + placed.length) / 2) hold = 'more than half of them at once';
         var rm = gone.length && !hold ? vcRemoveObjects(gone) : { removed: [], error: '' };
         var objs = ch.fresh.length ? vcPlaceObjects(ch.fresh) : { placed: 0, already: 0, error: '', els: [] };
-        (objs.els || []).forEach(function (x) { (info.placed = info.placed || []).push(x); });
+        // what the edit knows, as the panel now has it (v1.72.1): the next sync finds them, the panel loaded again or not
+        vcKnownAfter(info.job, info, objs.els);
         var lines = [Math.round(withDoc.length / 1024) + ' kB, ' + size.w + ' × ' + size.h + ' px' +
           (pack.lean ? ' - kept as plain SVG, without VectorCraft’s own copy of the document (' + (Math.round(pack.full / 104857.6) / 10) +
             ' MB compressed), so the picture stays light: the next edit opens the same layers and paths.'
@@ -18725,15 +18839,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (rm.error) lines.push('Not taken off: ' + rm.error + '.');
         if (hold) lines.push(iwdieN(gone.length, 'object', 'objects') + ' of the panel had no placeholder in the save, but stayed on it: ' + hold + ' (' +
           gone.slice(0, 6).join(', ') + (gone.length > 6 ? ', …' : '') + '). Delete them here if they should go.');
+        if (lost.length) lines.push(iwdieN(lost.length, 'object', 'objects') + ' of this edit could not be found on the panel as the last sync left ' +
+          (lost.length === 1 ? 'it - moved and relabelled here since? - so it was left as it is: ' : 'them - moved and relabelled here since? - so they were left as they are: ') +
+          lost.slice(0, 6).map(function (e) { return e.name + (e.tag ? ' “' + e.tag + '”' : ''); }).join(', ') + (lost.length > 6 ? ', …' : '') +
+          '. Delete ' + (lost.length === 1 ? 'it here if VectorCraft no longer has it, or a new one took its place.' : 'them here if VectorCraft no longer has them, or new ones took their place.'));
         if (ph.frames) lines.push('The art under ' + iwdieN(ph.frames, 'object', 'objects') + ' - its frame, its pill - is in the picture where its placeholder left it.');
         if (ph.skipped) lines.push(iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.');
         if (ph.stale) lines.push(iwdieN(ph.stale, 'placeholder', 'placeholders') + ' from an older edit left out - the IWMAC objects the plant’s .ai kept ' +
           'from the edit it was saved in. They stood for the objects as they were then; the ones added in this edit are the panel’s.');
         // the editor's tab told at once (v1.56.0): the background and the objects are set; the PNG still goes up
         var applied = { placed: objs.placed, already: objs.already, skipped: ph.skipped, stale: ph.stale || 0, objError: objs.error || mv.error || rm.error || rl.error,
-          moved: mv.moved + rl.relinked, removed: rm.removed.length, held: hold ? gone.length : 0, holdWhy: hold, uploading: true,
+          moved: mv.moved + rl.relinked, removed: rm.removed.length, held: (hold ? gone.length : 0) + lost.length,
+          holdWhy: hold || (lost.length ? 'not found as the last sync left them - changed in the Designer since?' : ''), uploading: true,
           linked: ch.fresh.filter(function (f) { return f.link; }).length + rl.relinked, linkFailed: links.failed.slice(0, 6) };
-        if (info.adopted) lines.push('This tab took the edit over from the tab it began in: objects deleted in VectorCraft are not taken off here - delete them by hand.');
+        // an edit begun by an older version keeps no record for another tab: that one takes nothing off
+        if (info.adopted && !info.record) lines.push('This tab took the edit over from the tab it began in: objects deleted in VectorCraft are not taken off here - delete them by hand.');
         ack('applied', Math.round(withDoc.length / 1024) + ' kB', applied);
         // and its PNG to the plant's pictures, as Upload to server does, named on the panel as Set background names it (v1.42.0)
         return vcUploadPng(withDoc, info).then(function (up) {
@@ -20704,6 +20824,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcTagJob: iwdieVcTagJob,
     vcAddPanelObjects: iwdieVcAddPanelObjects,
     vcObjectChanges: iwdieVcObjectChanges,
+    vcKnownResolve: iwdieVcKnownResolve,
     vcPlaceholderName: iwdieVcPlaceholderName,
     vcParseBind: iwdieVcParseBind,
     vcBindLabel: iwdieVcBindLabel,
