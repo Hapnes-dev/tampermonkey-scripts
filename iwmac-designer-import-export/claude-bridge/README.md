@@ -74,6 +74,17 @@ carries that row on, at its spacing. `connect` routes an orthogonal pipe between
 ports (a compressor's `out` on top, a gas cooler's `in` on its left, a motor valve's at its
 knot) and colours it by circuit: HP, Liquid, MT suction, LT suction, Heat recovery.
 
+A target is the `cid` the scene gave, or a `ref` an earlier op of the same edit placed.
+Since server 1.2.0 and userscript 1.69.0 it may also be portable:
+- `{object: 'object_12'}` names one of the panel's objects, by the panel's own name for it;
+- `{find: {kind, symbol, text, name, layer, circuit, bind, near: [x, y], within}}` names the
+  one thing that matches every field given, nearest `near` (within 30 px), and only when no
+  other is as near.
+
+The Copilot agent's edit files name things that way, because Copilot cannot reach this
+server; the editor's **Open IWMAC JSON…** makes such a file (the userscript's README,
+*Copilot's edits, by file*). The two forms suit Claude too, when no cid is at hand.
+
 Claude reads tables, not SVG: a scene of a full Maskin is a few kilobytes, and an edit
 sends only its ops.
 

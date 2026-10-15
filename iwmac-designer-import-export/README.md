@@ -338,6 +338,49 @@ by the right names, each turned copy told apart.
 
 Insert also accepts a **bare** panel document and the server's array-of-one wrapping, so files fetched straight from `V3load_design_panel` / `iw_load_ctrls.php?format=json` import fine.
 
+### Copilot's edits, by file (v1.69.0)
+
+Thomas asked whether the Copilot agent could draw in VectorCraft through MCP, as Claude does. It
+cannot reach the bridge: Copilot calls MCP servers from Microsoft's cloud, and the bridge listens
+on `127.0.0.1` only, by design. So Copilot's edits come as a file. This script makes them in the
+editor's tab with the plan and the apply Claude's edits use.
+
+- **The file.** `{format: 'iwmac-vectorcraft-edits', version: 1, plant, panel, summary, ops}`. The
+  Copilot agent's edit skill writes it from the panel's Export JSON (`vc_edits.py`) and checks it
+  before it hands it over. The ops are the bridge's `iwmac_edit` ops.
+- **How an op names what it changes.** Never by a cid, which only a tab that read the drawing
+  knows:
+  - `{object: 'object_12'}` names one of the panel's objects, by the panel's own name for it;
+  - `{find: {kind, symbol, text, near: [x, y]}}` names a drawn thing: of the things that match,
+    the one nearest that point, within 30 px, and only when no other is as near.
+
+  Claude may use both forms too.
+- **Open IWMAC JSON…** in the editor's banner takes such a file, instead of handing it to the
+  Designer.
+  - It plans the file on the drawing as it stands and says in words what it would make.
+  - **Make it** makes it on a copy, opened as a version of its own, *&lt;name&gt; · edits N.svg*;
+    **Leave it** changes nothing.
+  - Then the check: what this edit added, told apart from what the drawing had before.
+  - Ctrl+S syncs it, as any edit.
+- **Refused, with nothing changed:** a file for another plant or panel, one that names a cid, and
+  one whose target is not on the drawing. The banner says which, and why.
+
+Measured in the stub host with the real VectorCraft web build. The Maskin example was inserted
+and opened, then three files were opened:
+- one written for another panel: refused;
+- one naming a caption the drawing lacks: planned, then refused, with nothing changed;
+- one written by `vc_edits.py` from the panel's JSON. It added LT3 after LT2 at the row's own
+  spacing, with its drop and the main run on to it and a bound value beside it. It also moved
+  the Receiver caption and renamed MT3.
+  - The banner read *It makes 1 symbol, 1 caption, 2 pipes, 1 pill, 1 IWMAC object; 1 move, 1
+    caption changed*.
+  - After **Make it**: *nothing from this edit, 7 findings were on the drawing before it*.
+  - Ctrl+S synced it with *1 placed · 1 linked*: the new value became `object_9`, linked to
+    *Suction temp. To-LT*.
+
+The kit's `tests/test-claude-bridge.js` and `tests/vc-find-cases.json` hold the targets and the file
+check; the Copilot skill's own resolver answers the same cases.
+
 ### This edit's placeholders alone (v1.68.3)
 
 Thomas: editing in VectorCraft did not sync to the Designer on Ctrl+S. Measured on plant 10266 with
@@ -2420,6 +2463,11 @@ LED, nor a panel in the information column. And the check let an arrow stand whe
   within 3 px of a pipe running its way. An arrow wider than tall needs a horizontal run, a taller one
   a vertical run. An arrow beside a pipe whose runs are not known, a curve, is let be.
 - The kit's validator makes the same check on an agent's answer (`OP-F01`).
+
+**Copilot, by file (v1.69.0).** The Copilot agent cannot reach the bridge, so its edits come as a
+file the banner's **Open IWMAC JSON…** makes, with the same plan: *Copilot's edits, by file*, in
+the version history above. Targets may also name a panel object by its name (`{object}`) or a
+drawn thing by what it is and where it stands (`{find}`), for Claude too.
 
 ## AI-generated panels (Copilot)
 

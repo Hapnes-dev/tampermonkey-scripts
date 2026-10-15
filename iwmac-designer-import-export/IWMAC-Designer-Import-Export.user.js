@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.68.3
+// @version      1.69.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.68.3';
+var IWDIE_VERSION = '1.69.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -10066,6 +10066,130 @@ function iwdieCbTurn(deg, flip) {
   return q + (flip ? 4 : 0);
 }
 
+/** The one thing on the drawing a portable target names (v1.69.0), for an edit written where no cid can be known -
+ *  Copilot writes its edit files from the panel's Export JSON. `f` {kind?, symbol?, obj_id?, text?, name?, layer?,
+ *  circuit?, bind?, near?: [x, y], within? (30, at most 200)}: of the things that match every field given, the one
+ *  nearest `near` - nearest its box, then its centre - and only when no other is as near (2 px); without `near`, the
+ *  only one that matches. -> {item, d} | {why} */
+function iwdieCbFind(items, f) {
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return { why: 'find is {kind?, symbol?, text?, name?, layer?, near: [x, y]...}' };
+  var low = function (v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase(); };
+  var circ = f.circuit ? iwdieCbCircuit(f.circuit) : null;
+  if (f.circuit && !circ) return { why: 'no circuit "' + f.circuit + '": ' + IWDIE_CB_CIRCUITS.map(function (c) { return c[0]; }).join(', ') };
+  var circuitOf = function (it) { var c = it.circuit ? iwdieCbCircuit(it.circuit) : null; return c ? c.name : iwdieCbCircuitOfColour(it.colour); };
+  var picked = (items || []).filter(function (it) {
+    if (!it || !it.box) return false;
+    if (f.kind && it.kind !== f.kind) return false;
+    if (f.symbol && (it.kind !== 'symbol' || iwdieSymKey(it.symbol) !== iwdieSymKey(f.symbol))) return false;
+    if (f.obj_id && it.obj_id !== f.obj_id) return false;
+    if (f.text !== undefined && low(it.text) !== low(f.text)) return false;
+    if (f.name !== undefined && low(it.name) !== low(f.name)) return false;
+    if (f.layer && iwdieSymKey(it.layer) !== iwdieSymKey(f.layer)) return false;
+    if (circ && (it.kind !== 'pipe' || circuitOf(it) !== circ.name)) return false;
+    if (f.bind !== undefined && low(it.bind) !== low(f.bind)) return false;
+    return true;
+  });
+  var what = function () {
+    return [f.kind, f.symbol, f.obj_id, f.text !== undefined ? '"' + f.text + '"' : '', f.name !== undefined ? 'named "' + f.name + '"' : '',
+      f.layer ? 'in ' + f.layer : '', circ ? 'on ' + circ.name : '', f.bind !== undefined ? 'bound to ' + f.bind : ''].filter(Boolean).join(' ') || 'thing';
+  };
+  var row = function (it) { return it.cid + ' (' + (it.symbol || it.obj_id || it.text || it.name || it.kind) + ' at ' + Math.round(it.box.x) + ', ' + Math.round(it.box.y) + ')'; };
+  if (!picked.length) return { why: 'no ' + what() + ' on the drawing' };
+  var near = Array.isArray(f.near) && f.near.length === 2 && isFinite(+f.near[0]) && isFinite(+f.near[1]) ? [+f.near[0], +f.near[1]] : null;
+  if (f.near !== undefined && !near) return { why: 'near is [x, y] in panel pixels' };
+  if (!near) {
+    if (picked.length === 1) return { item: picked[0], d: 0 };
+    return { why: picked.length + ' things are ' + what() + ': ' + picked.slice(0, 4).map(row).join(', ') + (picked.length > 4 ? ', ...' : '') + ' - say which with near: [x, y]' };
+  }
+  var within = isFinite(+f.within) && +f.within > 0 ? Math.min(200, +f.within) : 30;
+  var scored = picked.map(function (it) {
+    var b = it.box, dx = Math.max(b.x - near[0], 0, near[0] - (b.x + b.w)), dy = Math.max(b.y - near[1], 0, near[1] - (b.y + b.h));
+    var cx = b.x + b.w / 2 - near[0], cy = b.y + b.h / 2 - near[1];
+    return { it: it, d: Math.sqrt(dx * dx + dy * dy), c: Math.sqrt(cx * cx + cy * cy) };
+  }).sort(function (a, b) { return (a.d - b.d) || (a.c - b.c); });
+  var best = scored[0], twin = scored[1];
+  if (best.d > within) {
+    return { why: 'no ' + what() + ' within ' + within + ' px of (' + near[0] + ', ' + near[1] + '): the nearest, ' + row(best.it) + ', is ' + Math.round(best.d) + ' px away' };
+  }
+  if (twin && twin.d <= within && twin.d - best.d < 2 && Math.abs(twin.c - best.c) < 2) {
+    return { why: row(best.it) + ' and ' + row(twin.it) + ' are both ' + what() + ' as near (' + near[0] + ', ' + near[1] + '): say which with text, name or a nearer near' };
+  }
+  return { item: best.it, d: Math.round(best.d * 10) / 10 };
+}
+
+/** An edit's portable targets made cids (v1.69.0): every {object: name} - a panel object's placeholder, by the name the
+ *  panel has for it (object_N) - and every {find: {...}} (iwdieCbFind) where an op takes a target: a place's near,
+ *  connect's from and to, the target of move, delete, set_text and bind, the targets of align and distribute, and a
+ *  box's for. Each is resolved on the drawing as it stands before the edit; a port and the rest stay with it.
+ *  -> {ops (copies), errors: [{op, why}], found: [{op, as, cid, what, box}]} */
+function iwdieCbTargets(ops, items) {
+  var errors = [], found = [], copy = [];
+  (ops || []).forEach(function (o, i) {
+    if (!o || typeof o !== 'object') { copy.push(o); return; }
+    var c = JSON.parse(JSON.stringify(o)), bad = false;
+    var fix = function (t, where) {
+      if (!t || typeof t !== 'object' || (t.object === undefined && t.find === undefined)) return t;
+      var hit = null, why = '', as = '';
+      if (t.object !== undefined) {
+        as = 'object ' + t.object;
+        var all = (items || []).filter(function (it) { return it && it.kind === 'object' && String(it.ref || '') === String(t.object); });
+        if (all.length === 1) hit = all[0];
+        else why = all.length ? 'object ' + t.object + ' is on the drawing ' + all.length + ' times'
+          : 'no IWMAC object ' + t.object + ' on the drawing: its placeholder is gone, or this is not that panel\'s drawing';
+      } else {
+        as = 'find ' + JSON.stringify(t.find);
+        var r = iwdieCbFind(items, t.find);
+        if (r.item) hit = r.item; else why = r.why;
+      }
+      if (!hit) {
+        if (!bad) errors.push({ op: i, why: where + ': ' + why });
+        bad = true;
+        return t;
+      }
+      found.push({ op: i, as: as, cid: hit.cid, what: hit.symbol || hit.obj_id || hit.text || hit.name || hit.kind, box: iwdieCbBoxRow(hit.box) });
+      var out = { cid: hit.cid };
+      Object.keys(t).forEach(function (k) { if (k !== 'object' && k !== 'find') out[k] = t[k]; });
+      return out;
+    };
+    if (c.at && typeof c.at === 'object' && c.at.near) c.at.near = fix(c.at.near, 'near');
+    if (c.from) c.from = fix(c.from, 'from');
+    if (c.to) c.to = fix(c.to, 'to');
+    if (c.target) c.target = fix(c.target, 'target');
+    if (c['for']) c['for'] = fix(c['for'], 'for');
+    if (Array.isArray(c.targets)) c.targets = c.targets.map(function (t, k) { return fix(t, 'target ' + (k + 1)); });
+    copy.push(c);
+  });
+  return { ops: copy, errors: errors, found: found };
+}
+
+var IWDIE_VC_EDITS_FORMAT = 'iwmac-vectorcraft-edits';
+/** An edit file (v1.69.0): the ops of one edit to a panel's drawing, as Copilot's iwmac-panel-edit skill writes them -
+ *  {format: 'iwmac-vectorcraft-edits', version: 1, plant, panel, summary?, ops: [...]} - read for the drawing `job`
+ *  open in VectorCraft. Refused: another plant's or panel's file, no ops or more than 400, an op without its name,
+ *  and a cid, which only the tab that read the drawing knows (a file names things by {object} and {find}).
+ *  -> {ok, ops, problems, summary, plant, panel} */
+function iwdieVcEditFile(doc, job) {
+  if (typeof doc === 'string') {
+    try { doc = JSON.parse(doc); } catch (e) { return { ok: false, ops: [], problems: ['it is not JSON: ' + e.message] }; }
+  }
+  if (!doc || typeof doc !== 'object' || doc.format !== IWDIE_VC_EDITS_FORMAT) {
+    return { ok: false, ops: [], problems: ['it is no edit file: its format is not ' + IWDIE_VC_EDITS_FORMAT] };
+  }
+  var problems = [], same = function (a, b) { return String(a).replace(/\s+/g, ' ').trim().toLowerCase() === String(b).replace(/\s+/g, ' ').trim().toLowerCase(); };
+  var given = function (v) { return v !== undefined && v !== null && String(v).trim() !== ''; };
+  if (+doc.version !== 1) problems.push('it is version ' + doc.version + ', and this userscript reads version 1');
+  if (job && given(doc.plant) && given(job.plant) && !same(doc.plant, job.plant)) problems.push('it was written for plant ' + doc.plant + ', and this drawing is plant ' + job.plant + '\'s');
+  if (job && given(doc.panel) && given(job.panel) && !same(doc.panel, job.panel)) problems.push('it was written for panel ' + doc.panel + ', and this drawing is ' + job.panel);
+  var ops = Array.isArray(doc.ops) ? doc.ops : null;
+  if (!ops || !ops.length) problems.push('it has no ops');
+  else if (ops.length > 400) problems.push('it has ' + ops.length + ' ops: at most 400 in one edit');
+  else {
+    ops.forEach(function (o, i) { if (!o || typeof o !== 'object' || typeof o.op !== 'string' || !o.op) problems.push('op ' + (i + 1) + ' says no op'); });
+    if (/"cid"\s*:/.test(JSON.stringify(ops))) problems.push('it names things by cid, which only the tab that read the drawing knows: a file names them by {object} or {find}');
+  }
+  return { ok: !problems.length, ops: ops || [], problems: problems, summary: typeof doc.summary === 'string' ? doc.summary : '', plant: doc.plant, panel: doc.panel };
+}
+
 /** An edit's plan (v1.64.0): the ops Claude sends, resolved against the drawing into steps with every place worked out.
  *  `scene` {items (iwdieCbSceneItem's), size {w, h}}; `ctx` {sizes: iwdieCbSymbolSizes(...), objects: {obj_id: {w, h, role,
  *  hasTag, kind}}, facts?}. The ops, each {op, ...}:
@@ -10083,12 +10207,18 @@ function iwdieCbTurn(deg, flip) {
  *    align    {targets, how}               distribute {targets, axis, gap?}
  *  A place (`at`) is {x, y} (its top left), {cx, cy} (its centre), or {near: target, side: right|left|above|below, gap?,
  *  align?: start|center|end}; `free: true` moves it to the nearest free place. A target is {cid} or {ref} (one placed
- *  earlier in the same edit); a port is a target with `port` (in, out, branch, tip, top, bottom, left, right).
- *  -> {steps, refs: {ref: {cid?, box}}, notes, errors} */
+ *  earlier in the same edit) - or, written where no cid is known (v1.69.0), {object: name} or {find: {...}}, made cids
+ *  first (iwdieCbTargets); an op whose target is not there is left out, with why. A port is a target with `port` (in,
+ *  out, branch, tip, top, bottom, left, right). -> {steps, refs: {ref: {cid?, box}}, notes, errors, targets} */
 function iwdieCbPlan(ops, scene, ctx) {
   ctx = ctx || {};
   var items = (scene && scene.items) || [], size = (scene && scene.size) || { w: 1400, h: 750 };
   var steps = [], refs = {}, notes = [], errors = [], boxes = [], byCid = {};
+  // portable targets - {object}, {find} - made cids before anything moves (v1.69.0); an op whose target is not there
+  // is left out, and says why where it stands in the list
+  var pre = iwdieCbTargets(ops, items), skip = {};
+  pre.errors.forEach(function (e) { skip[e.op] = e.why; });
+  ops = pre.ops;
   items.forEach(function (it) { byCid[it.cid] = it; if (it.kind !== 'pipe' && it.kind !== 'text' && it.layer !== 'Bakgrunn') boxes.push(it.box); });
   var r1 = function (v) { return Math.round(v * 10) / 10; };
   var area = { x: 0, y: 0, w: size.w, h: size.h };
@@ -10160,6 +10290,7 @@ function iwdieCbPlan(ops, scene, ctx) {
     return box;
   };
   (ops || []).forEach(function (o, i) {
+    if (skip[i] !== undefined) { fail(i, skip[i]); return; }
     if (!o || typeof o !== 'object') { fail(i, 'not an object'); return; }
     switch (o.op) {
       case 'symbol': symbolStep(o, i, o.at, o.ref, o.label); break;
@@ -10231,7 +10362,7 @@ function iwdieCbPlan(ops, scene, ctx) {
       }
       case 'connect': {
         var a = thing(o.from), z = thing(o.to);
-        if (!a || !z) { fail(i, 'connect needs from and to, each a {cid} or a {ref} on the drawing'); break; }
+        if (!a || !z) { fail(i, 'connect needs from and to, each a {cid}, {ref}, {object} or {find} on the drawing'); break; }
         var pa = iwdieCbPorts(a.symbol, a.box, a.k), pz = iwdieCbPorts(z.symbol, z.box, z.k);
         // the ports asked for, else the facing sides
         var face = function (p, q) {
@@ -10258,7 +10389,7 @@ function iwdieCbPlan(ops, scene, ctx) {
       }
       case 'move': {
         var m = thing(o.target);
-        if (!m || !m.cid) { fail(i, 'move needs a target {cid} on the drawing'); break; }
+        if (!m || !m.cid) { fail(i, 'move needs a target on the drawing: {cid}, {object} or {find}'); break; }
         var dx = +o.dx || 0, dy = +o.dy || 0;
         if (o.at) {
           var to = place(o.at, m.box.w, m.box.h, i);
@@ -10271,26 +10402,26 @@ function iwdieCbPlan(ops, scene, ctx) {
       }
       case 'delete': {
         var d = thing(o.target);
-        if (!d || !d.cid) { fail(i, 'delete needs a target {cid} on the drawing'); break; }
+        if (!d || !d.cid) { fail(i, 'delete needs a target on the drawing: {cid}, {object} or {find}'); break; }
         steps.push({ 'do': 'delete', cid: d.cid, op: i });
         break;
       }
       case 'set_text': {
         var t = thing(o.target);
-        if (!t || !t.cid) { fail(i, 'set_text needs a target {cid}'); break; }
+        if (!t || !t.cid) { fail(i, 'set_text needs a target on the drawing: {cid}, {object} or {find}'); break; }
         steps.push({ 'do': 'text', cid: t.cid, text: String(o.text == null ? '' : o.text), op: i });
         break;
       }
       case 'bind': {
         var bt = thing(o.target);
-        if (!bt || !bt.cid || !bt.item || bt.item.kind !== 'object') { fail(i, 'bind needs an IWMAC object {cid}'); break; }
+        if (!bt || !bt.cid || !bt.item || bt.item.kind !== 'object') { fail(i, 'bind needs an IWMAC object on the drawing: {cid}, {object} or {find}'); break; }
         steps.push({ 'do': 'bind', cid: bt.cid, bind: String(o.bind || ''), op: i });
         break;
       }
       case 'align':
       case 'distribute': {
         var ts = (o.targets || []).map(thing);
-        if (ts.length < 2 || ts.some(function (q) { return !q || !q.cid; })) { fail(i, o.op + ' needs two or more targets {cid} on the drawing'); break; }
+        if (ts.length < 2 || ts.some(function (q) { return !q || !q.cid; })) { fail(i, o.op + ' needs two or more targets on the drawing: {cid}, {object} or {find}'); break; }
         var mv = o.op === 'align' ? iwdieCbAlign(ts.map(function (q) { return q.box; }), o.how) : iwdieCbDistribute(ts.map(function (q) { return q.box; }), o.axis, o.gap);
         if (!mv) { fail(i, 'align how is top, middle, bottom, left, center or right'); break; }
         mv.forEach(function (q, k2) {
@@ -10304,7 +10435,7 @@ function iwdieCbPlan(ops, scene, ctx) {
         // an empty box (v1.64.2): under a strip, an alarm, an enable or an LED its anchor, at the object's own box; or, in
         // Bakgrunn, a panel of the information column, as 2349's: light inside, a grey ring
         var forT = o['for'] ? thing(o['for']) : null;
-        if (o['for'] && !forT) { fail(i, 'box for: needs a {cid} or a {ref} on the drawing'); break; }
+        if (o['for'] && !forT) { fail(i, 'box for: needs a {cid}, {ref}, {object} or {find} on the drawing'); break; }
         var pad = +o.pad || 0, inBg = /^bakgrunn$/i.test(String(o.layer || ''));
         var bw = forT ? forT.box.w + 2 * pad : +o.w, bh = forT ? forT.box.h + 2 * pad : +o.h;
         if (!(bw > 0 && bh > 0)) { fail(i, 'a box needs w and h, or for: the object it is the anchor of'); break; }
@@ -10320,7 +10451,7 @@ function iwdieCbPlan(ops, scene, ctx) {
       default: fail(i, 'no op "' + o.op + '"');
     }
   });
-  return { steps: steps, refs: refs, notes: notes, errors: errors };
+  return { steps: steps, refs: refs, notes: notes, errors: errors, targets: pre.found };
 }
 
 /** One thing on the drawing as the scene lists it (v1.64.0), from what the page read of its element: `d` {cid, layer,
@@ -15211,7 +15342,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         [{ act: 'ai', label: 'Open plant .ai…', title: 'The panel’s own Illustrator file - found in the plant’s folder once that is connected - opened here as it is, ' +
           'as File › Open opens it. Then you are asked whether to add the panel’s IWMAC objects to it.' },
         { act: 'json', label: 'Open IWMAC JSON…', title: 'A panel file - exported, or written by Copilot - inserted in the Designer’s tab as Insert JSON… ' +
-          'inserts it, with its check and its questions there; then the panel opens here again: its drawing as layers, its objects as placeholders.' },
+          'inserts it, with its check and its questions there; then the panel opens here again: its drawing as layers, its objects as placeholders. ' +
+          'An edit file Copilot wrote for this panel is made here instead: what it would change is said first, and it is made as a version of its own.' },
         { act: 'aiout', label: 'Save .ai for Illustrator', title: 'The drawing as it stands here, as an Illustrator file of its own layers - Bakgrunn locked, every text Arial type in its place, the IWMAC objects on a hidden layer - as Background → Illustrator writes it. VectorCraft’s own Save As › .ai keeps none of the layers and breaks the letters of a font it lacks. Nothing is synced.' },
         { html: '<button class="iwdie-vcb-l" data-act="trace" title="A copy whose picture is enlarged and set to its own flat colours, ' +
           'so Image Trace makes clean shapes of it">Image Trace copy</button>' }]);
@@ -15508,7 +15640,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       ui.on('ai', function () { if (!busy) plantFolder.pick(); });
       // Open IWMAC JSON… (v1.65.0): a panel file handed to the Designer's tab this edit began in, inserted there as Insert
       // JSON… inserts it, and the panel opened here again once it is in: its drawing as layers, its objects as placeholders
-      var jsonIn = document.createElement('input'), jsonWait = null;
+      var jsonIn = document.createElement('input'), jsonWait = null, claude = null;
       jsonIn.type = 'file';
       jsonIn.accept = '.json,application/json';
       jsonIn.style.display = 'none';
@@ -15520,8 +15652,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var fr = new FileReader();
         fr.onerror = function () { note('<b>' + esc2(f.name) + '</b> could not be read.', true); };
         fr.onload = function () {
-          var text = String(fr.result || ''), ok = false;
-          try { var j = JSON.parse(text); ok = !!j && typeof j === 'object' && (!!j.panel || Array.isArray(j.single_objects)); } catch (e) { ok = false; }
+          var text = String(fr.result || ''), ok = false, j = null;
+          try { j = JSON.parse(text); } catch (e) { j = null; }
+          // an edit file Copilot wrote (v1.69.0): made here, on this drawing, rather than handed to the Designer
+          if (j && typeof j === 'object' && j.format === IWDIE_VC_EDITS_FORMAT) {
+            if (!claude) { note('VectorCraft is not ready yet: open <b>' + esc2(f.name) + '</b> again in a moment.', true); return; }
+            claude.file(f.name, j);
+            return;
+          }
+          ok = !!j && typeof j === 'object' && (!!j.panel || Array.isArray(j.single_objects));
           if (!ok) { note('<b>' + esc2(f.name) + '</b> is no IWMAC panel file.', true); return; }
           try { GM_setValue(IWDIE_VC_INSERT_KEY, { job: job.id, name: f.name, text: text, at: Date.now() }); }
           catch (e) { note('It could not be handed to the Designer: ' + esc2(String((e && e.message) || e)), true); return; }
@@ -15814,7 +15953,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }).then(function () { busy = false; }, function () { busy = false; }).then(function () {
           // Claude, through the iwmac-vectorcraft MCP server, once it runs (v1.64.0)
           var sized = /<svg\b[^>]*\sviewBox\s*=\s*"\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(job.svg);
-          vcClaude({ job: job, looks: looks, size: function () { return sized ? { w: +sized[1], h: +sized[2] } : { w: 1400, h: 750 }; },
+          claude = vcClaude({ job: job, looks: looks, size: function () { return sized ? { w: +sized[1], h: +sized[2] } : { w: 1400, h: 750 }; },
             lib: function () { return lib; }, syncer: function () { return syncer; }, title: function () { return title; }, titled: titled, note: note,
             row: function (html) { var r = ui.el.querySelector('.iwdie-vcb-ai'); if (r) r.innerHTML = html; }, on: ui.on });
         });
@@ -15828,9 +15967,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        edit is made on a copy of the drawing and opened in VectorCraft as a document of its own, the version before it kept
        in its tab; nothing is synced from here, and nothing reaches the Designer but by the user's Ctrl+S. */
     /** `api`: {job, size(), lib(), syncer(), title(), titled(name, ms), note(html, bad, keep), row(html), on(act, fn), looks}.
-     *  -> {stop} | null */
+     *  The edits themselves need no bridge (v1.69.0): an edit file Copilot wrote is made here by the same plan and the
+     *  same apply, through file(name, doc). -> {stop, file} */
     function vcClaude(api) {
-      if (typeof GM_xmlhttpRequest !== 'function') return null;
+      var bridge = typeof GM_xmlhttpRequest === 'function';
       var esc2 = iwdieEscHtml, port = IWDIE_CB_PORT, session = null, stopped = false, working = '', edits = 0;
       // `away`: another tab took Claude over; this one does not take it back by itself, so two open edits never trade
       // Claude to and fro and Claude never edits a panel it did not just read
@@ -16093,11 +16233,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return notes;
       };
       var job = api.job, stem = String(job.name || 'panel.svg').replace(/\.svg$/i, '');
-      var mine = function (t) { return /\s·\sClaude\s\d+\.svg$/.test(String(t || '').replace(/^\*/, '')); };
+      var mine = function (t) { return /\s·\s(Claude|edits)\s\d+\.svg$/.test(String(t || '').replace(/^\*/, '')); };
       // a version opened in VectorCraft as a document of its own; the tab before it closed when it is one of these and
       // holds nothing unsaved (the save that read it saved it), so the panel's own tab and the newest stay
-      var reopen = function (svg) {
-        var t = api.title(), syncer = api.syncer(), name = stem + ' · Claude ' + (++rev) + '.svg';
+      var reopen = function (svg, who) {
+        var t = api.title(), syncer = api.syncer(), name = stem + ' · ' + (who || 'Claude') + ' ' + (++rev) + '.svg';
         var closing = mine(t) && !/^\*/.test(t) && syncer && syncer.close ? syncer.close() : Promise.resolve();
         return closing.then(function () {
           vcDropFile(svg, name, 'image/svg+xml', 'menu');
@@ -16107,7 +16247,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return name;
         });
       };
-      var edit = function (a) {
+      // `from`: 'file' for an edit file (v1.69.0) - its version is named for it, and file() says what came of it
+      var edit = function (a, from) {
         if (!Array.isArray(a.ops) || !a.ops.length) return Promise.reject(new Error('no ops'));
         if (a.ops.length > 400) return Promise.reject(new Error('at most 400 ops in one edit'));
         return current().then(function (s) {
@@ -16115,14 +16256,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var lib = iwdieLibWithBuiltin(api.lib()), libItems = lib ? lib.items : [];
           var copy = s.items.map(function (it) { var c = {}; Object.keys(it).forEach(function (k) { c[k] = it[k]; }); c.box = { x: it.box.x, y: it.box.y, w: it.box.w, h: it.box.h }; return c; });
           var plan = iwdieCbPlan(a.ops, { items: copy, size: s.size }, { sizes: iwdieCbSymbolSizes(libItems), facts: s.facts });
-          if (plan.errors.length && !a.partial) return { applied: false, errors: plan.errors, notes: plan.notes, hint: 'nothing was changed; fix the ops, or send partial: true to make the rest' };
+          if (plan.errors.length && !a.partial) return { applied: false, errors: plan.errors, notes: plan.notes, targets: plan.targets, hint: 'nothing was changed; fix the ops, or send partial: true to make the rest' };
           var counts = {};
           plan.steps.forEach(function (st) { var k = st['do'] === 'add' ? 'add ' + st.kind : st['do']; counts[k] = (counts[k] || 0) + 1; });
           // planned only: where each would go, nothing made
           if (a.dry_run) {
             var placed = {};
             Object.keys(plan.refs).forEach(function (r) { placed[r] = iwdieCbBoxRow(plan.refs[r].box); });
-            return { applied: false, dry_run: true, steps: counts, refs: placed, notes: plan.notes, errors: plan.errors,
+            return { applied: false, dry_run: true, steps: counts, refs: placed, notes: plan.notes, errors: plan.errors, targets: plan.targets,
               plan: plan.steps.map(function (st) {
                 return [st['do'], st.kind || '', st.name || st.obj_id || st.text || st.cid || '', st.box ? iwdieCbBoxRow(st.box) : st.pts || (st.dx !== undefined ? [st.dx, st.dy] : [st.x, st.y])];
               }) };
@@ -16134,16 +16275,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (ex.missing.length) notes.push('not in the kept library, drawn as red dashed boxes: ' + ex.missing.join(', ') + ' - import the Maskin template under Components');
           var refs = {};
           made.forEach(function (m) { if (m.ref !== undefined && m.ref !== null) refs[m.ref] = m.cid; });
-          var summary = { applied: true, steps: counts, refs: refs, notes: notes, errors: plan.errors };
+          var summary = { applied: true, steps: counts, refs: refs, notes: notes, errors: plan.errors, targets: plan.targets };
           var before = { svg: s.svg, title: s.title };
-          return reopen(ex.svg).then(function (name) {
+          return reopen(ex.svg, from === 'file' ? 'edits' : 'Claude').then(function (name) {
             revisions.push(before);
             if (revisions.length > 20) revisions.shift();
             edits++;
             read(ex.svg, name);
             summary.document = name;
-            api.note('✓ Claude’s edit is open as <b>' + esc2(name) + '</b> (' + esc2(Object.keys(counts).map(function (k) { return counts[k] + ' ' + k; }).join(', ')) +
-              '). Look it over; <b>Ctrl+S</b> syncs it to the Designer. The version before is in its own tab.', false, true);
+            if (from !== 'file') {
+              api.note('✓ Claude’s edit is open as <b>' + esc2(name) + '</b> (' + esc2(Object.keys(counts).map(function (k) { return counts[k] + ' ' + k; }).join(', ')) +
+                '). Look it over; <b>Ctrl+S</b> syncs it to the Designer. The version before is in its own tab.', false, true);
+            }
             return summary;
           });
         });
@@ -16168,9 +16311,83 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return { document: s.title, findings: iwdieCbCheck(s.items, s.size, { resolve: resolve }) };
         });
       };
-      line('off');
-      hello();
-      return { stop: function () { stopped = true; } };
+      // an edit file (v1.69.0): the ops Copilot wrote for this panel, planned on the drawing as it stands, said, and made
+      // only when the user says so - as a new version, checked; nothing reaches the Designer but by the user's Ctrl+S
+      var pending = null;
+      // what the steps make, in words: "1 symbol, 1 caption, 1 pipe; 1 move, 1 caption changed"
+      var WORDS = { 'add symbol': ['symbol', 'symbols'], 'add text': ['caption', 'captions'], 'add pipe': ['pipe', 'pipes'], 'add pill': ['pill', 'pills'],
+        'add object': ['IWMAC object', 'IWMAC objects'], 'add box': ['box', 'boxes'], move: ['move', 'moves'], 'delete': ['removal', 'removals'],
+        text: ['caption changed', 'captions changed'], bind: ['relink', 'relinks'] };
+      var told = function (r) {
+        var st = (r && r.steps) || {}, add = [], change = [];
+        Object.keys(st).forEach(function (k) { var w = WORDS[k] || [k, k]; (/^add /.test(k) ? add : change).push(iwdieN(st[k], w[0], w[1])); });
+        return [add.join(', '), change.join(', ')].filter(Boolean).join('; ') || 'nothing';
+      };
+      var listed = function (list, n) { return list.slice(0, n).map(esc2).join('<br>') + (list.length > n ? '<br>… and ' + (list.length - n) + ' more' : ''); };
+      var file = function (name, doc) {
+        var f = iwdieVcEditFile(doc, api.job);
+        if (!f.ok) {
+          api.note('<b>' + esc2(name) + '</b> cannot be made here: ' + esc2(f.problems.join('; ')) + '. Nothing was changed.', true, true);
+          return Promise.resolve(null);
+        }
+        pending = null;
+        api.note('Planning <b>' + esc2(name) + '</b> on this drawing…', false, true);
+        return edit({ ops: f.ops, dry_run: true }).then(function (r) {
+          if (!r.dry_run) {
+            api.note('<b>' + esc2(name) + '</b> cannot be made on this drawing as it stands. Nothing was changed:<br>' + listed(r.errors || [], 6), true, true);
+            return r;
+          }
+          pending = { name: name, ops: f.ops, plan: r };
+          api.note('<b>' + esc2(name) + '</b>' + (f.summary ? ': ' + esc2(f.summary) : '') + '<br>It makes ' + esc2(told(r)) + '.' +
+            (r.notes && r.notes.length ? '<br>' + listed(r.notes, 4) : '') +
+            '<br><button class="iwdie-vcb-l" data-act="cbfileok" title="Made on a copy of this drawing and opened as a version of its own; this one stays in its tab">Make it</button>' +
+            ' <button class="iwdie-vcb-l" data-act="cbfileno">Leave it</button>', false, true);
+          return r;
+        }, function (e) {
+          api.note('<b>' + esc2(name) + '</b> could not be planned: ' + esc2(String((e && e.message) || e)), true, true);
+          return null;
+        });
+      };
+      if (api.on) {
+        api.on('cbfileok', function () {
+          var p = pending;
+          pending = null;
+          if (!p) return;
+          api.note('Making <b>' + esc2(p.name) + '</b>…', false, true);
+          // the check before and after: what the edit added is told apart from what the drawing had already
+          var had = {};
+          check().then(function (c0) { c0.findings.forEach(function (x) { had[x.rule + ' ' + x.what] = 1; }); }, function () {}).then(function () {
+            return edit({ ops: p.ops }, 'file');
+          }).then(function (r) {
+            if (!r || !r.applied) {
+              api.note('<b>' + esc2(p.name) + '</b> was not made. Nothing was changed:<br>' + listed((r && r.errors) || [], 6), true, true);
+              return;
+            }
+            return check().then(function (c) {
+              var made = c.findings.filter(function (x) { return !had[x.rule + ' ' + x.what]; }), before = c.findings.length - made.length;
+              var bad = made.filter(function (x) { return x.level === 'error'; }), warn = made.filter(function (x) { return x.level !== 'error'; });
+              api.note('✓ <b>' + esc2(p.name) + '</b> is made, open as <b>' + esc2(r.document) + '</b>: ' + esc2(told(r)) + '.' +
+                (r.notes && r.notes.length ? '<br>' + listed(r.notes, 3) : '') +
+                '<br>The check: ' + (made.length ? iwdieN(bad.length, 'error', 'errors') + ', ' + iwdieN(warn.length, 'warning', 'warnings') + ' from this edit<br>' +
+                  listed(bad.concat(warn).map(function (x) { return x.rule + ' ' + x.what; }), 5) : 'nothing from this edit') +
+                (before ? '<br>' + iwdieN(before, 'finding was', 'findings were') + ' on the drawing before it.' : '') +
+                '<br>Look it over; <b>Ctrl+S</b> syncs it to the Designer. The version before is in its own tab.', bad.length > 0, true);
+            });
+          }, function (e) {
+            api.note('<b>' + esc2(p.name) + '</b> could not be made: ' + esc2(String((e && e.message) || e)), true, true);
+          });
+        });
+        api.on('cbfileno', function () {
+          var p = pending;
+          pending = null;
+          api.note(p ? '<b>' + esc2(p.name) + '</b> was left: nothing was changed.' : 'Nothing was changed.', false);
+        });
+      }
+      if (bridge) {
+        line('off');
+        hello();
+      }
+      return { stop: function () { stopped = true; }, file: file };
     }
 
     /* ---------- Edit in VectorCraft (v1.35.0): the Designer's side ---------- */
@@ -20272,6 +20489,10 @@ if (typeof module !== 'undefined' && module.exports) {
     cbSymbolBox: iwdieCbSymbolBox,
     cbTurn: iwdieCbTurn,
     cbPlan: iwdieCbPlan,
+    cbFind: iwdieCbFind,
+    cbTargets: iwdieCbTargets,
+    VC_EDITS_FORMAT: IWDIE_VC_EDITS_FORMAT,
+    vcEditFile: iwdieVcEditFile,
     cbClassify: iwdieCbClassify,
     cbSceneRows: iwdieCbSceneRows,
     cbMarkup: iwdieCbMarkup,
