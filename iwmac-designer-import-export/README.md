@@ -482,6 +482,26 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Ctrl+S opens VectorCraft when no tab of the edit is open (v1.73.4)
+
+Thomas, after Ctrl+S in the Designer: *No VectorCraft tab of this panel's edit answered - closed? Edit in VectorCraft…
+opens the panel there again.* - if that happens, open a new tab.
+
+- **Each VectorCraft tab of an edit notes itself open** in Tampermonkey's storage while it is (`iwdie.vc.tab.<job>`,
+  one entry a tab, gone on `pagehide`, back on a return from the back-forward cache). The notes are pruned with the
+  jobs.
+- **Ctrl+S in the Designer** sends the objects only to an edit whose tab is open. With none open, it opens the panel in
+  VectorCraft anew, as *Edit in VectorCraft…* does, with its objects as they stand in the Designer. The new tab is opened
+  inside the key press, which the browser allows without a pop-up block.
+- **A note that no tab answers** - left behind by a browser that closed by itself - is cleared after 6 s, and the toast
+  offers a button, *Open in VectorCraft*, that opens the panel there anew. A tab opened later than 6 s after the key
+  press needs a click, or the browser blocks it as a pop-up. The next Ctrl+S opens one at once.
+- An editor tab still running a version before 1.73.4 notes nothing, so Ctrl+S opens a new one beside it: reload it
+  once after updating.
+- Checked in the stub host: an edit with no tab open got a new tab and job at Ctrl+S. An edit whose note no tab
+  answered got its note cleared and the button, which opened a new tab and job. The push runs, with the editor's note
+  relayed, went as before.
+
 ### Waits that last on a fast display (v1.73.3)
 
 Thomas, after Ctrl+S in the Designer: *VectorCraft did not take the panel's objects in: VectorCraft did not save the

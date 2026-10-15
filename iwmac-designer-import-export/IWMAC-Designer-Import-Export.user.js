@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.73.3
+// @version      1.73.4
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.73.3';
+var IWDIE_VERSION = '1.73.4';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -13011,6 +13011,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-toast.iwdie-err{background:rgba(140,30,30,.96)}',
       '.iwdie-toast.iwdie-good{background:rgba(30,110,50,.96)}',
       '.iwdie-toast.iwdie-caution{background:rgba(150,100,10,.96)}',
+      // a toast's own button (v1.73.4): what to do about what it says, a click away
+      '.iwdie-toast .iwdie-t-go{margin-left:12px;height:24px;padding:0 10px;border:1px solid rgba(255,255,255,.6);border-radius:3px;background:transparent;' +
+      'color:#fff;font:600 12.5px Roboto,Arial,sans-serif;cursor:pointer;vertical-align:middle}',
+      '.iwdie-toast .iwdie-t-go:hover{background:rgba(255,255,255,.14)}',
       /* An insert's outcome (v1.31.0): title, facts, the save reminder, and a × */
       '.iwdie-toast.iwdie-rich{white-space:normal;text-align:left;min-width:360px;max-width:600px;max-height:60vh;overflow:auto;padding:12px 40px 12px 16px}',
       '.iwdie-t-title{font-weight:700;font-size:14px}',
@@ -16079,6 +16083,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           note(esc2(String(val.message || 'The Designer could not open the panel again here.')), true, true);
         });
       }
+      // this tab notes itself open on its edit while it is (v1.73.4): the Designer's Ctrl+S opens the panel in a new one when
+      // no tab of the edit is open, instead of sending to none
+      var tabKey = 'iwdie.vc.tab.' + job.id, tabSelf = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      var tabNote = function (open) {
+        try {
+          var m = GM_getValue(tabKey, null);
+          m = m && typeof m === 'object' ? m : {};
+          if (open) m[tabSelf] = Date.now(); else delete m[tabSelf];
+          if (Object.keys(m).length) GM_setValue(tabKey, m); else GM_deleteValue(tabKey);
+        } catch (e) {}
+      };
+      if (typeof GM_getValue === 'function') {
+        tabNote(true);
+        window.addEventListener('pagehide', function () { tabNote(false); });
+        // back from the back-forward cache: open again
+        window.addEventListener('pageshow', function (e) { if (e.persisted) tabNote(true); });
+      }
       // the Designer's Ctrl+S (v1.73.0): the panel's objects as they stand there, brought into the drawing open here as a
       // version of its own - once this tab is in front and the editor is ready; the Designer hears how it went
       var fromDesigner = null;
@@ -18585,7 +18606,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       Object.keys(all).forEach(function (k) {
         if (all[k] && now - (+all[k].at || 0) < IWDIE_VC_JOBS_TTL) return;
         delete all[k];
-        try { GM_deleteValue('iwdie.vc.known.' + k); } catch (e) {}
+        try { GM_deleteValue('iwdie.vc.known.' + k); GM_deleteValue('iwdie.vc.tab.' + k); } catch (e) {}
       });
       all[id] = { plant: String(info.plant || ''), panel: String(info.panel || ''), at: now };
       try { GM_setValue(IWDIE_VC_JOBS_KEY, all); } catch (e) {}
@@ -18705,12 +18726,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        Designer had no Ctrl+S: without an edit of this panel it is the browser's, as before. Nothing is saved to the plant. */
     var vcEditorAcks = {};
 
-    /** The newest edit of the panel this tab shows: one begun here, or one another tab of the plant noted (taken over here). */
+    /** Whether a VectorCraft tab of edit `id` is open (v1.73.4): each notes itself in Tampermonkey's storage while it is. */
+    function vcEditorOpen(id) {
+      var m = null;
+      try { m = GM_getValue('iwdie.vc.tab.' + id, null); } catch (e) { m = null; }
+      return !!m && typeof m === 'object' && Object.keys(m).length > 0;
+    }
+
+    /** The newest edit of the panel this tab shows whose VectorCraft tab is open (v1.73.4: one whose tab is closed is no
+     *  edit to send to): one begun here, or one another tab of the plant noted (taken over here). */
     function vcEditOfPanel() {
       var jobs = vcJobsRead(), plant = String(currentPlantId() || ''), panel = currentPanelName(), best = null, at = -1;
       var consider = function (id, info) {
         var t = jobs[id] ? +jobs[id].at || 0 : 0;
-        if (info && vcShowing(info) && t >= at) { best = info; at = t; }
+        if (info && vcShowing(info) && vcEditorOpen(id) && t >= at) { best = info; at = t; }
       };
       Object.keys(vcLive).forEach(function (id) { consider(id, vcLive[id]); });
       Object.keys(jobs).forEach(function (id) {
@@ -18756,7 +18785,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         clearTimeout(vcEditorAcks[id].timer);
         vcEditorAcks[id].heard = false;
         vcEditorAcks[id].timer = setTimeout(function () {
-          if (!vcEditorAcks[id].heard) toast('No VectorCraft tab of this panel’s edit answered - closed? Edit in VectorCraft… opens the panel there again.', true, 10000);
+          if (vcEditorAcks[id].heard) return;
+          // its note was left behind (a browser that closed by itself): gone, so the next Ctrl+S opens a tab at once
+          try { GM_deleteValue('iwdie.vc.tab.' + id); } catch (e) {}
+          vcOpenToast('No VectorCraft tab of this panel’s edit answered: it is closed.', 'Open in VectorCraft');
         }, 6000);
         GM_setValue('iwdie.vc.designer.' + id, { at: Date.now(), job: id, plant: info.plant, panel: info.panel, objects: objects, gone: gone });
         toast('The panel’s objects go to VectorCraft…', false, 3000);
@@ -18784,6 +18816,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** A toast with a button that opens the panel in VectorCraft anew (v1.73.4): a click, so the browser lets the tab open. */
+    function vcOpenToast(msg, label) {
+      try {
+        var t = document.createElement('div'), b = document.createElement('button');
+        t.className = 'iwdie-toast iwdie-caution';
+        t.appendChild(document.createTextNode(msg));
+        b.className = 'iwdie-t-go';
+        b.textContent = label;
+        b.addEventListener('click', function () { t.remove(); doEditInVectorCraft(); });
+        t.appendChild(b);
+        showToastEl(t, 15000);
+      } catch (e) { /* noop */ }
+    }
+
     /** Ctrl+S on the Designer's page: the panel's objects to its edit in VectorCraft. Always this script's there (v1.73.2): the
      *  browser's Save page (an .html of the Designer) is no use, so it never opens - without an edit of the panel open,
      *  the toast says how to begin one. */
@@ -18800,8 +18846,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var info = null;
         try { info = vcEditOfPanel(); } catch (err) { info = null; }
         if (!info) {
-          toast('Ctrl+S here sends the panel’s objects to its edit in VectorCraft - and no edit of “' + currentPanelName() + '” is open. ' +
-            'Edit in VectorCraft… opens one; Ctrl+S in VectorCraft syncs back. Nothing was saved: the panel is kept by the Designer’s own Save.', false, 9000);
+          // no VectorCraft tab of this panel open (v1.73.4): the panel opened there anew, as Edit in VectorCraft… opens it - its
+          // objects as they stand here - in a new tab, opened inside this key press so the browser lets it
+          toast('No VectorCraft tab of “' + currentPanelName() + '” is open: opening the panel there as it stands here… Nothing was saved: ' +
+            'the panel is kept by the Designer’s own Save.', false, 7000);
+          doEditInVectorCraft();
           return;
         }
         busy = true;
