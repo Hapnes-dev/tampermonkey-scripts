@@ -493,6 +493,58 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Cases, rooms and bars become the Designer's own boxes (v1.80.0)
+
+Thomas: *i think actually everything in the drawings should be objects from the databse so as little as possible to be
+vector*.
+
+- **The boxes the Designer draws itself.** His Oversikt pictures draw their cases and rooms in exactly the colours of the
+  Designer's `number_v3_R_dummy_*` boxes (`V3_iw_xo_components.css`): medium temperature #b1e1ef, low #8eb2d1, heated
+  #f3c96a, their corners 4 px round. His ventilation panels draw their right-hand column in a header's grey, #cdd2d7.
+  - **Now:** *Vectorize image* finds each such box (`iwdieVzBoxes`) and makes it that object at its size: a case or room
+    lying or standing (`number_v3_R_dummy_medium_temp_horis`, `…_low_temp`, `…_heated_vert` and so on), or a header
+    in white, grey 25, 50, 75 or app grey. The paper has a step for it, *Cases, rooms and bars*, after the words and
+    before the house symbols.
+  - **Under everything.** A box is placed at z 5, under the panel's other objects: a case's alarm, defrost icon and value
+    box stand on it, as before. On VectorCraft's IWMAC-objekter its placeholder comes first, in its colour with its
+    corners round.
+  - **Only a clean box.** An object covers the picture under it, so a box with anything drawn on it stays drawing: 2349's
+    rooms with their condensing units, a gas cooler with its fans, the Oversikt legend's grey column. Its sides must be
+    its colour past its corners, its corners no rounder than the Designer's (the legend's *Frys* pill is no case), and its
+    inside its colour but for words and objects already taken out of it.
+  - **Not an object's own look.** A box that one of the panel's objects, or one found in the picture, covers for seven
+    tenths or more - an AK-PC state's grey, a compressor's white body, a value's pill - is taken out with that object, not
+    placed again. One of the panel's own boxes is not placed twice.
+  - **Found on the picture as it came.** The steps before cut the objects' looks out of the picture, and that had left
+    holes in 10214's freezer islands; what they took out now counts as the box's own, inside it.
+- **A word beside a case read its edge as a letter.** 2349's *F14* read as *F14)*, and *F8* and *F9* as *F8i* and *F9i*.
+  The words are now read with the boxes' edges painted the colour round them (`iwdieVzBoxEdgesOff`).
+- **Nothing to read.** With the picture's font on the card and no run of it reading as words - a ventilation panel whose
+  words are all labels already - the paper says *no run of it reads as words*, not to add the font.
+- **What else his drawings hold, and whether the Designer has it:**
+  - **Valves:** the Designer's valve objects (its 2-way and 3-way valves, 64 pictures) look otherwise than his pictures'
+    valves, which have an *m* in the motor's circle. Searched for, they matched only dark pills, none of them valves, so
+    the valves stay house symbols and drawing.
+  - **Its decorative objects** (`number_v3_dummy_*`: black valves, pumps, compressors, air heaters, dotted connector
+    lines, small arrows): none of his pictures draws them. The pumps and compressors his pictures draw are found as the
+    Designer's live objects already (1.77.0).
+  - **Pipes, the receiver and other vessels, pills with round ends:** the Designer has no object drawn so, and they stay
+    drawing.
+
+Checked in the stub host with Myriad Pro on the card, then synced:
+
+| Picture | Boxes placed | Before |
+|---|---|---|
+| 10214 Oversikt | 32: its 30 cases, Meierirom and Fryserom | 31 house symbols |
+| 2349 Oversikt | 44 cases | 47 house symbols; *F14)*, *F8i*, *F9i* read |
+| 10214 VGV | its grey column | traced |
+| 10214 Maskin | none | none |
+
+- **Sync:** the boxes are placed at their size at z 5, and the panel's own objects are not changed.
+- **The words:** 10214's Oversikt and Maskin read 42 and 71 words as before, and 2349's Oversikt now reads *F14*, *F8*
+  and *F9*.
+- Not run in the live Designer.
+
 ### Every word read, the picture's font here or not; pipes by the house's circuits (v1.79.0)
 
 Thomas, of 10214's Maskin, with screenshots before and after and its receiver open in VectorCraft: *you can see there is

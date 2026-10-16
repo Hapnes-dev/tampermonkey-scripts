@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.79.0
+// @version      1.80.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.79.0';
+var IWDIE_VERSION = '1.80.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -7378,16 +7378,23 @@ function iwdieVcSvg(o) {
   shapes.forEach(function (sh) { out.push('    ' + iwdieDrawShapeSvg(sh)); });
   out.push('  </g>');
   var layer = iwdieVcPanelObjectsLayer(objects, o.looks, used, o.unders);
-  // v1.77.0: the IWMAC objects found in the picture (`found`), each the placeholder of a new object, on the same layer
-  var marks = (Array.isArray(o.found) ? o.found : []).map(function (f) {
+  // v1.77.0: the IWMAC objects found in the picture (`found`), each the placeholder of a new object, on the same layer -
+  // (v1.80.0) the boxes the Designer draws itself first, under the rest, as the Designer stacks them
+  var marks = [], boxes = [];
+  (Array.isArray(o.found) ? o.found : []).forEach(function (f) {
     // as the picture showed it - the state it was found in - else as its kind looks
-    return iwdieVcFoundPlaceholderSvg(f, f.look || (o.looks && o.looks[f.kind]), used);
-  }).filter(Boolean);
+    var p = iwdieVcFoundPlaceholderSvg(f, f.look || (o.looks && o.looks[f.kind]), used);
+    if (p) (iwdieVzBoxOf(f.kind) ? boxes : marks).push(p);
+  });
   // v1.78.0: each word read in the picture (`labels`), a new label's placeholder with its text
   (Array.isArray(o.labels) ? o.labels : []).forEach(function (l) { var p = iwdieVcReadLabelSvg(l, used); if (p) marks.push(p); });
-  if (marks.length) {
-    var more = marks.map(function (p) { return '    ' + p; }).join('\n');
-    layer = layer ? layer.replace(/\n {2}<\/g>\n$/, '\n' + more + '\n  </g>\n') : '  <g id="IWMAC-objekter" data-name="IWMAC-objekter">\n' + more + '\n  </g>\n';
+  if (marks.length || boxes.length) {
+    var ind = function (p) { return '    ' + p; }, more = marks.map(ind).join('\n'), lead = boxes.map(ind).join('\n');
+    if (!layer) layer = '  <g id="IWMAC-objekter" data-name="IWMAC-objekter">\n' + [lead, more].filter(Boolean).join('\n') + '\n  </g>\n';
+    else {
+      if (more) layer = layer.replace(/\n {2}<\/g>\n$/, '\n' + more + '\n  </g>\n');
+      if (lead) layer = layer.replace(/^( {2}<g id="IWMAC-objekter" data-name="IWMAC-objekter">\n)/, function (m0) { return m0 + lead + '\n'; });
+    }
   }
   if (layer) out.push(layer.replace(/\n$/, ''));
   out.push('</svg>');
@@ -8365,10 +8372,20 @@ function iwdieVcObjectCatalog() {
 }
 
 /** The catalogue by id; and (v1.78.0) every label the Designer has - 8 to 20 px, normal and bold, dark and white - known
- *  by its name as a label where the catalogue lacks it: a word read in a picture becomes the one its letters match. */
+ *  by its name as a label where the catalogue lacks it: a word read in a picture becomes the one its letters match; and
+ *  (v1.80.0) the boxes the Designer draws itself (IWDIE_VZ_BOXES), a case's or a room's and the headers' bars. */
 function iwdieVcObjectIndex() {
   var known = {};
   iwdieVcObjectCatalog().forEach(function (o) { known[o.id] = o; });
+  IWDIE_VZ_BOXES.forEach(function (b) {
+    [b[2], b[3]].forEach(function (id, lying) {
+      if (known[id]) return;
+      var cs = /R_dummy/.test(id);
+      known[id] = { id: id, w: cs ? (lying ? 80 : 35) : 250, h: cs ? (lying ? 35 : 80) : 20, role: cs ? 'zone' : 'header',
+        desc: cs ? 'Case or room, ' + (/low/.test(id) ? 'low temperature' : /medium/.test(id) ? 'medium temperature' : 'heated') : 'Header, ' + id.replace('number_v3_header_', ''),
+        pic: '', tag: '', hasTag: true, kind: 'bar' };
+    });
+  });
   [8, 9, 10, 11, 12, 14, 16, 18, 20].forEach(function (px) {
     ['norm', 'bold'].forEach(function (wt) {
       ['', '_white'].forEach(function (c) {
@@ -8435,8 +8452,13 @@ function iwdieVcObjectItem(o) {
     var px = +(/(\d+)px/.exec(o.id) || [0, 11])[1];
     shapes.push(line(null, 0.6), text(2, (h + px * 0.7) / 2, o.tag || 'Label', px, /_white$/.test(o.id) ? '#ffffff' : '#3c4650', /bold/.test(o.id)));
   } else if (o.kind === 'bar') {
-    shapes.push({ t: 'd', d: box, rule: '', st: { stroke: null, fill: o.bar || '#6b7782', sw: 0, dash: false, arrow: false } });
-    shapes.push(line(null, 0.6), text(6, (h + 11 * 0.7) / 2, o.tag || 'Header', 11, '#ffffff', true));
+    // (v1.80.0) a case's or a room's box with its corners as round (`o.round`); one found in a picture (`o.bare`) says nothing
+    var rr = Math.min(o.round || 0, w / 2, h / 2), f2 = iwdieDrawFmt;
+    var face = rr ? 'M' + f2(rr) + ' 0 L' + f2(w - rr) + ' 0 Q' + f2(w) + ' 0 ' + f2(w) + ' ' + f2(rr) + ' L' + f2(w) + ' ' + f2(h - rr) + ' Q' + f2(w) + ' ' + f2(h) + ' ' +
+      f2(w - rr) + ' ' + f2(h) + ' L' + f2(rr) + ' ' + f2(h) + ' Q0 ' + f2(h) + ' 0 ' + f2(h - rr) + ' L0 ' + f2(rr) + ' Q0 0 ' + f2(rr) + ' 0 Z' : box;
+    shapes.push({ t: 'd', d: face, rule: '', st: { stroke: null, fill: o.bar || '#6b7782', sw: 0, dash: false, arrow: false } });
+    shapes.push(line(null, 0.6));
+    if (!o.bare) shapes.push(text(6, (h + 11 * 0.7) / 2, o.tag || 'Header', 11, '#ffffff', true));
   } else if (o.src) {
     shapes.push({ t: 'image', x: 0, y: 0, w: w, h: h, src: o.src, iw: o.iw, ih: o.ih });
     shapes.push(line(null, 0.6));
@@ -8596,6 +8618,8 @@ function iwdieVcDesignerObjects(found, existing) {
   var have = (existing || []).filter(function (e) { return e && typeof e === 'object'; });
   var near = function (a, b) { var n = parseFloat(a); return isFinite(n) && Math.abs(n - b) <= 2; };
   var zOf = function (o) {
+    // (v1.80.0) a box the Designer draws itself under every other object: a case's alarm and a room's values stand on it
+    if (iwdieVzBoxOf(o.id)) return '5';
     var z = function (e) { return /^\d+$/.test(String(e.zIndex)) ? String(e.zIndex) : null; };
     var same = have.filter(function (e) { return e.obj_id === o.id && z(e); })[0] ||
       have.filter(function (e) { var k = known[e.obj_id]; return k && k.role === o.role && z(e); })[0];
@@ -8774,6 +8798,9 @@ function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
   if (at && [at.x, at.y, at.size].every(isFinite) && at.size > 0) o.tagAt = { x: at.x, y: at.y, size: at.size, color: /^#[0-9a-f]{6}$/i.test(at.color || '') ? at.color : '' };
   if (png(look)) { o.src = look.src; o.iw = look.iw; o.ih = look.ih; }
   if (look && /^#[0-9a-f]{6}$/i.test(look.bar || '')) o.bar = look.bar;
+  // (v1.80.0) a box the Designer draws itself: its corners as round, its colour where no look gave one
+  var bxk = iwdieVzBoxOf(id);
+  if (bxk) { o.round = bxk.round; if (!o.bar) o.bar = bxk.colour; }
   // a label's or the header's text is its own; without one it says nothing rather than "Label"
   if ((o.kind === 'label' || o.kind === 'bar') && !tag) o.tag = ' ';
   var art = (under || []).map(function (u) {
@@ -14176,9 +14203,182 @@ function iwdieVcFoundPlaceholderSvg(f, look, used) {
   if (!known || ![f.x, f.y, f.w, f.h].every(isFinite) || !(f.w > 0) || !(f.h > 0)) return '';
   var o = { id: known.id, w: f.w, h: f.h, role: known.role, desc: known.desc, kind: known.kind, tag: '', hasTag: false };
   if (look && typeof look.src === 'string' && /^data:image\/png;base64,/.test(look.src) && look.iw > 0 && look.ih > 0) { o.src = look.src; o.iw = look.iw; o.ih = look.ih; }
+  // (v1.80.0) a box the Designer draws itself: in the colour it was found in, its corners as round, saying nothing
+  var bx = iwdieVzBoxOf(known.id);
+  if (bx) { o.bar = /^#[0-9a-f]{6}$/i.test(f.colour || '') ? f.colour : bx.colour; o.round = bx.round; o.bare = true; }
   var name = IWDIE_VC_OBJ_PREFIX + known.id, gid = iwdieVcSvgId(name, used);
   return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-found="1" transform="translate(' + fmt(f.x) + ' ' + fmt(f.y) + ')">' +
     iwdieVcItemParts(iwdieVcObjectItem(o)).join('') + '</g>';
+}
+
+/* ===================== The boxes the Designer draws itself (v1.80.0) =====================
+   Thomas: *i think actually everything in the drawings should be objects from the databse so as little as possible to be
+   vector*. The house's Oversikt draws its cases and rooms in the Designer's own case colours - medium temperature
+   #b1e1ef, low #8eb2d1, heated #f3c96a, as V3_iw_xo_components.css draws its number_v3_R_dummy_* boxes, their corners
+   4 px round - and his ventilation panels draw their right-hand column in a header's grey (#cdd2d7). Each such box that
+   is clean inside becomes that object, at its size and under the panel's other objects; one with a drawing on it stays
+   drawing, since an object covers the picture under it. */
+
+/** The boxes the Designer draws itself (v1.80.0): [colour, its corners' radius, the kind standing, the kind lying]. */
+var IWDIE_VZ_BOXES = [
+  ['#b1e1ef', 4, 'number_v3_R_dummy_medium_temp', 'number_v3_R_dummy_medium_temp_horis'],
+  ['#8eb2d1', 4, 'number_v3_R_dummy_low_temp', 'number_v3_R_dummy_low_temp_horis'],
+  ['#f3c96a', 4, 'number_v3_R_dummy_heated_vert', 'number_v3_R_dummy_heated_hor'],
+  ['#ffffff', 0, 'number_v3_header_white', 'number_v3_header_white'],
+  ['#cdd2d7', 0, 'number_v3_header_grey25', 'number_v3_header_grey25'],
+  ['#9ea5af', 0, 'number_v3_header_grey50', 'number_v3_header_grey50'],
+  ['#697c87', 0, 'number_v3_header_grey75', 'number_v3_header_grey75'],
+  ['#3c505e', 0, 'number_v3_header_appgrey', 'number_v3_header_appgrey']
+];
+
+/** The box the Designer draws for kind `id` (v1.80.0), of IWDIE_VZ_BOXES. -> {colour, round} | null */
+function iwdieVzBoxOf(id) {
+  for (var i = 0; i < IWDIE_VZ_BOXES.length; i++) {
+    if (IWDIE_VZ_BOXES[i][2] === id || IWDIE_VZ_BOXES[i][3] === id) return { colour: IWDIE_VZ_BOXES[i][0], round: IWDIE_VZ_BOXES[i][1] };
+  }
+  return null;
+}
+
+/** The boxes the Designer draws itself in a picture (v1.80.0): each patch of one of IWDIE_VZ_BOXES' colours (within 8,
+ *  red, green and blue summed) that is such a box - at least 12 x 8 and under two fifths of the picture; its sides, past
+ *  its corners, nine tenths of its colour; its corners no rounder than its kind's (a pill's round ends are no case's: at
+ *  most 12 of the 36 pixels of each corner's square off its colour, a header's square corners at most one of four); and
+ *  clean inside, 98 % of its colour (`opts.inside`) and no mark drawn on it, a box found inside it counting as clean - grown by the row or column
+ *  round it that is half way to its colour or more (its edge's blend). `pic` RGBA, W x H, the picture as it came; with
+ *  `opts.now`, the picture as the steps before left it, a pixel they took something out of (an object's look, a word)
+ *  counts as the box's own. -> [{id, x, y, w, h, colour}], the biggest first, so one inside another comes after it */
+function iwdieVzBoxes(pic, W, H, opts) {
+  opts = opts || {};
+  var now = opts.now && opts.now.length === pic.length ? opts.now : null, share = opts.inside > 0 ? opts.inside : 0.98;
+  var kinds = IWDIE_VZ_BOXES.map(function (b) {
+    var h6 = b[0].slice(1);
+    return { hex: b[0], rgb: [parseInt(h6.slice(0, 2), 16), parseInt(h6.slice(2, 4), 16), parseInt(h6.slice(4, 6), 16)], r: b[1], up: b[2], lying: b[3] };
+  });
+  var n = W * H, cls = new Int8Array(n), i, k, x, y;
+  for (i = 0; i < n; i++) {
+    cls[i] = -1;
+    var j = i * 4;
+    for (k = 0; k < kinds.length; k++) {
+      var c = kinds[k].rgb;
+      if (Math.abs(pic[j] - c[0]) + Math.abs(pic[j + 1] - c[1]) + Math.abs(pic[j + 2] - c[2]) <= 8) { cls[i] = k; break; }
+    }
+  }
+  // each patch of one colour, four ways connected
+  var seen = new Uint8Array(n), stack = new Int32Array(n), comps = [];
+  for (i = 0; i < n; i++) {
+    if (cls[i] < 0 || seen[i]) continue;
+    k = cls[i];
+    var top = 0, x0 = W, y0 = H, x1 = -1, y1 = -1;
+    stack[top++] = i; seen[i] = 1;
+    while (top) {
+      var p = stack[--top];
+      x = p % W; y = (p / W) | 0;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      if (x > 0 && !seen[p - 1] && cls[p - 1] === k) { seen[p - 1] = 1; stack[top++] = p - 1; }
+      if (x < W - 1 && !seen[p + 1] && cls[p + 1] === k) { seen[p + 1] = 1; stack[top++] = p + 1; }
+      if (y > 0 && !seen[p - W] && cls[p - W] === k) { seen[p - W] = 1; stack[top++] = p - W; }
+      if (y < H - 1 && !seen[p + W] && cls[p + W] === k) { seen[p + W] = 1; stack[top++] = p + W; }
+    }
+    comps.push({ k: k, x0: x0, y0: y0, x1: x1, y1: y1, w: x1 - x0 + 1, h: y1 - y0 + 1 });
+  }
+  // the smallest first: a box inside another, taken, is clean for it
+  comps.sort(function (a, b) { return a.w * a.h - b.w * b.h; });
+  var taken = new Uint8Array(n), out = [];
+  comps.forEach(function (c) {
+    var K = kinds[c.k], R = K.r + 2;
+    // its shape on the picture as it came (`own`); inside it, what the steps before took out counts as its own too
+    var own = function (xx, yy) { var q = yy * W + xx; return cls[q] === c.k || taken[q] === 1; };
+    var inK = function (xx, yy) {
+      var q = yy * W + xx;
+      if (cls[q] === c.k || taken[q] === 1) return true;
+      return !!now && (now[q * 4] !== pic[q * 4] || now[q * 4 + 1] !== pic[q * 4 + 1] || now[q * 4 + 2] !== pic[q * 4 + 2]);
+    };
+    if (c.w < 12 || c.h < 8 || c.w * c.h > 0.4 * n || c.w <= 2 * R + 2 || c.h <= 2 * R + 2) return;
+    var full = function (xa, ya, xb, yb) {
+      var m = 0, t = 0;
+      for (var yy = ya; yy <= yb; yy++) for (var xx = xa; xx <= xb; xx++) { t++; if (own(xx, yy)) m++; }
+      return m >= 0.9 * t;
+    };
+    if (!full(c.x0 + R, c.y0, c.x1 - R, c.y0) || !full(c.x0 + R, c.y1, c.x1 - R, c.y1) || !full(c.x0, c.y0 + R, c.x0, c.y1 - R) || !full(c.x1, c.y0 + R, c.x1, c.y1 - R)) return;
+    var off = function (xa, ya) {
+      var m = 0;
+      for (var yy = ya; yy < ya + R; yy++) for (var xx = xa; xx < xa + R; xx++) if (!own(xx, yy)) m++;
+      return m;
+    };
+    var most = K.r ? 12 : 1;
+    if (off(c.x0, c.y0) > most || off(c.x1 - R + 1, c.y0) > most || off(c.x0, c.y1 - R + 1) > most || off(c.x1 - R + 1, c.y1 - R + 1) > most) return;
+    // inside: a little off its colour (a word's blend the steps before left), never a mark drawn on it (90 off, a few pixels)
+    var bad = 0, all = 0, marks = 0;
+    for (y = c.y0; y <= c.y1; y++) for (x = c.x0; x <= c.x1; x++) {
+      if ((x < c.x0 + R || x > c.x1 - R) && (y < c.y0 + R || y > c.y1 - R)) continue;
+      all++;
+      if (inK(x, y)) continue;
+      bad++;
+      var qm = (y * W + x) * 4;
+      if (Math.abs(pic[qm] - K.rgb[0]) + Math.abs(pic[qm + 1] - K.rgb[1]) + Math.abs(pic[qm + 2] - K.rgb[2]) > 90) marks++;
+    }
+    if (bad > (1 - share) * all || (share > 0.9 && marks > Math.max(3, 0.002 * all))) return;
+    // its edge's blend: how far each pixel of a row or column beyond it is from what lies beyond that towards its colour
+    var frac = function (xa, ya, xb, yb, dx, dy) {
+      var sum = 0, m = 0;
+      for (var yy = ya; yy <= yb; yy++) for (var xx = xa; xx <= xb; xx++) {
+        var gx = xx + dx, gy = yy + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H || gx < 0 || gy < 0 || gx >= W || gy >= H) continue;
+        var q = (yy * W + xx) * 4, g = (gy * W + gx) * 4, t0 = K.rgb[0] - pic[g], t1 = K.rgb[1] - pic[g + 1], t2 = K.rgb[2] - pic[g + 2], tt = t0 * t0 + t1 * t1 + t2 * t2;
+        if (tt < 300) continue;
+        sum += ((pic[q] - pic[g]) * t0 + (pic[q + 1] - pic[g + 1]) * t1 + (pic[q + 2] - pic[g + 2]) * t2) / tt;
+        m++;
+      }
+      return m ? sum / m : 0;
+    };
+    var bx0 = c.x0, by0 = c.y0, bx1 = c.x1, by1 = c.y1;
+    if (by0 > 1 && frac(bx0 + R, by0 - 1, bx1 - R, by0 - 1, 0, -1) >= 0.5) by0--;
+    if (by1 < H - 2 && frac(bx0 + R, by1 + 1, bx1 - R, by1 + 1, 0, 1) >= 0.5) by1++;
+    if (bx0 > 1 && frac(bx0 - 1, by0 + R, bx0 - 1, by1 - R, -1, 0) >= 0.5) bx0--;
+    if (bx1 < W - 2 && frac(bx1 + 1, by0 + R, bx1 + 1, by1 - R, 1, 0) >= 0.5) bx1++;
+    for (y = c.y0; y <= c.y1; y++) for (x = c.x0; x <= c.x1; x++) taken[y * W + x] = 1;
+    var bw = bx1 - bx0 + 1, bh = by1 - by0 + 1;
+    out.push({ id: bw >= bh ? K.lying : K.up, x: bx0, y: by0, w: bw, h: bh, colour: K.hex });
+  });
+  return out.sort(function (a, b) { return b.w * b.h - a.w * a.h; });
+}
+
+/** A picture with the edges of its boxes (iwdieVzBoxes') out of the way of its words (v1.80.0): along each box's sides,
+ *  three pixels in and two out, each pixel of its colour or of a blend of it and the colour round it (the commonest just
+ *  outside it) painted that colour round it; a word's letters beside it - of neither - stay. A word right beside a case
+ *  read the case's edge as a letter: 2349's F14 as "F14)", F8 and F9 as "F8i" and "F9i". -> a copy of `pic` */
+function iwdieVzBoxEdgesOff(pic, W, H, boxes) {
+  var out = new Uint8ClampedArray(pic);
+  (boxes || []).forEach(function (b) {
+    var h6 = String(b.colour || '').replace('#', ''), c = [parseInt(h6.slice(0, 2), 16), parseInt(h6.slice(2, 4), 16), parseInt(h6.slice(4, 6), 16)];
+    if (!c.every(isFinite)) return;
+    // the colour round it: the commonest of the ring two pixels out
+    var count = {}, best = null, bn = 0, x, y, j;
+    var ring = function (xx, yy) {
+      if (xx < 0 || yy < 0 || xx >= W || yy >= H) return;
+      j = (yy * W + xx) * 4;
+      var key = (pic[j] >> 3) + ',' + (pic[j + 1] >> 3) + ',' + (pic[j + 2] >> 3), e = count[key] || (count[key] = { n: 0, c: [pic[j], pic[j + 1], pic[j + 2]] });
+      if (++e.n > bn) { bn = e.n; best = e.c; }
+    };
+    for (x = b.x - 2; x < b.x + b.w + 2; x++) { ring(x, b.y - 2); ring(x, b.y + b.h + 1); }
+    for (y = b.y - 2; y < b.y + b.h + 2; y++) { ring(b.x - 2, y); ring(b.x + b.w + 1, y); }
+    if (!best) return;
+    var t = [c[0] - best[0], c[1] - best[1], c[2] - best[2]], tt = t[0] * t[0] + t[1] * t[1] + t[2] * t[2];
+    if (tt < 300) return;
+    for (y = b.y - 2; y < b.y + b.h + 2; y++) for (x = b.x - 2; x < b.x + b.w + 2; x++) {
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      if (x >= b.x + 3 && x < b.x + b.w - 3 && y >= b.y + 3 && y < b.y + b.h - 3) continue;
+      j = (y * W + x) * 4;
+      var d = [pic[j] - best[0], pic[j + 1] - best[1], pic[j + 2] - best[2]], u = (d[0] * t[0] + d[1] * t[1] + d[2] * t[2]) / tt;
+      var e0 = d[0] - u * t[0], e1 = d[1] - u * t[1], e2 = d[2] - u * t[2];
+      if (u < 0.08 || u > 1.25 || e0 * e0 + e1 * e1 + e2 * e2 > 400) continue;
+      out[j] = best[0]; out[j + 1] = best[1]; out[j + 2] = best[2];
+    }
+  });
+  return out;
 }
 
 /* ===================== The picture's words as label objects (v1.78.0) =====================
@@ -19278,7 +19478,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // and the house symbols found in it first
           if (ai === 'vector' || (!ai && base)) { info.vector = true; ai = null; lib = null; }
           if (ai) { info.ai = ai; lib = null; }
-          paper = info.vector ? vcPaper(tab, [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['text', 'Text in the picture'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'],
+          paper = info.vector ? vcPaper(tab, [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['text', 'Text in the picture'], ['boxes', 'Cases, rooms and bars'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'],
             ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']])
             : lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
             ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
@@ -19381,6 +19581,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var got = info.recognized, vz = info.vectorized;
         if (vz) what = 'The picture vectorized in ' + (Math.round(vz.ms / 100) / 10) + ' s: ' + [iwdieN(vz.shapes, 'shape', 'shapes') + ' in ' + iwdieN(vz.colours, 'colour', 'colours'),
           vz.pills ? iwdieN(vz.pills, 'pill', 'pills') + ' as rounded rectangles' : '', vz.pipes ? iwdieN(vz.pipes, 'pipe', 'pipes') + ' as lines' : '',
+          vz.boxes ? iwdieN(vz.boxes, 'case, room or bar', 'cases, rooms and bars') + ' as the Designer’s own boxes' : '',
           vz.labels && vz.labels.length ? iwdieN(vz.labels.length, 'word', 'words') + ' read as label objects' + (vz.textFont ? ' (' + vz.textFont + (vz.textLoose ? ', not the picture’s own font' : '') + ')' : '') : '',
           vz.textNone ? 'its words not read as labels (' + vz.textNone + ': add the picture’s font on the card - Myriad Pro is in Illustrator’s Support ' +
             'Files › Required › Fonts)' : '',
@@ -20270,6 +20471,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       step = step || function () {};
       return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, { words: true }], function () {}).then(function (tr) {
         var work = (tr && tr.work && tr.work.length === data.length) ? tr.work : data;
+        // (v1.80.0) the edges of the boxes the Designer draws itself out of the way: a word beside a case read its edge as a letter
+        work = iwdieVzBoxEdgesOff(work, w, h, iwdieVzBoxes(work, w, h, { inside: 0.8 }));
         var runs = iwdieTxRuns((tr && tr.words) || [], work, w, h);
         if (!runs.length) return { labels: [], runs: 0, none: 'no words in it' };
         step('runs', runs.length);
@@ -20322,7 +20525,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return tryFont(0).then(function () {
             // the font that reads it (v1.79.0: every word read, the picture's font here or not); none: no run reads as words
             var pick = iwdieTxFontChoice(scores), best = pick >= 0 ? scores[pick] : null;
-            if (!best) return { none: 'none of the fonts here reads it as words', fonts: labels };
+            // (v1.80.0) the picture's own font given and nothing read as words: no words in it, rather than a font to add
+            if (!best) return scores.some(function (sc) { return sc.trusted; }) ? { none: 'no run of it reads as words' } : { none: 'none of the fonts here reads it as words', fonts: labels };
             // not the picture's own: the words the panel, plant and house know carry more
             var loose = !best.trusted;
             step('font', best.f.label);
@@ -20975,6 +21179,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function vcVectorize(c, paper, info) {
       var w = c.width, h = c.height, data = c.getContext('2d').getImageData(0, 0, w, h).data, t0 = Date.now();
       var objects = (info && info.objects) || [], got = { symbols: [], symbolCount: {}, unders: {}, carried: 0, left: 0, looks: 0 };
+      // (v1.80.0) the picture as it came: the boxes the Designer draws itself are found on it, what the steps before took out
+      // of them counting as theirs
+      var pristine = new Uint8ClampedArray(data);
       var said = { palette: ['its colours', 0.62], pills: ['its pills', 0.64], pipes: ['its pipes', 0.66], labels: ['each pixel’s colour, at the edges a blend', 0.68],
         shapes: ['the shapes, laid over each other and fitted', 0.87], done: ['done', 0.9] };
       paper.step('objects', 'their pills', 0.02, 0.05);
@@ -21039,6 +21246,37 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             (rt.loose ? ', not the picture’s own font - drop it on the card to read surer (Myriad Pro is in Illustrator’s Support Files › Required › Fonts)' : '')
             : 'none read · ' + rt.font, 0.2);
         }, function () { paper.done('not read', 0.2); });
+      }).then(function () {
+        // v1.80.0: the boxes the Designer draws itself - cases, rooms and bars in its own colours - as its objects, their
+        // words out of them already, before the house symbols would take them
+        got.boxes = 0;
+        if (info && info.findObjects === false) { paper.none('boxes', 'not looked for: switched off on the card'); return null; }
+        paper.step('boxes', 'boxes in the Designer’s own colours…', 0.2, 0.21);
+        return paper.breath().then(function () {
+          var holes = [], placed = [], again = 0;
+          // the panel's objects and those found in the picture, each's box
+          var over = objects.map(function (ob) {
+            return ob ? { box: !!iwdieVzBoxOf(String(ob.obj_id || '')), x: parseFloat(ob.posLeft), y: parseFloat(ob.posTop), w: parseFloat(ob.posWidth), h: parseFloat(ob.posHeight) } : null;
+          }).concat(got.found.map(function (f) { return { box: false, x: f.x, y: f.y, w: f.w, h: f.h }; })).filter(function (e) { return e && [e.x, e.y, e.w, e.h].every(isFinite); });
+          iwdieVzBoxes(pristine, w, h, { now: data }).forEach(function (b) {
+            var area = function (e) { return Math.max(0, Math.min(b.x + b.w, e.x + e.w) - Math.max(b.x, e.x)) * Math.max(0, Math.min(b.y + b.h, e.y + e.h) - Math.max(b.y, e.y)); };
+            // one of the panel's own boxes there already: that box shown again; one an object covers for seven tenths or more
+            // (an AK-PC state's grey, a compressor's body): that object's own look - out of the picture all the same
+            var twice = over.some(function (e) { return e.box ? area(e) >= 0.5 * Math.min(b.w * b.h, e.w * e.h) : area(e) >= 0.7 * b.w * b.h; });
+            var all = new Uint8ClampedArray(b.w * b.h * 4);
+            for (var q = 3; q < all.length; q += 4) all[q] = 255;
+            holes.push({ x: b.x, y: b.y, w: b.w, h: b.h, rgba: all });
+            if (twice) again++;
+            else placed.push({ kind: b.id, x: b.x, y: b.y, w: b.w, h: b.h, colour: b.colour });
+          });
+          iwdieVcErase(data, w, h, holes);
+          got.found = got.found.concat(placed); got.boxes = placed.length; got.twice += again;
+          var count = {};
+          placed.forEach(function (b) { var d = (iwdieVcObjectIndex()[b.kind] || {}).desc || b.kind; count[d] = (count[d] || 0) + 1; });
+          var top = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 3).map(function (d) { return d + (count[d] > 1 ? ' ×' + count[d] : ''); });
+          paper.done(placed.length || again ? (placed.length ? placed.length + ' as objects: ' + top.join(', ') + (Object.keys(count).length > 3 ? ', …' : '') : 'none new') +
+            (again ? '; ' + again + ' the panel has already, taken out' : '') : 'none found', 0.21);
+        });
       }).then(function () {
         var lib = libSymbols(), items = lib && lib.items ? lib.items : [];
         if (!items.length) { paper.none('symbols', 'no library'); return null; }
@@ -24165,6 +24403,10 @@ if (typeof module !== 'undefined' && module.exports) {
     txLabelSizes: iwdieTxLabelSizes,
     txFit: iwdieTxFit,
     txKnownBest: iwdieTxKnownBest,
+    vzBoxes: iwdieVzBoxes,
+    vzBoxEdgesOff: iwdieVzBoxEdgesOff,
+    vzBoxOf: iwdieVzBoxOf,
+    VZ_BOXES: IWDIE_VZ_BOXES,
     txFontChoice: iwdieTxFontChoice,
     TX_LABEL_PX: IWDIE_TX_LABEL_PX,
     txErase: iwdieTxErase,
