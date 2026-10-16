@@ -493,6 +493,76 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Every word read, the picture's font here or not; pipes by the house's circuits (v1.79.0)
+
+Thomas, of 10214's Maskin, with screenshots before and after and its receiver open in VectorCraft: *you can see there is
+some differences on maskin also / for the tank i think we have object for it. and the same with pipes / do more deep
+dive and check*; and then: *all text should object text from the database so no vector on all panels*.
+
+- **Every word read, the picture's font here or not.** 1.78.1 read the words only in a font you gave (dropped on the
+  card, or Myriad Pro installed) and left them as drawing otherwise.
+  - **Now:** without the picture's font, they are read in the font here that reads them best - Roboto, Arial or Segoe
+    UI, by the same median cost, at 0.35 or better - and the words the panel, its plant and the house know count for
+    more (`opts.loose`).
+  - **A known word or phrase is weighed at every size and baseline tried**, where it stands as wide as the ink or up to
+    a sixth wider (`iwdieTxKnownBest`). In Segoe UI, the *M* of *M-T Sd °C* read best as *fv* at 12 px, while the phrase
+    itself fitted best at 10.5.
+  - **Taken more readily:** a known word whose letters explain its ink at 0.3 (0.24 in the picture's own font).
+  - **An icon two columns from its words** is read off at either end of them (the motor valve beside *V3hr*).
+  - **Said so.** The paper and the opening toast name the font and say it is not the picture's own; dropping the
+    picture's font on the card still reads surer. Only where no font here reads the picture as words do they stay
+    drawing.
+- **Read better in any font:**
+  - **Known words at any size** in the picture's own font too: 10214's Energi *Hovedinntak* (read freely as no words
+    at 11.5 px, where the word fits at 13.5) and the *M-T* of 2349's Maskin legend are now read.
+  - **A code may have small letters before its number** (*Shr4*, *Sc3*), as *V3hr* has them after it. *5hr4* does not
+    look like a code, so *Shr4* is read.
+  - **A *q* not before a *u*** weighs a little more: *V3gc%*, not *V3qc%*.
+  - **A unit beside its code** that reads as no words alone (the *°C* of *Sc3 °C*, three columns off) is weighed at the
+    code's size and baseline and joins it.
+  - **The house's case** is taken over the picture's only where the two look alike (c, o, s, u, v, w, x, z, and l):
+    the picture's *butikk* stays *butikk*.
+- **Pipes.** The Maskin template's pipes, and those Claude draws through the bridge, lie on *Rør* in one group per
+  circuit (HP, Liquid, MT suction, LT suction, Heat recovery), each in its circuit's colour (`IWDIE_CB_CIRCUITS`).
+  *Vectorize image* traced them as loose lines in the colours it read: 10214's HP as #f89f7a, not #f79f79, and its MT
+  suction as #84c3d0, not #83c2ce.
+  - **Now:** each traced pipe whose colour is a circuit's (the nearest, within 40) goes in that circuit's group, in its
+    colour exactly. VectorCraft, Claude's `iwmac_scene` and the export then know each pipe's circuit.
+  - **Other colours:** a pipe of no circuit's colour stays loose, as traced.
+  - **No pipe objects.** The Designer's pipe kinds are ventilation ducts and its line kinds short dotted connectors
+    (`number_v3_dummy_*_Line_*`), and none of his panels uses one for a pipe: the pipes stay drawing.
+- **The receiver is not an IWMAC object.** The Designer has no tank or receiver kind among its 1 769.
+  - **The house library** has eight vessel symbols. 10214's receiver is `BeholderVindu` (the receiver's body, with its
+    window) with `BeholderVarmespiral`'s coil drawn in its bottom and `BeholderNivå`'s level bar on its right. None of
+    the eight alone is drawn like that.
+  - **Nearest match:** `BeholderVindu` differs on 14.5 % of its pixels (mean 22.4, where the search accepts 22 at most).
+    Placed anyway, it would cover the coil, since a symbol is drawn over the trace.
+  - **So the receiver stays traced**, as the picture has it. A symbol for it (a receiver with a window, a coil and a
+    level bar) would be a new member of the Maskin template.
+- **The other differences in his screenshot** came from 1.78.0 reading in Segoe UI: *L-T* read as *I-T*, *M-T Sd °C*
+  in two pieces with its *°C* lost, *Room temperature* in two sizes, *= Gc-bypass active* without its *Gc-*. All 71
+  words now read right, with Myriad Pro or without it.
+
+Checked in the stub host, with the live Designer's label rules on the stub page and, on 10214's pictures, the plant's 42
+unit names as the live Designer has them:
+
+| Picture | Myriad Pro on the card | Without it |
+|---|---|---|
+| 10214 Oversikt | 42 of 42 right | 42 of 42 (Segoe UI) |
+| 10214 Maskin | 71 of 71 | 71 of 71 (Segoe UI) |
+| 10214 VGV | 7 of 7 | 7 of 7 (Roboto) |
+| 10214 Energi | 8, *Hovedinntak* new | 8 (Roboto) |
+| 2349 Maskin | 67, the legend's *M-T* new | 64 of the 67 (Segoe UI): *To °C* read as *Tc °C* twice, the legend's *M-T* left as drawing |
+
+- **The plant's unit names count.** With the stub's two units alone, Segoe UI read the Oversikt's *F76* as *F 76* and
+  *F65* as *F63*.
+- **Sync:** Ctrl+S on the Oversikt and the Maskin with Myriad Pro gave *✓ Synced · 42 placed* and *✓ Synced · 76
+  placed*, as 1.78.1 did.
+- **Time:** the Oversikt took 10.8 s with the font and 15.6 s without it, the Maskin 14.4 s and 20.5 s.
+- **Pipes:** 10214's Maskin has 14 HP, 3 Liquid, 11 MT suction, 4 LT suction and 4 Heat recovery pipes, none loose;
+  2349's Maskin has 14, 3, 10, 3 and 4. The house Maskin drawing keeps its 6 symbols and 7 objects.
+- Not run in the live Designer.
+
 ### What the first run on 10214 showed, put right (v1.78.1)
 
 Thomas, after 1.78.0 on 10214's Oversikt, with screenshots of the panel before and after: *you can see there is some
