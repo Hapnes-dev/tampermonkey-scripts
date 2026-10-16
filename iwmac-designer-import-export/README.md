@@ -493,6 +493,62 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The Designer's object, else the house's closest component, else vector; pipes as the house's pipe pieces (v1.81.0)
+
+Thomas: *so if you can find the object in iwmac objects you can look for it in vectorCraft .ai object or fallback of that
+it replaces whats in vectorcraft so close as possible / thats for pipes also / so if you can no vector at all that will
+be last fallback*, and then: *pipes are also .ai objects*.
+
+- **The order now.** Each thing in the picture becomes the first of these that has it:
+  1. **An IWMAC object** the Designer's own pictures find exactly (1.77.0).
+  2. **A label or a box** (1.78.0 to 1.80.0).
+  3. **An IWMAC object by its shape (new).** The objects' state pictures are weighed against what is left, unturned.
+     On 10214's Maskin, one of its 3-way motor valves became the Designer's own valve object, which can show its
+     state. On the Oversikt, the legend's alarm bell became the Designer's alarm object.
+  4. **A house symbol** the template's own pictures find exactly (1.74.0).
+  5. **The house's closest component by its shape (new).** These are the Maskin and Oversikt templates' components,
+     as VectorCraft's Libraries hold them, the small ones too: flow arrows, sensors' leads, pipe bends.
+  6. **Vector:** only what none of these has.
+- **By its shape.** What is left is taken apart into elements: patches of ink that are neither ground nor pipe.
+  - **Weighing.** Each element is weighed against every component turned four ways and as big within a quarter:
+    the share of the component's ink that the element has within a pixel, and the other way round, with the exact
+    overlap counting as much again or more (`iwdieVzClosest`). The exact overlap tells a right arrow from a left one.
+  - **Taken** at 0.85 or more (0.95 for an element of under 30 pixels), its colours within 60, or 80 for one that fits
+    wholly.
+  - **What a component lacks of its element goes with it.** The receiver's coil goes, the gas cooler's frame goes.
+  - **A panel nothing fits** (10214's information panel) is weighed again in its parts, on its own colour.
+  - **Specks** of under 10 pixels that earlier steps left are taken out.
+- **What it made of 10214's Maskin:**
+  - Its gas cooler is `Gaskjøler4Lav`, its 3-way motor valves `TreveisMotorventil` (or the Designer's valve object),
+    its 2-way valves `VentilHvit` and `Treveisventil`, its receiver `BeholderVindu`.
+  - Its 15 flow arrows are `PilLiten`, each pointing its own way, and its 7 sensors' leads are `Føler`.
+  - The colours of the motor valves' *m* differ from the template's, and the arrows are under 8 px; that is why the
+    exact search found none of these.
+- **Pipes as the house's pipe pieces.** Each traced pipe is named after the template's pipe piece for its circuit:
+  `RørHøytrykk`, `RørVæske`, `RørSugeMT`, `RørSugeLT` or `RørVarmegjenvinning`. It runs on as one piece under what
+  stands on it - a valve, a sensor, a value, a word (`opts.over`) - or across a gap of 6 px at most. A gap with another
+  pipe through it is a crossing, as drawn, and stays.
+- **Pills of a pipe's colour.** A pipe's colour counts as a pipe only where the pipe is thin. The Oversikt legend's Varme
+  pill (the liquid pipe's yellow) and its Frys pill are `GulDisk` and `FrysDiskSmal`, and its Kjøl pill is
+  `KjølOvalDisk`.
+- **Still vector:** what nothing of the Designer's or the house's is drawn like, mainly the pipes' small dots and dashes
+  left over, and a few shapes:
+  - 10214's level gauge: the template's `Nivåmåler` is drawn at 19 × 64 or 89, the picture's at 11 × 47, and no size
+    is tried.
+  - The Oversikt legend's *Kommunikasjonsfeil*, *Kjøl/Frys pågår* and *Avriming pågår* icons.
+
+Checked in the stub host with Myriad Pro on the card. The share of each Maskin drawing left as vector went from almost
+everything but the objects and words to the pipes alone (now named pipe pieces) and a handful of marks:
+
+| Picture | House symbols placed (closest of them) | IWMAC objects by shape |
+|---|---|---|
+| 10214 Maskin | 29 (27) | 1 valve |
+| 2349 Maskin | 28 (26) | 1 valve |
+| 10214 Oversikt | 7 (7): AC1 and AC2, the legend's pills, IWT, Plugin | 1 (the legend's alarm) |
+| 2349 Oversikt | 13 (8) | 1 (the legend's alarm) |
+
+The words, boxes and objects of 1.80.0 are as before. The jobs take 12 to 15 s.
+
 ### Cases, rooms and bars become the Designer's own boxes (v1.80.0)
 
 Thomas: *i think actually everything in the drawings should be objects from the databse so as little as possible to be

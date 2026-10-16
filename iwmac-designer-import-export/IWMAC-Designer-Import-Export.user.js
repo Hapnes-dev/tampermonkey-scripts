@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.80.0
+// @version      1.81.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.80.0';
+var IWDIE_VERSION = '1.81.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -14018,18 +14018,83 @@ function iwdieVzTrace(pic, W, H, opts, say) {
   // as the Maskin template's pipes and Claude's are; one of no circuit's colour as it was traced
   var circ = (opts.circuits || []).map(function (c) {
     var h6 = String(c[1]).replace('#', '');
-    return { name: c[0], hex: '#' + h6, rgb: [parseInt(h6.slice(0, 2), 16), parseInt(h6.slice(2, 4), 16), parseInt(h6.slice(4, 6), 16)], paths: [] };
+    return { name: c[0], hex: '#' + h6, rgb: [parseInt(h6.slice(0, 2), 16), parseInt(h6.slice(2, 4), 16), parseInt(h6.slice(4, 6), 16)], paths: [], family: c[2] ? String(c[2]) : '' };
   });
-  var loose = [];
-  lines.forEach(function (Ln) {
+  var loose = [], runs = lines.map(function (Ln) {
     var best = null, bd = 41;
     circ.forEach(function (c) {
       var d = Math.abs(c.rgb[0] - Ln.colour[0]) + Math.abs(c.rgb[1] - Ln.colour[1]) + Math.abs(c.rgb[2] - Ln.colour[2]);
       if (d < bd) { bd = d; best = c; }
     });
-    var path = '<path d="' + Ln.pts.map(function (p, k) { return (k ? 'L' : 'M') + f2(p[0]) + ' ' + f2(p[1]); }).join(' ') + '" fill="none" stroke="' +
-      (best ? best.hex : hex(Ln.colour)) + '" stroke-width="' + f2(Ln.width) + '" stroke-linejoin="miter" stroke-linecap="butt"/>';
-    (best ? best.paths : loose).push(path);
+    return { pts: Ln.pts.map(function (p) { return [p[0], p[1]]; }), colour: Ln.colour, width: Ln.width, c: best };
+  });
+  // (v1.81.0) a pipe runs on under what stands on it, as the template's pipe pieces do: two runs of one circuit on one
+  // line, facing each other, are one where the gap between them is under something placed (`opts.over` [[x, y, w, h]]:
+  // a symbol, an object, a word) or of 6 px at most - not where another pipe runs through it: a crossing, as drawn
+  var over = (opts.over || []).filter(function (o) { return o && o.length >= 4 && o.every(isFinite); });
+  var simplify = function (pts) {
+    var o = [pts[0]];
+    for (var k = 1; k < pts.length; k++) {
+      var a0 = o[o.length - 1], a1 = pts[k];
+      if (Math.abs(a0[0] - a1[0]) < 0.01 && Math.abs(a0[1] - a1[1]) < 0.01) continue;
+      if (o.length >= 2) {
+        var z = o[o.length - 2];
+        if ((Math.abs(z[0] - a0[0]) < 0.6 && Math.abs(a0[0] - a1[0]) < 0.6) || (Math.abs(z[1] - a0[1]) < 0.6 && Math.abs(a0[1] - a1[1]) < 0.6)) { o[o.length - 1] = a1; continue; }
+      }
+      o.push(a1);
+    }
+    return o;
+  };
+  var crossed = function (bx0, by0, bx1, by1, skip) {
+    return runs.some(function (R2) {
+      if (skip.indexOf(R2) >= 0) return false;
+      for (var k = 1; k < R2.pts.length; k++) {
+        var p = R2.pts[k - 1], q2 = R2.pts[k];
+        if (Math.max(p[0], q2[0]) > bx0 && Math.min(p[0], q2[0]) < bx1 && Math.max(p[1], q2[1]) > by0 && Math.min(p[1], q2[1]) < by1) return true;
+      }
+      return false;
+    });
+  };
+  for (var joined = true; joined;) {
+    joined = false;
+    for (var ra = 0; ra < runs.length && !joined; ra++) for (var rb = ra + 1; rb < runs.length && !joined; rb++) {
+      var RA = runs[ra], RB = runs[rb];
+      if (!RA.c || RA.c !== RB.c || Math.abs(RA.width - RB.width) > 1 || RA.pts.length < 2 || RB.pts.length < 2) continue;
+      [0, 1].forEach(function (ea) {
+        [0, 1].forEach(function (eb) {
+          if (joined) return;
+          var pa = ea ? RA.pts[RA.pts.length - 1] : RA.pts[0], fa = ea ? RA.pts[RA.pts.length - 2] : RA.pts[1];
+          var pb = eb ? RB.pts[RB.pts.length - 1] : RB.pts[0], fb = eb ? RB.pts[RB.pts.length - 2] : RB.pts[1];
+          var ax = Math.abs(pa[0] - fa[0]) < 0.6 && Math.abs(pb[0] - fb[0]) < 0.6 && Math.abs(pa[0] - pb[0]) <= 1.5 ? 1
+            : Math.abs(pa[1] - fa[1]) < 0.6 && Math.abs(pb[1] - fb[1]) < 0.6 && Math.abs(pa[1] - pb[1]) <= 1.5 ? 0 : -1;
+          if (ax < 0) return;
+          var da = pa[ax] - fa[ax], db = pb[ax] - fb[ax], gap = (pb[ax] - pa[ax]) * (da > 0 ? 1 : -1);
+          if (!da || !db || (da > 0) === (db > 0) || !(gap > 0) || gap > 160) return;
+          var half = Math.max(RA.width, RB.width) / 2 + 1, lo = Math.min(pa[ax], pb[ax]), hi = Math.max(pa[ax], pb[ax]), mid = (pa[1 - ax] + pb[1 - ax]) / 2;
+          var bx0 = ax ? mid - half : lo, bx1 = ax ? mid + half : hi, by0 = ax ? lo : mid - half, by1 = ax ? hi : mid + half;
+          // the gap along the pipe covered by the boxes over it, together: 6 px at most of it bare
+          var cov = over.filter(function (o) { return ax ? o[0] <= mid && o[0] + o[2] >= mid : o[1] <= mid && o[1] + o[3] >= mid; })
+            .map(function (o) { return ax ? [Math.max(lo, o[1]), Math.min(hi, o[1] + o[3])] : [Math.max(lo, o[0]), Math.min(hi, o[0] + o[2])]; })
+            .filter(function (iv) { return iv[1] > iv[0]; }).sort(function (p1, p2) { return p1[0] - p2[0]; });
+          var bare = 0, at = lo;
+          cov.forEach(function (iv) { if (iv[0] > at) bare += iv[0] - at; at = Math.max(at, iv[1]); });
+          bare += Math.max(0, hi - at);
+          var under = gap <= 6 || bare <= 6;
+          if (!under || crossed(bx0 + 0.5, by0 + 0.5, bx1 - 0.5, by1 - 0.5, [RA, RB])) return;
+          var aPts = ea ? RA.pts : RA.pts.slice().reverse(), bPts = eb ? RB.pts.slice().reverse() : RB.pts;
+          // on A's line
+          var onLine = bPts.map(function (p, k2) { return k2 <= 1 ? (ax ? [aPts[aPts.length - 1][0], p[1]] : [p[0], aPts[aPts.length - 1][1]]) : p; });
+          RA.pts = simplify(aPts.concat(onLine));
+          runs.splice(rb, 1);
+          joined = true;
+        });
+      });
+    }
+  }
+  runs.forEach(function (Rn) {
+    var path = '<path' + (Rn.c && Rn.c.family ? ' data-name="' + Rn.c.family + '"' : '') + ' d="' + Rn.pts.map(function (p, k) { return (k ? 'L' : 'M') + f2(p[0]) + ' ' + f2(p[1]); }).join(' ') +
+      '" fill="none" stroke="' + (Rn.c ? Rn.c.hex : hex(Rn.colour)) + '" stroke-width="' + f2(Rn.width) + '" stroke-linejoin="miter" stroke-linecap="butt"/>';
+    (Rn.c ? Rn.c.paths : loose).push(path);
   });
   out[1] = circ.filter(function (c) { return c.paths.length; }).map(function (c) {
     return '<g data-name="' + c.name + '">' + c.paths.join('') + '</g>';
@@ -15228,6 +15293,229 @@ function iwdieVcSymbolSvg(c, used) {
   return '<g id="' + esc(id) + '" data-name="' + esc(name) + '"' + (c.sym !== false ? ' data-iwdie-symbol="' + esc(name) + '"' : '') + ' transform="' + tf + '"' +
     (c.sym !== false ? ' data-iwdie-k="' + q + '"' : '') + '>' + (defs ? '<defs>' + defs + '</defs>' : '') +
     c.shapes.map(function (sh) { return iwdieDrawShapeSvg(sh); }).join('') + '</g>';
+}
+
+/* ===================== The house's components as close as it has them (v1.81.0) =====================
+   Thomas: *so if you can find the object in iwmac objects you can look for it in vectorCraft .ai object or fallback of
+   that it replaces whats in vectorcraft so close as possible / thats for pipes also / so if you can no vector at all that
+   will be last fallback*, and *pipes are also .ai objects*. What the Designer's objects and the house templates' exact
+   pictures (within 22 on average) did not find - a valve whose motor's m is drawn otherwise, a flow arrow or a sensor's
+   lead under 8 px, a gas cooler whose fans differ - is weighed against every component of the house by its shape, and
+   the closest becomes that house symbol. Pipes become the house's pipe pieces, one run under what stands on it. What is
+   left is traced, as before. */
+
+/** The colours of the house's pipes (v1.81.0): the circuits' (IWDIE_CB_CIRCUITS) and the Maskin template's own pipe
+ *  pieces' - a pipe's ink, never a component's. */
+var IWDIE_VZ_PIPE_COLOURS = ['#f79f79', '#eed243', '#83c2ce', '#70abc5', '#8ec1a3', '#f89f79', '#93d8ee', '#84c2ce', '#f3c96a', '#8fc1a3', '#71abc5',
+  '#f0ae64', '#9bcf82'];
+
+/** The Maskin template's pipe piece each circuit's pipes are (v1.81.0): its name in the template's own table. */
+var IWDIE_VZ_PIPE_FAMILY = { 'HP': 'RørHøytrykk', 'Liquid': 'RørVæske', 'MT suction': 'RørSugeMT', 'LT suction': 'RørSugeLT', 'Heat recovery': 'RørVarmegjenvinning' };
+
+/** How long the house's closest components are looked for in a picture (v1.81.0), at most. */
+var IWDIE_VZ_CLOSEST_MS = 25000;
+
+/** The house's components closest to what is left of a picture (v1.81.0). `pic` RGBA, W x H, after the IWMAC objects,
+ *  the words, the boxes and the exact house symbols came out of it; `templates` [{k, w, h, rgba}] the house's components
+ *  drawn at 1:1, turned here (iwdieVcTurn) - or (`still`) an IWMAC object's picture, never turned. Its ink: neither one of its grounds (its commonest colour and any of a
+ *  fiftieth of it, within 36) nor a pipe - a pipe's colour (`opts.pipes`, within 30) or its blend with the ground, but
+ *  where 20 of the 25 pixels round it are of it: a fill (a pill of a pipe's colour is ink). Its patches, those whose boxes touch one element;
+ *  each element of 4 to 220 px a side and 8 pixels of ink or more weighed against each template turned four ways and as
+ *  big within a quarter or 3 px, its middle within 3 px of the element's: P the share of the template's ink with the
+ *  element's within a pixel, R the share of the element's ink with the template's within a pixel, F their harmonic mean;
+ *  with the exact overlap (IoU) as much again, or up to three times as much the more ink there is - which tells a right
+ *  arrow from a left one, and an oval from a box - less what their colours differ past 40 where both have solid ink. The best is taken at F 0.85 or more (0.95 under 30 pixels of ink) with its
+ *  colours within 60 - or 80 where it fits wholly (F 0.95, IoU 0.7). A big element nothing fits (2 000 px of box or
+ *  more) is weighed again in its parts, its own commonest colour then its ground: a panel with things on it. An element
+ *  of under 10 pixels with no other within 4 px is a speck - what came out left it. `opts.until` ends it.
+ *  -> {found: [{k, turn, x, y, w, h, f, iou, col, hole: {x, y, w, h, rgba}: the element's ink and a pixel round it}],
+ *  specks: [{x, y, w, h}]} */
+function iwdieVzClosest(pic, W, H, templates, opts) {
+  opts = opts || {};
+  var late = function () { return opts.until && Date.now() > opts.until; };
+  var n = W * H, i, j, q, x, y, run;
+  var rgbOf = function (h) { h = String(h).replace('#', ''); return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]; };
+  var near36 = function (k, c) { var jj = k * 4; return Math.abs(pic[jj] - c[0]) + Math.abs(pic[jj + 1] - c[1]) + Math.abs(pic[jj + 2] - c[2]) <= 36; };
+  // its grounds: the commonest colour, and any of a fiftieth of the picture
+  var cnt = new Int32Array(262144), sr = new Float64Array(262144), sg = new Float64Array(262144), sb = new Float64Array(262144);
+  for (i = 0; i < n; i++) {
+    j = i * 4;
+    var key = (pic[j] >> 2) << 12 | (pic[j + 1] >> 2) << 6 | (pic[j + 2] >> 2);
+    cnt[key]++; sr[key] += pic[j]; sg[key] += pic[j + 1]; sb[key] += pic[j + 2];
+  }
+  var grounds = [];
+  for (i = 0; i < 262144; i++) if (cnt[i] >= 0.02 * n) grounds.push([sr[i] / cnt[i], sg[i] / cnt[i], sb[i] / cnt[i], cnt[i]]);
+  grounds.sort(function (a, b) { return b[3] - a[3]; });
+  var g0 = grounds[0] || [204, 204, 204], pipes = (opts.pipes || []).map(rgbOf);
+  var gnd = new Uint8Array(n), pipeC = new Uint8Array(n);
+  for (i = 0; i < n; i++) {
+    j = i * 4;
+    var r = pic[j], g = pic[j + 1], b = pic[j + 2];
+    for (q = 0; q < grounds.length; q++) if (Math.abs(r - grounds[q][0]) + Math.abs(g - grounds[q][1]) + Math.abs(b - grounds[q][2]) <= 36) { gnd[i] = 1; break; }
+    if (gnd[i]) continue;
+    for (q = 0; q < pipes.length && !pipeC[i]; q++) {
+      var pc = pipes[q];
+      if (Math.abs(r - pc[0]) + Math.abs(g - pc[1]) + Math.abs(b - pc[2]) <= 30) { pipeC[i] = 1; break; }
+      // a blend of the pipe and the ground: its edge
+      var t0 = pc[0] - g0[0], t1 = pc[1] - g0[1], t2 = pc[2] - g0[2], tt = t0 * t0 + t1 * t1 + t2 * t2;
+      if (tt < 1) continue;
+      var d0 = r - g0[0], d1 = g - g0[1], d2 = b - g0[2], u = (d0 * t0 + d1 * t1 + d2 * t2) / tt;
+      if (u < 0 || u > 1.1) continue;
+      var e0 = d0 - u * t0, e1 = d1 - u * t1, e2 = d2 - u * t2;
+      if (e0 * e0 + e1 * e1 + e2 * e2 <= 225) pipeC[i] = 1;
+    }
+  }
+  // a pipe is thin: its colour is a fill's, not a pipe's, only where 20 of the 25 pixels round it are of it too - a pipe's
+  // corner and its joints stay its own
+  var sum = new Int32Array((W + 1) * (H + 1));
+  for (y = 0; y < H; y++) for (x = 0, run = 0; x < W; x++) { run += pipeC[y * W + x]; sum[(y + 1) * (W + 1) + x + 1] = sum[y * (W + 1) + x + 1] + run; }
+  var ink = new Uint8Array(n);
+  for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+    i = y * W + x;
+    if (gnd[i]) continue;
+    if (pipeC[i]) {
+      var xa = Math.max(0, x - 2), ya = Math.max(0, y - 2), xb = Math.min(W, x + 3), yb = Math.min(H, y + 3);
+      if (sum[yb * (W + 1) + xb] - sum[ya * (W + 1) + xb] - sum[yb * (W + 1) + xa] + sum[ya * (W + 1) + xa] < 20) continue;
+    }
+    ink[i] = 1;
+  }
+  // patches of `isInk` within a box, eight ways joined, those whose boxes touch one element: {px: [index], x0..y1, cnt}
+  var seen = new Uint8Array(n), stack = new Int32Array(n);
+  var elementsOf = function (isInk, bx0, by0, bx1, by1) {
+    var comps = [], k;
+    for (var yy = by0; yy <= by1; yy++) for (var xx = bx0; xx <= bx1; xx++) {
+      k = yy * W + xx;
+      if (seen[k] || !isInk(k)) continue;
+      var top = 0, c = { px: [], x0: W, y0: H, x1: -1, y1: -1 };
+      stack[top++] = k; seen[k] = 1;
+      while (top) {
+        var p = stack[--top], px0 = p % W, py0 = (p / W) | 0;
+        c.px.push(p);
+        if (px0 < c.x0) c.x0 = px0;
+        if (px0 > c.x1) c.x1 = px0;
+        if (py0 < c.y0) c.y0 = py0;
+        if (py0 > c.y1) c.y1 = py0;
+        for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+          var X = px0 + dx, Y = py0 + dy;
+          if (X < bx0 || Y < by0 || X > bx1 || Y > by1) continue;
+          var qq = Y * W + X;
+          if (!seen[qq] && isInk(qq)) { seen[qq] = 1; stack[top++] = qq; }
+        }
+      }
+      comps.push(c);
+    }
+    comps.forEach(function (c2) { c2.px.forEach(function (p) { seen[p] = 0; }); });
+    for (var changed = true; changed;) {
+      changed = false;
+      for (var a1 = 0; a1 < comps.length && !changed; a1++) for (var b1 = a1 + 1; b1 < comps.length; b1++) {
+        var A = comps[a1], B = comps[b1];
+        if (A.x0 - 1 <= B.x1 && B.x0 - 1 <= A.x1 && A.y0 - 1 <= B.y1 && B.y0 - 1 <= A.y1) {
+          comps[a1] = { px: A.px.concat(B.px), x0: Math.min(A.x0, B.x0), y0: Math.min(A.y0, B.y0), x1: Math.max(A.x1, B.x1), y1: Math.max(A.y1, B.y1) };
+          comps.splice(b1, 1);
+          changed = true;
+          break;
+        }
+      }
+    }
+    comps.forEach(function (c3) { c3.cnt = c3.px.length; });
+    return comps;
+  };
+  // the templates turned four ways: their ink against the ground, solid where wholly drawn, and within a pixel of it
+  var T = [];
+  (templates || []).forEach(function (t0) {
+    for (var tq = 0; tq < (t0.still ? 1 : 4); tq++) {
+      var t = iwdieVcTurn(t0, tq), m = new Uint8Array(t.w * t.h), solid = new Uint8Array(t.w * t.h), tc = 0;
+      for (var k = 0; k < t.w * t.h; k++) {
+        var al = t.rgba[k * 4 + 3] / 255;
+        if (al < 0.5) continue;
+        var cr = t.rgba[k * 4] * al + g0[0] * (1 - al), cg = t.rgba[k * 4 + 1] * al + g0[1] * (1 - al), cb = t.rgba[k * 4 + 2] * al + g0[2] * (1 - al);
+        if (Math.abs(cr - g0[0]) + Math.abs(cg - g0[1]) + Math.abs(cb - g0[2]) <= 36) continue;
+        m[k] = 1; tc++;
+        if (al >= 0.98) solid[k] = 1;
+      }
+      if (tc < 6) continue;
+      // within a pixel of its ink, a pixel round its box included: (w + 2) x (h + 2), one in
+      var near = new Uint8Array((t.w + 2) * (t.h + 2));
+      for (var ty = 0; ty < t.h; ty++) for (var tx = 0; tx < t.w; tx++) {
+        if (!m[ty * t.w + tx]) continue;
+        for (var ey = 0; ey <= 2; ey++) for (var ex = 0; ex <= 2; ex++) near[(ty + ey) * (t.w + 2) + tx + ex] = 1;
+      }
+      T.push({ k: t0.k, turn: tq, w: t.w, h: t.h, m: m, solid: solid, near: near, rgba: t.rgba, cnt: tc });
+    }
+  });
+  // the template that fits an element best, or null
+  var weigh = function (e) {
+    var ew = e.x1 - e.x0 + 1, eh = e.y1 - e.y0 + 1;
+    var lx0 = e.x0 - 4, ly0 = e.y0 - 4, bw = ew + 8, bh = eh + 8, mine = new Uint8Array(bw * bh), near1 = new Uint8Array(bw * bh), xx, yy;
+    e.px.forEach(function (p) { mine[((p / W | 0) - ly0) * bw + (p % W) - lx0] = 1; });
+    for (yy = 0; yy < bh; yy++) for (xx = 0; xx < bw; xx++) {
+      if (!mine[yy * bw + xx]) continue;
+      for (var ny = Math.max(0, yy - 1); ny <= Math.min(bh - 1, yy + 1); ny++) for (var nx = Math.max(0, xx - 1); nx <= Math.min(bw - 1, xx + 1); nx++) near1[ny * bw + nx] = 1;
+    }
+    var best = null;
+    T.forEach(function (t) {
+      if (Math.abs(t.w - ew) > Math.max(3, 0.25 * ew) || Math.abs(t.h - eh) > Math.max(3, 0.25 * eh)) return;
+      for (var oy = -3; oy <= 3; oy++) for (var ox = -3; ox <= 3; ox++) {
+        var px = e.x0 + ((ew - t.w) >> 1) + ox, py = e.y0 + ((eh - t.h) >> 1) + oy, hitT = 0, exact = 0, cd = 0, cn = 0, hitE = 0, u, v;
+        for (v = 0; v < t.h; v++) for (u = 0; u < t.w; u++) {
+          var ti = v * t.w + u;
+          if (!t.m[ti]) continue;
+          var lx = px + u - lx0, ly = py + v - ly0;
+          if (lx < 0 || ly < 0 || lx >= bw || ly >= bh) continue;
+          var li = ly * bw + lx;
+          if (near1[li]) hitT++;
+          if (mine[li]) {
+            exact++;
+            if (t.solid[ti]) {
+              var pj = ((ly0 + ly) * W + lx0 + lx) * 4;
+              cd += Math.abs(pic[pj] - t.rgba[ti * 4]) + Math.abs(pic[pj + 1] - t.rgba[ti * 4 + 1]) + Math.abs(pic[pj + 2] - t.rgba[ti * 4 + 2]);
+              cn++;
+            }
+          }
+        }
+        for (v = 0; v < bh; v++) for (u = 0; u < bw; u++) {
+          if (!mine[v * bw + u]) continue;
+          var tu = lx0 + u - px + 1, tv = ly0 + v - py + 1;
+          if (tu >= 0 && tv >= 0 && tu < t.w + 2 && tv < t.h + 2 && t.near[tv * (t.w + 2) + tu]) hitE++;
+        }
+        var Pp = hitT / t.cnt, Rr = hitE / e.cnt, F = Pp + Rr ? 2 * Pp * Rr / (Pp + Rr) : 0, iou = exact / (t.cnt + e.cnt - exact), col = cn ? cd / cn : 999;
+        // the exact overlap counts the more, the more ink: a big shape is told by its outline (an oval from a box)
+        var wi = Math.min(0.75, 0.5 + e.cnt / 4000), score = (1 - wi) * F + wi * iou - Math.max(0, col - 40) / 300;
+        if (!best || score > best.score) best = { score: score, k: t.k, turn: t.turn, x: px, y: py, w: t.w, h: t.h, f: F, iou: iou, col: col };
+      }
+    });
+    if (!best || best.f < (e.cnt < 30 ? 0.95 : 0.85) || !(best.col <= 60 || (best.col <= 80 && best.f >= 0.95 && best.iou >= 0.7))) return null;
+    // the element's ink, and a pixel round it, to take out of the picture: what the component lacks of it goes with it
+    var hole = new Uint8ClampedArray(bw * bh * 4);
+    for (var hk = 0; hk < bw * bh; hk++) if (near1[hk]) hole[hk * 4 + 3] = 255;
+    return { k: best.k, turn: best.turn, x: best.x, y: best.y, w: best.w, h: best.h, f: Math.round(best.f * 100) / 100, iou: Math.round(best.iou * 100) / 100,
+      col: Math.round(best.col), hole: { x: lx0, y: ly0, w: bw, h: bh, rgba: hole } };
+  };
+  var found = [], specks = [], els = elementsOf(function (k) { return ink[k] === 1; }, 0, 0, W - 1, H - 1);
+  var fit = function (e) { var ew = e.x1 - e.x0 + 1, eh = e.y1 - e.y0 + 1; return ew >= 4 && eh >= 4 && ew <= 220 && eh <= 220 && e.cnt >= 8; };
+  els.forEach(function (e) {
+    var ew = e.x1 - e.x0 + 1, eh = e.y1 - e.y0 + 1;
+    if (e.cnt < 10) {
+      if (!els.some(function (o) { return o !== e && o.x0 - 4 <= e.x1 && e.x0 - 4 <= o.x1 && o.y0 - 4 <= e.y1 && e.y0 - 4 <= o.y1; })) specks.push({ x: e.x0, y: e.y0, w: ew, h: eh });
+      return;
+    }
+    if (late()) return;
+    var got = fit(e) ? weigh(e) : null;
+    if (got) { found.push(got); return; }
+    // a big element nothing fits: its parts, its own commonest colour their ground
+    if (ew * eh < 2000) return;
+    var tally = {}, top = null;
+    e.px.forEach(function (p) { var jj = p * 4, key2 = (pic[jj] >> 3) + ',' + (pic[jj + 1] >> 3) + ',' + (pic[jj + 2] >> 3); var c = tally[key2] || (tally[key2] = { n: 0, c: [pic[jj], pic[jj + 1], pic[jj + 2]] }); if (++c.n > (top ? top.n : 0)) top = c; });
+    if (!top || top.n < 0.3 * e.cnt) return;
+    var inE = new Uint8Array(n);
+    e.px.forEach(function (p) { inE[p] = 1; });
+    elementsOf(function (k) { return inE[k] === 1 && !near36(k, top.c); }, e.x0, e.y0, e.x1, e.y1).forEach(function (pt) {
+      if (late() || !fit(pt)) return;
+      var g2 = weigh(pt);
+      if (g2) found.push(g2);
+    });
+  });
+  return { found: found, specks: specks };
 }
 
 /** What iwdieVzTrace calls, for a worker built of their sources (v1.61.0): it runs them by name, and a helper left out
@@ -21278,6 +21566,35 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             (again ? '; ' + again + ' the panel has already, taken out' : '') : 'none found', 0.21);
         });
       }).then(function () {
+        // v1.81.0: what the Designer's pictures did not find exactly, its closest object by shape - an IWMAC object before
+        // a house symbol - each state picture unturned, placed as one found exactly is
+        got.closeObjects = 0;
+        if (info && info.findObjects === false) return null;
+        return vcObjectStates(objects).then(function (st) {
+          return vcStateTemplates(st).then(function (tpl) {
+            if (!tpl.length) return null;
+            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn], [data, w, h, tpl.map(function (t) { return { k: t.k, w: t.w, h: t.h, rgba: t.rgba, still: true }; }),
+              { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {}).then(function (res) {
+              var byK = {}, holes3 = [], list = [];
+              tpl.forEach(function (t) { byK[t.k] = t; });
+              ((res && res.found) || []).forEach(function (m) {
+                var t = byK[m.k];
+                if (!t) return;
+                list.push({ kind: iwdieVzTwinKind(t.kinds, st.main, objects), x: m.x, y: m.y, w: m.w, h: m.h, look: st.pics[t.pic] || null, m: m, t: t });
+              });
+              var seen = iwdieVzObjectsSeen(list, objects), at = function (o) { return o.kind + '@' + o.x + ',' + o.y; }, take = {};
+              seen.placed.concat(seen.twice).forEach(function (o) { take[at(o)] = 1; });
+              list.forEach(function (o) {
+                if (!take[at(o)]) return;
+                holes3.push({ x: o.x, y: o.y, w: o.w, h: o.h, rgba: o.t.rgba });
+                if (o.m.hole) holes3.push(o.m.hole);
+              });
+              iwdieVcErase(data, w, h, holes3);
+              got.found = got.found.concat(seen.placed); got.closeObjects = seen.placed.length; got.twice += seen.twice.length;
+            });
+          });
+        }).catch(function () { return null; });
+      }).then(function () {
         var lib = libSymbols(), items = lib && lib.items ? lib.items : [];
         if (!items.length) { paper.none('symbols', 'no library'); return null; }
         paper.step('symbols', iwdieN(items.length, 'symbol', 'symbols') + ' of ' + (lib.builtin ? 'the house templates' : '“' + (lib.file || 'the library') + '” and the house templates') +
@@ -21309,16 +21626,53 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             iwdieVcErase(data, w, h, holes);
           });
         }).then(function () {
+          // v1.81.0: what the exact pictures did not find, as the house's closest component by its shape - the small ones
+          // too (flow arrows, sensors' leads) - and the specks what came out left, out; the rest is traced
+          got.closest = 0; got.specks = 0;
+          if (paper.skipped()) return null;
+          paper.say('the rest weighed against the house’s components by their shapes…', 0.46);
+          return vcComponentTemplates(items, 3).then(function (all) {
+            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn], [data, w, h, all, { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {})
+              .then(function (res) {
+                var byK = {}, names2 = iwdieVcComponentNames(items), holes2 = [];
+                all.forEach(function (t) { byK[t.k] = t; });
+                ((res && res.found) || []).forEach(function (m) {
+                  var it = items[m.k], t = byK[m.k];
+                  if (!it || !t) return;
+                  var nm = String((it.sym && it.sym.name) || names2[m.k]);
+                  holes2.push({ x: m.x, y: m.y, w: m.w, h: m.h, rgba: iwdieVcTurn(t, m.turn).rgba });
+                  if (m.hole) holes2.push(m.hole);
+                  got.symbols.push({ kind: 'symbol', name: nm, sym: !!(it.sym && it.sym.name), shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, w0: it.w, h0: it.h, close: 1 });
+                  got.symbolCount[nm] = (got.symbolCount[nm] || 0) + 1;
+                  got.closest++;
+                });
+                ((res && res.specks) || []).forEach(function (sp) {
+                  var all1 = new Uint8ClampedArray(sp.w * sp.h * 4);
+                  for (var q = 3; q < all1.length; q += 4) all1[q] = 255;
+                  holes2.push({ x: sp.x, y: sp.y, w: sp.w, h: sp.h, rgba: all1 });
+                  got.specks++;
+                });
+                iwdieVcErase(data, w, h, holes2);
+              });
+          }).catch(function () { return null; });
+        }).then(function () {
           var top = Object.keys(got.symbolCount).sort(function (a, b) { return got.symbolCount[b] - got.symbolCount[a]; }).slice(0, 3)
             .map(function (nm) { return nm + (got.symbolCount[nm] > 1 ? ' ×' + got.symbolCount[nm] : ''); }).join(', ');
-          paper.done(got.symbols.length ? got.symbols.length + ' found: ' + top + (Object.keys(got.symbolCount).length > 3 ? ', …' : '') : 'none found', 0.5);
+          paper.done((got.symbols.length ? got.symbols.length + ' found: ' + top + (Object.keys(got.symbolCount).length > 3 ? ', …' : '') +
+            (got.closest ? ' (' + got.closest + ' of them as close as the house has them)' : '') : 'none found') +
+            (got.closeObjects ? '; ' + iwdieN(got.closeObjects, 'IWMAC object', 'IWMAC objects') + ' as close as the Designer has them' : ''), 0.5);
         }, function () { paper.done('not looked for', 0.5); });
       }).then(function () {
         paper.step('vector', 'its colours', 0.6, 0.62);
         // what the picture had transparent (v1.75.1): the panel's colour there, which the trace leaves undrawn
         var clear = info && info.clear && info.clear.mask && info.clear.mask.length === w * h ? { plate: info.clear.plate, clear: info.clear.mask } : {};
-        // (v1.79.0) its pipes by the house's circuits, as Claude's and the template's
-        clear.circuits = IWDIE_CB_CIRCUITS.map(function (c) { return [c[0], c[1]]; });
+        // (v1.79.0) its pipes by the house's circuits, as Claude's and the template's - (v1.81.0) each the template's pipe piece,
+        // one run under what stands on it
+        clear.circuits = IWDIE_CB_CIRCUITS.map(function (c) { return [c[0], c[1], IWDIE_VZ_PIPE_FAMILY[c[0]] || '']; });
+        clear.over = got.symbols.map(function (sy) { var q1 = (sy.turn || 0) & 1; return [sy.x, sy.y, q1 ? sy.h0 : sy.w0, q1 ? sy.w0 : sy.h0]; })
+          .concat(got.found.map(function (fo) { return [fo.x, fo.y, fo.w, fo.h]; }), (got.labels || []).map(function (l) { return [l.x, l.y, l.w, l.h]; }),
+            objects.map(function (ob) { return ob ? [parseFloat(ob.posLeft), parseFloat(ob.posTop), parseFloat(ob.posWidth), parseFloat(ob.posHeight)] : null; }))
+          .filter(function (o) { return o && o.every(isFinite); });
         return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, clear], function (p) {
           if (!p || !paper) return;
           if (p.phase === 'colour') paper.say('the outlines of colour ' + (p.i + 1) + ' of ' + p.n, 0.7 + 0.16 * p.i / Math.max(1, p.n));
@@ -21413,12 +21767,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** The library's components drawn at 1:1 and read back, each a template {k, w, h, rgba}: those
-     *  of 8 to 600 px a side (lines and outlines are not looked for). */
-    function vcComponentTemplates(items) {
-      var cells = [];
+     *  of 8 (v1.81.0: `min`) to 600 px a side (lines and outlines are not looked for). */
+    function vcComponentTemplates(items, min) {
+      var cells = [], lo = min > 0 ? min : 8;
       items.forEach(function (it, k) {
         var w = Math.ceil(it.w), h = Math.ceil(it.h);
-        if (w >= 8 && h >= 8 && w <= 600 && h <= 600) cells.push({ k: k, w: w, h: h, markup: vcShapesMarkup(it, it.shapes) });
+        if (w >= lo && h >= lo && w <= 600 && h <= 600) cells.push({ k: k, w: w, h: h, markup: vcShapesMarkup(it, it.shapes) });
       });
       return vcDrawCells(cells).then(function (data) {
         return cells.map(function (cl, i) { return { k: cl.k, w: cl.w, h: cl.h, rgba: data[i] }; });
@@ -24404,6 +24758,9 @@ if (typeof module !== 'undefined' && module.exports) {
     txFit: iwdieTxFit,
     txKnownBest: iwdieTxKnownBest,
     vzBoxes: iwdieVzBoxes,
+    vzClosest: iwdieVzClosest,
+    VZ_PIPE_FAMILY: IWDIE_VZ_PIPE_FAMILY,
+    VZ_PIPE_COLOURS: IWDIE_VZ_PIPE_COLOURS,
     vzBoxEdgesOff: iwdieVzBoxEdgesOff,
     vzBoxOf: iwdieVzBoxOf,
     VZ_BOXES: IWDIE_VZ_BOXES,
