@@ -174,7 +174,8 @@ house components: the Maskin template's, built into this script. Of its 418, 386
 out are those an IWMAC object shows: LEDs, alarm bells, state pills, switches, clocks and *no
 connection*. The IWMAC menu places the live object instead. A plant's `.ai` read here comes first;
 the template fills in the names it lacks. Since v1.72.0 the Oversikt template's floor plan kit is
-built in too: 585 in all, its own on the pages *Oversikt kjøl*, *Oversikt frys* and *Oversikt*. The
+built in too: 585 in all, its own on the pages *Oversikt kjøl*, *Oversikt frys* and *Oversikt*. Since v1.75.0 its
+28 arrangements follow, each one group: 613 in all. The
 banner says where they came from: *585 from the house templates, built in*, or *N from
 2349_Maskin.ai and the house templates*.
 
@@ -409,7 +410,8 @@ the Maskin template's were, so VectorCraft always has them, and make them easy f
   units, condensers, a plug-in case's plug, a pin, a dishwasher and a car wash. 24 of the 224 are only the dashed
   frames round the template's three sections, and are left out.
 - **Named.** `IWDIE_SYMBOLS` names the 200 after the Maskin families, in 66 families: `KjølDisk`, `FrysDisk`,
-  `KjølGavl`, `KjølRom`, `FrysSirkel` … for the cases, then `Inngang`, `Handlevogn`, `Aggregat`, `Kondensator3`,
+  `KjølGavl`, `KjølRom`, `FrysSirkel` … for the cases, then `Inngang`, `Handlevogn`, `Aggregat` (a checkout, renamed
+  `SelvbetjentKasse` in v1.75.0), `Kondensator3`,
   `Plugg`, `Nål` and the rest. Each family says which template it comes from (`set`: Maskin or Oversikt). A drawing
   places them by name, as it places the Maskin ones, and Insert draws them from the script:
   `<use data-iwdie-symbol="KjølDisk" x="300" y="200" width="69" height="29"/>`.
@@ -481,6 +483,69 @@ VectorCraft too, so they keep up with each other.
 - Checked in the stub host on the hosted VectorCraft 0.11.0: an object moved, one deleted and one added in the Designer,
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
+
+### The Oversikt template's arrangements, placed whole (v1.75.0)
+
+Thomas, with the template's *Kjøle*, *Fryse* and *Diverse Symboler* sheets: *can you also make it this is groupe object
+also, so make it permanent in the vectorcraft so its easy for mcp and copilot to place grouped objects also*.
+
+- **What they are.** The template lays its pieces out into 28 arrangements, each case's name written beside it (*K1*
+  on the cooling sheet, *F1* on the freezer one). In light blue (`Kjøl…`) and dark blue (`Frys…`) alike: islands of two
+  back-to-back rows of 1, 2 or 3 cases with an end case at each end, standing and lying (`KjølØy1Stående` …
+  `KjølØy3Stående`, `KjølØy1Liggende` … `KjølØy3Liggende`), a round, a diamond, a ring and an oval island
+  (`KjølØyRund`, `KjølØyDiamant`, `KjølØyRing`, `KjølØyOval`), a slim front row with its angled ends
+  (`KjølFrontrad`), a run of cases round a corner at 45 degrees (`KjølHjørnerad`) and two curved cases in an S
+  (`KjølBueS`). From the *Diverse* sheet: two staffed checkouts (`Kassepar`) and three self-service ones in a row
+  (`SelvbetjentKasserad`).
+- **Named.** `IWDIE_SYMBOL_GROUPS` holds each as its pieces - the family, its turn and its box, in reading order - and
+  where the template writes each case's name. It is generated from the template's own drawing: pieces 8 px or less
+  apart are one arrangement, each piece the template component at its place.
+- **In VectorCraft.** Libraries and the IWMAC menu offer each as one group, on pages of their own: *Oversikt kjøl
+  grupper*, *Oversikt frys grupper* and *Oversikt grupper*. Its pieces are groups named after their families, drawn
+  from the library kept or built in. Each case's name is a label placeholder with the template's *K1* or *F1* where the
+  template writes it: rename it, and a sync makes it the label object the Designer shows. The banner counts 613 from
+  the house templates: the 585 components and the 28 arrangements.
+- **The IWMAC menu keeps the names inside a component.** VectorCraft's SVG import names a group by its `id` alone. The
+  menu dropped a component's inner groups with only `data-name`, so they came in nameless. It now gives each named
+  group an id made of its name as well.
+- **For agents.** A drawing places one by its name, as it places a component:
+  `<use data-iwdie-symbol="KjølØy3Stående" x="400" y="120"/>`, turned and mirrored whole with `data-iwdie-turn` and
+  `data-iwdie-flip`. Insert draws its pieces as one group named after it. Insert's check counts one as lacking only when
+  one of its pieces is. An Oversikt's export lists them in `parts.components.groups`, with how many cases each names.
+  Claude's bridge places one with `symbol`, with a label object where each case is named: `labels` gives the names in
+  reading order, `labels: false` leaves them out, and without it the template's own are used. The scene reads one back
+  as one symbol, *arrangement of N pieces*, also when it was dragged from Libraries. MCP server 1.5.0 marks them in
+  `iwmac_find`. The Copilot kit lists them in `reference_data/oversikt-groups.json` (with `oversikt-groups.png`), and
+  its Oversikt builder places them from a spec's `groups`: each case with its cluster and its name.
+- **Two names fixed.** The template's *Diverse* sheet calls the grey pieces 1.72.0 named `Aggregat` and
+  `AggregatDobbel` *Selvbetjent kasser* and *Kasser*: checkouts, not condensing units. They are `SelvbetjentKasse`
+  (one self-service checkout) and `Kasse` (one staffed checkout) now. A drawing that still places the old names gets
+  red dashed boxes.
+- Checked in the stub host on the hosted VectorCraft 0.11.0, with nothing kept in the browser: the banner counts *613
+  from the house templates*, Libraries shows the three new pages, and the IWMAC menu lists *Oversikt kjøl grupper 13*.
+  `KjølØy3Stående` placed from the menu saved as one group with its 16 named children, and Ctrl+S made eight label
+  objects with the text *K1*: *8 placed*. `FrysØyRund` dragged from Libraries made four with *F1*. A plain component
+  from the menu still lands as one group named after it. Not run in the live Designer.
+
+### A drawing's transparency kept in the panel's picture (v1.75.0)
+
+Thomas, with the sketch's Oversikt on a panel and a Maskin picture beside it: *can you make the background transparent
+like this maskin picture? now the background is gray - the info panel on the right should still be gray*.
+
+- **Why it was grey.** The Oversikt is drawn with a transparent drawing area and a grey legend column. Insert JSON drew
+  a drawing into the panel's PNG over the Designer's own grey (`#main_image`, `rgb(204,204,204)`), and VectorCraft's
+  Ctrl+S did the same. Every transparent pixel came out opaque grey. On the plant's own page, where a transparent
+  picture shows the page's `#eeeeee` as his Maskin pictures do, the Oversikt stood out grey.
+- **Now.** Both render the drawing on nothing. What the drawing leaves transparent stays transparent in the PNG, and
+  what it paints stays opaque: the legend column, the information column, the cases. The Designer still shows its own
+  grey under the drawing.
+- **A picture opened in VectorCraft from a PNG** (no drawing kept in it) still gets the panel's grey as a ground of its
+  own, so a sync keeps it as it looked.
+- **The panel he has.** Edit in VectorCraft, then Ctrl+S, makes its picture again from the drawing it keeps,
+  transparent, with its objects untouched. So does Insert JSON of the drawing alone with *Apply the background only*.
+- Checked in the stub host on the hosted VectorCraft 0.11.0 with the sketch's Oversikt. After Insert, the PNG is
+  transparent at (50, 50), (600, 700) and (1000, 100), `#cdd2d7` in the legend column, and `#b0e0ef` in a case. After
+  Edit in VectorCraft and Ctrl+S, the same six pixels match. Not run in the live Designer.
 
 ### Vectorize image reads the panel's objects and the house symbols (v1.74.0)
 

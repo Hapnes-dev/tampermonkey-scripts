@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.74.0
+// @version      1.75.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.74.0';
+var IWDIE_VERSION = '1.75.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1490,7 +1490,8 @@ function iwdieCheckFile(text, opts) {
       }
       if (Array.isArray(opts.symbols)) {
         var have = opts.symbols.map(iwdieSymKey);
-        var lack = order.filter(function (n) { return have.indexOf(iwdieSymKey(n)) < 0; });
+        // an arrangement (v1.75.0) by the families of its pieces
+        var lack = order.filter(function (n) { return iwdieSymLacks(n, have); });
         if (lack.length) {
           out.warnings.push(opts.symbols.length
             ? 'image_svg places ' + iwdieN(lack.length, 'symbol', 'symbols') + ' the house templates do not have (' + lack.slice(0, 6).join(', ') +
@@ -7001,8 +7002,10 @@ function iwdieSymIsObject(name) {
 
 /** The components VectorCraft offers, in Libraries and the IWMAC menu (v1.70.0): those kept from a plant's .ai, filled
  *  in from the house templates built into the script (Maskin; Oversikt since v1.72.0) - so, with nothing imported, the
- *  templates' own, always - less those an IWMAC object shows. -> a library ({..., items, filled, builtin when nothing
- *  was kept, objects: how many were left out}) or null */
+ *  templates' own, always - less those an IWMAC object shows; and after them (v1.75.0) the Oversikt template's
+ *  arrangements, each one group of those pieces with its names as label placeholders, on layers of their own (Oversikt
+ *  kjøl grupper, Oversikt frys grupper, Oversikt grupper). -> a library ({..., items, filled, builtin when nothing was
+ *  kept, objects: how many were left out, groups: how many arrangements}) or null */
 function iwdieLibForVc(kept) {
   var lib = iwdieLibWithBuiltin(kept);
   if (!lib || !lib.items) return null;
@@ -7010,10 +7013,11 @@ function iwdieLibForVc(kept) {
   IWDIE_SYM_OBJECT_FAMILIES.forEach(function (n) { objects[iwdieSymKey(n)] = 1; });
   var items = lib.items.filter(function (it) { return !(it.sym && objects[iwdieSymKey(it.sym.name)]); });
   if (!items.length) return null;
-  var out = {};
+  var groups = iwdieSymGroupItems(items), out = {};
   Object.keys(lib).forEach(function (k) { out[k] = lib[k]; });
-  out.items = items;
+  out.items = items.concat(groups);
   out.objects = lib.items.length - items.length;
+  out.groups = groups.length;
   return out;
 }
 
@@ -9217,6 +9221,31 @@ function iwdieVcSvgId(name, used) {
   return id;
 }
 
+/** A component's shapes as an SVG file's for VectorCraft to place (v1.75.0): each named group with an id made of its
+ *  name as well as data-name. VectorCraft's SVG import names a group by its id alone, so without one the groups inside a
+ *  component the IWMAC menu dropped came in nameless - an arrangement's pieces, and its label placeholders, which a sync
+ *  knows only by their names ("IWMAC_number_v3_label_12px_norm-2" reads as the label it stands for). */
+function iwdieVcNamedSvg(shapes, used) {
+  var esc = iwdieDrawEsc;
+  return (shapes || []).map(function (s) {
+    if (!s || s.t !== 'group') return s ? iwdieDrawShapeSvg(s) : '';
+    return '<g' + (s.name ? ' id="' + esc(iwdieVcSvgId(s.name, used)) + '" data-name="' + esc(s.name) + '"' : '') + '>' +
+      iwdieVcNamedSvg(s.items, used) + '</g>';
+  }).join('');
+}
+
+/** A component as the SVG file the IWMAC menu drops (v1.70.0; v1.75.0 keeps the groups in it): its shapes at 0, 0, the
+ *  size of it. VectorCraft takes a group with an id at the file's top for a layer of its own and flattens it into what
+ *  it places, so with named groups in it (iwdieVcNamedSvg) the whole goes in one group with an id - kept, named as the
+ *  file is, its groups and their names with it (measured on the hosted VectorCraft 0.11.0, 2026-10-16: an arrangement's
+ *  sixteen named groups came through only so). -> SVG text */
+function iwdieVcComponentFileSvg(it, name) {
+  var w = Math.max(1, Math.ceil(it.w)), h = Math.max(1, Math.ceil(it.h)), defs = iwdieDrawDefsSvg(it.shapes), used = {};
+  var top = iwdieVcSvgId(name || it.name || 'Komponent', used), inner = iwdieVcNamedSvg(it.shapes, used);
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' + (defs ? '<defs>' + defs + '</defs>' : '') +
+    (/<g id="/.test(inner) ? '<g id="' + iwdieDrawEsc(top) + '">' + inner + '</g>' : inner) + '</svg>';
+}
+
 /** A component found, as a group of the job's SVG: its shapes, named, where it was found and turned
  *  as it was ({name, shapes, x, y, turn, tw, th}: tw × th its size drawn, before the turn). The id
  *  must be unique and XML's; `data-name` keeps the name itself, which VectorCraft shows. */
@@ -10310,13 +10339,21 @@ function iwdieCbSymbolSizes(items) {
     var odd = (it.sym.k & 1) && !f.inner, w = r(odd ? it.h : it.w), h = r(odd ? it.w : it.h);
     if (!o.sizes.some(function (s) { return Math.abs(s[0] - w) < 0.6 && Math.abs(s[1] - h) < 0.6; })) o.sizes.push([w, h]);
   });
+  // the Oversikt template's arrangements (v1.75.0) whose pieces the library draws, each at its own size: `group` how many
+  // pieces, `names` how many of its cases the template names
+  var have = Object.keys(out).map(iwdieSymKey);
+  iwdieSymGroups().list.forEach(function (g) {
+    if (iwdieSymLacks(g.name, have)) return;
+    out[g.name] = { sizes: [[r(g.w), r(g.h)]], what: g.en, offered: true, inner: false, object: false, set: g.set, group: g.pieces.length, names: g.names.length };
+  });
   return out;
 }
 
 /** The size a symbol gets placed at (v1.64.0): `want` (w and/or h, either may be missing) fitted to the nearest size the
  *  library has, its proportions kept; turned by `k`. -> {w, h} or null when the library has no such symbol */
 function iwdieCbSymbolBox(sizes, name, k, want) {
-  var t = iwdieSymTable(), f = t.families[t.byKey[iwdieSymKey(name)]], s = sizes && f ? sizes[f.name] : null;
+  // an arrangement's name too (v1.75.0)
+  var t = iwdieSymTable(), f = t.families[t.byKey[iwdieSymKey(name)]] || iwdieSymGroup(name), s = sizes && f ? sizes[f.name] : null;
   if (!s || !s.sizes.length) return null;
   var odd = (k & 1) && !s.inner, list = s.sizes.map(function (z) { return odd ? [z[1], z[0]] : z; });
   var w = want && want.w > 0 ? +want.w : 0, h = want && want.h > 0 ? +want.h : 0, best = list[0];
@@ -10463,7 +10500,9 @@ function iwdieVcEditFile(doc, job) {
 /** An edit's plan (v1.64.0): the ops Claude sends, resolved against the drawing into steps with every place worked out.
  *  `scene` {items (iwdieCbSceneItem's), size {w, h}}; `ctx` {sizes: iwdieCbSymbolSizes(...), objects: {obj_id: {w, h, role,
  *  hasTag, kind}}, facts?}. The ops, each {op, ...}:
- *    symbol   {name, at, w?, h?, turn?, flip?, ref?, label?}           a house symbol
+ *    symbol   {name, at, w?, h?, turn?, flip?, ref?, label?, labels?}  a house symbol - or an arrangement of the Oversikt
+ *             template (v1.75.0: KjølØy3Stående ...), its pieces one group, with a label object where each of its cases
+ *             is named: `labels` the names in its pieces' order (null skips one), false none, else the template's (K1)
  *    bank     {name, count, at, spacing?, axis?, turn?, refs?, labels?} a row (or column) of like symbols
  *    object   {obj_id, at, w?, h?, bind?, text?, ref?}                 an IWMAC object, as its placeholder
  *    value    {bind?, at, dark?, obj_id?, label?, ref?}                a value on its pill: the Maskin way
@@ -10539,17 +10578,17 @@ function iwdieCbPlan(ops, scene, ctx) {
       colour: (ctx.facts && ctx.facts.text && ctx.facts.text.colour) || '#425664', op: i });
   };
   var symbolStep = function (o, i, at, ref, label) {
-    var k = iwdieCbTurn(o.turn, o.flip), sz = iwdieCbSymbolBox(ctx.sizes, o.name, k, { w: o.w, h: o.h });
+    var k = iwdieCbTurn(o.turn, o.flip), sz = iwdieCbSymbolBox(ctx.sizes, o.name, k, { w: o.w, h: o.h }), grp = iwdieSymGroup(o.name);
     if (!sz) {
       // not in the kept library: placed all the same, at the size asked or a guess, and drawn as a box until it is
       var st = iwdieSymTable(), fam = st.families[st.byKey[iwdieSymKey(o.name)]];
-      if (!fam) { fail(i, 'no house symbol is called "' + o.name + '"'); return null; }
-      notes.push('op ' + (i + 1) + ': ' + fam.name + ' is not in the kept library; Insert-like expansion draws a red dashed box');
-      sz = { w: +o.w || 40, h: +o.h || 40 };
+      if (!fam && !grp) { fail(i, 'no house symbol is called "' + o.name + '"'); return null; }
+      notes.push('op ' + (i + 1) + ': ' + (fam || grp).name + ' is not in the kept library; Insert-like expansion draws a red dashed box');
+      sz = grp ? ((k & 1) ? { w: grp.h, h: grp.w } : { w: grp.w, h: grp.h }) : { w: +o.w || 40, h: +o.h || 40 };
     }
     var box = place(at, sz.w, sz.h, i);
     if (!box) return null;
-    var st2 = iwdieSymTable(), real = (st2.families[st2.byKey[iwdieSymKey(o.name)]] || {}).name || o.name;
+    var st2 = iwdieSymTable(), real = (st2.families[st2.byKey[iwdieSymKey(o.name)]] || grp || {}).name || o.name;
     if (iwdieSymIsObject(real)) {
       notes.push('op ' + (i + 1) + ': ' + real + ' is what an IWMAC object shows on a live panel; placed as drawing all the same');
     }
@@ -10557,6 +10596,19 @@ function iwdieCbPlan(ops, scene, ctx) {
     boxes.push(box);
     keep(ref, { box: box, symbol: real, k: k });
     addLabel(label, box, i);
+    // an arrangement's cases named (v1.75.0): a label object where the template writes each name - the names given in the
+    // order of its pieces (null or '' skips one), none for labels: false, the template's own (K1, F1) without them
+    if (grp && o.labels !== false) {
+      var given = Array.isArray(o.labels) ? o.labels : null, pl = iwdieSymGroupPlace(grp, box, k);
+      if (given && given.length > pl.names.length) notes.push('op ' + (i + 1) + ': ' + grp.name + ' names ' + pl.names.length + ' cases; the names past them are left out');
+      pl.names.forEach(function (n, j) {
+        var text = given ? given[j] : grp.text;
+        if (text === null || text === undefined || !String(text).trim()) return;
+        var nb = iwdieSymGroupNameBox(n, iwdieSymNameWidth(String(text)));
+        steps.push({ 'do': 'add', kind: 'object', obj_id: 'number_v3_label_12px_norm', box: nb, bind: '', text: String(text), op: i });
+        boxes.push(nb);
+      });
+    }
     return box;
   };
   (ops || []).forEach(function (o, i) {
@@ -10742,12 +10794,15 @@ function iwdieCbClassify(d) {
   }
   var st = iwdieSymTable(), sym = a['data-iwdie-symbol'];
   if (!sym && d.tag === 'g' && d.name) {
-    var bare = String(d.name).replace(/[\s_-]+\d+$/, ''), f = st.families[st.byKey[iwdieSymKey(bare)]];
+    // an arrangement's group too (v1.75.0), dragged from Libraries
+    var bare = String(d.name).replace(/[\s_-]+\d+$/, ''), f = st.families[st.byKey[iwdieSymKey(bare)]] || iwdieSymGroup(bare);
     if (f) sym = f.name;
   }
   if (sym) {
     it.kind = 'symbol'; it.symbol = sym; it.k = parseInt(a['data-iwdie-k'], 10) || 0;
     if (a['data-iwdie-missing']) it.missing = true;
+    var grp = iwdieSymGroup(sym);
+    if (grp) it.group = grp.pieces.length;
     return it;
   }
   var fill = String(a.fill || '').toLowerCase(), stroke = String(a.stroke || '').toLowerCase();
@@ -10797,7 +10852,7 @@ function iwdieCbSceneRows(items, size, opts) {
   }).map(function (it, i) { return { it: it, i: i }; }).sort(function (a, b) { return (rank[a.it.kind] - rank[b.it.kind]) || (a.i - b.i); });
   var limit = Math.max(1, Math.min(2000, parseInt(opts.limit, 10) || 150)), more = Math.max(0, picked.length - limit);
   var note = function (it) {
-    if (it.kind === 'symbol') return (it.k ? 'k' + it.k : '') + (it.missing ? ' MISSING' : '');
+    if (it.kind === 'symbol') return [it.group ? 'arrangement of ' + it.group + ' pieces' : '', it.k ? 'k' + it.k : '', it.missing ? 'MISSING' : ''].filter(Boolean).join(' ');
     if (it.kind === 'object') return [it.bind ? 'bind ' + it.bind : 'unbound', it.ref ? 'panel ' + it.ref : 'new', it.text ? 'text ' + it.text : ''].filter(Boolean).join('; ');
     if (it.kind === 'pipe') return (it.circuit ? it.circuit + ' ' : '') + it.colour + ' ' + it.width + (it.pts ? ' ' + it.pts.map(function (p) { return p.join(','); }).join(' ') : ' curved');
     if (it.kind === 'text') return it.text + (it.size ? ' (' + it.size + 'px)' : '');
@@ -10883,7 +10938,9 @@ function iwdieCbContext(job, size, sizes, libFile, looks) {
    Since v1.72.0 the Oversikt template (reference_data/oversikt-light-template.ai, the house's xxxx_oversikt-v6) is
    named the same way, after the Maskin families: its case pieces in light blue (Kjøl…, cooling) and dark blue
    (Frys…, freezer) - KjølDisk, FrysGavl, KjølSirkel, FrysRom … - and the rest of its floor plan kit: Inngang,
-   Handlevogn, Aggregat, Kondensator2, Plugg, Nål … */
+   Handlevogn, Kasse, SelvbetjentKasse (Aggregat and AggregatDobbel before v1.75.0), Kondensator2, Plugg, Nål …
+   Since v1.75.0 its arrangements are named too (IWDIE_SYMBOL_GROUPS): the islands, rows and checkouts it lays out of
+   those pieces, each placed whole by its name - KjølØy3Stående, FrysØyRund, KjølHjørnerad, Kassepar … */
 
 /** The templates' components (v1.63.0; the Oversikt template's since v1.72.0): `families` [name, what it is, offered to
  *  a drawing (1) or not (0), turned only inside (1: the template turns what is in its box and keeps the box), the
@@ -11059,8 +11116,8 @@ var IWDIE_SYMBOLS = {
     ['Kondensator2', 'a condenser or gas cooler seen from above: 2 fans in a white box, 52 x 28', 1, 0, 'Oversikt'],
     ['Kondensator3', 'a condenser or gas cooler seen from above: 3 fans in a white box, 75 x 28', 1, 0, 'Oversikt'],
     ['Kondensator4', 'a condenser or gas cooler seen from above: 4 fans in a white box, 97 x 28', 1, 0, 'Oversikt'],
-    ['Aggregat', 'a condensing unit seen from above, grey, 64 x 38', 1, 0, 'Oversikt'],
-    ['AggregatDobbel', 'two condensing units side by side seen from above, grey, 95 x 34 lying', 1, 0, 'Oversikt'],
+    ['SelvbetjentKasse', 'a self-service checkout seen from above, grey, 64 x 38: three in a row are the template\'s Selvbetjent kasser (SelvbetjentKasserad)', 1, 0, 'Oversikt'],
+    ['Kasse', 'a staffed checkout seen from above - belt, till and seat - grey, 95 x 34 lying: two mirrored about their middle are the template\'s Kasser (Kassepar)', 1, 0, 'Oversikt'],
     ['Oppvaskmaskin', 'a dishwasher: a spray over a glass and a plate, in a white square, 60 x 60', 1, 0, 'Oversikt'],
     ['Bilvask', 'a car wash: a spray over a car, in a white square, 60 x 60', 1, 0, 'Oversikt'],
     ['Handlevogn', 'a trolley sign in a grey frame: 72 x 62, 72 x 42 or 72 x 30', 1, 0, 'Oversikt'],
@@ -11232,6 +11289,171 @@ var IWDIE_SYMBOLS = {
     '165|cm9xjw|63.7|38|0.87|0.51|0.54|0.48|0'
 };
 
+/** The Oversikt template's arrangements (v1.75.0): its islands, rows and checkouts as it lays them out
+ *  around its artboard - `groups` [name, what it is, the template it comes from, the layer VectorCraft shows it on,
+ *  width, height, the template's own name for its cases (K1, F1; '' for none), pieces, names]:
+ *    pieces "family|k|x|y|w|h;..." - each one of IWDIE_SYMBOLS's families, turned k from its own as there, its box in the
+ *           group's own pixels; in reading order (lines top to bottom, each left to right), which numbers them;
+ *    names  "slot|cx|cy|just|tw;..." - where the template writes a case's name: the piece it names, the centre of the
+ *           template's text, how it is set (L, C, R: its left edge, centre or right edge stays put for a longer name)
+ *           and the width of the template's own text.
+ *  A drawing places one by its name as it places a family (<use data-iwdie-symbol="KjølØy3Stående" .../>), and Insert
+ *  draws its pieces as one group named after it; VectorCraft's Libraries and IWMAC menu offer each as one group, its
+ *  names label placeholders. Generated by osym-arrange.js from the Oversikt template. */
+var IWDIE_SYMBOL_GROUPS = {
+  v: 1, source: 'oversikt-light-template.ai',
+  groups: [
+    ['KjølØy1Stående', 'an island standing: two back-to-back columns of 1 upright KjølDisk, a KjølGavl at each end - 4 cooling cases, 60 x 130',
+      'Oversikt', 'Oversikt kjøl grupper', 59.8, 130.05, 'K1',
+      'KjølGavl|0|0|0|59.8|28.57;KjølDisk|1|0|30.81|28.9|68.56;KjølDisk|1|30.9|30.81|28.9|68.56;' +
+      'KjølGavl|0|0|101.47|59.8|28.58',
+      '0|30.26|-10.03|C|14.3;1|-9.94|41.07|R|14.3;2|69.36|41.07|L|14.3;3|30.26|139.97|C|14.3'],
+    ['FrysØy1Stående', 'an island standing: two back-to-back columns of 1 upright FrysDisk, a FrysGavl at each end - 4 freezer cases, 60 x 130',
+      'Oversikt', 'Oversikt frys grupper', 59.8, 130.05, 'F1',
+      'FrysGavl|0|0|0|59.8|28.57;FrysDisk|1|0|30.81|28.9|68.56;FrysDisk|1|30.9|30.81|28.9|68.56;' +
+      'FrysGavl|0|0|101.47|59.8|28.58',
+      '0|29.51|-7.89|C|13.4;1|-10.09|42.21|R|13.4;2|68.21|42.21|L|13.4;3|29.51|142.11|C|13.4'],
+    ['KjølØy2Stående', 'an island standing: two back-to-back columns of 2 upright KjølDisk, a KjølGavl at each end - 6 cooling cases, 60 x 201',
+      'Oversikt', 'Oversikt kjøl grupper', 59.8, 201.05, 'K1',
+      'KjølGavl|0|0|0|59.8|28.58;KjølDisk|1|0|30.81|28.9|68.57;KjølDisk|1|30.9|30.81|28.9|68.57;' +
+      'KjølDisk|1|0|101.99|28.9|68.56;KjølDisk|1|30.9|101.99|28.9|68.56;KjølGavl|0|0|172.48|59.8|28.57',
+      '0|29.22|-9|C|14.3;1|-9.88|41.1|R|14.3;2|69.42|41.1|L|14.3;3|-9.88|110.8|R|14.3;4|69.42|110.8|L|14.3;' +
+      '5|29.22|212|C|14.3'],
+    ['FrysØy2Stående', 'an island standing: two back-to-back columns of 2 upright FrysDisk, a FrysGavl at each end - 6 freezer cases, 60 x 201',
+      'Oversikt', 'Oversikt frys grupper', 59.8, 201.05, 'F1',
+      'FrysGavl|0|0|0|59.8|28.58;FrysDisk|1|0|30.81|28.9|68.57;FrysDisk|1|30.9|30.81|28.9|68.57;' +
+      'FrysDisk|1|0|101.99|28.9|68.56;FrysDisk|1|30.9|101.99|28.9|68.56;FrysGavl|0|0|172.48|59.8|28.57',
+      '0|29.45|-7.86|C|13.4;1|-8.25|41.24|R|13.4;2|70.15|41.24|L|13.4;3|-8.25|111.04|R|13.4;4|70.15|111.04|L|13.4;' +
+      '5|29.45|213.14|C|13.4'],
+    ['KjølØy3Stående', 'an island standing: two back-to-back columns of 3 upright KjølDisk, a KjølGavl at each end - 8 cooling cases, 60 x 272',
+      'Oversikt', 'Oversikt kjøl grupper', 59.8, 272.05, 'K1',
+      'KjølGavl|0|0|0|59.8|28.58;KjølDisk|1|0|30.81|28.9|68.57;KjølDisk|1|30.9|30.81|28.9|68.57;' +
+      'KjølDisk|1|0|101.99|28.9|68.56;KjølDisk|1|30.9|101.99|28.9|68.56;KjølDisk|1|0|172.99|28.9|68.56;' +
+      'KjølDisk|1|30.9|172.99|28.9|68.56;KjølGavl|0|0|243.48|59.8|28.57',
+      '0|29.22|-9|C|14.3;1|-9.88|41.1|R|14.3;2|69.42|41.1|L|14.3;3|-9.88|110.8|R|14.3;4|69.42|110.8|L|14.3;' +
+      '5|-9.88|183.1|R|14.3;6|69.42|183.1|L|14.3;7|29.22|281.7|C|14.3'],
+    ['FrysØy3Stående', 'an island standing: two back-to-back columns of 3 upright FrysDisk, a FrysGavl at each end - 8 freezer cases, 60 x 272',
+      'Oversikt', 'Oversikt frys grupper', 59.8, 272.05, 'F1',
+      'FrysGavl|0|0|0|59.8|28.58;FrysDisk|1|0|30.81|28.9|68.57;FrysDisk|1|30.9|30.81|28.9|68.57;' +
+      'FrysDisk|1|0|101.99|28.9|68.56;FrysDisk|1|30.9|101.99|28.9|68.56;FrysDisk|1|0|172.99|28.9|68.56;' +
+      'FrysDisk|1|30.9|172.99|28.9|68.56;FrysGavl|0|0|243.48|59.8|28.57',
+      '0|29.35|-8.16|C|13.4;1|-9.25|41.04|R|13.4;2|69.05|41.04|L|13.4;3|-9.25|110.74|R|13.4;4|69.05|110.74|L|13.4;' +
+      '5|-9.25|183.04|R|13.4;6|69.05|183.04|L|13.4;7|29.35|282.64|C|13.4'],
+    ['KjølØy1Liggende', 'an island lying: two back-to-back rows of 1 KjølDisk, an upright KjølGavl at each end - 4 cooling cases, 130 x 60',
+      'Oversikt', 'Oversikt kjøl grupper', 130.04, 59.8, 'K1',
+      'KjølDisk|0|30.67|0|68.56|28.9;KjølGavl|1|0|0|28.57|59.8;KjølGavl|1|101.47|0|28.57|59.8;' +
+      'KjølDisk|0|30.67|30.9|68.56|28.9',
+      '0|62.49|-11.25|C|14.3;1|-10.51|10.65|R|14.3;2|142.49|10.65|L|14.3;3|62.49|68.75|C|14.3'],
+    ['FrysØy1Liggende', 'an island lying: two back-to-back rows of 1 FrysDisk, an upright FrysGavl at each end - 4 freezer cases, 130 x 60',
+      'Oversikt', 'Oversikt frys grupper', 130.05, 59.91, 'F1',
+      'FrysDisk|0|30.81|0|68.57|28.91;FrysGavl|1|0|0|28.58|59.81;FrysGavl|1|101.48|0|28.57|59.81;' +
+      'FrysDisk|0|30.81|31|68.57|28.91',
+      '0|63.23|-11.7|C|13.4;1|-9.37|7.3|R|13.4;2|141.13|7.3|L|13.4;3|63.23|68.3|C|13.4'],
+    ['KjølØy2Liggende', 'an island lying: two back-to-back rows of 2 KjølDisk, an upright KjølGavl at each end - 6 cooling cases, 201 x 60',
+      'Oversikt', 'Oversikt kjøl grupper', 201.05, 59.8, 'K1',
+      'KjølDisk|0|30.5|0|68.56|28.9;KjølDisk|0|101.68|0|68.56|28.9;KjølGavl|1|0|0|28.58|59.8;' +
+      'KjølGavl|1|172.48|0|28.57|59.8;KjølDisk|0|30.5|30.9|68.56|28.9;KjølDisk|0|101.68|30.9|68.56|28.9',
+      '0|63.77|-11.29|C|14.3;1|133.47|-11.29|C|14.3;2|-10.53|10.71|R|14.3;3|213.47|10.71|L|14.3;4|63.77|68.71|C|14.3;' +
+      '5|133.47|68.71|C|14.3'],
+    ['FrysØy2Liggende', 'an island lying: two back-to-back rows of 2 FrysDisk, an upright FrysGavl at each end - 6 freezer cases, 201 x 60',
+      'Oversikt', 'Oversikt frys grupper', 201.05, 59.8, 'F1',
+      'FrysDisk|0|30.82|0|68.56|28.9;FrysDisk|0|101.99|0|68.57|28.9;FrysGavl|1|0|0|28.58|59.8;' +
+      'FrysGavl|1|172.48|0|28.57|59.8;FrysDisk|0|30.82|30.9|68.56|28.9;FrysDisk|0|101.99|30.9|68.57|28.9',
+      '0|63.06|-11.65|C|13.4;1|132.86|-11.65|C|13.4;2|-10.74|7.35|R|13.4;3|212.36|7.35|L|13.4;4|63.06|68.35|C|13.4;' +
+      '5|132.86|68.35|C|13.4'],
+    ['KjølØy3Liggende', 'an island lying: two back-to-back rows of 3 KjølDisk, an upright KjølGavl at each end - 8 cooling cases, 272 x 60',
+      'Oversikt', 'Oversikt kjøl grupper', 272.05, 59.8, 'K1',
+      'KjølDisk|0|30.5|0|68.56|28.9;KjølDisk|0|101.5|0|68.56|28.9;KjølDisk|0|172.68|0|68.56|28.9;' +
+      'KjølGavl|1|0|0|28.58|59.8;KjølGavl|1|243.48|0|28.57|59.8;KjølDisk|0|30.5|30.9|68.56|28.9;' +
+      'KjølDisk|0|101.5|30.9|68.56|28.9;KjølDisk|0|172.68|30.9|68.56|28.9',
+      '0|62.47|-11.29|C|14.3;1|134.77|-11.29|C|14.3;2|204.47|-11.29|C|14.3;3|-10.53|10.71|R|14.3;' +
+      '4|284.47|10.71|L|14.3;5|62.47|68.71|C|14.3;6|134.77|68.71|C|14.3;7|204.47|68.71|C|14.3'],
+    ['FrysØy3Liggende', 'an island lying: two back-to-back rows of 3 FrysDisk, an upright FrysGavl at each end - 8 freezer cases, 272 x 60',
+      'Oversikt', 'Oversikt frys grupper', 272.05, 59.8, 'F1',
+      'FrysDisk|0|30.82|0|68.56|28.9;FrysDisk|0|101.99|0|68.57|28.9;FrysDisk|0|172.99|0|68.57|28.9;' +
+      'FrysGavl|1|0|0|28.58|59.8;FrysGavl|1|243.48|0|28.57|59.8;FrysDisk|0|30.82|30.9|68.56|28.9;' +
+      'FrysDisk|0|101.99|30.9|68.57|28.9;FrysDisk|0|172.99|30.9|68.57|28.9',
+      '0|62.26|-10.35|C|13.4;1|134.46|-10.35|C|13.4;2|204.26|-10.35|C|13.4;3|-10.34|8.55|R|13.4;4|283.76|8.55|L|13.4;' +
+      '5|62.26|69.65|C|13.4;6|134.46|69.65|C|13.4;7|204.26|69.65|C|13.4'],
+    ['KjølØyRund', 'a round island of four KjølKvartsirkel - 4 cooling cases, 79 x 79',
+      'Oversikt', 'Oversikt kjøl grupper', 79.13, 79.25, 'K1',
+      'KjølKvartsirkel|0|0|0.07|35.98|35.96;KjølKvartsirkel|1|43.04|0|35.96|35.98;' +
+      'KjølKvartsirkel|3|0.12|43.28|35.96|35.97;KjølKvartsirkel|2|43.15|43.22|35.98|35.96',
+      '0|4.61|5.31|L|14.3;1|83.91|5.31|L|14.3;2|7.11|75.81|L|14.3;3|83.91|74.31|L|14.3'],
+    ['FrysØyRund', 'a round island of four FrysKvartsirkel - 4 freezer cases, 79 x 79',
+      'Oversikt', 'Oversikt frys grupper', 79.12, 79.25, 'F1',
+      'FrysKvartsirkel|0|0|0.07|35.97|35.96;FrysKvartsirkel|1|43.04|0|35.96|35.98;' +
+      'FrysKvartsirkel|3|0.12|43.28|35.96|35.97;FrysKvartsirkel|2|43.14|43.22|35.98|35.96',
+      '0|4.2|5.31|L|13.4;1|83.5|5.31|L|13.4;2|6.7|75.81|L|13.4;3|83.5|74.31|L|13.4'],
+    ['KjølØyDiamant', 'a diamond island of four KjølKvartdiamant - 4 cooling cases, 58 x 57',
+      'Oversikt', 'Oversikt kjøl grupper', 57.62, 57.08, 'K1',
+      'KjølKvartdiamant|0|0|0.09|26.05|26.73;KjølKvartdiamant|1|30.89|0|26.73|26.04;' +
+      'KjølKvartdiamant|3|0.09|31.04|26.73|26.04;KjølKvartdiamant|2|30.89|30.26|26.05|26.73',
+      '0|5.86|4.97|L|14.3;1|59.36|4.97|L|14.3;2|5.86|51.97|L|14.3;3|59.36|51.97|L|14.3'],
+    ['FrysØyDiamant', 'a diamond island of four FrysKvartdiamant - 4 freezer cases, 58 x 57',
+      'Oversikt', 'Oversikt frys grupper', 57.62, 57.08, 'F1',
+      'FrysKvartdiamant|0|0|0.09|26.04|26.73;FrysKvartdiamant|1|30.89|0|26.73|26.04;' +
+      'FrysKvartdiamant|3|0.09|31.04|26.73|26.04;FrysKvartdiamant|2|30.89|30.26|26.04|26.73',
+      '0|5.4|4.97|L|13.4;1|58.9|4.97|L|13.4;2|5.4|51.97|L|13.4;3|58.9|51.97|L|13.4'],
+    ['KjølØyRing', 'a ring island of four KjølRingdel round an open middle - 4 cooling cases, 91 x 92',
+      'Oversikt', 'Oversikt kjøl grupper', 90.69, 91.78, 'K1',
+      'KjølRingdel|0|0|0|42.72|43.24;KjølRingdel|1|47.38|0.26|43.25|42.72;KjølRingdel|3|0.07|48.8|43.25|42.71;' +
+      'KjølRingdel|2|47.98|48.53|42.71|43.25',
+      '0|-1.76|2.96|L|14.3;1|95.34|2.66|L|14.3;2|1.24|92.66|L|14.3;3|95.34|92.66|L|14.3'],
+    ['FrysØyRing', 'a ring island of four FrysRingdel round an open middle - 4 freezer cases, 91 x 92',
+      'Oversikt', 'Oversikt frys grupper', 90.69, 91.78, 'F1',
+      'FrysRingdel|0|0|0|42.72|43.24;FrysRingdel|1|47.38|0.26|43.24|42.72;FrysRingdel|3|0.07|48.8|43.24|42.71;' +
+      'FrysRingdel|2|47.97|48.53|42.72|43.25',
+      '0|-2.26|2.96|L|13.4;1|95.34|2.96|L|13.4;2|0.74|92.66|L|13.4;3|94.84|92.66|L|13.4'],
+    ['KjølØyOval', 'an oval island: two KjølOvalDisk side by side, a KjølHalvrund at each end - 4 cooling cases, 53 x 127',
+      'Oversikt', 'Oversikt kjøl grupper', 53.48, 127, 'K1',
+      'KjølHalvrund|0|0.94|0|51.67|26.57;KjølOvalDisk|0|0|30.63|24.96|66.51;KjølOvalDisk|0|28.52|30.63|24.96|66.51;' +
+      'KjølHalvrund|2|0.94|100.43|51.67|26.57',
+      '0|27.2|-11.01|C|14.3;1|-15|59.99|R|14.3;2|69.3|59.99|L|14.3;3|27.2|138.99|C|14.3'],
+    ['FrysØyOval', 'an oval island: two FrysOvalDisk side by side, a FrysHalvrund at each end - 4 freezer cases, 53 x 127',
+      'Oversikt', 'Oversikt frys grupper', 53.48, 127, 'F1',
+      'FrysHalvrund|0|0.94|0|51.67|26.57;FrysOvalDisk|0|0|30.63|24.96|66.51;FrysOvalDisk|0|28.53|30.63|24.95|66.51;' +
+      'FrysHalvrund|2|0.94|100.43|51.67|26.57',
+      '0|26.13|-11.01|C|13.4;1|-18.57|59.99|R|13.4;2|68.83|59.99|L|13.4;3|26.13|138.99|C|13.4'],
+    ['KjølFrontrad', 'a slim front row: KjølDiskSmal between its angled ends, KjølEndeTrekant and KjølEndeSkrå - one cooling case, 117 x 26',
+      'Oversikt', 'Oversikt kjøl grupper', 116.66, 25.72, 'K1',
+      'KjølEndeTrekant|0|0|1.4|18.48|19.41;KjølDiskSmal|0|22.58|0|65.03|21;KjølEndeSkrå|0|90.93|0|25.73|25.72',
+      '1|54.76|30.48|C|14.3'],
+    ['FrysFrontrad', 'a slim front row: FrysDiskSmal between its angled ends, FrysEndeTrekant and FrysEndeSkrå - one freezer case, 117 x 26',
+      'Oversikt', 'Oversikt frys grupper', 116.66, 25.72, 'F1',
+      'FrysEndeSkrå|0|0|0|25.73|25.72;FrysDiskSmal|0|29.05|0|65.03|21;FrysEndeTrekant|0|98.18|1.4|18.48|19.41',
+      '1|61.62|30.48|C|13.4'],
+    ['KjølHjørnerad', 'a run of cases round a corner at 45 degrees: an upright KjølDiskKort, KjølHjørneStående, KjølDiskDiagonal, KjølHjørneLiggende and a lying KjølDiskKort - 3 cooling cases, 142 x 135',
+      'Oversikt', 'Oversikt kjøl grupper', 141.69, 135.11, 'K1',
+      'KjølDiskKort|1|114.35|0|27.34|49.54;KjølHjørneStående|0|112.62|52.13|29.07|24.34;' +
+      'KjølDiskDiagonal|0|70.47|62.34|57.76|57.76;KjølDiskKort|0|0|107.7|57.95|27.34;' +
+      'KjølHjørneLiggende|0|60.31|105.01|24.55|30.1',
+      '0|96.49|22.42|R|14.3;2|83.89|69.52|R|14.3;3|27.69|96.22|C|14.3'],
+    ['FrysHjørnerad', 'a run of cases round a corner at 45 degrees: an upright FrysDiskKort, FrysHjørneStående, FrysDiskDiagonal, FrysHjørneLiggende and a lying FrysDiskKort - 3 freezer cases, 142 x 135',
+      'Oversikt', 'Oversikt frys grupper', 141.69, 135.11, 'F1',
+      'FrysDiskKort|1|0|0|27.34|49.54;FrysHjørneStående|0|0|52.13|29.07|24.34;' +
+      'FrysDiskDiagonal|0|13.46|62.34|57.76|57.76;FrysHjørneLiggende|0|56.83|105.01|24.55|30.1;' +
+      'FrysDiskKort|0|83.74|107.7|57.95|27.34',
+      '0|40.72|22.42|L|13.4;2|65.42|69.52|L|13.4;4|112.72|96.22|C|13.4'],
+    ['KjølBueS', 'two curved cases in an S: KjølBue twice - 2 cooling cases, 78 x 96',
+      'Oversikt', 'Oversikt kjøl grupper', 77.64, 95.71, 'K1',
+      'KjølBue|0|0|0|48.12|50.62;KjølBue|2|29.52|45.09|48.12|50.62',
+      '0|7.14|5.79|L|14.3;1|81.04|88.99|L|14.3'],
+    ['FrysBueS', 'two curved cases in an S: FrysBue twice - 2 freezer cases, 78 x 96',
+      'Oversikt', 'Oversikt frys grupper', 77.64, 95.71, 'F1',
+      'FrysBue|0|0|0|48.12|50.62;FrysBue|2|29.52|45.09|48.12|50.62',
+      '0|6.72|5.79|L|13.4;1|80.62|88.99|L|13.4'],
+    ['Kassepar', 'two staffed checkouts mirrored about their middle: Kasse twice, lying, 95 x 70',
+      'Oversikt', 'Oversikt grupper', 95.15, 69.59, '',
+      'Kasse|6|0.19|0|94.96|33.97;Kasse|0|0|35.63|94.97|33.96',
+      ''],
+    ['SelvbetjentKasserad', 'three self-service checkouts in a row: SelvbetjentKasse three times, 186 x 38',
+      'Oversikt', 'Oversikt grupper', 185.66, 38.04, '',
+      'SelvbetjentKasse|0|0|0|63.66|38.04;SelvbetjentKasse|0|61|0|63.66|38.04;SelvbetjentKasse|0|122|0|63.66|38.04',
+      '']
+  ]
+};
+
 /** A component's shapes, groups opened, in drawing order. */
 function iwdieSymLeaves(shapes, out) {
   out = out || [];
@@ -11316,6 +11538,191 @@ function iwdieSymTable() {
     (t.byHash[p[1]] = t.byHash[p[1]] || []).push(one);
   });
   return (iwdieSymCache = t);
+}
+
+var iwdieSymGroupCache = null;
+/** IWDIE_SYMBOL_GROUPS read (v1.75.0): {list: [{name, en, set, layer, w, h, text, pieces: [{f: its family, k, x, y, w, h}],
+ *  names: [{slot, cx, cy, just, tw}]}], byKey: {iwdieSymKey(name): index}} */
+function iwdieSymGroups() {
+  if (iwdieSymGroupCache) return iwdieSymGroupCache;
+  var t = { list: [], byKey: {} };
+  ((IWDIE_SYMBOL_GROUPS && IWDIE_SYMBOL_GROUPS.groups) || []).forEach(function (g) {
+    var one = { name: g[0], en: g[1], set: g[2] || 'Oversikt', layer: g[3] || '', w: +g[4], h: +g[5], text: g[6] || '', pieces: [], names: [] };
+    String(g[7] || '').split(';').forEach(function (s) {
+      var p = s.split('|');
+      if (p.length === 6) one.pieces.push({ f: p[0], k: +p[1], x: +p[2], y: +p[3], w: +p[4], h: +p[5] });
+    });
+    String(g[8] || '').split(';').forEach(function (s) {
+      var p = s.split('|');
+      if (p.length === 5) one.names.push({ slot: +p[0], cx: +p[1], cy: +p[2], just: p[3], tw: +p[4] });
+    });
+    t.byKey[iwdieSymKey(one.name)] = t.list.length;
+    t.list.push(one);
+  });
+  return (iwdieSymGroupCache = t);
+}
+
+/** The arrangement called `name` (v1.75.0), written as iwdieSymKey reads names - or null, also for a family's name. */
+function iwdieSymGroup(name) {
+  var k = iwdieSymKey(name), t = iwdieSymGroups();
+  if (iwdieSymTable().byKey[k] !== undefined || t.byKey[k] === undefined) return null;
+  return t.list[t.byKey[k]];
+}
+
+/** An arrangement placed (v1.75.0): `g` (iwdieSymGroup's) turned `k` - quarter turns clockwise, +4 mirrored left to right
+ *  first, as iwdieSymMatrix turns - and fitted into `box` {x, y, w, h} as iwdieSymExpand fits a symbol: its proportions
+ *  kept, centred; w or h 0 takes it from the other, both 0 its own size. -> {box: the box it fills, k, scale, pieces:
+ *  [{name, k, x, y, w, h}]: each piece's box and turn on the drawing, names: [{slot, x, y, just}]: where each case's name
+ *  goes - y the middle of its line, x the edge of it that stays put (just L: its left, R: its right) or its centre (C).
+ *  Turned or mirrored, a name beside its case is set from the side it stands on, one above or below it from its centre. */
+function iwdieSymGroupPlace(g, box, k) {
+  k = k || 0;
+  var m = iwdieSymMatrix(k), odd = k & 1, gw = odd ? g.h : g.w, gh = odd ? g.w : g.h, r = function (v) { return Math.round(v * 100) / 100; };
+  var bw = box.w > 0 ? box.w : (box.h > 0 ? gw * box.h / Math.max(gh, 0.01) : gw), bh = box.h > 0 ? box.h : (box.w > 0 ? gh * box.w / Math.max(gw, 0.01) : gh);
+  var sc = Math.min(bw / Math.max(gw, 0.01), bh / Math.max(gh, 0.01)), cx = box.x + bw / 2, cy = box.y + bh / 2;
+  // a point of the group's own on the drawing
+  var at = function (x, y) {
+    var u = x - g.w / 2, v = y - g.h / 2;
+    return [cx + sc * (m[0] * u + m[2] * v), cy + sc * (m[1] * u + m[3] * v)];
+  };
+  var pieces = g.pieces.map(function (p) {
+    var c = at(p.x + p.w / 2, p.y + p.h / 2), w = (odd ? p.h : p.w) * sc, h = (odd ? p.w : p.h) * sc, q = iwdieSymMatrix(p.k);
+    // its turn on the drawing: its own, then the group's
+    var t = [m[0] * q[0] + m[2] * q[1], m[1] * q[0] + m[3] * q[1], m[0] * q[2] + m[2] * q[3], m[1] * q[2] + m[3] * q[3]];
+    return { name: p.f, k: iwdieSymK(t), x: r(c[0] - w / 2), y: r(c[1] - h / 2), w: r(w), h: r(h) };
+  });
+  var names = g.names.map(function (n) {
+    var c = at(n.cx, n.cy), just = n.just, half = n.tw / 2 * sc, p = g.pieces[n.slot];
+    if (k && p) {
+      // turned: set from the side of its case it stands on - left of it from its right edge, right of it from its left
+      var a = at(p.x, p.y), z = at(p.x + p.w, p.y + p.h);
+      just = c[0] < Math.min(a[0], z[0]) ? 'R' : c[0] > Math.max(a[0], z[0]) ? 'L' : 'C';
+    }
+    return { slot: n.slot, x: r(just === 'L' ? c[0] - half : just === 'R' ? c[0] + half : c[0]), y: r(c[1]), just: just };
+  });
+  return { box: { x: r(box.x), y: r(box.y), w: r(bw), h: r(bh) }, k: k, scale: sc, pieces: pieces, names: names };
+}
+
+/** A name's label object where an arrangement's case is named (v1.75.0): `n` one of iwdieSymGroupPlace's names, `w` the
+ *  width of the name - 12 px text, as the house's label objects carry it, its line 14 high. -> {x, y, w, h} */
+function iwdieSymGroupNameBox(n, w) {
+  var r = function (v) { return Math.round(v * 10) / 10; };
+  return { x: r(n.just === 'L' ? n.x : n.just === 'R' ? n.x - w : n.x - w / 2), y: r(n.y - 7), w: w, h: 14 };
+}
+
+/** About how wide a name is in the 12 px label of an Oversikt (v1.75.0): Roboto's advance widths, rounded up, 2 px over -
+ *  narrow letters and digits 7, wide capitals 9, the narrowest 3 to 4. -> px */
+function iwdieSymNameWidth(text) {
+  var w = 0;
+  String(text || '').split('').forEach(function (ch) {
+    w += /[iljI.,:;'|!]/.test(ch) ? 3.2 : /[ frt()\-\/]/.test(ch) ? 4.2 : /[mwMW]/.test(ch) ? 10 : /[A-ZÆØÅ]/.test(ch) ? 8.2 : 6.8;
+  });
+  return Math.ceil(w) + 2;
+}
+
+/** A drawing with each arrangement it places by name (v1.75.0, IWDIE_SYMBOL_GROUPS) written out as its pieces: a group
+ *  named after it - its id the <use>'s own when it has one, data-iwdie-group its name, data-iwdie-k its turn - holding a
+ *  <use data-iwdie-symbol> for each piece where iwdieSymGroupPlace puts it, for iwdieSymExpand to draw. -> {svg, groups} */
+function iwdieSymExpandGroups(svg) {
+  var s = String(svg || ''), refs = iwdieSymRefs(s).filter(function (r) { return !!iwdieSymGroup(r.name); });
+  if (!refs.length) return { svg: s, groups: 0 };
+  var used = {}, out = '', from = 0, rest = '', at = 0, f = iwdieDrawFmt, esc = iwdieDrawEsc;
+  refs.forEach(function (r) { rest += s.slice(at, r.at); at = r.end; });
+  rest += s.slice(at);
+  (rest.match(/\sid\s*=\s*"[^"]*"/g) || []).forEach(function (q) { used[q.replace(/^\sid\s*=\s*"|"$/g, '')] = 1; });
+  refs.forEach(function (r) {
+    out += s.slice(from, r.at);
+    from = r.end;
+    var g = iwdieSymGroup(r.name), pl = iwdieSymGroupPlace(g, { x: r.x, y: r.y, w: r.w, h: r.h }, r.k);
+    out += '<g id="' + esc(iwdieVcSvgId(r.id || g.name, used)) + '" data-name="' + esc(g.name) + '" data-iwdie-symbol="' + esc(g.name) +
+      '" data-iwdie-group="' + esc(g.name) + '" data-iwdie-k="' + r.k + '"' + (r.cid ? ' data-iwdie-cid="' + esc(r.cid) + '"' : '') + '>' +
+      pl.pieces.map(function (p) {
+        var deg = (p.k & 3) * 90;
+        return '<use data-iwdie-symbol="' + esc(p.name) + '" x="' + f(p.x) + '" y="' + f(p.y) + '" width="' + f(p.w) + '" height="' + f(p.h) + '"' +
+          (deg ? ' data-iwdie-turn="' + deg + '"' : '') + (p.k & 4 ? ' data-iwdie-flip="1"' : '') + '/>';
+      }).join('') + '</g>';
+  });
+  return { svg: out + s.slice(from), groups: refs.length };
+}
+
+/** Whether the names given lack what `name` needs to be drawn (v1.75.0): its own name, or for an arrangement the family
+ *  of each of its pieces. `have` holds the names as iwdieSymKey writes them. */
+function iwdieSymLacks(name, have) {
+  var g = iwdieSymGroup(name);
+  if (g) return g.pieces.some(function (p) { return have.indexOf(iwdieSymKey(p.f)) < 0; });
+  return have.indexOf(iwdieSymKey(name)) < 0;
+}
+
+/** An arrangement as a component VectorCraft offers (v1.75.0): drawn of the library's own pieces (`items`, named by
+ *  iwdieSymName), each a group named after its family, and a label placeholder (`label`: the catalogue's
+ *  number_v3_label_12px_norm) with the template's own name (K1, F1) where each case's name goes - which a sync makes the
+ *  label objects the user renames. The whole at 0, 0, as wide and high as it reaches, names and all. -> a library item
+ *  ({name, layer, w, h, shapes, sym: {name, k: 0, named: false, group: true}}) or null when a piece is missing */
+function iwdieSymGroupItem(g, items, label) {
+  var pl = iwdieSymGroupPlace(g, { x: 0, y: 0, w: 0, h: 0 }, 0), shapes = [], boxes = [];
+  for (var i = 0; i < pl.pieces.length; i++) {
+    var p = pl.pieces[i], pick = iwdieSymPick(items, p.name, p.k, p.w, p.h);
+    if (!pick) return null;
+    var it = pick.it, still = pick.still, mm = iwdieSymMatrix(still), odd = still & 1, nw = odd ? it.h : it.w, nh = odd ? it.w : it.h;
+    var sc = Math.min(p.w / Math.max(nw, 0.01), p.h / Math.max(nh, 0.01));
+    // the member's shapes about its centre, turned what is still to do, scaled into the piece's box
+    var a = mm[0] * sc, b = mm[1] * sc, c = mm[2] * sc, d = mm[3] * sc, e = p.x + p.w / 2 - (a * it.w + c * it.h) / 2, f = p.y + p.h / 2 - (b * it.w + d * it.h) / 2;
+    shapes.push({ t: 'group', name: p.name, items: it.shapes.map(function (s) { return iwdieSymMapShape(s, [a, b, c, d, e, f]); }) });
+    boxes.push([p.x, p.y, p.x + p.w, p.y + p.h]);
+  }
+  if (label && g.text) {
+    pl.names.forEach(function (n) {
+      var w = iwdieSymNameWidth(g.text), nb = iwdieSymGroupNameBox(n, w), o = {};
+      Object.keys(label).forEach(function (key) { o[key] = label[key]; });
+      o.w = nb.w; o.h = nb.h; o.tag = g.text;
+      var ph = iwdieVcObjectItem(o);
+      shapes.push({ t: 'group', name: ph.name, items: ph.shapes.map(function (s) { return iwdieDrawMap(s, 1, nb.x, 1, nb.y); }) });
+      boxes.push([nb.x, nb.y, nb.x + nb.w, nb.y + nb.h]);
+    });
+  }
+  var x0 = Math.min.apply(null, boxes.map(function (q) { return q[0]; })), y0 = Math.min.apply(null, boxes.map(function (q) { return q[1]; }));
+  var x1 = Math.max.apply(null, boxes.map(function (q) { return q[2]; })), y1 = Math.max.apply(null, boxes.map(function (q) { return q[3]; }));
+  var round = function (v) { return Math.round(v * 100) / 100; };
+  return { name: g.name, layer: g.layer || 'Oversikt grupper', w: round(x1 - x0), h: round(y1 - y0),
+    shapes: shapes.map(function (s) { return iwdieDrawMap(s, 1, -x0, 1, -y0); }), sym: { name: g.name, k: 0, named: false, group: true } };
+}
+
+/** A shape under the affine map `t` [a, b, c, d, e, f]: (x, y) -> (a x + c y + e, b x + d y + f) (v1.75.0) - a quarter
+ *  turn, a mirror and a scale, as a piece of an arrangement takes them. A rectangle or an ellipse turned a quarter keeps
+ *  its kind with its sides swapped; line widths, corner radii and text sizes stay. */
+function iwdieSymMapShape(s, t) {
+  var N = iwdieDrawNum, P = function (x, y) { return [N(t[0] * x + t[2] * y + t[4]), N(t[1] * x + t[3] * y + t[5])]; };
+  if (s.t === 'group') return { t: 'group', name: s.name, items: s.items.map(function (k) { return iwdieSymMapShape(k, t); }) };
+  var c = JSON.parse(JSON.stringify(s));
+  if (s.t === 'd') {
+    var nums = (s.d.match(/-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || []).map(Number), at = 0;
+    c.d = s.d.replace(/-?\d*\.?\d+(?:[eE][-+]?\d+)?/g, function () {
+      var i = at++, x = i % 2 === 0 ? nums[i] : nums[i - 1], y = i % 2 === 0 ? nums[i + 1] : nums[i];
+      return String(P(x, y)[i % 2]);
+    });
+  } else if (s.t === 'rect' || s.t === 'image') {
+    var p1 = P(s.x, s.y), p2 = P(s.x + s.w, s.y + s.h);
+    c.x = Math.min(p1[0], p2[0]); c.y = Math.min(p1[1], p2[1]); c.w = N(Math.abs(p2[0] - p1[0])); c.h = N(Math.abs(p2[1] - p1[1]));
+  } else if (s.t === 'ellipse') {
+    var q = P(s.cx, s.cy), sw = Math.abs(t[1]) > Math.abs(t[0]);
+    c.cx = q[0]; c.cy = q[1];
+    c.rx = N((sw ? s.ry : s.rx) * Math.hypot(t[0], t[1])); c.ry = N((sw ? s.rx : s.ry) * Math.hypot(t[2], t[3]));
+  } else if (s.t === 'line') {
+    c.pts = s.pts.map(function (p) { return P(p[0], p[1]); });
+  } else if (s.t === 'path') {
+    c.nodes = s.nodes.map(function (k) { var a = P(k.x, k.y), i = P(k.ix, k.iy), o = P(k.ox, k.oy); return { x: a[0], y: a[1], ix: i[0], iy: i[1], ox: o[0], oy: o[1] }; });
+  } else if (s.t === 'text') {
+    var tp = P(s.x, s.y);
+    c.x = tp[0]; c.y = tp[1];
+  }
+  return c;
+}
+
+/** The arrangements VectorCraft offers (v1.75.0), each drawn of `items`' own pieces (iwdieSymGroupItem), with its names
+ *  as label placeholders; those whose pieces the library lacks left out. -> library items */
+function iwdieSymGroupItems(items) {
+  var known = iwdieVcObjectIndex(), label = known.number_v3_label_12px_norm || null;
+  return iwdieSymGroups().list.map(function (g) { return iwdieSymGroupItem(g, items, label); }).filter(Boolean);
 }
 
 /** Which of the template's components `it` is: drawn of the same, the same size within 1.5 px, its two points within
@@ -11429,16 +11836,20 @@ function iwdieSymLack(text, names) {
   var p = doc && typeof doc === 'object' ? (doc.panel && typeof doc.panel === 'object' ? doc.panel : doc) : null;
   if (!p || typeof p.image_svg !== 'string') return 0;
   var have = (Array.isArray(names) ? names : []).map(iwdieSymKey);
-  return iwdieSymRefs(p.image_svg).filter(function (r) { return have.indexOf(iwdieSymKey(r.name)) < 0; }).length;
+  // an arrangement (v1.75.0) lacks what one of its pieces lacks
+  return iwdieSymRefs(p.image_svg).filter(function (r) { return iwdieSymLacks(r.name, have); }).length;
 }
 
 /** A drawing with each symbol it places drawn (v1.63.0): the component of that name from `items` (a library named by
  *  iwdieSymName), turned and mirrored as asked, scaled - its proportions kept - into the box asked for, as a group
  *  named after it (VectorCraft shows the name; data-iwdie-symbol says which it was). One the library lacks becomes a
- *  dashed box of its size with its name in it, to be swapped by hand. -> {svg, placed: n, missing: [name...]} */
+ *  dashed box of its size with its name in it, to be swapped by hand. An arrangement's name (v1.75.0) places its pieces,
+ *  as one group named after it (iwdieSymExpandGroups). -> {svg, placed: n pieces drawn, missing: [name...], groups: n} */
 function iwdieSymExpand(svg, items) {
+  var grouped = iwdieSymExpandGroups(svg);
+  svg = grouped.svg;
   var refs = iwdieSymRefs(svg);
-  if (!refs.length) return { svg: String(svg || ''), placed: 0, missing: [] };
+  if (!refs.length) return { svg: String(svg || ''), placed: 0, missing: [], groups: grouped.groups };
   var s = String(svg), used = {}, out = '', from = 0, placed = 0, missing = [], f = iwdieDrawFmt, esc = iwdieDrawEsc, t = iwdieSymTable();
   // the ids taken, those of the <use> elements that go left out: one keeps its id as the group it becomes
   var rest = '', at = 0;
@@ -11473,7 +11884,7 @@ function iwdieSymExpand(svg, items) {
     placed++;
   });
   out += s.slice(from);
-  return { svg: out, placed: placed, missing: missing };
+  return { svg: out, placed: placed, missing: missing, groups: grouped.groups };
 }
 
 /** The symbols a drawing may place (v1.63.0): the families of `items` (a library named by iwdieSymName) the templates
@@ -11868,13 +12279,23 @@ function iwdieBuildOverview(doc, src) {
     var syms = iwdieSymAvailable(lib.items, oversikt ? 'Oversikt' : 'Maskin');
     if (syms.length && oversikt) {
       parts.components.symbols = { cols: ['name', 'sizes', 'what', 'ports'], rows: syms.map(function (s) { return [s.name, s.sizes.join(' '), s.en, null]; }) };
+      // v1.75.0: the template's arrangements whose pieces the library has - `names` how many of its cases it names
+      var haveSyms = syms.map(function (s) { return iwdieSymKey(s.name); });
+      var arranged = iwdieSymGroups().list.filter(function (g) { return !iwdieSymLacks(g.name, haveSyms); });
+      if (arranged.length) {
+        parts.components.groups = { cols: ['name', 'size', 'what', 'names'], rows: arranged.map(function (g) {
+          return [g.name, Math.round(g.w) + 'x' + Math.round(g.h), g.en, g.names.length];
+        }) };
+      }
       parts.components.place = 'An Oversikt places the Oversikt template\'s components by name instead of drawing them: ' +
         '<use data-iwdie-symbol="KjølDisk" x="300" y="200" width="69" height="29"/> puts a cooling case module with its top left at 300, 200. ' +
         'Kjøl… is light blue (cooling), Frys… dark blue (freezer): Disk, Gavl, Kvadrat, Rom, Sirkel, Kvartsirkel, Ringdel, Bue, Halvrund ...; ' +
-        'and Inngang, Handlevogn, Aggregat, Kondensator2/3/4, Plugg, Nål, Oppvaskmaskin, Bilvask. width and height fit it into that box, its ' +
-        'proportions kept; data-iwdie-turn="90" (180, 270) turns it clockwise, data-iwdie-flip="1" mirrors it left to right first. Insert ' +
-        'draws each from the templates built into the script, as a group named after it. A cluster\'s value object stands on its case: never ' +
-        'a pill under it.';
+        'and Inngang, Handlevogn, Kasse, SelvbetjentKasse, Kondensator2/3/4, Plugg, Nål, Oppvaskmaskin, Bilvask. width and height fit it into ' +
+        'that box, its proportions kept; data-iwdie-turn="90" (180, 270) turns it clockwise, data-iwdie-flip="1" mirrors it left to right ' +
+        'first. Insert draws each from the templates built into the script, as a group named after it. A whole island, row or checkout as ' +
+        'the template lays it out (groups: KjølØy3Stående, FrysØyRund, KjølHjørnerad, Kassepar ...) is placed the same way by its name and ' +
+        'drawn as one group of its pieces; its cases\' names are label objects (number_v3_label_12px_norm) beside them, which the drawing ' +
+        'adds itself. A cluster\'s value object stands on its case: never a pill under it.';
     } else if (syms.length) {
       // v1.64.1: with the ports their pipes join at
       parts.components.symbols = { cols: ['name', 'sizes', 'what', 'ports'], rows: syms.map(function (s) { return [s.name, s.sizes.join(' '), s.en, iwdieCbPortsOf(s.name)]; }) };
@@ -14971,12 +15392,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return '<div class="iwdie-vcm-i" data-layer="' + esc2(l) + '"><span class="iwdie-vcm-l">' + esc2(l) + '</span>' +
           '<span class="iwdie-vcm-k">' + byLayer[l].length + '</span><span class="iwdie-vcm-k">▸</span></div>';
       };
-      // a component as a file to drop: its shapes at 0,0, the size of it, named as it is
+      // a component as a file to drop: its shapes at 0,0, the size of it, named as it is (v1.75.0: the groups in it too)
       var compThing = function (k) {
-        var it = comps[k], w = Math.max(1, Math.ceil(it.w)), h = Math.max(1, Math.ceil(it.h)), defs = iwdieDrawDefsSvg(it.shapes);
+        var it = comps[k];
         return { label: compNames[k], w: Math.round(it.w), h: Math.round(it.h), name: compNames[k], svg: function () {
-          return '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' + (defs ? '<defs>' + defs + '</defs>' : '') +
-            it.shapes.map(function (s) { return iwdieDrawShapeSvg(s); }).join('') + '</svg>';
+          return iwdieVcComponentFileSvg(it, compNames[k]);
         } };
       };
       var objThing = function (o) {
@@ -19364,7 +19784,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** A drawing drawn at the panel's size as VectorCraft means it (v1.58.0): its font sizes with their unit, the fonts it
-     *  names written in - or, should the browser not draw that, as it came - over `fill`. -> Promise<PNG bytes> */
+     *  names written in - or, should the browser not draw that, as it came - over `fill`; without one (v1.75.0) on
+     *  nothing, so what the drawing leaves transparent stays so. -> Promise<PNG bytes> */
     function vcRenderPng(svg, size, fill) {
       var draw = function (text) {
         var url = URL.createObjectURL(new Blob([iwdieVcSized(text, size.w, size.h)], { type: 'image/svg+xml' }));
@@ -19376,8 +19797,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var c = document.createElement('canvas');
         c.width = size.w; c.height = size.h;
         var ctx = c.getContext('2d');
-        ctx.fillStyle = fill;
-        ctx.fillRect(0, 0, size.w, size.h);
+        if (fill) {
+          ctx.fillStyle = fill;
+          ctx.fillRect(0, 0, size.w, size.h);
+        }
         ctx.drawImage(img, 0, 0, size.w, size.h);
         return new Promise(function (resolve, reject) {
           c.toBlob(function (blob) {
@@ -19389,12 +19812,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** A drawing made the panel's picture as a sync from VectorCraft makes it (v1.65.0): sized to the panel and marked as
-     *  given (iwdieVcGiven), drawn with the fonts it names over the panel's colour, and kept in the PNG - so Edit in
-     *  VectorCraft opens its layers again, and Export hands it back. -> Promise<{bytes, dataUrl, name, w, h, lean}> */
+     *  given (iwdieVcGiven), drawn with the fonts it names, and kept in the PNG - so Edit in VectorCraft opens its layers
+     *  again, and Export hands it back. Since v1.75.0 drawn on nothing, not over the panel's colour: what the drawing leaves
+     *  transparent stays so - the Designer shows its own grey there, the plant's page its own - as the house's
+     *  transparent pictures do; before, an Oversikt drawn without a ground came out grey everywhere (Thomas, 2026-10-16).
+     *  -> Promise<{bytes, dataUrl, name, w, h, lean}> */
     function vcDrawingPicture(svg, size) {
       var doc = iwdieVcGiven(svg, size);
       if (!doc) return Promise.reject(new Error('it is no SVG'));
-      return vcRenderPng(doc, size, grabBackgroundFillColor() || '#ffffff').then(function (png) {
+      return vcRenderPng(doc, size, null).then(function (png) {
         return vcPack(doc).then(function (pack) {
           var withDoc = iwdieVcEmbed(png, pack.data, pack.type);
           return { bytes: withDoc, dataUrl: 'data:image/png;base64,' + iwdieBytesToBase64(withDoc), name: 'iwdie-drawing.png', w: size.w, h: size.h, lean: pack.lean };
@@ -19491,8 +19917,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // one it knew but cannot find as the last sync left it, its placeholder not in the save (or one an earlier sync placed):
       // left on the panel, and said so - never taken off unseen
       var lost = kf.lost.filter(function (e) { return !e.sent || !inSave[e.key]; });
-      // drawn as VectorCraft means it (vcRenderPng, v1.58.0). The SVG kept in the PNG for the next edit stays as VectorCraft saved it.
-      return vcRenderPng(svg, size, grabBackgroundFillColor() || '#ffffff').then(function (pngBytes) {
+      // drawn as VectorCraft means it (vcRenderPng, v1.58.0) - on nothing since v1.75.0, so what the drawing leaves
+      // transparent stays so (a picture opened in VectorCraft from a PNG carries the panel's colour as its own ground).
+      // The SVG kept in the PNG for the next edit stays as VectorCraft saved it.
+      return vcRenderPng(svg, size, null).then(function (pngBytes) {
         return vcPack(svg).then(function (pack) { return { png: pngBytes, pack: pack }; });
       }).then(function (r) {
         // the parameters the placeholders' names give (v1.63.0), read against the plant before anything changes
@@ -21556,6 +21984,8 @@ if (typeof module !== 'undefined' && module.exports) {
     vcBindWhy: iwdieVcBindWhy,
     vcComponentNames: iwdieVcComponentNames,
     vcSvgId: iwdieVcSvgId,
+    vcNamedSvg: iwdieVcNamedSvg,
+    vcComponentFileSvg: iwdieVcComponentFileSvg,
     vcComponentSvg: iwdieVcComponentSvg,
     SYMBOLS: IWDIE_SYMBOLS,
     symPrint: iwdieSymPrint,
@@ -21575,6 +22005,17 @@ if (typeof module !== 'undefined' && module.exports) {
     SYM_OBJECT_FAMILIES: IWDIE_SYM_OBJECT_FAMILIES,
     symExpand: iwdieSymExpand,
     symAvailable: iwdieSymAvailable,
+    SYMBOL_GROUPS: IWDIE_SYMBOL_GROUPS,
+    symGroups: iwdieSymGroups,
+    symGroup: iwdieSymGroup,
+    symGroupPlace: iwdieSymGroupPlace,
+    symGroupNameBox: iwdieSymGroupNameBox,
+    symNameWidth: iwdieSymNameWidth,
+    symExpandGroups: iwdieSymExpandGroups,
+    symLacks: iwdieSymLacks,
+    symGroupItem: iwdieSymGroupItem,
+    symGroupItems: iwdieSymGroupItems,
+    symMapShape: iwdieSymMapShape,
     CB_PORT: IWDIE_CB_PORT,
     CB_PORTS: IWDIE_CB_PORTS,
     CB_CIRCUITS: IWDIE_CB_CIRCUITS,
