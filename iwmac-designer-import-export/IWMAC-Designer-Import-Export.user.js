@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.81.0
+// @version      1.82.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.81.0';
+var IWDIE_VERSION = '1.82.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8377,6 +8377,8 @@ function iwdieVcObjectCatalog() {
 function iwdieVcObjectIndex() {
   var known = {};
   iwdieVcObjectCatalog().forEach(function (o) { known[o.id] = o; });
+  // (v1.82.0) and the kinds a picture was searched for by shape
+  Object.keys(IWDIE_VC_KNOWN_EXTRA).forEach(function (id) { if (!known[id]) known[id] = IWDIE_VC_KNOWN_EXTRA[id]; });
   IWDIE_VZ_BOXES.forEach(function (b) {
     [b[2], b[3]].forEach(function (id, lying) {
       if (known[id]) return;
@@ -14219,16 +14221,26 @@ function iwdieVzObjectKind(id) {
 /** The kinds the found pictures of a picture stand for, one each (v1.77.0). One picture may be several kinds' -
  *  a grey LED is three LEDs' "off", "Running" four AK-PC kinds' - so each look carries its `kinds`; the one taken is the
  *  kind the panel uses already (the most of them), else the one whose own picture it is (`main`: the kind's default
- *  picture, the Designer's `file`), else the first in the catalogue's order. `panel`: the panel's objects. -> the kind */
-function iwdieVzTwinKind(kinds, main, panel) {
+ *  picture, the Designer's `file`), else the first in the catalogue's order. `panel`: the panel's objects. With `pic`, the
+ *  picture found (v1.82.0), else: a kind of normal logic before an inverted one (`_inv`), of those the one whose own
+ *  picture is that very picture - what it shows unlinked - and of those the plainest, the fewest pictures (`defs`: {id:
+ *  {pics}}). -> the kind */
+function iwdieVzTwinKind(kinds, main, panel, pic, defs) {
   var list = (kinds || []).filter(Boolean);
   if (list.length < 2) return list[0] || null;
   var count = {};
   (panel || []).forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (list.indexOf(k) >= 0) count[k] = (count[k] || 0) + 1; });
   var used = list.filter(function (k) { return count[k]; }).sort(function (a, b) { return count[b] - count[a]; });
   if (used.length) return used[0];
-  var own = list.filter(function (k) { return main && main[k]; });
-  return own[0] || list[0];
+  if (pic == null) {
+    var own0 = list.filter(function (k) { return main && main[k]; });
+    return own0[0] || list[0];
+  }
+  var bare = function (p) { return String(p).replace(/^\/+/, ''); }, n = function (k) { var d = defs && defs[k]; return d && d.pics ? d.pics.length : 99; };
+  var pool = list.filter(function (k) { return !/_inv(_|$)/i.test(k); });
+  if (!pool.length) pool = list;
+  var own = pool.filter(function (k) { return main && main[k] && bare(main[k]) === bare(pic); });
+  return (own.length ? own : pool).slice().sort(function (a, b) { return n(a) - n(b); })[0];
 }
 
 /** The IWMAC objects found in a picture, read against the panel's own (v1.77.0). `found`: [{kind, x, y, w, h}] (each
@@ -14296,6 +14308,71 @@ var IWDIE_VZ_BOXES = [
   ['#3c505e', 0, 'number_v3_header_appgrey', 'number_v3_header_appgrey']
 ];
 
+/** The folders the Designer keeps its objects' own pictures in, and the role of an object whose picture is in one
+ *  (v1.82.0): its valves, pumps, compressors, fans, LEDs and status symbols, the ventilation's dampers, fans, coils and
+ *  filters. */
+var IWDIE_VZ_OBJECT_FOLDERS = [['V3/valves/', 'valve'], ['V3/pumps/', 'pump'], ['V3/compressors/', 'compressor'], ['V3/fans/', 'fan'],
+  ['V3/indicators/', 'led'], ['V3/refrigeration/status_symbols/', 'led'], ['V3/hvac/dampers/', 'damper'], ['V3/hvac/fans/', 'fan'],
+  ['V3/hvac/heatexchangers/', 'coil'], ['V3/hvac/filters/', 'filter']];
+
+/** The role of an object whose picture is `path` (v1.82.0), by its folder (IWDIE_VZ_OBJECT_FOLDERS): an alarm's bell
+ *  among the status symbols an alarm. -> role | '' */
+function iwdieVzFolderRole(path) {
+  var p = String(path || '').replace(/^\/+/, '');
+  for (var i = 0; i < IWDIE_VZ_OBJECT_FOLDERS.length; i++) {
+    if (p.indexOf(IWDIE_VZ_OBJECT_FOLDERS[i][0]) === 0) return /status_symbols/.test(p) && /alarm|bell/i.test(p) ? 'alarm' : IWDIE_VZ_OBJECT_FOLDERS[i][1];
+  }
+  return '';
+}
+
+/** Kinds of the Designer's known by name beyond the catalogue (v1.82.0): those whose own pictures a picture was searched
+ *  for by shape (iwdieVcKnowKinds), so a sync can make one found an object. id -> {id, w, h, role, desc, pic, tag,
+ *  hasTag, kind} */
+var IWDIE_VC_KNOWN_EXTRA = {};
+
+/** Kinds known by name beyond the catalogue (v1.82.0): `list` [{id, w, h, role, desc, pic, hasTag}]. */
+function iwdieVcKnowKinds(list) {
+  (list || []).forEach(function (o) {
+    if (!o || !o.id || !(o.w > 0) || !(o.h > 0)) return;
+    IWDIE_VC_KNOWN_EXTRA[o.id] = { id: o.id, w: o.w, h: o.h, role: o.role || 'other', desc: String(o.desc || o.id), pic: o.pic || '', tag: '', hasTag: !!o.hasTag, kind: 'picture' };
+  });
+}
+
+/** Whether a house template (`t` {w, h, rgba}, drawn at 1:1) is a box the Designer draws itself (v1.82.0): nine
+ *  tenths of its box drawn, nineteen twentieths of that in one of IWDIE_VZ_BOXES' colours (within 12), its corners as
+ *  round as that box's (a case's 4 px, a header's square: a pill is neither). The Oversikt template's cases and rooms are
+ *  such boxes. -> {colour, round} | null */
+function iwdieVzBoxTemplate(t) {
+  if (!t || !(t.w >= 8) || !(t.h >= 8)) return null;
+  var n = t.w * t.h, drawn = 0, hits = IWDIE_VZ_BOXES.map(function () { return 0; });
+  var rgbs = IWDIE_VZ_BOXES.map(function (b) { var h6 = b[0].slice(1); return [parseInt(h6.slice(0, 2), 16), parseInt(h6.slice(2, 4), 16), parseInt(h6.slice(4, 6), 16)]; });
+  for (var i = 0; i < n; i++) {
+    if (t.rgba[i * 4 + 3] < 128) continue;
+    drawn++;
+    for (var k = 0; k < rgbs.length; k++) {
+      if (Math.abs(t.rgba[i * 4] - rgbs[k][0]) + Math.abs(t.rgba[i * 4 + 1] - rgbs[k][1]) + Math.abs(t.rgba[i * 4 + 2] - rgbs[k][2]) <= 12) { hits[k]++; break; }
+    }
+  }
+  if (drawn < 0.9 * n) return null;
+  var best = 0;
+  for (var j = 1; j < hits.length; j++) if (hits[j] > hits[best]) best = j;
+  if (hits[best] < 0.95 * drawn) return null;
+  // its corners as round as the box's: of each corner's 6 x 6 pixels at most 12 undrawn for a case's 4 px, 3 for a square
+  var most = IWDIE_VZ_BOXES[best][1] ? 12 : 3, off = function (x0, y0) {
+    var m = 0;
+    for (var y = y0; y < y0 + 6; y++) for (var x = x0; x < x0 + 6; x++) if (t.rgba[(y * t.w + x) * 4 + 3] < 128) m++;
+    return m;
+  };
+  if (off(0, 0) > most || off(t.w - 6, 0) > most || off(0, t.h - 6) > most || off(t.w - 6, t.h - 6) > most) return null;
+  return { colour: IWDIE_VZ_BOXES[best][0], round: IWDIE_VZ_BOXES[best][1] };
+}
+
+/** The box object the Designer draws in `colour` (v1.82.0), standing or lying as `w` x `h` is. -> obj_id | null */
+function iwdieVzBoxKind(colour, w, h) {
+  for (var i = 0; i < IWDIE_VZ_BOXES.length; i++) if (IWDIE_VZ_BOXES[i][0] === colour) return w >= h ? IWDIE_VZ_BOXES[i][3] : IWDIE_VZ_BOXES[i][2];
+  return null;
+}
+
 /** The box the Designer draws for kind `id` (v1.80.0), of IWDIE_VZ_BOXES. -> {colour, round} | null */
 function iwdieVzBoxOf(id) {
   for (var i = 0; i < IWDIE_VZ_BOXES.length; i++) {
@@ -14306,12 +14383,13 @@ function iwdieVzBoxOf(id) {
 
 /** The boxes the Designer draws itself in a picture (v1.80.0): each patch of one of IWDIE_VZ_BOXES' colours (within 8,
  *  red, green and blue summed) that is such a box - at least 12 x 8 and under two fifths of the picture; its sides, past
- *  its corners, nine tenths of its colour; its corners no rounder than its kind's (a pill's round ends are no case's: at
- *  most 12 of the 36 pixels of each corner's square off its colour, a header's square corners at most one of four); and
+ *  its corners, nine tenths of its colour; its corners no rounder than its kind's (at most 12 of the 36 pixels of each
+ *  corner's square off its colour, a header's square corners at most one of four) - or (v1.82.0) a case's colour as a
+ *  pill, round ends and all, under 40 px across (the Oversikt legend's: `pill`, what it takes out of the picture); and
  *  clean inside, 98 % of its colour (`opts.inside`) and no mark drawn on it, a box found inside it counting as clean - grown by the row or column
  *  round it that is half way to its colour or more (its edge's blend). `pic` RGBA, W x H, the picture as it came; with
  *  `opts.now`, the picture as the steps before left it, a pixel they took something out of (an object's look, a word)
- *  counts as the box's own. -> [{id, x, y, w, h, colour}], the biggest first, so one inside another comes after it */
+ *  counts as the box's own. -> [{id, x, y, w, h, colour, pill?}], the biggest first, so one inside another comes after it */
 function iwdieVzBoxes(pic, W, H, opts) {
   opts = opts || {};
   var now = opts.now && opts.now.length === pic.length ? opts.now : null, share = opts.inside > 0 ? opts.inside : 0.98;
@@ -14367,18 +14445,35 @@ function iwdieVzBoxes(pic, W, H, opts) {
       for (var yy = ya; yy <= yb; yy++) for (var xx = xa; xx <= xb; xx++) { t++; if (own(xx, yy)) m++; }
       return m >= 0.9 * t;
     };
-    if (!full(c.x0 + R, c.y0, c.x1 - R, c.y0) || !full(c.x0 + R, c.y1, c.x1 - R, c.y1) || !full(c.x0, c.y0 + R, c.x0, c.y1 - R) || !full(c.x1, c.y0 + R, c.x1, c.y1 - R)) return;
-    var off = function (xa, ya) {
+    var off = function (xa, ya, side) {
       var m = 0;
-      for (var yy = ya; yy < ya + R; yy++) for (var xx = xa; xx < xa + R; xx++) if (!own(xx, yy)) m++;
+      for (var yy = ya; yy < ya + side; yy++) for (var xx = xa; xx < xa + side; xx++) if (!own(xx, yy)) m++;
       return m;
     };
     var most = K.r ? 12 : 1;
-    if (off(c.x0, c.y0) > most || off(c.x1 - R + 1, c.y0) > most || off(c.x0, c.y1 - R + 1) > most || off(c.x1 - R + 1, c.y1 - R + 1) > most) return;
+    var boxy = full(c.x0 + R, c.y0, c.x1 - R, c.y0) && full(c.x0 + R, c.y1, c.x1 - R, c.y1) && full(c.x0, c.y0 + R, c.x0, c.y1 - R) && full(c.x1, c.y0 + R, c.x1, c.y1 - R) &&
+      off(c.x0, c.y0, R) <= most && off(c.x1 - R + 1, c.y0, R) <= most && off(c.x0, c.y1 - R + 1, R) <= most && off(c.x1 - R + 1, c.y1 - R + 1, R) <= most;
+    // (v1.82.0) a case's colour as a pill - its ends round, the Oversikt legend's Varme, Kjøl and Frys - is that case too, as
+    // the Designer draws it: under 40 px across, longer than across by 4 px, each corner's square of half its radius more
+    // off it than on, and at most a twelfth of its box off a pill's shape
+    var rp = Math.min(c.w, c.h) / 2, inPill = function (xx, yy, by) {
+      var u = xx - c.x0 + 0.5, v = yy - c.y0 + 0.5;
+      return Math.hypot(u - Math.max(rp, Math.min(c.w - rp, u)), v - Math.max(rp, Math.min(c.h - rp, v))) <= rp + by;
+    };
+    var pill = false;
+    if (!boxy) {
+      var q2 = Math.floor(rp / 2), half = q2 * q2 / 2;
+      if (!K.r || 2 * rp > 40 || Math.max(c.w, c.h) < 2 * rp + 4 || q2 < 3) return;
+      if (off(c.x0, c.y0, q2) < half || off(c.x1 - q2 + 1, c.y0, q2) < half || off(c.x0, c.y1 - q2 + 1, q2) < half || off(c.x1 - q2 + 1, c.y1 - q2 + 1, q2) < half) return;
+      var miss = 0;
+      for (y = c.y0; y <= c.y1; y++) for (x = c.x0; x <= c.x1; x++) if (inPill(x, y, 0) !== own(x, y)) miss++;
+      if (miss > c.w * c.h / 12) return;
+      pill = true;
+    }
     // inside: a little off its colour (a word's blend the steps before left), never a mark drawn on it (90 off, a few pixels)
     var bad = 0, all = 0, marks = 0;
     for (y = c.y0; y <= c.y1; y++) for (x = c.x0; x <= c.x1; x++) {
-      if ((x < c.x0 + R || x > c.x1 - R) && (y < c.y0 + R || y > c.y1 - R)) continue;
+      if (pill ? !inPill(x, y, -1.5) : (x < c.x0 + R || x > c.x1 - R) && (y < c.y0 + R || y > c.y1 - R)) continue;
       all++;
       if (inK(x, y)) continue;
       bad++;
@@ -14399,14 +14494,25 @@ function iwdieVzBoxes(pic, W, H, opts) {
       }
       return m ? sum / m : 0;
     };
-    var bx0 = c.x0, by0 = c.y0, bx1 = c.x1, by1 = c.y1;
-    if (by0 > 1 && frac(bx0 + R, by0 - 1, bx1 - R, by0 - 1, 0, -1) >= 0.5) by0--;
-    if (by1 < H - 2 && frac(bx0 + R, by1 + 1, bx1 - R, by1 + 1, 0, 1) >= 0.5) by1++;
-    if (bx0 > 1 && frac(bx0 - 1, by0 + R, bx0 - 1, by1 - R, -1, 0) >= 0.5) bx0--;
-    if (bx1 < W - 2 && frac(bx1 + 1, by0 + R, bx1 + 1, by1 - R, 1, 0) >= 0.5) bx1++;
+    // a pill's sides only along their straight part
+    var bx0 = c.x0, by0 = c.y0, bx1 = c.x1, by1 = c.y1, S = pill ? Math.ceil(rp) : R;
+    if (by0 > 1 && frac(bx0 + S, by0 - 1, bx1 - S, by0 - 1, 0, -1) >= 0.5) by0--;
+    if (by1 < H - 2 && frac(bx0 + S, by1 + 1, bx1 - S, by1 + 1, 0, 1) >= 0.5) by1++;
+    if (bx0 > 1 && frac(bx0 - 1, by0 + S, bx0 - 1, by1 - S, -1, 0) >= 0.5) bx0--;
+    if (bx1 < W - 2 && frac(bx1 + 1, by0 + S, bx1 + 1, by1 - S, 1, 0) >= 0.5) bx1++;
     for (y = c.y0; y <= c.y1; y++) for (x = c.x0; x <= c.x1; x++) taken[y * W + x] = 1;
-    var bw = bx1 - bx0 + 1, bh = by1 - by0 + 1;
-    out.push({ id: bw >= bh ? K.lying : K.up, x: bx0, y: by0, w: bw, h: bh, colour: K.hex });
+    var bw = bx1 - bx0 + 1, bh = by1 - by0 + 1, box = { id: bw >= bh ? K.lying : K.up, x: bx0, y: by0, w: bw, h: bh, colour: K.hex };
+    if (pill) {
+      // what a pill takes out of the picture: its shape and the light ring round it, 2 px (and the pixel round any hole)
+      var gx = Math.max(0, bx0 - 2), gy = Math.max(0, by0 - 2), gw = Math.min(W - 1, bx1 + 2) - gx + 1, gh = Math.min(H - 1, by1 + 2) - gy + 1;
+      var gr = new Uint8ClampedArray(gw * gh * 4), r2 = Math.min(bw, bh) / 2;
+      for (var vy = 0; vy < gh; vy++) for (var vx = 0; vx < gw; vx++) {
+        var u2 = gx + vx + 0.5 - bx0, v2 = gy + vy + 0.5 - by0;
+        if (Math.hypot(u2 - Math.max(r2, Math.min(bw - r2, u2)), v2 - Math.max(r2, Math.min(bh - r2, v2))) <= r2 + 2) gr[(vy * gw + vx) * 4 + 3] = 255;
+      }
+      box.pill = { x: gx, y: gy, w: gw, h: gh, rgba: gr };
+    }
+    out.push(box);
   });
   return out.sort(function (a, b) { return b.w * b.h - a.w * a.h; });
 }
@@ -15325,7 +15431,8 @@ var IWDIE_VZ_CLOSEST_MS = 25000;
  *  element's within a pixel, R the share of the element's ink with the template's within a pixel, F their harmonic mean;
  *  with the exact overlap (IoU) as much again, or up to three times as much the more ink there is - which tells a right
  *  arrow from a left one, and an oval from a box - less what their colours differ past 40 where both have solid ink. The best is taken at F 0.85 or more (0.95 under 30 pixels of ink) with its
- *  colours within 60 - or 80 where it fits wholly (F 0.95, IoU 0.7). A big element nothing fits (2 000 px of box or
+ *  colours within 60 - or 80 where it fits wholly (F 0.95, IoU 0.7), or (`opts.shape`, an object's own pictures) 130
+ *  where it fits closely (F 0.95, IoU 0.6). A big element nothing fits (2 000 px of box or
  *  more) is weighed again in its parts, its own commonest colour then its ground: a panel with things on it. An element
  *  of under 10 pixels with no other within 4 px is a speck - what came out left it. `opts.until` ends it.
  *  -> {found: [{k, turn, x, y, w, h, f, iou, col, hole: {x, y, w, h, rgba}: the element's ink and a pixel round it}],
@@ -15480,11 +15587,15 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
         }
         var Pp = hitT / t.cnt, Rr = hitE / e.cnt, F = Pp + Rr ? 2 * Pp * Rr / (Pp + Rr) : 0, iou = exact / (t.cnt + e.cnt - exact), col = cn ? cd / cn : 999;
         // the exact overlap counts the more, the more ink: a big shape is told by its outline (an oval from a box)
-        var wi = Math.min(0.75, 0.5 + e.cnt / 4000), score = (1 - wi) * F + wi * iou - Math.max(0, col - 40) / 300;
+        // (v1.82.0) an object's own picture (`opts.shape`): its colours count half - its state is its own - but still tell its sides
+        var wi = Math.min(0.75, 0.5 + e.cnt / 4000), score = (1 - wi) * F + wi * iou - Math.max(0, col - 40) / (opts.shape ? 600 : 300);
         if (!best || score > best.score) best = { score: score, k: t.k, turn: t.turn, x: px, y: py, w: t.w, h: t.h, f: F, iou: iou, col: col };
       }
     });
-    if (!best || best.f < (e.cnt < 30 ? 0.95 : 0.85) || !(best.col <= 60 || (best.col <= 80 && best.f >= 0.95 && best.iou >= 0.7))) return null;
+    // (v1.82.0) an IWMAC object's own picture (`opts.shape`): its colours may differ further where the shapes fit closely -
+    // its state picture is its own (a valve's white port on another side, green for running)
+    if (!best || best.f < (e.cnt < 30 ? 0.95 : 0.85) || !(best.col <= 60 || (best.col <= 80 && best.f >= 0.95 && best.iou >= 0.7) ||
+      (opts.shape && best.col <= 130 && best.f >= 0.95 && best.iou >= 0.6))) return null;
     // the element's ink, and a pixel round it, to take out of the picture: what the component lacks of it goes with it
     var hole = new Uint8ClampedArray(bw * bh * 4);
     for (var hk = 0; hk < bw * bh; hk++) if (near1[hk]) hole[hk * 4 + 3] = 255;
@@ -20474,12 +20585,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  that show a state (iwdieVzObjectKind) and the panel's own of those roles, each with its size as the Designer
      *  draws it and its pictures - its render definition's `file` and every one of its `status_array` - fetched from
      *  /iw_icons/ as PNG and kept a week in Tampermonkey's storage, as the objects' looks are. A kind the Designer does
-     *  not define here has none. `fetched(done, of)`, when given, hears how far the fetching is (v1.77.1).
+     *  not define here has none. `fetched(done, of)`, when given, hears how far the fetching is (v1.77.1). With `all`
+     *  (v1.82.0), every kind the Designer has whose pictures are its objects' (IWDIE_VZ_OBJECT_FOLDERS).
      *  -> Promise<{kinds: {id: {w, h, pics: [path]}}, main: {id: path}, pics: {path: {src, w, h}}}> */
-    function vcObjectStates(objects, fetched) {
+    function vcObjectStates(objects, fetched, all) {
       var ctl = W.controls || {}, ids = [];
       iwdieVcObjectCatalog().forEach(function (o) { if (iwdieVzObjectKind(o.id)) ids.push(o.id); });
       (objects || []).forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (iwdieVzObjectKind(k) && ids.indexOf(k) < 0) ids.push(k); });
+      // (v1.82.0, `all`) every kind the Designer has whose own pictures are its objects' (IWDIE_VZ_OBJECT_FOLDERS), 8 to 120 px:
+      // known by name, so one found becomes an object
+      if (all) {
+        var extra = [];
+        Object.keys(ctl).forEach(function (id) {
+          if (ids.indexOf(id) >= 0 || /^sub_page/.test(id)) return;
+          var def = ctl[id];
+          if (!def || typeof def !== 'object') return;
+          var sa0 = def.status_array || {}, ps = [def.file].concat(Array.isArray(sa0) ? sa0 : Object.keys(sa0).map(function (k) { return sa0[k]; }));
+          var role = '';
+          ps.forEach(function (p) { if (!role && typeof p === 'string') role = iwdieVzFolderRole(p); });
+          var dw = parseFloat(def.width), dh = parseFloat(def.height);
+          if (!role || !(dw >= 8) || !(dh >= 8) || dw > 120 || dh > 120) return;
+          ids.push(id);
+          extra.push({ id: id, w: dw, h: dh, role: role, desc: String(def.name || id), pic: typeof def.file === 'string' ? def.file.replace(/^\/+/, '') : '', hasTag: !!def.hasTag });
+        });
+        iwdieVcKnowKinds(extra);
+      }
       var known = iwdieVcObjectIndex(), kinds = {}, main = {}, want = [];
       ids.forEach(function (id) {
         var def = null;
@@ -20555,7 +20685,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             var looked = found.map(function (m) {
               var t = byK[m.k];
               var pic = t ? st.pics[t.pic] : null;
-              return t ? { kind: iwdieVzTwinKind(t.kinds, st.main, objects), x: m.x, y: m.y, w: m.w, h: m.h, rgba: t.rgba,
+              return t ? { kind: iwdieVzTwinKind(t.kinds, st.main, objects, t.pic, st.kinds), x: m.x, y: m.y, w: m.w, h: m.h, rgba: t.rgba,
                 look: pic ? { src: pic.src, iw: pic.w, ih: pic.h } : null } : null;
             }).filter(Boolean);
             var seen = iwdieVzObjectsSeen(looked, objects), rgbaOf = function (f) {
@@ -21553,7 +21683,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             var twice = over.some(function (e) { return e.box ? area(e) >= 0.5 * Math.min(b.w * b.h, e.w * e.h) : area(e) >= 0.7 * b.w * b.h; });
             var all = new Uint8ClampedArray(b.w * b.h * 4);
             for (var q = 3; q < all.length; q += 4) all[q] = 255;
-            holes.push({ x: b.x, y: b.y, w: b.w, h: b.h, rgba: all });
+            holes.push(b.pill || { x: b.x, y: b.y, w: b.w, h: b.h, rgba: all });
             if (twice) again++;
             else placed.push({ kind: b.id, x: b.x, y: b.y, w: b.w, h: b.h, colour: b.colour });
           });
@@ -21570,17 +21700,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // a house symbol - each state picture unturned, placed as one found exactly is
         got.closeObjects = 0;
         if (info && info.findObjects === false) return null;
-        return vcObjectStates(objects).then(function (st) {
+        return vcObjectStates(objects, null, true).then(function (st) {
           return vcStateTemplates(st).then(function (tpl) {
             if (!tpl.length) return null;
             return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn], [data, w, h, tpl.map(function (t) { return { k: t.k, w: t.w, h: t.h, rgba: t.rgba, still: true }; }),
-              { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {}).then(function (res) {
+              { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS, shape: true }], function () {}).then(function (res) {
               var byK = {}, holes3 = [], list = [];
               tpl.forEach(function (t) { byK[t.k] = t; });
               ((res && res.found) || []).forEach(function (m) {
                 var t = byK[m.k];
                 if (!t) return;
-                list.push({ kind: iwdieVzTwinKind(t.kinds, st.main, objects), x: m.x, y: m.y, w: m.w, h: m.h, look: st.pics[t.pic] || null, m: m, t: t });
+                list.push({ kind: iwdieVzTwinKind(t.kinds, st.main, objects, t.pic, st.kinds), x: m.x, y: m.y, w: m.w, h: m.h, look: st.pics[t.pic] || null, m: m, t: t });
               });
               var seen = iwdieVzObjectsSeen(list, objects), at = function (o) { return o.kind + '@' + o.x + ',' + o.y; }, take = {};
               seen.placed.concat(seen.twice).forEach(function (o) { take[at(o)] = 1; });
@@ -21620,9 +21750,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               if (!it || !t) return;
               var nm = String((it.sym && it.sym.name) || names[m.k]);
               holes.push({ x: m.x, y: m.y, w: m.w, h: m.h, rgba: iwdieVcTurn(t, m.turn).rgba });
-              got.symbols.push({ kind: 'symbol', name: nm, sym: !!(it.sym && it.sym.name), shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, w0: it.w, h0: it.h });
+              got.symbols.push({ kind: 'symbol', name: nm, sym: !!(it.sym && it.sym.name), shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, w0: it.w, h0: it.h, k: m.k,
+                eb: [m.x, m.y, m.w, m.h] });
               got.symbolCount[nm] = (got.symbolCount[nm] || 0) + 1;
             });
+            got.tplK = byK;
             iwdieVcErase(data, w, h, holes);
           });
         }).then(function () {
@@ -21636,13 +21768,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               .then(function (res) {
                 var byK = {}, names2 = iwdieVcComponentNames(items), holes2 = [];
                 all.forEach(function (t) { byK[t.k] = t; });
+                got.tplK = byK;
                 ((res && res.found) || []).forEach(function (m) {
                   var it = items[m.k], t = byK[m.k];
                   if (!it || !t) return;
                   var nm = String((it.sym && it.sym.name) || names2[m.k]);
                   holes2.push({ x: m.x, y: m.y, w: m.w, h: m.h, rgba: iwdieVcTurn(t, m.turn).rgba });
                   if (m.hole) holes2.push(m.hole);
-                  got.symbols.push({ kind: 'symbol', name: nm, sym: !!(it.sym && it.sym.name), shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, w0: it.w, h0: it.h, close: 1 });
+                  got.symbols.push({ kind: 'symbol', name: nm, sym: !!(it.sym && it.sym.name), shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, w0: it.w, h0: it.h, close: 1,
+                    k: m.k, eb: m.hole ? [m.hole.x + 4, m.hole.y + 4, m.hole.w - 8, m.hole.h - 8] : [m.x, m.y, m.w, m.h] });
                   got.symbolCount[nm] = (got.symbolCount[nm] || 0) + 1;
                   got.closest++;
                 });
@@ -21656,11 +21790,67 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               });
           }).catch(function () { return null; });
         }).then(function () {
+          // v1.82.0: a house symbol that is a box the Designer draws itself (iwdieVzBoxTemplate: the Oversikt template's cases
+          // and rooms) becomes that object, as big as the picture has it - where nothing drawn on it would be hidden: no other
+          // house symbol on it, nothing of the picture left in it
+          got.native = 0;
+          var boxOf = {}, keep = [];
+          got.symbols.forEach(function (sy) {
+            var t = got.tplK && got.tplK[sy.k];
+            if (!(sy.k in boxOf)) boxOf[sy.k] = t ? iwdieVzBoxTemplate(t) : null;
+            var bx = boxOf[sy.k], b = sy.eb;
+            if (!bx || !b || !(b[2] >= 8) || !(b[3] >= 8)) { keep.push(sy); return; }
+            // as big as its colour is in the picture as it came, and only where the picture has it in that colour: a light ring
+            // round it (the Oversikt legend's pills) is not the box's, and a case of another colour is not this box
+            var rgb = [parseInt(bx.colour.slice(1, 3), 16), parseInt(bx.colour.slice(3, 5), 16), parseInt(bx.colour.slice(5, 7), 16)];
+            var cx0 = w, cy0 = h, cx1 = -1, cy1 = -1, cn = 0, x, y;
+            for (y = Math.max(0, b[1] - 1); y <= Math.min(h - 1, b[1] + b[3]); y++) for (x = Math.max(0, b[0] - 1); x <= Math.min(w - 1, b[0] + b[2]); x++) {
+              var jc = (y * w + x) * 4;
+              if (Math.abs(pristine[jc] - rgb[0]) + Math.abs(pristine[jc + 1] - rgb[1]) + Math.abs(pristine[jc + 2] - rgb[2]) > 36) continue;
+              cn++;
+              if (x < cx0) cx0 = x;
+              if (x > cx1) cx1 = x;
+              if (y < cy0) cy0 = y;
+              if (y > cy1) cy1 = y;
+            }
+            if (cn < 0.5 * b[2] * b[3] || cx1 - cx0 < 7 || cy1 - cy0 < 7) { keep.push(sy); return; }
+            b = [cx0, cy0, cx1 - cx0 + 1, cy1 - cy0 + 1];
+            var on = got.symbols.some(function (o) {
+              if (o === sy || boxOf[o.k]) return false;
+              var q1 = (o.turn || 0) & 1, ow = q1 ? o.h0 : o.w0, oh = q1 ? o.w0 : o.h0;
+              var a = Math.max(0, Math.min(b[0] + b[2], o.x + ow) - Math.max(b[0], o.x)) * Math.max(0, Math.min(b[1] + b[3], o.y + oh) - Math.max(b[1], o.y));
+              return a > 0.1 * Math.min(b[2] * b[3], ow * oh);
+            });
+            // the commonest colour just round it, and how much inside it is not that
+            var tally = {}, top1 = null, inside = 0, off = 0;
+            var look = function (X, Y) {
+              if (X < 0 || Y < 0 || X >= w || Y >= h) return;
+              var j = (Y * w + X) * 4, key = (data[j] >> 3) + ',' + (data[j + 1] >> 3) + ',' + (data[j + 2] >> 3), e = tally[key] || (tally[key] = { n: 0, c: [data[j], data[j + 1], data[j + 2]] });
+              if (++e.n > (top1 ? top1.n : 0)) top1 = e;
+            };
+            for (x = b[0] - 2; x < b[0] + b[2] + 2; x++) { look(x, b[1] - 2); look(x, b[1] + b[3] + 1); }
+            for (y = b[1] - 2; y < b[1] + b[3] + 2; y++) { look(b[0] - 2, y); look(b[0] + b[2] + 1, y); }
+            for (y = b[1] + 2; y < b[1] + b[3] - 2; y++) for (x = b[0] + 2; x < b[0] + b[2] - 2; x++) {
+              if (x < 0 || y < 0 || x >= w || y >= h || !top1) continue;
+              var j2 = (y * w + x) * 4;
+              inside++;
+              if (Math.abs(data[j2] - top1.c[0]) + Math.abs(data[j2 + 1] - top1.c[1]) + Math.abs(data[j2 + 2] - top1.c[2]) > 36) off++;
+            }
+            var kind = iwdieVzBoxKind(bx.colour, b[2], b[3]);
+            if (on || !kind || (inside && off > 0.02 * inside)) { keep.push(sy); return; }
+            got.found.push({ kind: kind, x: b[0], y: b[1], w: b[2], h: b[3], colour: bx.colour });
+            got.symbolCount[sy.name]--;
+            if (!got.symbolCount[sy.name]) delete got.symbolCount[sy.name];
+            if (sy.close) got.closest--;
+            got.native++; got.boxes = (got.boxes || 0) + 1;
+          });
+          got.symbols = keep;
           var top = Object.keys(got.symbolCount).sort(function (a, b) { return got.symbolCount[b] - got.symbolCount[a]; }).slice(0, 3)
             .map(function (nm) { return nm + (got.symbolCount[nm] > 1 ? ' ×' + got.symbolCount[nm] : ''); }).join(', ');
           paper.done((got.symbols.length ? got.symbols.length + ' found: ' + top + (Object.keys(got.symbolCount).length > 3 ? ', …' : '') +
             (got.closest ? ' (' + got.closest + ' of them as close as the house has them)' : '') : 'none found') +
-            (got.closeObjects ? '; ' + iwdieN(got.closeObjects, 'IWMAC object', 'IWMAC objects') + ' as close as the Designer has them' : ''), 0.5);
+            (got.closeObjects ? '; ' + iwdieN(got.closeObjects, 'IWMAC object', 'IWMAC objects') + ' as close as the Designer has them' : '') +
+            (got.native ? '; ' + iwdieN(got.native, 'case or box', 'cases and boxes') + ' as the Designer’s own boxes' : ''), 0.5);
         }, function () { paper.done('not looked for', 0.5); });
       }).then(function () {
         paper.step('vector', 'its colours', 0.6, 0.62);
@@ -24758,6 +24948,10 @@ if (typeof module !== 'undefined' && module.exports) {
     txFit: iwdieTxFit,
     txKnownBest: iwdieTxKnownBest,
     vzBoxes: iwdieVzBoxes,
+    vzBoxTemplate: iwdieVzBoxTemplate,
+    vzBoxKind: iwdieVzBoxKind,
+    vzFolderRole: iwdieVzFolderRole,
+    vcKnowKinds: iwdieVcKnowKinds,
     vzClosest: iwdieVzClosest,
     VZ_PIPE_FAMILY: IWDIE_VZ_PIPE_FAMILY,
     VZ_PIPE_COLOURS: IWDIE_VZ_PIPE_COLOURS,

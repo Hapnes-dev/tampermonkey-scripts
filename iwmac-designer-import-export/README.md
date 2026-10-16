@@ -493,6 +493,72 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Display cases and the Designer's other objects, native wherever one fits (v1.82.0)
+
+Thomas, with screenshots of the Designer's palette (the `R_dummy` cases for medium, low and heated temperature, lying
+and standing; the `disk_type_V3` multi objects; the cabinet container; room control; the Left/Top/Width/Height panel):
+*Display cases are also IWMAC Designer objects that can be resized. Can you update the tool so that, whenever a display
+case or another object can be replaced with an existing IWMAC Designer object, it uses the native IWMAC Designer object
+instead of a VectorCraft .ai vector object? … Make sure the objects are correctly positioned, scaled, and aligned to
+match the original design. Only use VectorCraft vector objects when no suitable native IWMAC Designer object is
+available.*
+
+- **A house symbol that is a case becomes the Designer's case.** Some house symbols found in a picture, exactly or as
+  the closest, have a template that is a box the Designer draws itself (`iwdieVzBoxTemplate`). That means one of the
+  `R_dummy` colours with 4 px corners, or a header's grey with square ones. Such a symbol becomes that object
+  (`iwdieVzBoxKind`): lying when it is wider than high, standing otherwise.
+  - **Sized by the picture.** It takes the size its colour has in the picture as it came, not the template's size.
+  - **Only in that colour.** Half of its box or more must be within 36 of the case's colour. A case drawn in another
+    colour stays the house symbol.
+  - **Never hiding anything.** If another house symbol covers more than a tenth of it, or more than 2 % of its inside
+    is still drawn, it stays the house symbol.
+- **The legend's pills are cases too.** The Oversikt legend draws *Varme*, *Kjøl* and *Frys* as pills in the cases'
+  colours, each with a light ring. The boxes step (1.80.0) now takes a case's colour drawn as a pill, round ends and
+  all, when it is under 40 px across (`iwdieVzBoxes`: each corner more off the colour than on it, and at most a twelfth
+  of its box off a pill's shape). The ring is taken out with it.
+  - **Before.** 10214's pills were the house's box-shaped `GulDisk`, `KjølOvalDisk` and `FrysDiskSmal`, at the
+    templates' own sizes, up to 9 px off. On 2349's Oversikt the *Kjøl* pill stayed vector: so much of 2349 is that
+    light blue that the closest search took it for the picture's ground.
+  - **Shape.** The Designer draws its cases with 4 px corners, not round ends.
+- **Every kind the Designer has is searched by shape.** The search for the Designer's objects by shape (1.81.0) now
+  takes every kind with pictures in one of the Designer's object folders, at 8 to 120 px (`IWDIE_VZ_OBJECT_FOLDERS`):
+  valves, pumps, compressors, fans, indicators, status symbols, and the ventilation's dampers, fans, heat exchangers
+  and filters. The Designer's registry has 229 such kinds; before, only the catalogue's were searched. A kind found is
+  synced as itself, in its role's z band (`iwdieVcKnowKinds`).
+  - **Its colours count for less.** A state picture shows the state it was drawn in: a valve's white port on another
+    side, green for running. For these pictures the colour penalty is halved, and colours up to 130 apart are taken
+    where the shape fits closely (F 0.95, IoU 0.6).
+  - **Which kind is placed.** Several kinds can show the same picture. If the panel uses none of them, the choice goes
+    in this order (`iwdieVzTwinKind` with the picture):
+    1. Normal logic before inverted (`_inv`).
+    2. The kind whose own picture (the Designer's `file`) is the one found, so the object shows it unlinked.
+    3. The plainest: the fewest pictures.
+  - **On the Oversikt legend** this gives `V3_R_24px_circular_cooling_nrm` for *Kjøl/Frys pågår*,
+    `V3_R_24px_circular_defrost_nrm` for *Avriming pågår*, and the static bell `V3_R_34px_noanim_circular_alarm_nrm`
+    for *Alarm*. Before, any kind with a `file` counted: the evaporator's state icon was placed for *Kjøl/Frys pågår*,
+    and it shows the defrost picture unlinked.
+  - **On 10214's Maskin** the 3-way valve stays `v3_3w_valve_right_down_nrm`, although it was found in its OFF picture
+    and the inverted kind's own picture is OFF.
+- **Not used, and why:**
+  - **`Refrigeration_Cont`:** the numeric objects are cabinet containers that hold other objects. The `R_dummy`
+    objects are the cases.
+  - **`disk_type_V3_*`:** link buttons to another page. A picture does not say which page.
+  - **A valve with the panel's own LED on its actuator** stays the house symbol: the LED shows its state (1.77.0's rule).
+    This is 10214's other 3-way valve.
+
+Checked in the stub host, with Myriad Pro on the card and every object picture fetched read-only from `/iw_icons/`:
+
+| Picture | Cases and boxes as the Designer's | IWMAC objects by shape | Ctrl+S |
+|---|---|---|---|
+| 10214 Oversikt | 35, the legend's 3 pills among them, within 1 px of the picture's edges | 3: the legend's alarm, *Kjøl/Frys pågår*, *Avriming pågår* | 80 placed |
+| 2349 Oversikt | 47, the 3 pills among them, within 1 px | 3, as on 10214 | 109 placed |
+| 10214 Oversikt, the cases' colours shifted by 18 | 34, all from house symbols, within 1 px of the plain picture's boxes | 3 | 79 placed |
+| 10214 Maskin | none (it has none) | the valve, as in 1.81.0 | 77 placed |
+
+The third row exercises the house symbols that become boxes. When the colours are off, the boxes step finds nothing,
+and the cases come through the house symbols. Only the 73 × 123 room is missing, because the house has no symbol that
+size. Not run in the live Designer.
+
 ### The Designer's object, else the house's closest component, else vector; pipes as the house's pipe pieces (v1.81.0)
 
 Thomas: *so if you can find the object in iwmac objects you can look for it in vectorCraft .ai object or fallback of that
