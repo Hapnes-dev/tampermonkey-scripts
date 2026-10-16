@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.73.6
+// @version      1.74.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.73.6';
+var IWDIE_VERSION = '1.74.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -7065,7 +7065,8 @@ function iwdieVcSvg(o) {
   if (found.length) {
     out.push('  <g id="Komponenter" data-name="Komponenter">');
     found.forEach(function (c) {
-      var part = c.kind === 'piece' ? iwdieVcPieceSvg(c, used) : c.kind === 'pill' ? iwdieVcPillSvg(c, used) : iwdieVcComponentSvg(c, used);
+      var part = c.kind === 'piece' ? iwdieVcPieceSvg(c, used) : c.kind === 'pill' ? iwdieVcPillSvg(c, used)
+        : c.kind === 'symbol' ? iwdieVcSymbolSvg(c, used) : iwdieVcComponentSvg(c, used);
       if (part) out.push('    ' + part);
     });
     out.push('  </g>');
@@ -8851,7 +8852,19 @@ function iwdieVcComponentIndex(pic, W, H) {
   for (i = 1; i < 512; i++) if (count[i] > count[top]) top = i;
   var bg = [0, 0, 0];
   for (i = start[top]; i < start[top + 1]; i++) { bg[0] += P[where[i] * 4]; bg[1] += P[where[i] * 4 + 1]; bg[2] += P[where[i] * 4 + 2]; }
-  return { P: P, R: pic, W: W, H: H, count: count, start: start, where: where, bg: bg.map(function (v) { return v / Math.max(1, count[top]); }) };
+  var bgv = bg.map(function (v) { return v / Math.max(1, count[top]); });
+  // the same places without the ground (v1.74.0): a template not of the ground's colour is looked for only where the
+  // picture is not the ground - on a panel's grey ground every light template began at each of its pixels
+  var whereNG = new Int32Array(n), startNG = new Int32Array(513), m2 = 0;
+  for (i = 0; i < 512; i++) {
+    startNG[i] = m2;
+    for (var w3 = start[i]; w3 < start[i + 1]; w3++) {
+      var a3 = where[w3] * 4;
+      if (Math.abs(P[a3] - bgv[0]) + Math.abs(P[a3 + 1] - bgv[1]) + Math.abs(P[a3 + 2] - bgv[2]) > 18) whereNG[m2++] = where[w3];
+    }
+  }
+  startNG[512] = m2;
+  return { P: P, R: pic, W: W, H: H, count: count, start: start, where: where, startNG: startNG, whereNG: whereNG.subarray(0, m2), bg: bgv };
 }
 
 /** A template ({k, w, h, rgba}) turned `q` quarters clockwise, made ready to look for (v1.45.0);
@@ -8945,13 +8958,16 @@ function iwdieVcFindPrepared(ix, t, found) {
   var sum = function (q3) { return px[q3 + 2] + px[q3 + 3] + px[q3 + 4]; }, pivot = anchors[0], light = pivot, dark = pivot;
   anchors.forEach(function (q3) { if (sum(q3) > sum(light)) light = q3; if (sum(q3) < sum(dark)) dark = q3; });
   var contrast = sum(light) - sum(dark), inkN = t.ink.length, limAll = 22 * t.np, limInk = 36 * inkN;
+  // where its pivot's colour is not the ground's, never on the ground (v1.74.0, iwdieVcComponentIndex's whereNG)
+  var ng = !!ix.whereNG && Math.abs(px[pivot + 2] - bgr) + Math.abs(px[pivot + 3] - bgg) + Math.abs(px[pivot + 4] - bgb) > 40;
+  var WH = ng ? ix.whereNG : ix.where, ST = ng ? ix.startNG : ix.start;
   var pr = px[pivot + 2] >> 5, pg = px[pivot + 3] >> 5, pb = px[pivot + 4] >> 5, dr, dg, db;
   for (dr = -1; dr <= 1; dr++) for (dg = -1; dg <= 1; dg++) for (db = -1; db <= 1; db++) {
     var br = pr + dr, bgx = pg + dg, bb = pb + db;
     if (br < 0 || bgx < 0 || bb < 0 || br > 7 || bgx > 7 || bb > 7) continue;
     var bk = br << 6 | bgx << 3 | bb;
-    for (var w2 = ix.start[bk]; w2 < ix.start[bk + 1]; w2++) {
-      var at = ix.where[w2], x0 = at % W - px[pivot], y0 = (at / W | 0) - px[pivot + 1];
+    for (var w2 = ST[bk]; w2 < ST[bk + 1]; w2++) {
+      var at = WH[w2], x0 = at % W - px[pivot], y0 = (at / W | 0) - px[pivot + 1];
       if (x0 < 0 || y0 < 0 || x0 + tw > W || y0 + th > H) continue;
       if (contrast >= 60) {
         var li = ((y0 + px[light + 1]) * W + x0 + px[light]) * 4, di = ((y0 + px[dark + 1]) * W + x0 + px[dark]) * 4;
@@ -12140,8 +12156,10 @@ function iwdieVzPalette(pic, W, H, opts) {
   list.forEach(function (e) {
     var r = (e[0] >> 16) & 255, g = (e[0] >> 8) & 255, b = e[0] & 255;
     for (var j = 0; j < cl.length; j++) {
-      var c = cl[j], dr = c[0] - r, dg = c[1] - g, db = c[2] - b;
-      if (dr * dr + dg * dg + db * db < n2) { c[3] += e[1]; return; }
+      var c = cl[j], dr = c[0] - r, dg = c[1] - g, db = c[2] - b, d2 = dr * dr + dg * dg + db * db;
+      // a near twin merges when nearly equal, or when it is rare beside the other (v1.74.0): two large flat areas of
+      // close colours - a panel's grey column on the Designer's grey ground - stay two
+      if (d2 < n2 && (d2 < 36 || e[1] * 6 < c[3])) { c[3] += e[1]; return; }
     }
     cl.push([r, g, b, e[1]]);
   });
@@ -12598,7 +12616,12 @@ function iwdieVzFit(pts, opts) {
     var b1 = (Suuu + Suvv) / 2, b2 = (Svvv + Svuu) / 2, uc = (b1 * Svv - b2 * Suv) / det, vc = (Suu * b2 - Suv * b1) / det;
     var cx = uc + mx, cy = vc + my, rad = Math.sqrt(uc * uc + vc * vc + (Suu + Svv) / n), off = 0;
     for (i = 0; i < n && off <= rad; i++) off = Math.max(off, Math.abs(Math.sqrt((P[i][0] - cx) * (P[i][0] - cx) + (P[i][1] - cy) * (P[i][1] - cy)) - rad));
-    if (rad >= 0.8 && off <= 0.25 + rad * 0.012) {
+    // and the outline's own area and box are the circle's (v1.74.0): a long thin outline lies within that tolerance of a
+    // huge circle too - a 2 px border 204 px long became a circle 1216 px across over the panel
+    var bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity, disc = Math.PI * rad * rad;
+    for (i = 0; i < n; i++) { bx0 = Math.min(bx0, P[i][0]); by0 = Math.min(by0, P[i][1]); bx1 = Math.max(bx1, P[i][0]); by1 = Math.max(by1, P[i][1]); }
+    var whole = Math.abs(Math.abs(area) - disc) <= disc * 0.2 + rad && Math.abs(bx1 - bx0 - 2 * rad) <= rad * 0.3 + 1 && Math.abs(by1 - by0 - 2 * rad) <= rad * 0.3 + 1;
+    if (rad >= 0.8 && off <= 0.25 + rad * 0.012 && whole) {
       var kk = 0.5522847498 * rad;
       return { d: 'M' + fmt([cx + rad, cy]) +
         ' C' + fmt([cx + rad, cy + sg * kk]) + ' ' + fmt([cx + kk, cy + sg * rad]) + ' ' + fmt([cx, cy + sg * rad]) +
@@ -13033,6 +13056,113 @@ function iwdieVzTrace(pic, W, H, opts, say) {
   };
 }
 
+
+/** The object a pill is the look of (v1.74.0): the one of the panel's `objects` ({name, posLeft, posTop, posWidth,
+ *  posHeight}) over half of `box` and no more than four times its size - a big one round it, a room's picture or a
+ *  link's area, is no pill's. -> that object | null */
+function iwdieVzPillOwner(box, objects) {
+  var area = box.w * box.h, best = null, most = 0;
+  if (!(area > 0)) return null;
+  (objects || []).forEach(function (ob) {
+    var x = parseFloat(ob && ob.posLeft), y = parseFloat(ob && ob.posTop), w = parseFloat(ob && ob.posWidth), h = parseFloat(ob && ob.posHeight);
+    if (!ob || !ob.name || !isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0) || w * h > area * 4) return;
+    var a = Math.max(0, Math.min(box.x + box.w, x + w) - Math.max(box.x, x)) * Math.max(0, Math.min(box.y + box.h, y + h) - Math.max(box.y, y));
+    if (a > most) { most = a; best = ob; }
+  });
+  return most >= area * 0.5 ? best : null;
+}
+
+/** What the panel's objects stand on in its picture, taken out of it before it is vectorized (v1.74.0): each pill one of
+ *  `objects` stands on (iwdieVzPillOwner) is erased from `pic`, which this changes. Under a value that is bare text (an
+ *  object that does not draw itself, not `iwdieSelf`) the pill is its bubble, as the Designer shows it: it goes along
+ *  with the object's placeholder, as vectors, and moves with it. Under one the Designer draws itself it is that
+ *  object's own look a second time, and goes. `cols`: the picture's palette, [[r, g, b], ...] as iwdieVzPalette reads it.
+ *  -> {unders: {name: [{markup, box}]}, carried, left} */
+function iwdieVzObjectPills(pic, W, H, cols, objects) {
+  var obs = (objects || []).filter(function (ob) { return ob && ob.name; }), unders = {}, used = {}, carried = 0, left = 0, gone = [];
+  if (!obs.length) return { unders: unders, carried: 0, left: 0 };
+  (iwdieVcFindPills(pic, W, H, cols) || []).forEach(function (p) {
+    var ob = iwdieVzPillOwner(p.outer, obs);
+    if (!ob) return;
+    if (!ob.iwdieSelf) {
+      var name = String(ob.name);
+      (unders[name] = unders[name] || []).push({ markup: iwdieVcPillSvg({ name: 'Pille', x: p.x, y: p.y, w: p.w, h: p.h, fill: p.fill, stroke: p.stroke, sw: p.sw }, used),
+        box: { x: p.outer.x, y: p.outer.y, w: p.outer.w, h: p.outer.h } });
+      carried++;
+    } else left++;
+    gone.push(p);
+  });
+  iwdieVcErasePills(pic, W, H, gone);
+  return { unders: unders, carried: carried, left: left };
+}
+
+/** The pixels of `pic` that show an object's own look where the object stands (v1.74.0): `looks` [{x, y, w, h, rgba}],
+ *  each the Designer's picture of one of the panel's objects that draws itself, drawn at its box. Where a look covers a
+ *  pixel (alpha 128 or more) and the picture is that colour there (within 60, red, green and blue together), the
+ *  picture shows the object a second time: those pixels, and one round each, are filled from round them
+ *  (iwdieVcEraseMask). What the object does not cover - a pipe through its corners - and what differs from it stay.
+ *  Changes `pic`. -> how many pixels were taken out */
+function iwdieVzEraseLooks(pic, W, H, looks) {
+  var M = new Uint8Array(W * H), n = 0;
+  (looks || []).forEach(function (L) {
+    if (!L || !L.rgba || !(L.w > 0) || !(L.h > 0)) return;
+    for (var y = 0; y < L.h; y++) for (var x = 0; x < L.w; x++) {
+      var X = L.x + x, Y = L.y + y, s = (y * L.w + x) * 4;
+      if (X < 0 || Y < 0 || X >= W || Y >= H || L.rgba[s + 3] < 128) continue;
+      var j = (Y * W + X) * 4;
+      if (Math.abs(pic[j] - L.rgba[s]) + Math.abs(pic[j + 1] - L.rgba[s + 1]) + Math.abs(pic[j + 2] - L.rgba[s + 2]) > 60) continue;
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+        var X2 = X + dx, Y2 = Y + dy;
+        if (X2 >= 0 && Y2 >= 0 && X2 < W && Y2 < H && !M[Y2 * W + X2]) { M[Y2 * W + X2] = 1; n++; }
+      }
+    }
+  });
+  if (n) iwdieVcEraseMask(pic, W, H, M);
+  return n;
+}
+
+/** The looks a picture is searched for its house symbols with (v1.74.0): each look once (twins alike), and none
+ *  - of a pill (iwdieVcIsPill: pills are the objects' and the pill step's), a Pille… or a family an IWMAC object shows
+ *    (iwdieSymIsObject);
+ *  - under a fifth solid: a small mark in a big empty box was found on anything dark;
+ *  - of one colour within 75 of the picture's ground `bg`: one the ground could not be told from was looked for at
+ *    every ground pixel, and found in plain ground.
+ *  `templates` [{k, w, h, rgba}] drawn from `items` (vcComponentTemplates), named by `names` (iwdieVcComponentNames).
+ *  -> those templates */
+function iwdieVcSymbolLooks(templates, items, names, bg) {
+  var seen = {}, out = [], g = [0, 1, 2].map(function (c) { return Math.round((bg || [])[c] || 0); });
+  (templates || []).forEach(function (t) {
+    var it = items[t.k], sig = t.w + 'x' + t.h + ':' + iwdieVcPixelHash(t.rgba);
+    if (!it || seen[sig]) return;
+    seen[sig] = 1;
+    var name = String((it.sym && it.sym.name) || (names && names[t.k]) || '');
+    if (/^Pille/i.test(name) || iwdieSymIsObject(name)) return;
+    var solid = 0;
+    for (var i = 3; i < t.rgba.length; i += 4) if (t.rgba[i] >= 250) solid++;
+    if (solid < t.w * t.h * 0.2) return;
+    var p = iwdieVcPrepare(t, 0);
+    if (!p) return;
+    if (p.one && Math.abs(p.M[0] - g[0]) + Math.abs(p.M[1] - g[1]) + Math.abs(p.M[2] - g[2]) < 75) return;
+    if (iwdieVcIsPill(t, g)) return;
+    out.push(t);
+  });
+  return out;
+}
+
+/** A house symbol found in a picture, as the job's SVG has it (v1.74.0): a group named after it, with data-iwdie-symbol
+ *  and its turn (data-iwdie-k) as iwdieSymExpand draws one placed by name - so VectorCraft's IWMAC menu, Claude and an
+ *  edit file know it for what it is - where it was found, turned as it was. `c`: {name, sym, shapes, x, y, turn, w0,
+ *  h0}: w0 x h0 the symbol's own size, (x, y) the top left of where it was found; `sym` false for a component the
+ *  library names but no template does, a plain group then. */
+function iwdieVcSymbolSvg(c, used) {
+  var f = iwdieDrawFmt, esc = iwdieDrawEsc, name = String(c.name || '').trim() || 'Symbol', id = iwdieVcSvgId(name, used);
+  var q = (c.turn || 0) & 3, m = iwdieSymMatrix(q), w = +c.w0 || 0, h = +c.h0 || 0, bw = q & 1 ? h : w, bh = q & 1 ? w : h;
+  var tf = 'translate(' + f(c.x + bw / 2) + ' ' + f(c.y + bh / 2) + ')' + (q ? ' matrix(' + m.join(' ') + ' 0 0)' : '') + ' translate(' + f(-w / 2) + ' ' + f(-h / 2) + ')';
+  var defs = iwdieDrawDefsSvg(c.shapes);
+  return '<g id="' + esc(id) + '" data-name="' + esc(name) + '"' + (c.sym !== false ? ' data-iwdie-symbol="' + esc(name) + '"' : '') + ' transform="' + tf + '"' +
+    (c.sym !== false ? ' data-iwdie-k="' + q + '"' : '') + '>' + (defs ? '<defs>' + defs + '</defs>' : '') +
+    c.shapes.map(function (sh) { return iwdieDrawShapeSvg(sh); }).join('') + '</g>';
+}
 
 /** What iwdieVzTrace calls, for a worker built of their sources (v1.61.0): it runs them by name, and a helper left out
  *  is a ReferenceError there - so the kit runs the trace from these alone. */
@@ -15990,7 +16120,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           drawLine(ground ? 'locking Bakgrunn…' : 'as');
           // a picture made vectors (v1.61.0): what it is, and that it is there to be edited
           if (job.vector) {
-            note('✓ The panel’s picture, vectorized: its shapes on the layers Bakgrunn, Rør, Former and Tekst, each figure and each word a group, ' +
+            note('✓ The panel’s picture, vectorized: its shapes on the layers Bakgrunn, Rør, Former and Tekst, each figure and each word a group, the ' +
+              'house symbols found in it on Komponenter, each value’s bubble in its object’s placeholder - ' +
               (ground ? 'Bakgrunn locked and the rest not' : 'nothing locked') + ' - click one to edit it.<br><span class="iwdie-vcb-q"><b>Ctrl+S</b> syncs. The picture as it was is on the hidden layer ' +
               'Bakgrunn (original).</span>', false, true);
           } else if (job.authored) {
@@ -17184,12 +17315,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // drawn in - whose artboard is the picture as exact vectors - with the plant's folder to find it in. Offered
         // as well where no components are kept (v1.55.1): Tampermonkey keeps them in this browser alone, so on
         // another computer there were none, and neither the trace nor the .ai was offered
-        return vcPreferAi(tab, info, { trace: !!lib, picture: !!base }).then(function (ai) {
+        return vcPreferAi(tab, info, { picture: !!base }).then(function (ai) {
           if (ai === false) { var stop = new Error('the editor’s tab was closed'); stop.cancelled = true; throw stop; }
-          // Vectorize image (v1.61.0): the picture made vectors, not looked through for components
-          if (ai === 'vector') { info.vector = true; ai = null; lib = null; }
+          // Vectorize image (v1.61.0): the picture made vectors - since v1.74.0 whenever there is one and no .ai, its objects
+          // and the house symbols found in it first
+          if (ai === 'vector' || (!ai && base)) { info.vector = true; ai = null; lib = null; }
           if (ai) { info.ai = ai; lib = null; }
-          paper = info.vector ? vcPaper(tab, [['vector', 'Vectorizing the picture'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']])
+          paper = info.vector ? vcPaper(tab, [['objects', 'What the objects stand on'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'],
+            ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']])
             : lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
             ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
             : vcPaper(tab, (ai ? [['ai', 'The plant’s .ai']] : []).concat([['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']]));
@@ -17197,8 +17330,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             paper.step('ai', '', 0.05);
             paper.done(ai.name + ', ' + (Math.round(ai.bytes.length / 104857.6) / 10) + ' MB - opened in VectorCraft as it is; the picture is not traced', 0.1);
           }
-          if (info.vector) paper.step('vector', 'its colours', 0.02, 0.1);
-          else if (!lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3, 0.9);
+          if (!info.vector && !lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3, 0.9);
           // over the panel's own colour, as the Designer shows it (v1.48.2): a picture whose ground is
           // transparent reads black on a bare canvas, and what is taken out of it was filled with that black
           return exportPaint(base && base.bytes, base && base.mime, size, fill).then(function (c) {
@@ -17206,13 +17338,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             var picture = base ? c.toDataURL('image/png') : null;
             var title = (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '');
             if (info.vector) {
-              return vcVectorize(c, paper).then(function (vz) {
+              return vcVectorize(c, paper, info).then(function (vz) {
                 info.vectorized = vz;
                 paper.done(iwdieN(vz.shapes + vz.pills + vz.pipes, 'shape', 'shapes') + ' in ' + (Math.round(vz.ms / 100) / 10) + ' s', 0.9);
                 paper.step('build', 'its layers' + (nObj ? ', ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : ''), 0.92, 0.97);
-                // the picture as it was on a hidden layer, to read again later (v1.48.0)
+                // the picture as it was on a hidden layer, to read again later (v1.48.0); the house symbols found on Komponenter,
+                // and each value's bubble in its placeholder (v1.74.0)
                 return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: null, original: picture, vectors: vz.layers, shapes: shapes,
-                  objects: info.objects, looks: info.looks, title: title });
+                  components: vz.symbols, objects: info.objects, looks: info.looks, unders: vz.unders, title: title });
               });
             }
             // the kept components looked for in the picture (v1.44.0): those found become vectors of their own
@@ -18019,18 +18152,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /** Before the picture is read for components (v1.51.0), in the editor's tab: the plant's own .ai offered
-     *  instead - the file the picture was drawn in, whose artboard is the picture as exact vectors. The plant's
+    /** Before the picture is vectorized (v1.51.0; v1.74.0: no more traced for components, its button gone), in the editor's
+     *  tab: the plant's own .ai offered instead - the file the picture was drawn in, whose artboard is the picture as exact
+     *  vectors. The plant's
      *  folder is asked of PANG, as its Folder button asks (v1.53.0): shown in full, Open plant folder opens it
      *  in Explorer through PANG's own pang:// handler, and the .ai is dragged here from there, or chosen. Where
      *  this page may read folders (https), the plants' folder, connected once, also lists the plant's .ai files
      *  here, each used with a click (v1.52.0). The browser wants a click in this tab for each picker,
-     *  permission, copy and launch, so they are this tab's own. `how` (v1.55.1): {trace: the picture is to be
-     *  read for components, picture: there is one} - without components it opens as it is, without a picture
-     *  as an empty canvas, and the card says so.
-     *  -> Promise<{name, type, bytes} | null: trace or open the picture | false: the tab was closed> */
+     *  permission, copy and launch, so they are this tab's own. `how` (v1.55.1): {picture: there is one} - without
+     *  a picture VectorCraft opens an empty canvas, and the card says so.
+     *  -> Promise<{name, type, bytes} | 'vector': Vectorize image | null: an empty canvas | false: the tab was closed> */
     function vcPreferAi(tab, info, how) {
-      how = how || { trace: true, picture: true };
+      how = how || { picture: true };
       return new Promise(function (resolve) {
         var doc = null, done = false, watch = null;
         var finish = function (v) { if (done) return; done = true; if (watch) clearInterval(watch); resolve(v); };
@@ -18062,13 +18195,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#535353;color:#d1d1d1;font:13px/1.5 ' + font + '">' +
             '<div style="width:680px;padding:22px;box-sizing:border-box;background:#424242;border:1px solid #383838;border-radius:6px;box-shadow:0 8px 14px rgba(0,0,0,.55)">' +
             '<div style="font-size:16px;font-weight:600;color:#ffffff;margin-bottom:8px">Best result: the plant’s own .ai file</div>' +
-            '<p style="margin:0 0 12px">' + (how.trace ? 'The picture is about to be traced, to find your components in it. The Illustrator file it was drawn in ' +
-              'has the whole picture as exact vectors - nothing traced, nothing guessed.'
-              : how.picture ? 'The picture is about to open as it is: pixels, under the IWMAC objects. The Illustrator file it was drawn in has the whole ' +
-              'picture as exact vectors.'
+            '<p style="margin:0 0 12px">' + (how.picture ? 'The Illustrator file the picture was drawn in has the whole picture as exact vectors - nothing ' +
+              'traced, nothing guessed. Without it, <b style="color:#ffffff">Vectorize image</b> turns the picture into vectors to edit: the house symbols ' +
+              'found in it as symbols, what the panel’s objects stand on along with them, the rest as shapes, pipes and words on layers, unlocked.'
               : 'The panel has no picture yet, so VectorCraft is about to open an empty canvas. The plant’s Illustrator file has its drawing as exact vectors.') +
-            (how.picture ? ' Without it, <b style="color:#ffffff">Vectorize image</b> turns the picture into vector shapes to edit: its colours, pills, pipes and ' +
-              'letters, on layers, unlocked.' : '') +
             '</p>' +
             '<div style="display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 12px;margin-bottom:14px">' +
             '<span style="color:#9a9a9a">Plant folder</span><span id="folder"></span><span id="seenl" style="color:#9a9a9a"></span><span id="seen"></span></div>' +
@@ -18076,10 +18206,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             'Drag the .ai here from the plant folder, or click to choose it</div>' +
             '<div id="say" style="margin-top:8px;font-size:12px;color:#9a9a9a"></div>' +
             '<div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;margin-top:16px">' +
-            '<button id="trace" style="' + pillCss(false) + '">' + (how.trace ? 'Trace the picture' : how.picture ? 'Open the picture' : 'Open an empty canvas') + '</button>' +
-            // without the .ai (v1.61.0): the picture made vectors - its colours, pills, pipes and letters - to edit as shapes
-            (how.picture ? '<button id="vector" style="' + pillCss(false) + '" title="Without the .ai: the picture turned into vector shapes - its colours, ' +
-              'its pills as rounded rectangles, its pipes as lines, its letters grouped into words - on layers to edit, unlocked">Vectorize image</button>' : '') +
+            // without the .ai (v1.61.0): the picture made vectors; Trace the picture (raster, components found) gone since v1.74.0
+            (how.picture ? '<button id="vector" style="' + pillCss(false) + '" title="Without the .ai: the picture turned into vectors - the house symbols ' +
+              'found in it as symbols, the values’ bubbles with their objects, its pills as rounded rectangles, its pipes as lines, its letters grouped into ' +
+              'words - on layers to edit, unlocked">Vectorize image</button>'
+              : '<button id="trace" style="' + pillCss(false) + '">Open an empty canvas</button>') +
             '<button id="choose" style="' + pillCss(false) + '">Choose the .ai file…</button>' +
             '<a id="open" target="iwdie-ext" style="' + pillCss(true) + '">Open plant folder</a></div>' +
             '<input id="file" type="file" accept=".ai,.pdf,.eps,application/pdf,application/postscript,application/illustrator" style="display:none">' +
@@ -18397,17 +18528,90 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /** The picture on canvas `c` - the panel's, over its colour - as vector layers (v1.61.0): iwdieVzTrace off this page,
-     *  how far it is on the paper. -> Promise<iwdieVzTrace's result> */
-    function vcVectorize(c, paper) {
-      var w = c.width, h = c.height, data = c.getContext('2d').getImageData(0, 0, w, h).data;
-      var said = { palette: ['its colours', 0.03], pills: ['its pills', 0.06], pipes: ['its pipes', 0.1], labels: ['each pixel’s colour, at the edges a blend', 0.13],
-        shapes: ['the shapes, laid over each other and fitted', 0.72], done: ['done', 0.88] };
-      return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, {}], function (p) {
-        if (!p || !paper) return;
-        if (p.phase === 'colour') paper.say('the outlines of colour ' + (p.i + 1) + ' of ' + p.n, 0.15 + 0.55 * p.i / Math.max(1, p.n));
-        else if (said[p.phase]) paper.say(said[p.phase][0], said[p.phase][1]);
+    /** The picture on canvas `c` - the panel's, over its colour - as vectors for VectorCraft (v1.61.0; v1.74.0: the panel's
+     *  objects and the house symbols first). What `info.objects` stand on goes first: a value's bubble with its
+     *  placeholder, and what an object the Designer draws itself shows of itself a second time (iwdieVzObjectPills,
+     *  iwdieVzEraseLooks). Then the house symbols - the kept library filled in from the templates built in (libSymbols) -
+     *  are looked for in workers (iwdieVcSymbolLooks: no pill, no IWMAC object, nothing the ground hides), placed as
+     *  symbols where found and taken out; the rest is traced as before (iwdieVzTrace, off this page). Each step on the
+     *  paper. -> Promise<iwdieVzTrace's result, with {symbols, symbolCount, unders, carried, left, looks}> */
+    function vcVectorize(c, paper, info) {
+      var w = c.width, h = c.height, data = c.getContext('2d').getImageData(0, 0, w, h).data, t0 = Date.now();
+      var objects = (info && info.objects) || [], got = { symbols: [], symbolCount: {}, unders: {}, carried: 0, left: 0, looks: 0 };
+      var said = { palette: ['its colours', 0.52], pills: ['its pills', 0.54], pipes: ['its pipes', 0.56], labels: ['each pixel’s colour, at the edges a blend', 0.58],
+        shapes: ['the shapes, laid over each other and fitted', 0.86], done: ['done', 0.9] };
+      paper.step('objects', 'their pills', 0.02, 0.05);
+      var cols = iwdieVzPalette(data, w, h, {}).map(function (cc) { return cc.slice(0, 3); }), ground = cols[0] || [204, 204, 204];
+      try {
+        var op = iwdieVzObjectPills(data, w, h, cols, objects);
+        got.unders = op.unders; got.carried = op.carried; got.left = op.left;
+      } catch (e) {}
+      return vcLookMasks(objects, info && info.looks).then(function (masks) {
+        got.looks = iwdieVzEraseLooks(data, w, h, masks);
+        paper.done(got.carried + got.left + got.looks ? iwdieN(got.carried, 'bubble', 'bubbles') + ' with their values, ' + iwdieN(got.left, 'pill', 'pills') +
+          ' and ' + (got.looks ? 'some looks' : 'no look') + ' left to their objects' : 'nothing under them', 0.05);
+        var lib = libSymbols(), items = lib && lib.items ? lib.items : [];
+        if (!items.length) { paper.none('symbols', 'no library'); return null; }
+        paper.step('symbols', iwdieN(items.length, 'symbol', 'symbols') + ' of ' + (lib.builtin ? 'the house templates' : '“' + (lib.file || 'the library') + '” and the house templates') +
+          ', drawn at 1:1…', 0.06, 0.1);
+        return vcComponentTemplates(items).then(function (templates) {
+          var names = iwdieVcComponentNames(items), looks = iwdieVcSymbolLooks(templates, items, names, ground), job = null, tFind = Date.now();
+          if (!looks.length) return null;
+          job = vcFindAll(data, w, h, looks, function (done, of, workers) {
+            if (job && paper.skipped()) { job.stop(); return; }
+            var gone = (Date.now() - tFind) / 1000, left = done ? gone / done * (of - done) : 0;
+            paper.say(done + ' of ' + of + ' looked for' + (workers ? ' · ' + iwdieN(workers, 'worker', 'workers') : ' · in this page') +
+              (done && done < of && gone > 1.5 ? ' · about ' + Math.max(1, Math.round(left)) + ' s left' : ''), 0.1 + 0.38 * done / of);
+          });
+          return job.promise.then(function (found) {
+            var byK = {}, holes = [];
+            templates.forEach(function (t) { byK[t.k] = t; });
+            (found || []).forEach(function (m) {
+              var it = items[m.k], t = byK[m.k];
+              if (!it || !t) return;
+              var nm = String((it.sym && it.sym.name) || names[m.k]);
+              holes.push({ x: m.x, y: m.y, w: m.w, h: m.h, rgba: iwdieVcTurn(t, m.turn).rgba });
+              got.symbols.push({ kind: 'symbol', name: nm, sym: !!(it.sym && it.sym.name), shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, w0: it.w, h0: it.h });
+              got.symbolCount[nm] = (got.symbolCount[nm] || 0) + 1;
+            });
+            iwdieVcErase(data, w, h, holes);
+          });
+        }).then(function () {
+          var top = Object.keys(got.symbolCount).sort(function (a, b) { return got.symbolCount[b] - got.symbolCount[a]; }).slice(0, 3)
+            .map(function (nm) { return nm + (got.symbolCount[nm] > 1 ? ' ×' + got.symbolCount[nm] : ''); }).join(', ');
+          paper.done(got.symbols.length ? got.symbols.length + ' found: ' + top + (Object.keys(got.symbolCount).length > 3 ? ', …' : '') : 'none found', 0.5);
+        }, function () { paper.done('not looked for', 0.5); });
+      }).then(function () {
+        paper.step('vector', 'its colours', 0.5, 0.52);
+        return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, {}], function (p) {
+          if (!p || !paper) return;
+          if (p.phase === 'colour') paper.say('the outlines of colour ' + (p.i + 1) + ' of ' + p.n, 0.6 + 0.25 * p.i / Math.max(1, p.n));
+          else if (said[p.phase]) paper.say(said[p.phase][0], said[p.phase][1]);
+        });
+      }).then(function (vz) {
+        Object.keys(got).forEach(function (k) { vz[k] = got[k]; });
+        vz.ms = Date.now() - t0;
+        return vz;
       });
+    }
+
+    /** The Designer's own looks of the panel's objects that draw themselves (v1.74.0), each drawn at its object's box, for
+     *  iwdieVzEraseLooks: the one the Designer paints by CSS (`ob.iwdieLook`, v1.60.0), else its kind's (`looks[obj_id]`).
+     *  -> Promise<[{x, y, w, h, rgba}]> */
+    function vcLookMasks(objects, looks) {
+      var jobs = (objects || []).filter(function (ob) { return ob && ob.iwdieSelf; }).map(function (ob) {
+        var l = ob.iwdieLook && ob.iwdieLook.src ? ob.iwdieLook : looks && looks[ob.obj_id];
+        var x = Math.round(parseFloat(ob.posLeft)), y = Math.round(parseFloat(ob.posTop)), w = Math.round(parseFloat(ob.posWidth)), h = Math.round(parseFloat(ob.posHeight));
+        if (!l || !/^data:image\//.test(String(l.src || '')) || !isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0) || w > 2000 || h > 2000) return null;
+        return loadPicture(l.src).then(function (img) {
+          var cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          var g = cv.getContext('2d');
+          g.drawImage(img, 0, 0, w, h);
+          return { x: x, y: y, w: w, h: h, rgba: g.getImageData(0, 0, w, h).data };
+        }, function () { return null; });
+      }).filter(Boolean);
+      return Promise.all(jobs).then(function (all) { return all.filter(Boolean); }, function () { return []; });
     }
 
     /** `fn` for each of `list`, a few at a time (v1.48.1): between them the editor's tab shows how far
@@ -21238,6 +21442,11 @@ if (typeof module !== 'undefined' && module.exports) {
     vzFit: iwdieVzFit,
     vzSample: iwdieVzSample,
     vzTrace: iwdieVzTrace,
+    vzPillOwner: iwdieVzPillOwner,
+    vzObjectPills: iwdieVzObjectPills,
+    vzEraseLooks: iwdieVzEraseLooks,
+    vcSymbolLooks: iwdieVcSymbolLooks,
+    vcSymbolSvg: iwdieVcSymbolSvg,
     vzWorkerDeps: iwdieVzWorkerDeps,
     OV_MAX_ROWS: IWDIE_OV_MAX_ROWS,
     OV_MAX_SIGNALS: IWDIE_OV_MAX_SIGNALS,

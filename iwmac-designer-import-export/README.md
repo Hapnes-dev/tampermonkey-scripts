@@ -482,6 +482,55 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Vectorize image reads the panel's objects and the house symbols (v1.74.0)
+
+Thomas: *you can remove button trace the picture … can you see if you can optimize vectorize image? I have now objects
+already in the VectorCraft so maybe it can be easier to vectorize image*.
+
+Measured first, read-only, on eight panels of plants 2349 and 4798 and on the pictures 1.61.0 was tested with. 1.73.6's
+Vectorize image went badly wrong on several of them:
+
+- **A border became a huge circle.** An outline was fitted as a circle when all its points lay within 0.25 px plus
+  1.2 % of the radius of one. A long thin outline lies that close to a huge circle too. On 2349's Maskin the 2 px bottom
+  border of the heat recovery box, 204 px long, became a circle 1216 px across over the top right of the panel; on a
+  ventilation picture 87 % of the pixels came out wrong. A circle now also needs the outline's own area and box to be the
+  circle's.
+- **Two close colours became one.** The palette merged colours under 14 apart, whatever their size. On 2349's Oversikt
+  the legend column (205, 210, 215) and the Designer's grey ground (204, 204, 204) became one colour, and the column was
+  drawn white. Near twins now merge only when nearly equal (under 6 apart), or when the rarer is under a sixth of the
+  commoner.
+
+Drawn back and held to the picture outside the objects' boxes, the mean difference (of 255) went from 8-25 to 0.06-0.41
+on the panels that went wrong, and from about 1.1 to 0.04-0.10 on the rest; the old 3D style of 2349's Maskinrom stayed
+at 1.1. Then, before the trace:
+
+- **What the objects stand on.** Each pill one of the panel's objects stands on - the object over at least half of it,
+  and no more than four times its size - comes out of the picture. Under a value that is bare text it is the value's
+  bubble: it goes into the object's placeholder as vectors and moves with it in VectorCraft, and a sync puts it in the
+  picture where the placeholder left it. Under an object the Designer draws itself, a state pill or an AK-PC's status,
+  it is that object a second time, and goes. So does whatever of an object's own look, as the Designer draws it, the
+  picture shows again where the object stands. On 2349's Maskin: 45 bubbles with their values, 11 pills left to their
+  objects.
+- **The house symbols.** The kept library's components, filled in from the Maskin and Oversikt templates built into the
+  script, are looked for at 1:1 in four quarter turns, in workers. Not looked for: pills, the families an IWMAC object
+  shows, templates less than a fifth solid, and one-colour templates the ground cannot be told from, which were found in
+  plain ground. Nor is a template started on the picture's ground unless its colour is the ground's: that took the search
+  on a grey panel from 60-100 s to 2-11 s on one thread. Each one found comes out of the picture and goes on the layer
+  *Komponenter* as the house symbol itself, named and marked (`data-iwdie-symbol`) as the IWMAC menu places one, so
+  Claude and edit files know it for what it is. 2349's Oversikt: 40 cases, islands and aggregates; 2349's Maskin: four
+  compressors, the oil separator and the heat exchanger.
+- **The rest** is vectorized as before, onto *Bakgrunn*, *Rør*, *Former* and *Tekst*.
+
+The card has no *Trace the picture* any more, nor *Open the picture*: a panel with a picture and no `.ai` is vectorized.
+*Choose the .ai file…* and *Open plant folder* stay; without a picture, *Open an empty canvas*.
+
+- Checked in the stub host with plant 2349's Maskin picture and its 58 objects, through the card and the hosted
+  VectorCraft 0.11.0: the job in 4.1 s (the search 2.0 s, in 4 workers), 6 symbols on *Komponenter*, 45 placeholders
+  each carrying its bubble. VectorCraft opened it, Ctrl+S synced back, and the Designer reported the art under 45 objects
+  in the picture where their placeholders left it. Not run in the live Designer.
+- Not found yet: symbols drawn at another size or in another style than the templates; they are vectorized as shapes.
+  Letters are still shapes, not text.
+
 ### The PNG upload tried again, and what a failed one means (v1.73.6)
 
 Thomas: *sometimes this error message pops up, but it still works* - VectorCraft's banner said *The PNG was not
