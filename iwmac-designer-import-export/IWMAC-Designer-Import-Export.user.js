@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.77.0
+// @version      1.77.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.77.0';
+var IWDIE_VERSION = '1.77.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -18403,13 +18403,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             paper.done(ai.name + ', ' + (Math.round(ai.bytes.length / 104857.6) / 10) + ' MB - opened in VectorCraft as it is; the picture is not traced', 0.1);
           }
           if (!info.vector && !lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3, 0.9);
+          // the first step running, and drawn, before the picture is read (v1.77.1): reading it holds this page's thread,
+          // and the tab's with it, and a tab that had drawn no step yet stood at 0.0 s as if it had stopped
+          if (info.vector) paper.step('objects', 'reading the picture…', 0.01, 0.02);
           // over the panel's own colour, as the Designer shows it (v1.48.2): a picture whose ground is
           // transparent reads black on a bare canvas, and what is taken out of it was filled with that black. And as it is
           // (v1.75.1): where it is transparent, the copies VectorCraft gets stay so - the picture under the drawing, the
           // original kept to read again - and Vectorize image leaves what was transparent undrawn, so a sync gives a
           // transparent picture back
-          return Promise.all([exportPaint(base && base.bytes, base && base.mime, size, fill),
-            base ? exportPaint(base.bytes, base.mime, size, null) : Promise.resolve(null)]).then(function (cs) {
+          return paper.breath().then(function () {
+            return Promise.all([exportPaint(base && base.bytes, base && base.mime, size, fill),
+              base ? exportPaint(base.bytes, base.mime, size, null) : Promise.resolve(null)]);
+          }).then(function (cs) {
             var c = cs[0], raw = cs[1], clear = raw ? iwdieVcClearMask(raw.getContext('2d').getImageData(0, 0, raw.width, raw.height).data) : null;
             var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
             var picture = base ? (clear ? raw : c).toDataURL('image/png') : null;
@@ -19092,8 +19097,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  that show a state (iwdieVzObjectKind) and the panel's own of those roles, each with its size as the Designer
      *  draws it and its pictures - its render definition's `file` and every one of its `status_array` - fetched from
      *  /iw_icons/ as PNG and kept a week in Tampermonkey's storage, as the objects' looks are. A kind the Designer does
-     *  not define here has none. -> Promise<{kinds: {id: {w, h, pics: [path]}}, main: {id: path}, pics: {path: {src, w, h}}}> */
-    function vcObjectStates(objects) {
+     *  not define here has none. `fetched(done, of)`, when given, hears how far the fetching is (v1.77.1).
+     *  -> Promise<{kinds: {id: {w, h, pics: [path]}}, main: {id: path}, pics: {path: {src, w, h}}}> */
+    function vcObjectStates(objects, fetched) {
       var ctl = W.controls || {}, ids = [];
       iwdieVcObjectCatalog().forEach(function (o) { if (iwdieVzObjectKind(o.id)) ids.push(o.id); });
       (objects || []).forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (iwdieVzObjectKind(k) && ids.indexOf(k) < 0) ids.push(k); });
@@ -19115,9 +19121,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var kept = null;
       try { kept = GM_getValue(IWDIE_VC_STATES_KEY, null); } catch (e) { kept = null; }
       var fresh = !!(kept && kept.v === 1 && kept.pics && kept.at > Date.now() - 7 * 864e5), pics = fresh ? kept.pics : {};
-      var missing = want.filter(function (p) { return !pics[p]; });
+      var missing = want.filter(function (p) { return !pics[p]; }), came = 0;
+      if (fetched && missing.length) fetched(0, missing.length);
       return Promise.all(missing.map(function (p) {
-        return vcIconPng(vcDesignerUrl('../iw_icons/' + p)).then(function (got) { pics[p] = { src: got.url, w: got.w, h: got.h }; }, function () {});
+        return vcIconPng(vcDesignerUrl('../iw_icons/' + p)).then(function (got) { pics[p] = { src: got.url, w: got.w, h: got.h }; }, function () {}).then(function () {
+          came++;
+          if (fetched) { try { fetched(came, missing.length); } catch (e) {} }
+        });
       })).then(function () {
         if (missing.length) { try { GM_setValue(IWDIE_VC_STATES_KEY, { v: 1, at: fresh ? kept.at : Date.now(), pics: pics }); } catch (e) {} }
         return { kinds: kinds, main: main, pics: pics };
@@ -19152,10 +19162,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** The IWMAC objects a picture shows (v1.77.0): `data` its pixels (RGBA, w x h) over the panel's colour, `objects`
      *  the panel's. Each state picture of each kind looked for unturned, in workers, at most `ms` long; each found one
-     *  read against the panel's objects (iwdieVzObjectsSeen). `step(done, of)` hears how far it is. -> Promise<{placed,
-     *  twice, kept, holes: [{x, y, w, h, rgba}] of placed and twice, looked: pictures} | null when it ran out of time> */
-    function vcFindObjects(data, w, h, objects, ms, step) {
-      return vcObjectStates(objects).then(function (st) {
+     *  read against the panel's objects (iwdieVzObjectsSeen). `step(done, of)` hears how far it is, and `fetched(done, of)`
+     *  how far the pictures are fetched, the first time in a week (v1.77.1). -> Promise<{placed, twice, kept, holes:
+     *  [{x, y, w, h, rgba}] of placed and twice, looked: pictures} | null when it ran out of time> */
+    function vcFindObjects(data, w, h, objects, ms, step, fetched) {
+      return vcObjectStates(objects, fetched).then(function (st) {
         return vcStateTemplates(st).then(function (templates) {
           if (!templates.length) return { placed: [], twice: [], kept: [], holes: [], looked: 0 };
           var job = vcFindAll(data, w, h, templates, step || function () {}), timer = setTimeout(function () { job.stop(); }, ms);
@@ -19541,7 +19552,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /** What the editor's tab shows while the panel is made ready (v1.47.0): each step of `steps`
      *  ([[key, title]...]) with what it found and how long it took, the time so far and, while the
      *  search runs, the time left; a bar; and, while the picture is read (`skip`), a way to go on
-     *  without it. The tab is still about:blank, so it is this page's to write. */
+     *  without it. The tab is still about:blank, so it is this page's to write.
+     *  It runs on this page's thread, so a step that holds the thread held the tab too: its clock stood at 0.0 s and
+     *  nothing showed running, as if it had stopped (v1.77.1). Now the running step's ring and a sheen along the bar
+     *  turn in the browser's compositor (CSS transforms), which goes on while the thread is held; and `breath()` lets
+     *  the tab draw a step before its work starts. */
     function vcPaper(tab, steps, skip) {
       var doc = null, skipped = false, onSkip = null, cur = null, t0 = Date.now(), began = 0, at = 0;
       try { doc = tab && !tab.closed ? tab.document : null; } catch (e) { doc = null; }
@@ -19550,6 +19565,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var font = '\'Segoe UI\',Roboto,Arial,sans-serif';
           doc.open();
           doc.write('<!doctype html><meta charset="utf-8"><title>IWMAC Designer → VectorCraft</title>' +
+            // what moves by itself (v1.77.1): transforms alone, each on a layer of its own, so the compositor turns them
+            '<style>@keyframes iwdie-turn{to{transform:rotate(360deg)}}@keyframes iwdie-sheen{from{transform:translateX(-100%)}to{transform:translateX(500%)}}' +
+            '.ring{display:inline-block;width:10px;height:10px;box-sizing:border-box;border:2px solid #378ef0;border-right-color:transparent;border-radius:50%;' +
+            'vertical-align:-1px;animation:iwdie-turn .8s linear infinite;will-change:transform}' +
+            '#sheen{position:absolute;top:0;left:0;width:20%;height:6px;background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.3),rgba(255,255,255,0));' +
+            'animation:iwdie-sheen 1.6s linear infinite;will-change:transform}</style>' +
             '<body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#535353;color:#d1d1d1;font:13px/1.45 ' + font + '">' +
             '<div style="width:520px;padding:22px;box-sizing:border-box;background:#424242;border:1px solid #383838;border-radius:6px;box-shadow:0 8px 14px rgba(0,0,0,.55)">' +
             '<div style="display:flex;align-items:baseline;margin-bottom:12px"><div style="flex:1;font-size:16px;font-weight:600;color:#ffffff">Preparing the panel for VectorCraft</div>' +
@@ -19561,7 +19582,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 '<span id="d-' + s[0] + '" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9a9a9a;font-size:12px"></span>' +
                 '<span id="t-' + s[0] + '" style="flex:none;color:#9a9a9a;font-size:12px;font-variant-numeric:tabular-nums"></span></div>';
             }).join('') +
-            '<div style="height:6px;margin:14px 0 12px;background:#383838;border-radius:3px"><div id="fill" style="height:6px;width:2%;background:#378ef0;border-radius:3px;transition:width .25s"></div></div>' +
+            '<div style="position:relative;overflow:hidden;height:6px;margin:14px 0 12px;background:#383838;border-radius:3px"><div id="fill" style="height:6px;width:2%;background:#378ef0;border-radius:3px;transition:width .25s"></div>' +
+            '<div id="sheen"></div></div>' +
             (skip ? '<button id="skip" style="height:28px;padding:0 16px;border:0;border-radius:14px;background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0;font:600 12.5px ' + font + '">' +
               'Skip - open the picture as it is</button>' : '') + '</div></body>');
           doc.close();
@@ -19580,9 +19602,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var seen = {};
       var show = function (key, state, detail, time) {
         seen[key] = state;
-        var icon = { now: '◐', done: '✓', none: '–' }[state] || '○', colour = { now: '#ffffff', done: '#d1d1d1', none: '#7c7c7c' }[state] || '#7c7c7c';
+        var icon = { done: '✓', none: '–' }[state] || '○', colour = { now: '#ffffff', done: '#d1d1d1', none: '#7c7c7c' }[state] || '#7c7c7c';
         put('r-' + key, null, 'color:' + colour);
-        put('i-' + key, icon, 'color:' + (state === 'now' ? '#378ef0' : state === 'done' ? '#6cc5a2' : '#7c7c7c'));
+        // the running step's ring turns by itself (v1.77.1); the others are a mark
+        var ic = $('i-' + key);
+        if (ic && state === 'now') { if (!ic.querySelector('.ring')) ic.innerHTML = '<span class="ring"></span>'; }
+        else put('i-' + key, icon, 'color:' + (state === 'done' ? '#6cc5a2' : '#7c7c7c'));
         if (detail !== undefined && detail !== null) put('d-' + key, detail);
         if (time) put('t-' + key, time);
       };
@@ -19606,8 +19631,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var paper = {
         // `part` where the bar is at the start, `until` how far it may creep while the step says nothing
         step: function (key, detail, part, until) {
-          if (cur) paper.done(null);
-          cur = key; began = Date.now();
+          // the step already running goes on, with its time (v1.77.1): started before the picture is read, say
+          if (cur && cur !== key) paper.done(null);
+          if (cur !== key) { cur = key; began = Date.now(); }
           show(key, 'now', detail || '');
           bar(part);
           from = at; to = typeof until === 'number' ? Math.max(at, until) : at; creepAt = Date.now();
@@ -19629,6 +19655,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         },
         // a step not reached
         none: function (key, detail) { if (!seen[key]) show(key, 'none', detail || ''); },
+        // a frame for the tab to draw what it was told, before work that holds this page's thread - and the tab's (v1.77.1)
+        breath: function () { return vcBreath(tab); },
         // once the picture is read, there is nothing left to skip
         noSkip: function () { put('skip', null, 'display:none'); },
         onSkip: function (fn) { onSkip = fn; },
@@ -19722,12 +19750,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var said = { palette: ['its colours', 0.52], pills: ['its pills', 0.54], pipes: ['its pipes', 0.56], labels: ['each pixel’s colour, at the edges a blend', 0.58],
         shapes: ['the shapes, laid over each other and fitted', 0.86], done: ['done', 0.9] };
       paper.step('objects', 'their pills', 0.02, 0.05);
-      var cols = iwdieVzPalette(data, w, h, {}).map(function (cc) { return cc.slice(0, 3); }), ground = cols[0] || [204, 204, 204];
-      try {
-        var op = iwdieVzObjectPills(data, w, h, cols, objects);
-        got.unders = op.unders; got.carried = op.carried; got.left = op.left;
-      } catch (e) {}
-      return vcLookMasks(objects, info && info.looks).then(function (masks) {
+      var ground = [204, 204, 204];
+      // each step drawn before its work, which holds this page's thread - and the tab's - for a while (v1.77.1)
+      return paper.breath().then(function () {
+        var cols = iwdieVzPalette(data, w, h, {}).map(function (cc) { return cc.slice(0, 3); });
+        ground = cols[0] || ground;
+        try {
+          var op = iwdieVzObjectPills(data, w, h, cols, objects);
+          got.unders = op.unders; got.carried = op.carried; got.left = op.left;
+        } catch (e) {}
+        return vcLookMasks(objects, info && info.looks);
+      }).then(function (masks) {
         got.looks = iwdieVzEraseLooks(data, w, h, masks);
         paper.done(got.carried + got.left + got.looks ? iwdieN(got.carried, 'bubble', 'bubbles') + ' with their values, ' + iwdieN(got.left, 'pill', 'pills') +
           ' and ' + (got.looks ? 'some looks' : 'no look') + ' left to their objects' : 'nothing under them', 0.05);
@@ -19737,6 +19770,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         paper.step('found', 'the Designer’s pictures of every state of each kind…', 0.05, 0.06);
         return vcFindObjects(data, w, h, objects, IWDIE_VZ_OBJECT_MS, function (done, of, workers) {
           paper.say(done + ' of ' + of + ' pictures looked for' + (workers ? ' · ' + iwdieN(workers, 'worker', 'workers') : ' · in this page'), 0.06 + 0.03 * done / Math.max(1, of));
+        }, function (done, of) {
+          // the first time in a week, the pictures come from the Designer first (v1.77.1)
+          paper.say(done + ' of ' + of + ' pictures fetched from the Designer (kept a week)', 0.05 + 0.01 * done / Math.max(1, of));
         }).then(function (fo) {
           if (!fo) { paper.done('not finished in time: none placed', 0.09); return; }
           iwdieVcErase(data, w, h, fo.holes);
@@ -19752,7 +19788,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!items.length) { paper.none('symbols', 'no library'); return null; }
         paper.step('symbols', iwdieN(items.length, 'symbol', 'symbols') + ' of ' + (lib.builtin ? 'the house templates' : '“' + (lib.file || 'the library') + '” and the house templates') +
           ', drawn at 1:1…', 0.06, 0.1);
-        return vcComponentTemplates(items).then(function (templates) {
+        // drawing the templates and reading their looks each hold this page's thread a while: a frame before each (v1.77.1)
+        return paper.breath().then(function () { return vcComponentTemplates(items); }).then(function (templates) {
+          paper.say(iwdieN(templates.length, 'template', 'templates') + ' drawn; what each looks like…', 0.08);
+          return paper.breath().then(function () { return templates; });
+        }).then(function (templates) {
           var names = iwdieVcComponentNames(items), looks = iwdieVcSymbolLooks(templates, items, names, ground), job = null, tFind = Date.now();
           if (!looks.length) return null;
           job = vcFindAll(data, w, h, looks, function (done, of, workers) {

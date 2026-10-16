@@ -493,6 +493,32 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The progress tab keeps moving while the page works (v1.77.1)
+
+Thomas, with a screenshot of the tab at *0.0 s* and no step running: *is it possible show better progress here? sometimes
+it just look like have frozen but it still works*.
+
+The tab that shows the steps is the Designer page's own (about:blank, written by the page), so it runs on that page's
+thread. A step that holds the thread held the tab too: its clock, bar and step marks stood still. Measured in the stub
+host on 2349's Maskin with its 58 objects, a Vectorize image held the thread three times. First came 0.3 s at the very
+start, reading the pills under the panel's objects; then 0.07 s and 0.35 s while the house symbols' templates were drawn
+and read. The first hold came before the tab had drawn any step, so it showed *0.0 s* with nothing running. On a slower
+PC or a bigger panel each lasts longer.
+
+- **What moves by itself.** The running step has a turning ring, and a sheen runs along the bar. Both are CSS transform
+  animations, which Chrome runs in its compositor, off the page's thread, so they keep moving while a step holds it. In
+  the stub host, the tab was recorded while the Designer page was held busy for 2 s: the ring changed in all 200 frames
+  and the sheen in 75, while the clock stood still.
+- **A step shows before its work starts.** The first step shows running before the picture is read. Each step is drawn
+  (one frame) before its work starts. Drawing the house symbols' templates and reading their looks are now two shorter
+  holds instead of one.
+- **The Designer's state pictures counted.** The first Vectorize image in a week fetches the Designer's pictures of every
+  state (1.77.0), and now counts them as they come: *43 of 89 pictures fetched from the Designer (kept a week)*.
+
+On 2349's Maskin, 1.77.1 showed the first step running at 0.1 s. Its holds were 83, 273, 76, 77 and 285 ms, and the job
+took 4.5 s (4.3 s before) with the same objects and symbols found. The clock and the words still wait while a step holds
+the thread; then only the ring and the sheen move. Not run in the live Designer.
+
 ### IWMAC objects found in the picture become objects (v1.77.0)
 
 Thomas: *Before vectorizing an image, … check whether any of the elements match existing objects in the IWMAC object
