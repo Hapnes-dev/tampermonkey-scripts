@@ -493,6 +493,87 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Text in the picture becomes label objects (v1.78.0)
+
+Thomas, with 10214's Oversikt legend and a crop of *K13* and *K14* beside their cases: *i think more can be replaced with
+objects from database / like info panel letters and objects / save with the text next to the disk can be replace with
+object text etc / do a deep dive and se if you find more*.
+
+On his plants every name is a label object. In a picture of pixels the names are letters, and *Vectorize image* traced
+each into filled shapes: a case's *K13*, a room's *Meierirom*, a Maskin's whole information column. Now the words are
+read, and each word read surely becomes a label object with that text:
+
+- **Where the words are.** The tracer's word boxes (those the export lists as `picture.texts`), found off the page on the
+  picture without its pills' rings and its pipes. Boxes on one line at like heights are one run; an icon beside a word
+  stays apart.
+- **Read in the picture's own font.** The browser draws every letter of the font at each size the run may be, in half
+  pixels, at four quarter-pixel phases. A dynamic programme over the pen's positions finds the letters that best explain
+  the run's ink; a reading's cost is what its letters, laid where they stand, leave unexplained. Then come the readings
+  its look-alikes give (*rn* and *m*, *O* and *0*, *l*, *I* and *1*), a case's code as codes are written (*K05*, not
+  *K,0S*), and the words the panel, its plant and the house know: the panel's objects' texts, the plant's unit names, a
+  Maskin's captions and legend, the Oversikt legend, rooms, heating and ventilation words. Each is weighed by how well it
+  alone explains the ink. A word is known whatever its case, and a known word as wide as the ink is weighed even when the
+  reading is far from it: *Maskin* had been read as *fvtaskin*.
+- **A run that does not read whole** is read in pieces (a word, an icon, a word), and a wide piece that does not read in
+  smaller pieces. A Maskin legend's *V3gc*, valve, *= Gc-bypass active* is one run as high as the valve. Pieces on one
+  baseline are joined, and a word read by two runs is kept once, the wider reading.
+- **Taken only when sure.** A reading must look like words and explain its ink well. A known word may explain it a
+  little less well, and so may one shaped as panels' words are (a code, a unit, capitals, a short capitalised word). It
+  needs two letters at least, and a capital inside a word nobody knows (*VarmlLrftspor*) is a letter read wrong. A word
+  not read surely stays drawing.
+- **The label.** The Designer's label (`number_v3_label_8px_norm` to `_20px_norm`) whose capitals stand as high as the
+  picture's, white where the text is light on a dark ground, placed where the picture had the word. Its letters come out
+  of the picture, so the trace leaves them. It goes on *IWMAC-objekter* as a placeholder (`IWMAC number_v3_label_…`,
+  marked `data-iwdie-read`) with the word as its text, and Ctrl+S in VectorCraft places it as a label object with that
+  text, unlinked.
+- **The font.** Thomas's pictures are in Illustrator's default font, Myriad Pro, which the browser does not have unless it
+  is installed in Windows. The card says which fonts it reads in, and *Add the picture's font…* (or a font file dropped
+  on the card) keeps a font in Tampermonkey's storage: four at most, 4 MB each. `MyriadPro-Regular.otf` is in
+  Illustrator's `Support Files\Required\Fonts` folder. The fonts are tried in order: the card's, Myriad Pro if installed,
+  Roboto, Arial, Segoe UI. The first that reads one of the four widest runs surely is used, and no other. In a font that
+  is not the picture's, *S* reads as *5* and *H* as *FI*: on 2349's Maskin in Segoe UI, 5 of 60 labels were wrong. So
+  when none reads surely, the words stay drawing, and the paper and the opening toast say to add the picture's font.
+- **Off on the card.** A second box, ticked: *Text in the picture becomes label objects*. The paper shows the step *Text
+  in the picture* after *IWMAC objects in the picture* and before *House symbols*: erased letters are not taken for a
+  symbol's strokes, and a symbol's outline is not read as letters.
+- **Time.** In workers, up to four, for at most 30 s; each reading 1.5 s at most.
+
+Checked in the stub host, with Myriad Pro kept on the card and each panel's own objects:
+
+- **10214's Oversikt:** 42 words, all right: the cases' codes (*K01* to *K45*, *F60* to *F76*, *AC1*, *AC2*),
+  *Meierirom*, *Fryserom* and the legend (*Symbolforklaring*, *Varme*, *Kjøl*, *Frys*, *Kommunikasjonsfeil*, *Alarm*,
+  *Kjøl/Frys pågår*, *Avriming pågår*, *IWT*, *Plugin*). The job took 11.6 s. Ctrl+S in the hosted VectorCraft 0.11.0
+  placed the 42 as label objects: *✓ Synced · 42 placed*.
+- **10214's Maskin:** 71 words, all right: the information column (its bar's *Heat recovery information* a white
+  label), the captions with their units (*Tc °C*, *Pgc bar*, *Vhp OD %*), the legend's *= Hr active* and *Gc-bypass
+  active*. The job took 16.7 s.
+- **2349's Maskin:** 66 words, all right, and its four compressors found as objects as in 1.77.0. The job took 15.2 s.
+- **10214's VGV:** 7 words, all right (*Varmluftsport*, *inngangsparti*, *Aerotemper*, *Lager*, *Ventilasjon*, *butikk*,
+  *Magna3*). **10214's Energi:** 7, all right (*Maskin*, *Kjøl og Frys*, *Total energi (kWh)* and *Effekt (kW)* twice,
+  *L3*).
+- **Unticked:** no word read; the house symbols as before.
+- **Without the picture's font** (2349's Maskin; the browser had Arial and Segoe UI): no word read, the paper saying *not
+  read: none of the fonts here reads it surely … drop the picture's font on the card*; the compressors and the house
+  symbols as before.
+- Not run in the live Designer.
+
+Not read: a word of one letter, and what stands under the panel's objects (taken out before, as since 1.74.0). Text in
+another weight than the font given reads less surely; 10214's VGV, heavier than Myriad Pro Regular, read right with the
+house's heating words. Every label is a `_norm` one: a bold caption becomes a normal label.
+
+**Also looked at in this pass, and left as they are:**
+
+- **The Oversikt legend's icons** are the Designer's own pictures at their own sizes: the bell beside *Alarm* (34 px,
+  `AlarmIcon_34` and `BellPumping_34`), the snowflake beside *Kjøl/Frys pågår* and the drop beside *Avriming pågår* (24
+  px, `FreezeIcon_24` and `DefrostIcon_24`). 1.77.0 does not find them: it looks for the kinds of the object catalogue
+  and of the panel, and these are pictures in `iw_icons` that no such kind shows. They stay drawn on purpose: as
+  unlinked objects they would show their state 0, which for these is `transp.gif`, nothing at all. The icon beside
+  *Kommunikasjonsfeil* (28 px) matches no picture of the Designer's.
+- **IWT and Plugin** have objects of their own in the Designer, `disk_type_V3_iwt` and `disk_type_V3_plugin` (62 × 40).
+  The legend's samples of them stay drawing, like the bell.
+- **A Maskin's header bars** (*Heat recovery information*): the Designer has a header bar object,
+  `number_v3_header_grey75`, but not in the bars' colour. The bar stays drawn, and its words become a white label on it.
+
 ### The progress tab keeps moving while the page works (v1.77.1)
 
 Thomas, with a screenshot of the tab at *0.0 s* and no step running: *is it possible show better progress here? sometimes

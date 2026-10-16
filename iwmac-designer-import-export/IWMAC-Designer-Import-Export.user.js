@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.77.1
+// @version      1.78.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.77.1';
+var IWDIE_VERSION = '1.78.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -7383,6 +7383,8 @@ function iwdieVcSvg(o) {
     // as the picture showed it - the state it was found in - else as its kind looks
     return iwdieVcFoundPlaceholderSvg(f, f.look || (o.looks && o.looks[f.kind]), used);
   }).filter(Boolean);
+  // v1.78.0: each word read in the picture (`labels`), a new label's placeholder with its text
+  (Array.isArray(o.labels) ? o.labels : []).forEach(function (l) { var p = iwdieVcReadLabelSvg(l, used); if (p) marks.push(p); });
   if (marks.length) {
     var more = marks.map(function (p) { return '    ' + p; }).join('\n');
     layer = layer ? layer.replace(/\n {2}<\/g>\n$/, '\n' + more + '\n  </g>\n') : '  <g id="IWMAC-objekter" data-name="IWMAC-objekter">\n' + more + '\n  </g>\n';
@@ -8334,6 +8336,10 @@ var IWDIE_VC_LOOKS_KEY = 'iwdie.vc.looks';
 var IWDIE_VC_STATES_KEY = 'iwdie.vc.states';
 /** How long Vectorize image and Export look for IWMAC objects in a picture (v1.77.0), at most. */
 var IWDIE_VZ_OBJECT_MS = 15000;
+/** The fonts dropped on the card to read a picture's words in (v1.78.0): [{name, b64, at}], four at most. */
+var IWDIE_TX_FONTS_KEY = 'iwdie.tx.fonts';
+/** How long a picture's words are read (v1.78.0), at most: what is read by then is kept. */
+var IWDIE_TX_READ_MS = 30000;
 
 var iwdieVcObjCache = null;
 
@@ -8355,10 +8361,19 @@ function iwdieVcObjectCatalog() {
   return (iwdieVcObjCache = out);
 }
 
-/** The catalogue by id. */
+/** The catalogue by id; and (v1.78.0) every label the Designer has - 8 to 20 px, normal and bold, dark and white - known
+ *  by its name as a label where the catalogue lacks it: a word read in a picture becomes the one its letters match. */
 function iwdieVcObjectIndex() {
   var known = {};
   iwdieVcObjectCatalog().forEach(function (o) { known[o.id] = o; });
+  [8, 9, 10, 11, 12, 14, 16, 18, 20].forEach(function (px) {
+    ['norm', 'bold'].forEach(function (wt) {
+      ['', '_white'].forEach(function (c) {
+        var id = 'number_v3_label_' + px + 'px_' + wt + c;
+        if (!known[id]) known[id] = { id: id, w: 50, h: 20, role: 'label', desc: px + 'px ' + (wt === 'bold' ? 'Bold' : 'Normal') + (c ? ', white' : ''), pic: '', tag: 'Label', hasTag: true, kind: 'label' };
+      });
+    });
+  });
   return known;
 }
 
@@ -8415,7 +8430,7 @@ function iwdieVcObjectItem(o) {
   };
   if (o.kind === 'label') {
     var px = +(/(\d+)px/.exec(o.id) || [0, 11])[1];
-    shapes.push(line(null, 0.6), text(2, (h + px * 0.7) / 2, o.tag || 'Label', px, '#3c4650', /bold/.test(o.id)));
+    shapes.push(line(null, 0.6), text(2, (h + px * 0.7) / 2, o.tag || 'Label', px, /_white$/.test(o.id) ? '#ffffff' : '#3c4650', /bold/.test(o.id)));
   } else if (o.kind === 'bar') {
     shapes.push({ t: 'd', d: box, rule: '', st: { stroke: null, fill: o.bar || '#6b7782', sw: 0, dash: false, arrow: false } });
     shapes.push(line(null, 0.6), text(6, (h + 11 * 0.7) / 2, o.tag || 'Header', 11, '#ffffff', true));
@@ -13837,6 +13852,8 @@ function iwdieVzTrace(pic, W, H, opts, say) {
   var nodes = 0, out = [[], [], [], []], fitted = 0;
   shapes.forEach(function (s) {
     if (s.gone || s.pill) return;
+    // v1.78.0, `opts.words`: where its words are, for them to be read - each shape as it would be drawn, none fitted
+    if (opts.words) { s.svg = '1'; return; }
     var fr = iwdieVzFit(s.pts, opts);
     if (!fr) return;
     var d = fr.d, rule = '';
@@ -13898,6 +13915,18 @@ function iwdieVzTrace(pic, W, H, opts, say) {
     list[0].layer = 2;
     return false;
   });
+  // v1.78.0, `opts.words`: the words' boxes as the outline gives them, and the picture without its pills' rings and its
+  // pipes, to read them on
+  if (opts.words) {
+    return {
+      words: order.map(function (r) {
+        var list = words.get(r), b = [Infinity, Infinity, -Infinity, -Infinity];
+        list.forEach(function (q) { b[0] = Math.min(b[0], q.box[0]); b[1] = Math.min(b[1], q.box[1]); b[2] = Math.max(b[2], q.box[2]); b[3] = Math.max(b[3], q.box[3]); });
+        return [Math.round(b[0]), Math.round(b[1]), Math.round(b[2] - b[0]), Math.round(b[3] - b[1]), hex(cols[list[0].c]), list.length];
+      }),
+      work: work === pic ? null : work, ms: Date.now() - t0
+    };
+  }
   // Former: each figure - a shape of the layer on one of a lower layer - a group with what lies on it there
   var figures = [], byTop = new Map();
   var top = function (s) { while (s.parent && s.parent.layer === 2) s = s.parent; return s; };
@@ -14099,6 +14128,647 @@ function iwdieVcFoundPlaceholderSvg(f, look, used) {
   if (look && typeof look.src === 'string' && /^data:image\/png;base64,/.test(look.src) && look.iw > 0 && look.ih > 0) { o.src = look.src; o.iw = look.iw; o.ih = look.ih; }
   var name = IWDIE_VC_OBJ_PREFIX + known.id, gid = iwdieVcSvgId(name, used);
   return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-found="1" transform="translate(' + fmt(f.x) + ' ' + fmt(f.y) + ')">' +
+    iwdieVcItemParts(iwdieVcObjectItem(o)).join('') + '</g>';
+}
+
+/* ===================== The picture's words as label objects (v1.78.0) =====================
+   Thomas, with 10214's Oversikt: *more can be replaced with objects from database like info panel letters and objects ...
+   the text next to the disk can be replace with object text*. A picture of pixels has its words as letters: case names
+   beside the cases (K13, F60, AC1), the legend's words, a Maskin's captions (Pc Bar, Run Cap. %). Vectorize image traced
+   them into shapes. Each one now read in the picture's own font becomes a label object with that text, and its letters
+   come out of the picture.
+
+   Reading: the tracer finds the words (iwdieVzTrace, `opts.words`); each run of them is read letter by letter - every
+   letter of the font drawn at the run's size at quarter-pixel phases (a bank, drawn by the page) and a dynamic programme
+   over pen positions finding the string that explains the run's ink best (iwdieTxRead). Look-alikes (m and rn, g and q,
+   S and 5) and the panel's and plant's own words are weighed one by one by how well each alone explains it
+   (iwdieTxForce, iwdieTxBest). Only a reading that explains its ink well is taken; the rest stays drawing. */
+
+/** The letters a word of a panel picture is read as (v1.78.0). */
+var IWDIE_TX_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅabcdefghijklmnopqrstuvwxyzæøå0123456789.,:-+/%°()=&';
+
+/** Words the house's pictures say (v1.78.0): the Oversikt template's legend, a Maskin's captions and information column,
+ *  rooms. Known whatever the panel, with the panel's own and its plant's. */
+var IWDIE_TX_HOUSE = ['Symbolforklaring', 'Varme', 'Kjøl', 'Frys', 'Kommunikasjonsfeil', 'Alarm', 'Kjøl/Frys pågår', 'Avriming pågår', 'IWT',
+  'Plugin', 'Information', 'Machine status', 'Room temperature', 'CO2 Alarm', 'Heat recovery information', 'Capacity %', 'Runtime',
+  'Runtime h', 'Run Cap. %', 'Reg Cap. %', 'Reg cap %', 'Run Cap %', 'VSD %', 'Ref', 'Ref °C', 'To °C', 'To offset', 'SH K', 'Suct.°C', 'Pc Bar', 'Tc °C',
+  'Pgc bar', 'Prec bar', 'Shp °C', 'Sgc °C', 'Liq. consumer', 'M-T Suct.', 'L-T Suct.', 'M-T Sd °C', 'L-T Sd °C', 'Gascooler', 'Hr enable',
+  'Oil-sep.', 'Low-level', 'Oil-', 'sep.', 'Low-', 'level', 'Pump %', 'Consumer Ref %', 'Manuel', 'Running', 'Enabled', 'Meierirom', 'Fryserom', 'Kjølerom', 'Tekniskrom',
+  'Maskinrom', 'Lager', 'Butikk', 'Hovedinntak', 'Total energi (kWh)', 'Effekt (kW)', 'Kjøl og Frys', 'Maskin', 'Ventilasjon',
+  'Varmegjenvinning', 'Tilluft', 'Avtrekk', 'Uteluft', 'Avkast', 'Inngang', 'Kasse', 'Frukt', 'Bakeri', 'Hr active', 'Gc-bypass active',
+  '= Hr active', '= Gc-bypass active', 'Varmluftsport', 'Inngangsparti', 'Aerotemper', 'Varmepumpe', 'Gulvvarme', 'Radiator',
+  'Forbruksvann', 'Tappevann', 'Varmtvann', 'Turvann', 'Returvann', 'Tur', 'Retur', 'Pumpe', 'Shunt', 'Ventil', 'Akkumulatortank',
+  'Varmebatteri', 'Kjølebatteri', 'Vifte', 'Spjeld', 'Energi', 'Effekt', 'Forbruk'];
+
+/** A word's ink (v1.78.0): how far each pixel of box `b` ({x, y, w, h}, grown by `pad`) of picture `pic` (RGBA, W x H) is
+ *  from the box's ground - its commonest colour - towards its text's colour - the mean of its farthest pixels. 0..1, row
+ *  by row. -> {ink: Float32Array, w, h, x, y, ground: [r, g, b], text: [r, g, b], total: the ink's sum of squares} */
+function iwdieTxInk(pic, W, H, b, pad) {
+  pad = pad == null ? 3 : pad;
+  var x0 = Math.max(0, Math.floor(b.x) - pad), y0 = Math.max(0, Math.floor(b.y) - pad);
+  var x1 = Math.min(W, Math.ceil(b.x + b.w) + pad), y1 = Math.min(H, Math.ceil(b.y + b.h) + pad);
+  var w = Math.max(0, x1 - x0), h = Math.max(0, y1 - y0), n = w * h, count = {}, best = null, bestN = 0, i, x, y, j;
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+    j = ((y0 + y) * W + x0 + x) * 4;
+    var key = (pic[j] >> 2) + ',' + (pic[j + 1] >> 2) + ',' + (pic[j + 2] >> 2);
+    var c = count[key] || (count[key] = { n: 0, s: [0, 0, 0] });
+    c.n++; c.s[0] += pic[j]; c.s[1] += pic[j + 1]; c.s[2] += pic[j + 2];
+    if (c.n > bestN) { bestN = c.n; best = c; }
+  }
+  var ground = best ? [best.s[0] / best.n, best.s[1] / best.n, best.s[2] / best.n] : [0, 0, 0];
+  var dist = new Float32Array(n);
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+    j = ((y0 + y) * W + x0 + x) * 4;
+    var dr = pic[j] - ground[0], dg = pic[j + 1] - ground[1], db = pic[j + 2] - ground[2];
+    dist[y * w + x] = Math.sqrt(dr * dr + dg * dg + db * db);
+  }
+  // the text's colour: the mean of the farthest 4 % (one pixel at least)
+  var sorted = Array.prototype.slice.call(dist).sort(function (a, b2) { return b2 - a; });
+  var cut = Math.max(1, sorted[Math.max(0, Math.floor(n * 0.04) - 1)] || 0), text = [0, 0, 0], m = 0;
+  for (i = 0; i < n; i++) {
+    if (dist[i] < cut) continue;
+    j = ((y0 + Math.floor(i / w)) * W + x0 + (i % w)) * 4;
+    text[0] += pic[j]; text[1] += pic[j + 1]; text[2] += pic[j + 2]; m++;
+  }
+  if (m) { text[0] /= m; text[1] /= m; text[2] /= m; }
+  var t = [text[0] - ground[0], text[1] - ground[1], text[2] - ground[2]], span = Math.max(1, t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+  var ink = new Float32Array(n), total = 0;
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+    j = ((y0 + y) * W + x0 + x) * 4;
+    var v = ((pic[j] - ground[0]) * t[0] + (pic[j + 1] - ground[1]) * t[1] + (pic[j + 2] - ground[2]) * t[2]) / span;
+    v = v < 0 ? 0 : v > 1 ? 1 : v;
+    ink[y * w + x] = v;
+    total += v * v;
+  }
+  return { ink: ink, w: w, h: h, x: x0, y: y0, ground: ground, text: text, total: total, contrast: Math.sqrt(span) };
+}
+
+/** The tracer's words (iwdieVzTrace's: [x, y, w, h, colour, letters]) as runs of text (v1.78.0). Those on one line that
+ *  overlap or nearly touch are one - the tracer splits a small word by the shades of its letters - at like heights (an
+ *  icon beside a word stays apart, a dot or an accent joins it); each grown over its own letters beside it on its rows
+ *  (a pixel nearer its text's colour than its ground, and near that colour), up to half its height of ground at a time -
+ *  a thin 1 the tracer left out as a figure. `gap` that ground, when given. -> [{x, y, w, h}] */
+function iwdieTxRuns(words, pic, W, H, gap) {
+  var boxes = (words || []).filter(function (r) { return r && r[2] >= 3 && r[3] >= 5 && r[5] >= 2; }).map(function (r) {
+    return [r[0], r[1], r[0] + r[2], r[1] + r[3]];
+  });
+  var merge = function () {
+    for (var changed = true; changed;) {
+      changed = false;
+      for (var a = 0; a < boxes.length && !changed; a++) {
+        for (var b = a + 1; b < boxes.length; b++) {
+          var A = boxes[a], B = boxes[b], vo = Math.min(A[3], B[3]) - Math.max(A[1], B[1]), ha = A[3] - A[1], hb = B[3] - B[1];
+          if (vo < 0.5 * Math.min(ha, hb)) continue;
+          if (Math.max(ha, hb) > 1.6 * Math.min(ha, hb) && !(Math.min(ha, hb) <= 6 && vo >= Math.min(ha, hb) - 1)) continue;
+          if (B[0] > A[2] + 2 || A[0] > B[2] + 2) continue;
+          boxes[a] = [Math.min(A[0], B[0]), Math.min(A[1], B[1]), Math.max(A[2], B[2]), Math.max(A[3], B[3])];
+          boxes.splice(b, 1);
+          changed = true;
+          break;
+        }
+      }
+    }
+  };
+  merge();
+  boxes = boxes.map(function (B) {
+    var y0 = Math.max(0, B[1]), y1 = Math.min(H, B[3]);
+    var I = iwdieTxInk(pic, W, H, { x: B[0], y: B[1], w: B[2] - B[0], h: B[3] - B[1] }, 1), g = I.ground, t = I.text;
+    var d2 = function (j, c) { var dr = pic[j] - c[0], dg = pic[j + 1] - c[1], db = pic[j + 2] - c[2]; return dr * dr + dg * dg + db * db; };
+    var inkCol = function (x) {
+      if (x < 0 || x >= W) return false;
+      for (var yy = y0; yy < y1; yy++) {
+        var j = (yy * W + x) * 4, toT = d2(j, t);
+        if (toT < d2(j, g) && toT < 3600) return true;
+      }
+      return false;
+    };
+    var x1 = B[2], run = 0, x, room = gap == null ? Math.max(4, Math.round((y1 - y0) / 2)) : gap;
+    for (x = B[2]; x < W && run <= room; x++) { if (inkCol(x)) { run = 0; x1 = x + 1; } else run++; }
+    var x0 = B[0];
+    run = 0;
+    for (x = B[0] - 1; x >= 0 && run <= room; x--) { if (inkCol(x)) { run = 0; x0 = x; } else run++; }
+    return [x0, B[1], x1, B[3]];
+  });
+  merge();
+  return boxes.filter(function (B) { return B[2] - B[0] >= 6 && B[3] - B[1] >= 6; }).map(function (B) {
+    return { x: B[0], y: B[1], w: B[2] - B[0], h: B[3] - B[1] };
+  });
+}
+
+/** What each letter of `bank` explains of `ink` (w x h, its baseline on row `base`) at each whole column (v1.78.0): for
+ *  letter c at phase k, gains[c * 4 + k][x] = the sum over its template of T^2 - 2 I T, negative where it explains ink;
+ *  Infinity where its window leaves the ink's columns. A bank: {size, space, index: {ch: c}, chars: [{ch, adv, ph: [4 x
+ *  {off: its first column from the pen's whole pixel, top: its first row from the baseline, w, h, a: Float32Array}]}]}. */
+function iwdieTxGains(ink, w, h, base, bank) {
+  var out = new Array(bank.chars.length * 4);
+  bank.chars.forEach(function (g, c) {
+    for (var k = 0; k < 4; k++) {
+      var t = g.ph[k], arr = new Float32Array(w + 1);
+      if (!t || !t.w) { out[c * 4 + k] = arr; continue; }
+      var tt = 0, i;
+      for (i = 0; i < t.a.length; i++) tt += t.a[i] * t.a[i];
+      t.tt = tt;
+      for (var x = 0; x <= w; x++) {
+        if (x + t.w > w) { arr[x] = Infinity; continue; }
+        var s = 0;
+        for (var r = 0; r < t.h; r++) {
+          var yy = base + t.top + r;
+          if (yy < 0 || yy >= h) continue;
+          var row = yy * w + x, tr = r * t.w;
+          for (var q = 0; q < t.w; q++) s += ink[row + q] * t.a[tr + q];
+        }
+        arr[x] = tt - 2 * s;
+      }
+      out[c * 4 + k] = arr;
+    }
+  });
+  return out;
+}
+
+/** Which of a bank's letters kern with what follows them (v1.78.0): the next letter may come up to 1.5 px closer after
+ *  them - To, Tc, Vo, P., r. - than its advance says. Kept on the bank once worked out. -> [bool] by letter */
+function iwdieTxKerny(bank) {
+  if (!bank.kern) bank.kern = bank.chars.map(function (g) { return 'AFKLPTVWYfrvwy7'.indexOf(g.ch) >= 0; });
+  return bank.kern;
+}
+
+/** The ink's first and last columns with ink (a column's ink over 0.15). -> [first, last] | null */
+function iwdieTxSpan(ink, w, h) {
+  var first = -1, last = -1, x, y, s;
+  for (x = 0; x < w && first < 0; x++) { s = 0; for (y = 0; y < h; y++) s += ink[y * w + x]; if (s > 0.15) first = x; }
+  for (x = w - 1; x >= 0 && last < 0; x--) { s = 0; for (y = 0; y < h; y++) s += ink[y * w + x]; if (s > 0.15) last = x; }
+  return first < 0 ? null : [first, last];
+}
+
+/** What letters laid on `ink` (w x h, the baseline on row `base`) leave unexplained of it (v1.78.0): the sum of squares of
+ *  the ink less the letters' templates added up, over `total` (the ink's own) - 0 is perfect. Letters that overlap pay for
+ *  the ink they both claim, as a sum of each letter's own gain (iwdieTxGains) does not. `placed` [[c, p]]: letter c of
+ *  `bank` with its pen at p quarter pixels. */
+function iwdieTxResidue(ink, w, h, base, bank, placed, total) {
+  var comp = new Float32Array(w * h), out = 0, i;
+  placed.forEach(function (lp) {
+    var t = bank.chars[lp[0]].ph[lp[1] & 3];
+    if (!t || !t.w) return;
+    var x0 = (lp[1] >> 2) + t.off;
+    for (var r = 0; r < t.h; r++) {
+      var yy = base + t.top + r;
+      for (var q = 0; q < t.w; q++) {
+        var v = t.a[r * t.w + q], xx = x0 + q;
+        if (yy < 0 || yy >= h || xx < 0 || xx >= w) out += v * v;
+        else comp[yy * w + xx] += v;
+      }
+    }
+  });
+  for (i = 0; i < comp.length; i++) { var d = ink[i] - comp[i]; out += d * d; }
+  return out / total;
+}
+
+/** The string whose letters, each one advance after the other with a little slack (two quarter pixels either way, six
+ *  closer after a letter that kerns), best explain `ink` (v1.78.0): a dynamic programme over pen positions in quarter
+ *  pixels, from just before the first ink to past the last. Each letter is paid `opts.lambda` (0.5) and each space
+ *  `opts.space` (0.3) besides what it explains, so a letter must earn its place over two. `gains` from iwdieTxGains for
+ *  the same ink, base and bank; `total` the ink's sum of squares.
+ *  -> {text, cost: what its letters leave unexplained of the ink (iwdieTxResidue), from, to: the pen's first and last
+ *  positions in px, letters: [{ch, x: its pen position}]} | null */
+function iwdieTxRead(ink, w, h, base, bank, gains, total, opts) {
+  opts = opts || {};
+  var lam = opts.lambda == null ? 0.5 : opts.lambda, spaceCost = opts.space == null ? 0.3 : opts.space;
+  var sp = iwdieTxSpan(ink, w, h);
+  if (!sp || !(total > 0)) return null;
+  var P = 4 * (w + 4), best = new Float64Array(P + 1).fill(Infinity), from = new Int32Array(P + 1).fill(-1), what = new Int32Array(P + 1).fill(-2), p;
+  for (p = Math.max(0, 4 * (sp[0] - 4)); p <= 4 * (sp[0] + 1) && p <= P; p++) best[p] = 0;
+  var adv4 = bank.chars.map(function (g) { return Math.round(g.adv * 4); }), sp4 = Math.round(bank.space * 4), kern = iwdieTxKerny(bank);
+  var go = function (p0, q, cost, c) {
+    // a letter or space moves the pen on: at a small size its advance less the slack could be nothing
+    if (q <= p0 || q > P || !(cost < best[q])) return;
+    best[q] = cost; from[q] = p0; what[q] = c;
+  };
+  for (p = 0; p <= P; p++) {
+    if (best[p] === Infinity) continue;
+    var n = p >> 2, k = p & 3, d;
+    for (var c = 0; c < bank.chars.length; c++) {
+      var t = bank.chars[c].ph[k];
+      if (!t || !t.w) continue;
+      var xx = n + t.off;
+      if (xx < 0 || xx > w) continue;
+      var gv = gains[c * 4 + k][xx];
+      for (d = kern[c] ? -6 : -2; d <= 2; d++) go(p, p + adv4[c] + d, best[p] + gv + lam, c);
+    }
+    // no space before the first letter
+    if (from[p] >= 0) for (d = -3; d <= 3; d++) go(p, p + sp4 + d, best[p] + spaceCost, -1);
+  }
+  var end = -1;
+  for (p = 4 * sp[1]; p <= P; p++) if (best[p] !== Infinity && (end < 0 || best[p] < best[end])) end = p;
+  if (end < 0) return null;
+  var letters = [], placed = [], steps = 0;
+  for (p = end; from[p] >= 0 && steps++ <= P; p = from[p]) {
+    letters.push({ ch: what[p] < 0 ? ' ' : bank.chars[what[p]].ch, x: from[p] / 4 });
+    if (what[p] >= 0) placed.push([what[p], from[p]]);
+  }
+  letters.reverse();
+  var text = letters.map(function (l) { return l.ch; }).join('').replace(/^ +| +$/g, '').replace(/ {2,}/g, ' ');
+  return { text: text, cost: iwdieTxResidue(ink, w, h, base, bank, placed, total), from: p / 4, to: end / 4,
+    letters: letters.filter(function (l) { return l.ch !== ' '; }) };
+}
+
+/** How well `text` alone explains `ink` (v1.78.0): the programme of iwdieTxRead with `text`'s letters in order - a
+ *  forced reading, to weigh a look-alike or a word the panel knows against what was read. -> {cost, to} | null when
+ *  `bank` lacks one of its letters or it cannot be laid on the ink */
+function iwdieTxForce(ink, w, h, base, bank, gains, total, text, opts) {
+  opts = opts || {};
+  var lam = opts.lambda == null ? 0.5 : opts.lambda, spaceCost = opts.space == null ? 0.3 : opts.space;
+  var sp = iwdieTxSpan(ink, w, h), need = [], u;
+  if (!sp || !(total > 0) || !text) return null;
+  for (u = 0; u < text.length; u++) {
+    var ch = text.charAt(u);
+    if (ch === ' ') { need.push(-1); continue; }
+    if (bank.index[ch] === undefined) return null;
+    need.push(bank.index[ch]);
+  }
+  var P = 4 * (w + 4), L = need.length, cur = new Float64Array(P + 1).fill(Infinity), backs = [], p, i, d;
+  var adv4 = bank.chars.map(function (g) { return Math.round(g.adv * 4); }), sp4 = Math.round(bank.space * 4), kern = iwdieTxKerny(bank);
+  for (p = Math.max(0, 4 * (sp[0] - 4)); p <= 4 * (sp[0] + 1) && p <= P; p++) cur[p] = 0;
+  for (i = 0; i < L; i++) {
+    var next = new Float64Array(P + 1).fill(Infinity), back = new Int32Array(P + 1).fill(-1), c = need[i];
+    for (p = 0; p <= P; p++) {
+      if (cur[p] === Infinity) continue;
+      if (c < 0) { for (d = -3; d <= 3; d++) { var q0 = p + sp4 + d; if (q0 > p && q0 <= P && cur[p] + spaceCost < next[q0]) { next[q0] = cur[p] + spaceCost; back[q0] = p; } } continue; }
+      var k = p & 3, t = bank.chars[c].ph[k];
+      if (!t || !t.w) continue;
+      var xx = (p >> 2) + t.off;
+      if (xx < 0 || xx > w) continue;
+      var gv = gains[c * 4 + k][xx];
+      if (gv === Infinity) continue;
+      for (d = kern[c] ? -6 : -2; d <= 2; d++) { var q = p + adv4[c] + d; if (q > p && q <= P && cur[p] + gv + lam < next[q]) { next[q] = cur[p] + gv + lam; back[q] = p; } }
+    }
+    backs.push(back);
+    cur = next;
+  }
+  var end = -1;
+  for (p = 4 * sp[1]; p <= P; p++) if (cur[p] !== Infinity && (end < 0 || cur[p] < cur[end])) end = p;
+  if (end < 0) return null;
+  var placed = [];
+  for (i = L - 1, p = end; i >= 0; i--) { var p0 = backs[i][p]; if (need[i] >= 0) placed.push([need[i], p0]); p = p0; }
+  return { cost: iwdieTxResidue(ink, w, h, base, bank, placed, total), to: end / 4 };
+}
+
+/** Whether a reading looks like words rather than an icon read as letters (v1.78.0): mostly letters and digits, no run of
+ *  marks, no mark at its start (but a legend's '= ' before a word), nothing at its end a caption does not end in (a hyphen
+ *  after a letter does: Low-). */
+function iwdieTxWordy(s) {
+  s = String(s || '');
+  if (!s || s.length > 60) return false;
+  var marks = s.replace(/[A-Za-zÆØÅæøå0-9 ]/g, '').length, alnum = s.replace(/[^A-Za-zÆØÅæøå0-9]/g, '').length;
+  if (!alnum || marks > Math.max(1, 0.3 * s.length)) return false;
+  if (/[.,:\/'()\-+]{2,}/.test(s)) return false;
+  if (/^[.,:\/'\-+%°)&]/.test(s) || /^=(?! [A-ZÆØÅa-zæøå])/.test(s)) return false;
+  if (/[\/'(+:,=&]$/.test(s) || /[^A-Za-zÆØÅæøå]-$/.test(s)) return false;
+  // mostly thin strokes - f, j, l, I, 1 - or a letter four times running is a figure's outline read as letters
+  if (/([^\s0-9])\1\1\1/.test(s)) return false;
+  var thin = s.replace(/[^fjlI1|]/g, '').length;
+  if (s.replace(/ /g, '').length >= 5 && thin >= 0.5 * s.replace(/ /g, '').length) return false;
+  // a word of six letters or more mostly of strokes - f, j, l, r, I, L, v, y, 1 - is an outline's edges read as letters
+  var odd = s.split(' ').some(function (t) {
+    var letters = t.replace(/[^A-Za-zÆØÅæøå0-9]/g, '');
+    return (letters.length >= 6 && letters.replace(/[^fjlrILvy1]/g, '').length >= 0.6 * letters.length) ||
+      (letters.length === 5 && letters.replace(/[^fjlrILvy1]/g, '').length >= 4);
+  });
+  return !odd;
+}
+
+/** Levenshtein distance, `cap` + 1 once it is past `cap`. */
+function iwdieTxDist(a, b, cap) {
+  if (Math.abs(a.length - b.length) > cap) return cap + 1;
+  var prev = [], cur, i, j;
+  for (j = 0; j <= b.length; j++) prev[j] = j;
+  for (i = 1; i <= a.length; i++) {
+    cur = [i];
+    var low = i;
+    for (j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1));
+      if (cur[j] < low) low = cur[j];
+    }
+    if (low > cap) return cap + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/** The part of a word's ink between columns x0 and x1 (v1.78.0), as iwdieTxInk gives it. */
+function iwdieTxCrop(I, x0, x1) {
+  x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(I.w, Math.ceil(x1));
+  var w = Math.max(0, x1 - x0), ink = new Float32Array(w * I.h), total = 0;
+  for (var y = 0; y < I.h; y++) for (var x = 0; x < w; x++) { var v = I.ink[y * I.w + x0 + x]; ink[y * w + x] = v; total += v * v; }
+  return { ink: ink, w: w, h: I.h, x: I.x + x0, y: I.y, ground: I.ground, text: I.text, total: total };
+}
+
+/** How much a reading looks like what panels say (v1.78.0), word by word, 2 each: a code (K13, AC1, V3hr, V3gc%), a word
+ *  (Runtime, bar, SH), words joined by a hyphen or a slash (M-T, Kjøl/Frys), a number, a unit or sign (%, °C, (kW)). */
+function iwdieTxShape(s) {
+  return String(s || '').split(' ').reduce(function (n, t) {
+    if (!t) return n;
+    if (/^[A-ZÆØÅ]{1,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅ]?[a-zæøå]+[.:]?$/.test(t) || /^[A-ZÆØÅ]{2,}[.:]?$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅa-zæøå]+(?:[-\/][A-ZÆØÅa-zæøå]+)+[.:-]?$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅa-zæøå]+-$/.test(t)) return n + 2;
+    if (/^\d+(?:[.,]\d+)?$/.test(t) || /^(%|°C|°|K|h|=|&|\(kW\)|\(kWh\))$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅa-zæøå]+\.°C$/.test(t)) return n + 2;
+    return n;
+  }, 0);
+}
+
+/** One run of a picture's text read (v1.78.0). `I` its ink (iwdieTxInk); `tries` [[bank, base]] the sizes and baselines
+ *  to read it at; `vocab` words and phrases the panel, its plant and the house use. The best free reading, its stray
+ *  marks at either end read off (a pill's edge, a valve's tip) and the ink cropped to what is left; then, in rounds, the
+ *  readings a letter's look-alike or a known word would give, and the known words as wide as the ink at its size, each
+ *  weighed by how well it alone explains the ink - a known word or phrase (whatever its case) a little lighter, a reading
+ *  that looks like what panels say a little lighter, each letter a little heavier.
+ *  -> {text, cost, known, bank, base, x0, x1: its columns in I} | null */
+function iwdieTxBest(I, tries, vocab, opts) {
+  opts = opts || {};
+  var late = function () { return opts.until && Date.now() > opts.until; };
+  var ALIKE = [['rn', 'm'], ['rr', 'n'], ['m', 'rn'], ['q', 'g'], ['g', 'q'], ['h', 'b'], ['b', 'h'], ['S', '5'], ['5', 'S'], ['O', '0'], ['0', 'O'],
+    ['I', 'l'], ['l', 'I'], ['1', 'l'], ['l', '1'], ['I', '1'], ['1', 'I'], ['I.', 'L'], ['cl', 'd'], ['vv', 'w'], ['c', 'e'], ['e', 'c'], ['ii', 'u'], ['ri', 'n']];
+  var UNITS = ['bar', '°C', '%', 'K', 'h', 'kW', 'kWh', '(kW)', '(kWh)', 'ppm', 'Pa', 'kPa', 'm3/h', 'l/s', 'Hz', 'rpm', 'min'];
+  var best = null;
+  (tries || []).forEach(function (tb) {
+    if (best && late()) return;
+    var bank = tb[0], base = tb[1], gains = iwdieTxGains(I.ink, I.w, I.h, base, bank);
+    var got = iwdieTxRead(I.ink, I.w, I.h, base, bank, gains, I.total, opts);
+    // a reading that is no words (a figure's strokes read as rows of f at a small size) ranks after one that is - judged
+    // without the stray marks at its ends, read off below
+    var bare = got ? got.text.replace(/^[.,')(:\-]+/, '').replace(/[,'(:]+$/, '') : '';
+    var rank = got ? got.cost + (iwdieTxWordy(bare) ? 0 : 0.5) : Infinity;
+    if (got && (!best || rank < best.rank)) best = { text: got.text, cost: got.cost, rank: rank, bank: bank, base: base, gains: gains, letters: got.letters };
+  });
+  if (!best || !best.text) return null;
+  var L = best.letters, a = 0, b = L.length - 1;
+  while (a < b && /^[.,')(:\-]$/.test(L[a].ch) && !(L[a].ch === '(' && /\)/.test(best.text))) a++;
+  while (b > a && /^[,'(:]$/.test(L[b].ch)) b--;
+  var J = I, bank0 = best.bank, base0 = best.base, gains0 = best.gains, text0 = best.text, cost0 = best.cost;
+  if (a > 0 || b < L.length - 1) {
+    var t0 = bank0.chars[bank0.index[L[a].ch]].ph[0];
+    var x0 = L[a].x + (t0 ? t0.off : 0) - 1, x1 = b + 1 < L.length ? L[b + 1].x : I.w;
+    J = iwdieTxCrop(I, x0, Math.min(I.w, x1 + 1));
+    var keep = '', k = -1;
+    for (var u = 0; u < best.text.length; u++) {
+      var ch = best.text.charAt(u);
+      if (ch === ' ') { if (k >= a && k < b) keep += ' '; continue; }
+      k++;
+      if (k >= a && k <= b) keep += ch;
+    }
+    text0 = keep.replace(/^ +| +$/g, '');
+    gains0 = iwdieTxGains(J.ink, J.w, J.h, base0, bank0);
+    var f0 = iwdieTxForce(J.ink, J.w, J.h, base0, bank0, gains0, J.total, text0, opts);
+    if (!f0) return null;
+    cost0 = f0.cost;
+  }
+  // what is no words, or explains its ink poorly, is left as read: weighing its look-alikes would take long for nothing
+  if (!iwdieTxWordy(text0) || cost0 > 0.4) {
+    var sp0 = iwdieTxSpan(J.ink, J.w, J.h);
+    return { text: text0, cost: cost0, known: false, bank: bank0, base: base0, x0: (J.x - I.x) + (sp0 ? sp0[0] : 0), x1: (J.x - I.x) + (sp0 ? sp0[1] + 1 : J.w) };
+  }
+  var words = {}, lows = {}, phrases = {};
+  (vocab || []).forEach(function (v) { phrases[String(v).toLowerCase()] = 1; });
+  (vocab || []).concat(UNITS).forEach(function (v) {
+    String(v).split(' ').forEach(function (t) { if (t.length >= 2 || /[%°]/.test(t)) { words[t] = 1; lows[t.toLowerCase()] = 1; } });
+  });
+  // known whatever its case: the panel's Inngangsparti is the picture's inngangsparti
+  var known = function (t) { return !!phrases[t.toLowerCase()] || t.split(' ').every(function (w) { return !!lows[w.toLowerCase()]; }); };
+  var score = function (t, cost) {
+    var toks = t.split(' '), kw = toks.filter(function (w) { return !!lows[w.toLowerCase()]; }).length;
+    // the share of its words that are known, and that look like panels' words: a word split in two is not two words
+    return cost - (known(t) ? 0.04 : 0) - 0.04 * kw / toks.length - 0.02 * iwdieTxShape(t) / (2 * toks.length) + 0.012 * t.replace(/ /g, '').length;
+  };
+  var weighed = {}, weigh = function (t) {
+    if (t in weighed) return weighed[t];
+    var f = t === text0 ? { cost: cost0 } : iwdieTxForce(J.ink, J.w, J.h, base0, bank0, gains0, J.total, t, opts);
+    return (weighed[t] = f ? { text: t, cost: f.cost, score: score(t, f.cost) } : null);
+  };
+  var variants = function (s0) {
+    var out = {}, add = function (t) { t = t.replace(/ {2,}/g, ' ').replace(/^ +| +$/g, ''); if (t && t !== s0) out[t] = 1; };
+    ALIKE.forEach(function (pr) {
+      for (var at = s0.indexOf(pr[0]); at >= 0; at = s0.indexOf(pr[0], at + 1)) add(s0.slice(0, at) + pr[1] + s0.slice(at + pr[0].length));
+      if (s0.indexOf(pr[0]) >= 0) add(s0.split(pr[0]).join(pr[1]));
+    });
+    // a space between two lower-case letters (a word read in two): read off
+    s0.replace(/[a-zæøå] [a-zæøå]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
+    // a stray mark between two letters or digits (a speck read as a comma): read off
+    s0.replace(/[A-Za-zÆØÅæøå0-9][,.:'][A-Za-zÆØÅæøå0-9]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
+    // a case's code (K05, F60, AC1) as codes are written: no mark in it, its number in digits
+    var code = /^([A-ZÆØÅ]{1,3})[,.:']?([0-9OoSIlBZ]{1,3})$/.exec(s0);
+    if (code && /[^0-9]/.test(code[2] + s0.replace(code[1], '').replace(code[2], ''))) {
+      add(code[1] + code[2].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Il]/g, '1').replace(/B/g, '8').replace(/Z/g, '2'));
+    }
+    var toks = s0.split(' ');
+    toks.forEach(function (tk, i) {
+      if (words[tk]) return;
+      var cap = Math.max(1, Math.floor(tk.length / 3)), low = tk.toLowerCase();
+      Object.keys(words).forEach(function (w) {
+        if (Math.abs(w.length - tk.length) > cap || iwdieTxDist(low, w.toLowerCase(), cap) > cap) return;
+        add(toks.slice(0, i).concat([w]).concat(toks.slice(i + 1)).join(' '));
+      });
+    });
+    // a whole phrase the panel, plant or house knows - spaces aside, so a word read in two is found
+    var lowAll = s0.toLowerCase().replace(/ /g, '');
+    (vocab || []).forEach(function (v) {
+      var cap = Math.max(1, Math.floor(String(v).length / 3));
+      if (iwdieTxDist(lowAll, String(v).toLowerCase().replace(/ /g, ''), cap) <= cap) add(String(v));
+    });
+    return Object.keys(out);
+  };
+  var pick = weigh(text0);
+  // the words the panel, plant or house knows that would stand as wide as this ink at its size: a letter read badly (an M
+  // as fvt) leaves a word further from what was read than its look-alikes, or a third of its letters, reach
+  var spW = iwdieTxSpan(J.ink, J.w, J.h), inkW = spW ? spW[1] - spW[0] + 1 : J.w;
+  var wide = function (v) {
+    for (var n = 0, u = 0; u < v.length; u++) {
+      var ch = v.charAt(u);
+      if (ch === ' ') n += bank0.space;
+      else if (bank0.index[ch] === undefined) return -1;
+      else n += bank0.chars[bank0.index[ch]].adv;
+    }
+    return n;
+  };
+  (vocab || []).map(function (v) { return [String(v), wide(String(v))]; }).filter(function (p) {
+    return p[1] > 0 && p[0].replace(/ /g, '').length >= 3 && Math.abs(p[1] - inkW) <= Math.max(3, 0.12 * p[1]);
+  }).sort(function (a, b) { return Math.abs(a[1] - inkW) - Math.abs(b[1] - inkW); }).slice(0, 6).forEach(function (p) {
+    if (late()) return;
+    var w2 = weigh(p[0]);
+    if (w2 && w2.score < pick.score) pick = w2;
+  });
+  for (var round = 0; round < 3 && pick && !late(); round++) {
+    var better = pick;
+    variants(pick.text).forEach(function (t) { if (late()) return; var w = weigh(t); if (w && w.score < better.score) better = w; });
+    if (better === pick) break;
+    pick = better;
+  }
+  if (!pick) return null;
+  var span = iwdieTxSpan(J.ink, J.w, J.h);
+  return { text: pick.text, cost: pick.cost, known: known(pick.text), bank: bank0, base: base0,
+    x0: (J.x - I.x) + (span ? span[0] : 0), x1: (J.x - I.x) + (span ? span[1] + 1 : J.w) };
+}
+
+/** Whether a reading is taken (v1.78.0): one that looks like words and explains its ink well (cost 0.14 at most), or a
+ *  little less well (0.24) and is a word or phrase the panel, plant or house knows, or (0.28) looks wholly like what
+ *  panels say - codes, units, numbers, capitals, a short capitalised word. Two letters at least; a capital after a small
+ *  letter in a word nobody knows (VarmlLrftspor) is a letter read wrong, but in a unit (kW, kWh). */
+function iwdieTxTaken(r) {
+  if (!r || !iwdieTxWordy(r.text) || r.text.replace(/ /g, '').length < 2) return false;
+  if (!r.known && r.text.split(' ').some(function (t) { return /[a-zæøå][A-ZÆØÅ]/.test(t) && !/^\(?(kW|kWh|MW|MWh|kVA|kPa|MPa|mA|pH|dB)\)?$/.test(t); })) return false;
+  if (r.cost <= 0.14) return true;
+  if (r.cost <= 0.24 && r.known) return true;
+  // a little less sure: each of its words a code, a unit, a number, capitals or a capitalised word - not any letters
+  return r.cost <= 0.28 && r.text.split(' ').every(function (t) {
+    return /^[A-ZÆØÅ]{1,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t) || /^[A-ZÆØÅ]{2,}[.:]?$/.test(t) || /^[A-ZÆØÅ][a-zæøå]{1,4}[.:-]?$/.test(t) ||
+      /^\d+(?:[.,]\d+)?$/.test(t) || /^(%|°C|K|h|bar|=|\(kW\)|\(kWh\)|[A-ZÆØÅ]-[A-ZÆØÅ])$/.test(t) || /^[A-ZÆØÅa-zæøå]+\.°C$/.test(t);
+  });
+}
+
+/** A run's pieces (v1.78.0): its columns with ink (over 0.15), apart where `gapMin` columns have none. -> [{x0, x1}] */
+function iwdieTxPieces(I, gapMin) {
+  var on = [], x, y, out = [], start = -1, run = 0;
+  for (x = 0; x < I.w; x++) { var s = 0; for (y = 0; y < I.h; y++) s += I.ink[y * I.w + x]; on.push(s > 0.15); }
+  for (x = 0; x <= I.w; x++) {
+    if (x < I.w && on[x]) { if (start < 0) start = x; run = 0; continue; }
+    if (start < 0) continue;
+    run++;
+    if (run >= gapMin || x === I.w) { out.push({ x0: start, x1: x - run + 1 }); start = -1; run = 0; }
+  }
+  return out;
+}
+
+/** The sizes and baselines a run whose ink stands `h` rows high, its lowest on row `bottom`, is read at (v1.78.0): a size
+ *  from that height as capitals and ascenders stand on the baseline (0.66 to 0.71 of the size), and as descenders reach
+ *  under it (0.88 to 0.93 of the size in all, the baseline 0.21 of the size up), each on its baseline and a row either
+ *  way, among `sizes`, the sizes there are banks for. -> [[size, base]] */
+function iwdieTxTries(h, bottom, sizes) {
+  var out = [];
+  (sizes || []).forEach(function (s) {
+    var d;
+    if (s >= h / 0.71 - 1 && s <= h / 0.66 + 1) for (d = -1; d <= 1; d++) out.push([s, bottom + d]);
+    if (s >= h / 0.93 - 1 && s <= h / 0.88 + 1) for (d = -1; d <= 1; d++) out.push([s, Math.round(bottom - 0.21 * s) + d]);
+  });
+  return out;
+}
+
+/** The sizes, in half pixels, a run whose ink stands `h` rows high may be read at (v1.78.0), as iwdieTxTries tries -
+ *  measured on two of Thomas's plants' pictures, half pixels read as well as quarter pixels did, with half the glyphs. */
+function iwdieTxSizes(h) {
+  var out = [], add = function (lo, hi) { for (var s = Math.ceil(lo * 2) / 2; s <= hi + 1e-9; s += 0.5) if (out.indexOf(s) < 0) out.push(s); };
+  add(h / 0.71 - 1, h / 0.66 + 1);
+  add(h / 0.93 - 1, h / 0.88 + 1);
+  return out.sort(function (a, b) { return a - b; });
+}
+
+/** Runs of a picture's text read (v1.78.0), a worker's share: `runs` [{I: iwdieTxInk's, h: the run's height, bottom: the
+ *  row under its ink in I}], `banks` {size: bank} of one font, `vocab` the panel's, plant's and house's words. A run that
+ *  does not read and is wide is read in pieces (a word, an icon, a word), a wide piece that does not read in smaller
+ *  pieces - those that read joined where they stand on one baseline at most a word space and a half apart. Each reading
+ *  has `opts.runMs` (1.5 s) at most. `say([i, readings])` hears each run read as it is.
+ *  -> [[{text, cost, known, size, base, x0, x1}] | null] by run, x0 and x1 its columns and base its row in its I */
+function iwdieTxReadAll(runs, banks, vocab, opts, say) {
+  var sizes = Object.keys(banks).map(Number).sort(function (a, b) { return a - b; });
+  // the sizes there are banks for, each on its baseline and a row either way; each reading - a run whole, a piece - with
+  // its own time, so the pieces of an icon's run are not left the time its reading whole took
+  var read = function (I, h, bottom) {
+    var tries = iwdieTxTries(h, bottom, sizes).map(function (t) { return [banks[t[0]], t[1]]; }).filter(function (t) { return !!t[0]; });
+    return iwdieTxBest(I, tries, vocab, Object.assign({}, opts || {}, { until: Date.now() + ((opts && opts.runMs) || 1500) }));
+  };
+  var out = (runs || []).map(function (R, i) {
+    // a run whose text hardly stands off its ground (under 40 apart) is no text: an erased symbol's residue
+    if (!(R.I.contrast >= 40)) { if (say) say([i, null]); return null; }
+    var I = R.I, got = read(I, R.h, R.bottom), res = null;
+    if (iwdieTxTaken(got)) res = [{ text: got.text, cost: got.cost, known: got.known, size: got.bank.size, base: got.base, x0: got.x0, x1: got.x1 }];
+    else if (I.w > 3 * R.h && I.w <= 300) {
+      var parts = [], gap = Math.max(3, Math.round(0.3 * R.h));
+      var piece = function (pc, again) {
+        var C = iwdieTxCrop(I, Math.max(0, pc.x0 - 2), Math.min(I.w, pc.x1 + 2)), top = -1, bot = -1, y, x, s;
+        for (y = 0; y < C.h && top < 0; y++) { s = 0; for (x = 0; x < C.w; x++) s += C.ink[y * C.w + x]; if (s > 0.15) top = y; }
+        for (y = C.h - 1; y >= 0 && bot < 0; y--) { s = 0; for (x = 0; x < C.w; x++) s += C.ink[y * C.w + x]; if (s > 0.15) bot = y; }
+        if (top < 0 || bot + 1 - top < 5) return;
+        var g = read(C, bot + 1 - top, bot + 1), off = C.x - I.x;
+        if (iwdieTxTaken(g)) parts.push({ text: g.text, cost: g.cost, known: g.known, size: g.bank.size, base: g.base, x0: off + g.x0, x1: off + g.x1, space: g.bank.space });
+        // a wide piece that does not read - an icon with the words beside it, the run as high as the icon - in smaller pieces
+        else if (again && gap > 3 && C.w > 3 * (bot + 1 - top)) {
+          iwdieTxPieces(C, 3).slice(0, 12).forEach(function (q) { piece({ x0: off + q.x0, x1: off + q.x1 }, false); });
+        }
+      };
+      iwdieTxPieces(I, gap).slice(0, 12).forEach(function (pc) { piece(pc, true); });
+      var joined = [];
+      parts.forEach(function (p) {
+        var q = joined[joined.length - 1];
+        if (q && Math.abs(q.base - p.base) <= 1 && Math.abs(q.size - p.size) <= 0.5 && p.x0 - q.x1 <= 1.5 * Math.max(q.space, 2)) {
+          q.text += ' ' + p.text; q.x1 = p.x1; q.cost = Math.max(q.cost, p.cost); q.known = q.known && p.known;
+        } else joined.push(p);
+      });
+      joined.forEach(function (p) { delete p.space; });
+      res = joined.length ? joined : null;
+    }
+    if (say) say([i, res]);
+    return res;
+  });
+  return out;
+}
+
+/** Labels read from runs that overlap, kept once (v1.78.0) - an icon's run grown over the words beside it reads them
+ *  again: the widest first (the lower cost of two as wide), then each that is not on one line with one kept (their rows
+ *  over half the lower's height) over half the narrower's width. `boxes` [{x0, y0, x1, y1, cost}] in the picture.
+ *  -> [index kept], in order */
+function iwdieTxDistinct(boxes) {
+  var order = boxes.map(function (b, i) { return i; }).sort(function (a, b) {
+    return (boxes[b].x1 - boxes[b].x0) - (boxes[a].x1 - boxes[a].x0) || (boxes[a].cost || 0) - (boxes[b].cost || 0) || a - b;
+  });
+  var kept = [];
+  order.forEach(function (i) {
+    var B = boxes[i];
+    var on = kept.some(function (k) {
+      var K = boxes[k], ox = Math.min(B.x1, K.x1) - Math.max(B.x0, K.x0), oy = Math.min(B.y1, K.y1) - Math.max(B.y0, K.y0);
+      return oy > 0 && oy >= 0.5 * Math.min(B.y1 - B.y0, K.y1 - K.y0) && ox > 0 && ox >= 0.5 * Math.min(B.x1 - B.x0, K.x1 - K.x0);
+    });
+    if (!on) kept.push(i);
+  });
+  return kept.sort(function (a, b) { return a - b; });
+}
+
+/** The label a reading becomes (v1.78.0): the Designer's label size whose capitals stand as high as the picture's -
+ *  `cap` px over its baseline - in the label's own font (`ratio`: its capitals' height over its size, the Designer's
+ *  measured by vcTxLabelLook; Roboto's 0.711 without), white where the text is light on a dark ground. -> obj_id */
+function iwdieTxLabelKind(cap, white, ratio) {
+  var want = cap / (ratio || 0.711), best = 12;
+  [8, 9, 10, 11, 12, 14, 16, 18, 20].forEach(function (s) { if (Math.abs(s - want) < Math.abs(best - want)) best = s; });
+  return 'number_v3_label_' + best + 'px_norm' + (white ? '_white' : '');
+}
+
+/** A reading's letters out of the picture (v1.78.0): within box `b` ({x, y, w, h}), each pixel on the way from `ground`
+ *  to `text` - nearer that line than 40 and at least 6 % of the way - set to the ground; a pixel of another colour (a
+ *  case's edge, a pipe) stays. -> how many */
+function iwdieTxErase(pic, W, H, b, ground, text) {
+  var t = [text[0] - ground[0], text[1] - ground[1], text[2] - ground[2]], span = t[0] * t[0] + t[1] * t[1] + t[2] * t[2], n = 0;
+  if (!(span > 0)) return 0;
+  var x0 = Math.max(0, Math.floor(b.x)), y0 = Math.max(0, Math.floor(b.y)), x1 = Math.min(W, Math.ceil(b.x + b.w)), y1 = Math.min(H, Math.ceil(b.y + b.h));
+  var g = [Math.round(ground[0]), Math.round(ground[1]), Math.round(ground[2])];
+  for (var y = y0; y < y1; y++) for (var x = x0; x < x1; x++) {
+    var j = (y * W + x) * 4, dr = pic[j] - ground[0], dg = pic[j + 1] - ground[1], db = pic[j + 2] - ground[2];
+    var u = (dr * t[0] + dg * t[1] + db * t[2]) / span;
+    if (u < 0.06) continue;
+    var er = dr - u * t[0], eg = dg - u * t[1], eb = db - u * t[2];
+    if (er * er + eg * eg + eb * eb > 1600 || u > 1.25) continue;
+    pic[j] = g[0]; pic[j + 1] = g[1]; pic[j + 2] = g[2];
+    n++;
+  }
+  return n;
+}
+
+/** A word read in the picture as a placeholder of the job's SVG (v1.78.0): a label of the Designer (`l.kind`) with its
+ *  text, where the label would draw it (`l.x`, `l.y`, at `l.w` x `l.h`), marked data-iwdie-found and data-iwdie-read. It
+ *  stands for no object of the panel, so a sync makes it a new label, its text the label's own. '' without a text. */
+function iwdieVcReadLabelSvg(l, used) {
+  var known = l && iwdieVcObjectIndex()[l.kind], fmt = iwdieDrawFmt, esc = iwdieDrawEsc;
+  if (!known || known.kind !== 'label' || !l.text || ![l.x, l.y, l.w, l.h].every(isFinite) || !(l.w > 0) || !(l.h > 0)) return '';
+  var o = { id: known.id, w: l.w, h: l.h, role: known.role, desc: known.desc, kind: 'label', tag: String(l.text), hasTag: true };
+  var name = IWDIE_VC_OBJ_PREFIX + known.id, gid = iwdieVcSvgId(name, used);
+  return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-found="1" data-iwdie-read="1" transform="translate(' + fmt(l.x) + ' ' + fmt(l.y) + ')">' +
     iwdieVcItemParts(iwdieVcObjectItem(o)).join('') + '</g>';
 }
 
@@ -18393,7 +19063,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // and the house symbols found in it first
           if (ai === 'vector' || (!ai && base)) { info.vector = true; ai = null; lib = null; }
           if (ai) { info.ai = ai; lib = null; }
-          paper = info.vector ? vcPaper(tab, [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'],
+          paper = info.vector ? vcPaper(tab, [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['text', 'Text in the picture'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'],
             ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']])
             : lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
             ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
@@ -18428,7 +19098,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 // the picture as it was on a hidden layer, to read again later (v1.48.0); the house symbols found on Komponenter,
                 // and each value's bubble in its placeholder (v1.74.0); each IWMAC object found in it a new object's placeholder (v1.77.0)
                 return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: null, original: picture, vectors: vz.layers, shapes: shapes,
-                  components: vz.symbols, objects: info.objects, looks: info.looks, unders: vz.unders, found: vz.found, title: title });
+                  components: vz.symbols, objects: info.objects, looks: info.looks, unders: vz.unders, found: vz.found, labels: vz.labels, title: title });
               });
             }
             // the kept components looked for in the picture (v1.44.0): those found become vectors of their own
@@ -18496,6 +19166,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var got = info.recognized, vz = info.vectorized;
         if (vz) what = 'The picture vectorized in ' + (Math.round(vz.ms / 100) / 10) + ' s: ' + [iwdieN(vz.shapes, 'shape', 'shapes') + ' in ' + iwdieN(vz.colours, 'colour', 'colours'),
           vz.pills ? iwdieN(vz.pills, 'pill', 'pills') + ' as rounded rectangles' : '', vz.pipes ? iwdieN(vz.pipes, 'pipe', 'pipes') + ' as lines' : '',
+          vz.labels && vz.labels.length ? iwdieN(vz.labels.length, 'word', 'words') + ' read as label objects' + (vz.textFont ? ' (' + vz.textFont + ')' : '') : '',
+          vz.textNone ? 'its words not read as labels (' + vz.textNone + ': add the picture’s font on the card - Myriad Pro is in Illustrator’s Support ' +
+            'Files › Required › Fonts)' : '',
           vz.letters ? iwdieN(vz.letters, 'letter', 'letters') + ' in ' + iwdieN(vz.words, 'word', 'words') : ''].filter(Boolean).join(', ') +
           ', on the layers Bakgrunn, Rør, Former and Tekst - unlocked, to edit; the picture as it was on the hidden layer Bakgrunn (original)' +
           (nObj ? '. The ' + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter, over the rest' : '');
@@ -19192,6 +19865,288 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /* ---------- the picture's words as label objects (v1.78.0) ---------- */
+    /** The fonts a picture's words may be read in (v1.78.0), each loaded in this page: the fonts dropped on the card
+     *  (IWDIE_TX_FONTS_KEY), Myriad Pro where the machine has it - Illustrator's own, which most pictures are written
+     *  in - the house's Roboto, the machine's or else Google Fonts' (kept a month with the synced pictures' fonts),
+     *  and the machine's Arial and Segoe UI. -> Promise<[{family, label}]> */
+    function vcTxFonts() {
+      var out = [], kept = [];
+      try { kept = GM_getValue(IWDIE_TX_FONTS_KEY, []) || []; } catch (e) { kept = []; }
+      var load = function (family, bytes, desc) {
+        try {
+          var ff = new FontFace(family, bytes, desc || {});
+          return ff.load().then(function (f) { document.fonts.add(f); return true; }, function () { return false; });
+        } catch (e) { return Promise.resolve(false); }
+      };
+      return Promise.all((Array.isArray(kept) ? kept : []).map(function (f) {
+        var fam = 'IWDIE ' + String(f.name || 'font').replace(/\.[^.]+$/, '').replace(/[^\w -]/g, '');
+        return load(fam, iwdieBase64ToBytes(String(f.b64 || ''))).then(function (ok) { if (ok) out.push({ family: fam, label: String(f.name) }); });
+      })).then(function () {
+        if (vcHasFont('Myriad Pro')) out.push({ family: 'Myriad Pro', label: 'Myriad Pro' });
+        if (vcHasFont('Roboto')) { out.push({ family: 'Roboto', label: 'Roboto' }); return null; }
+        var cache = {};
+        try { cache = GM_getValue(IWDIE_VC_FONTS_KEY, {}) || {}; } catch (e) { cache = {}; }
+        var rec = cache.Roboto, fresh = rec && rec.faces && Date.now() - (+rec.at || 0) < IWDIE_VC_FONTS_TTL;
+        return (fresh ? Promise.resolve(rec.faces) : vcFetchFaces('Roboto').then(function (faces) {
+          cache.Roboto = { at: Date.now(), faces: faces };
+          try { GM_setValue(IWDIE_VC_FONTS_KEY, cache); } catch (e) {}
+          return faces;
+        }, function () { return []; })).then(function (faces) {
+          var mine = (faces || []).filter(function (fc) { return String(fc.weight) === '400'; });
+          return Promise.all(mine.map(function (fc) {
+            return load('IWDIE Roboto', iwdieBase64ToBytes(fc.b64), fc.range ? { weight: '400', unicodeRange: fc.range } : { weight: '400' });
+          })).then(function (oks) { if (oks.some(Boolean)) out.push({ family: 'IWDIE Roboto', label: 'Roboto' }); });
+        });
+      }).then(function () {
+        ['Arial', 'Segoe UI'].forEach(function (f) { if (vcHasFont(f)) out.push({ family: f, label: f }); });
+        return out;
+      });
+    }
+
+    /** A font's letters drawn for reading (v1.78.0): each of IWDIE_TX_CHARS at `size` px - drawn at 4 times the size and
+     *  averaged down, the pen at the four quarter-pixel phases - with its advance; the space's, and the height of the
+     *  font's capitals over its size. Kept per font and size. -> bank (iwdieTxGains') */
+    var vcTxBankCache = {};
+    function vcTxBank(family, size) {
+      var key = family + '|' + size;
+      if (vcTxBankCache[key]) return vcTxBankCache[key];
+      var S = 4, c = document.createElement('canvas'), g = c.getContext('2d', { willReadFrequently: true });
+      var font = (size * S) + 'px "' + family + '"';
+      g.font = font;
+      var m = g.measureText('ÅHgjpqy|'), asc = Math.ceil((m.actualBoundingBoxAscent || size * S) / S) + 2;
+      var desc = Math.ceil((m.actualBoundingBoxDescent || size * S * 0.3) / S) + 2, Hs = asc + desc, chars = [], index = {};
+      var cap = (g.measureText('H').actualBoundingBoxAscent || size * S * 0.7) / S / size;
+      IWDIE_TX_CHARS.split('').forEach(function (ch) {
+        g.font = font;
+        var adv = g.measureText(ch).width / S, Wc = Math.ceil(adv) + 8;
+        c.width = Wc * S; c.height = Hs * S;
+        g.font = font; g.fillStyle = '#000'; g.textBaseline = 'alphabetic';
+        g.fillText(ch, 2 * S, asc * S);
+        var A = g.getImageData(0, 0, c.width, c.height).data, ph = [];
+        for (var k = 0; k < 4; k++) {
+          // the pen k quarter pixels on: the 4x picture shifted k columns right, averaged down 4 x 4
+          var a = new Float32Array(Wc * Hs), x0 = Wc, x1 = -1, y0 = Hs, y1 = -1, x, y, dx, dy;
+          for (y = 0; y < Hs; y++) for (x = 0; x < Wc; x++) {
+            var s = 0;
+            for (dy = 0; dy < S; dy++) for (dx = 0; dx < S; dx++) {
+              var sx = x * S + dx - k;
+              if (sx >= 0) s += A[((y * S + dy) * c.width + sx) * 4 + 3];
+            }
+            var v = s / (S * S * 255);
+            a[y * Wc + x] = v;
+            if (v > 0.01) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+          }
+          if (x1 < 0) { ph.push(null); continue; }
+          var tw = x1 - x0 + 1, th = y1 - y0 + 1, t = new Float32Array(tw * th);
+          for (y = 0; y < th; y++) for (x = 0; x < tw; x++) t[y * tw + x] = a[(y0 + y) * Wc + x0 + x];
+          ph.push({ off: x0 - 2, top: y0 - asc, w: tw, h: th, a: t });
+        }
+        index[ch] = chars.length;
+        chars.push({ ch: ch, adv: adv, ph: ph });
+      });
+      g.font = font;
+      return (vcTxBankCache[key] = { size: size, space: g.measureText(' ').width / S, index: index, chars: chars, cap: cap });
+    }
+
+    /** How the Designer draws a label of `kind` (v1.78.0), measured on an element of its class out of sight: its font,
+     *  its capitals' height over its size, where its baseline stands below the object's top and its first letter right of
+     *  its left. Where the page has no such style (it is not the Designer's), the house's: Roboto, 0.711, the baseline
+     *  0.93 of the size down, a pixel in. -> {font, px, cap, base, left} */
+    var vcTxLookCache = {};
+    function vcTxLabelLook(kind) {
+      if (vcTxLookCache[kind]) return vcTxLookCache[kind];
+      var px = +(/(\d+)px/.exec(kind) || [0, 12])[1], look = { font: (/bold/.test(kind) ? '700 ' : '') + px + 'px Roboto, Arial, sans-serif', px: px, cap: 0.711, base: Math.round(px * 0.93), left: 1 };
+      try {
+        var def = (W.controls || {})[kind] || {}, el = document.createElement('div'), mark = document.createElement('span');
+        el.className = def.classname || ('css_' + kind);
+        el.style.cssText = 'position:absolute;left:-9999px;top:-9999px;white-space:nowrap';
+        el.appendChild(document.createTextNode('Hx'));
+        mark.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline';
+        el.appendChild(mark);
+        document.body.appendChild(el);
+        var cs = getComputedStyle(el), size = parseFloat(cs.fontSize);
+        // the Designer's own style for it: the size the kind says
+        if (Math.abs(size - px) < 0.6) {
+          var f = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily, g = document.createElement('canvas').getContext('2d');
+          g.font = f;
+          var mH = g.measureText('H'), mK = g.measureText('K');
+          look = { font: f, px: px, cap: (mH.actualBoundingBoxAscent || px * 0.711) / px, base: mark.offsetTop, left: (parseFloat(cs.paddingLeft) || 0) - (mK.actualBoundingBoxLeft || 0) };
+        }
+        el.parentNode.removeChild(el);
+      } catch (e) {}
+      return (vcTxLookCache[kind] = look);
+    }
+
+    /** The words a picture's text is weighed against (v1.78.0): the house's (IWDIE_TX_HOUSE), the panel's objects' tags
+     *  and aliases (without their [t_n] prefix), and the plant's units' names. -> [string] */
+    function vcTxVocab(objects) {
+      var out = IWDIE_TX_HOUSE.slice(), add = function (s) { s = String(s || '').replace(/\s+/g, ' ').trim(); if (s && s.length <= 40 && out.indexOf(s) < 0) out.push(s); };
+      (objects || []).forEach(function (o) { if (!o) return; add(o.tag_text); add(String(o.alias_text || '').replace(/^\[[^\]]*\]\s*/, '').replace(/^-+\s*/, '')); });
+      try { (W.yourplantUnits || []).forEach(function (u) { add(u && u.unit_name); }); } catch (e) {}
+      return out.slice(0, 3000);
+    }
+
+    /** The page's turn (v1.78.0): a task of its own after the work so far - a message, which a page behind another does not
+     *  hold back as it holds back timers. -> Promise */
+    function vcTxTurn() {
+      return new Promise(function (resolve) {
+        var ch = new MessageChannel();
+        ch.port1.onmessage = function () { ch.port1.close(); resolve(); };
+        ch.port2.postMessage(0);
+      });
+    }
+
+    /** Runs of a picture's text read in a worker of their own (v1.78.0): iwdieTxReadAll with `args`, each run's reading
+     *  heard as it comes (`onRun([i, readings])`), the worker ended once it is done or `ms` are up - what came by then
+     *  kept. A worker that cannot run it reads nothing: the page's thread is not held for it. -> Promise (done) */
+    function vcTxWorker(args, onRun, ms) {
+      return new Promise(function (resolve) {
+        var url = null, wk = null, timer = null, over = false;
+        var end = function () {
+          if (over) return;
+          over = true;
+          if (timer) clearTimeout(timer);
+          try { if (wk) wk.terminate(); } catch (e) {}
+          if (url) URL.revokeObjectURL(url);
+          resolve();
+        };
+        try {
+          url = URL.createObjectURL(new Blob([vcTxDeps().concat([iwdieTxReadAll]).map(String).join('\n') +
+            '\nonmessage = function (ev) {\n  try { iwdieTxReadAll.apply(null, ev.data.concat([function (p) { postMessage({ run: p }); }])); } catch (e) {}\n' +
+            '  postMessage({ done: 1 });\n};\n'], { type: 'text/javascript' }));
+          wk = new Worker(url);
+        } catch (e) { end(); return; }
+        wk.onmessage = function (ev) {
+          var d = ev.data || {};
+          if (d.run) { try { onRun(d.run); } catch (e) {} }
+          if (d.done) end();
+        };
+        wk.onerror = function (e) { try { if (e && e.preventDefault) e.preventDefault(); } catch (e2) {} end(); };
+        timer = setTimeout(end, ms);
+        wk.postMessage(args);
+      });
+    }
+
+    /** The reading functions a worker runs (v1.78.0). */
+    function vcTxDeps() {
+      return [iwdieTxGains, iwdieTxKerny, iwdieTxSpan, iwdieTxResidue, iwdieTxRead, iwdieTxForce, iwdieTxWordy, iwdieTxDist, iwdieTxCrop, iwdieTxShape, iwdieTxBest,
+        iwdieTxTaken, iwdieTxPieces, iwdieTxTries];
+    }
+
+    /** The picture's words read in its own font, each to be a label object (v1.78.0). The tracer finds them (iwdieVzTrace
+     *  `words`, off this page: their boxes, and the picture without its pills' rings and pipes, to read them on); they are
+     *  read in the first font this page has (vcTxFonts) that reads one of its widest runs surely - none, and they stay
+     *  drawing - each run in a worker
+     *  (iwdieTxReadAll) against the panel's, plant's and house's words (vcTxVocab). Each word taken is a label of the
+     *  Designer's whose capitals stand as high (iwdieTxLabelKind) where it draws them as the picture did (vcTxLabelLook),
+     *  and its letters come out of `data` (iwdieTxErase), so the trace leaves them. `step(phase, a, b)` hears how far it is:
+     *  ('runs', n), ('font', label), ('read', done, of).
+     *  -> Promise<{labels: [{kind, text, x, y, w, h, cost}], runs, font, fonts: [label], left: runs left as drawing} | {none: why, fonts}> */
+    function vcReadText(data, w, h, info, step) {
+      var objects = (info && info.objects) || [];
+      step = step || function () {};
+      return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, { words: true }], function () {}).then(function (tr) {
+        var work = (tr && tr.work && tr.work.length === data.length) ? tr.work : data;
+        var runs = iwdieTxRuns((tr && tr.words) || [], work, w, h);
+        if (!runs.length) return { labels: [], runs: 0, none: 'no words in it' };
+        step('runs', runs.length);
+        // no caption is longer than 400 px or 30 times its height: a run that is, a pipe with its arrows or a border, stays drawing
+        var long = 0, R = runs.filter(function (r) { var ok = r.w <= Math.min(400, 30 * r.h); if (!ok) long++; return ok; }).map(function (r) {
+          var I = iwdieTxInk(work, w, h, r, 3);
+          return { r: r, I: I, h: r.h, bottom: (r.y - I.y) + r.h };
+        });
+        if (!R.length) return { labels: [], runs: runs.length, left: long, none: 'no run of it short enough to be a caption' };
+        var vocab = vcTxVocab(objects);
+        // the glyphs of the sizes the runs may be, a size at a time, the page given its turn between (half pixels alone: `half`)
+        var banksFor = function (family, list, half) {
+          var banks = {}, want = [];
+          list.forEach(function (x) { iwdieTxSizes(x.h).forEach(function (s) { if (want.indexOf(s) < 0 && (!half || s * 2 === Math.round(s * 2))) want.push(s); }); });
+          return want.reduce(function (p, s) {
+            return p.then(function () { banks[s] = vcTxBank(family, s); return vcTxTurn(); });
+          }, Promise.resolve()).then(function () { return banks; });
+        };
+        var lean = function (x) { return { I: x.I, h: x.h, bottom: x.bottom }; };
+        return vcTxFonts().then(function (fonts) {
+          var labels = fonts.map(function (f) { return f.label; });
+          if (!fonts.length) return { none: 'no font to read it in', fonts: labels };
+          // the font: in order - the card's, Myriad Pro, Roboto, the machine's - the first that reads one of the four widest
+          // runs shaped like text surely (cost 0.1 at most; one an icon in a word may read as none, so one is enough)
+          var probe = R.filter(function (x) { return x.h >= 7 && x.h <= 26 && x.I.w <= 25 * x.h; }).sort(function (a, b) { return b.I.w - a.I.w; }).slice(0, 4);
+          if (!probe.length) probe = R.slice(0, 4);
+          var scores = [];
+          var tryFont = function (k) {
+            if (k >= fonts.length) return Promise.resolve();
+            var f = fonts[k];
+            var res = [];
+            return banksFor(f.family, probe, true).then(function (banks) {
+              // each run in a worker of its own, side by side
+              return Promise.all(probe.map(function (x, j) {
+                return vcTxWorker([[lean(x)], banks, vocab, {}], function (p) { if (p) res[j] = p[1]; }, 12000);
+              }));
+            }).then(function () {
+              var taken = 0, cost = 0, sure = 0;
+              res.forEach(function (r) { (r || []).forEach(function (l) { taken++; cost += l.cost; if (l.cost <= 0.1) sure++; }); });
+              return { f: f, taken: taken, sure: sure, cost: taken ? cost / taken : 1 };
+            }, function () { return { f: f, taken: 0, cost: 1 }; }).then(function (sc) {
+              scores.push(sc);
+              if (sc.sure >= 1) return;
+              return tryFont(k + 1);
+            });
+          };
+          return tryFont(0).then(function () {
+            // none that does: the words stay drawing - read in a font not the picture's, S reads as 5 and H as FI, and is taken
+            var best = scores.filter(function (sc) { return sc.sure >= 1; })[0];
+            if (!best) return { none: 'none of the fonts here reads it surely', fonts: labels };
+            step('font', best.f.label);
+            // every run, shared among up to four workers, each with every size's glyphs: a run's pieces are lower than it
+            var n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1, R.length)), parts = [], i;
+            for (i = 0; i < n; i++) parts.push([]);
+            R.map(function (x, k) { return k; }).sort(function (a, b) { return R[b].I.w - R[a].I.w; }).forEach(function (k, j) { parts[j % n].push(k); });
+            return banksFor(best.f.family, R, false).then(function (banks) {
+              var got = {}, count = 0;
+              return Promise.all(parts.map(function (ks) {
+                var mine = ks.map(function (k) { return R[k]; });
+                return vcTxWorker([mine.map(lean), banks, vocab, {}], function (p) {
+                  if (!p || !(p[0] >= 0) || got[ks[p[0]]] !== undefined) return;
+                  got[ks[p[0]]] = p[1] || null;
+                  step('read', ++count, R.length);
+                }, IWDIE_TX_READ_MS);
+              })).then(function () {
+                return R.map(function (x, k) { return { k: k, labels: got[k] || null }; });
+              });
+            }).then(function (all) {
+              var bankCap = vcTxBank(best.f.family, 12).cap, out = [], left = 0, read = [];
+              all.forEach(function (got) {
+                if (!got.labels) { left++; return; }
+                got.labels.forEach(function (l) {
+                  var x = R[got.k];
+                  // its letters' rows: an icon's run is taller than the words beside it
+                  var top = Math.max(x.r.y - 1, x.I.y + l.base - Math.ceil(0.95 * l.size)), bot = Math.min(x.r.y + x.r.h + 1, x.I.y + l.base + Math.ceil(0.3 * l.size));
+                  read.push({ x: x, l: l, x0: x.I.x + l.x0, x1: x.I.x + l.x1, y0: top, y1: bot, cost: l.cost });
+                });
+              });
+              // words read twice - by an icon's run grown over them and by their own - kept once
+              iwdieTxDistinct(read).forEach(function (i) {
+                var x = read[i].x, l = read[i].l;
+                var lum = function (c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; };
+                var white = lum(x.I.text) > 170 && lum(x.I.text) > lum(x.I.ground) + 40;
+                var kind = iwdieTxLabelKind(bankCap * l.size, white, vcTxLabelLook('number_v3_label_12px_norm').cap), look = vcTxLabelLook(kind);
+                var g2 = document.createElement('canvas').getContext('2d');
+                g2.font = look.font;
+                var inkLeft = x.I.x + l.x0, baseY = x.I.y + l.base;
+                out.push({ kind: kind, text: l.text, cost: Math.round(l.cost * 1000) / 1000, x: Math.round(inkLeft - look.left), y: Math.round(baseY - look.base),
+                  w: Math.max(6, Math.ceil(g2.measureText(l.text).width) + 2), h: Math.round(look.px * 1.2) + 2 });
+                // its letters out of the picture, so the trace leaves them
+                iwdieTxErase(data, w, h, { x: inkLeft - 1, y: read[i].y0, w: l.x1 - l.x0 + 2, h: read[i].y1 - read[i].y0 }, x.I.ground, x.I.text);
+              });
+              return { labels: out, runs: R.length + long, font: best.f.label, fonts: labels, left: left + long };
+            });
+          });
+        });
+      });
+    }
+
     /* ---------- components, pills and pipes found in the picture (v1.44.0, v1.45.0) ---------- */
     /** Whether the Designer draws an object of kind `id` itself (v1.48.0): its render definition's
      *  picture, or its CSS class's look on an element of its size out of sight (iwdieVcPaintsItself). A
@@ -19392,6 +20347,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               'vectorized, the Designer’s own pictures of each object that shows a state are looked for in it: one found where no object of the ' +
               'panel stands becomes that object, a new one to link; one the panel’s object shows already is taken out. The rest is vectorized.">' +
               '<input type="checkbox" id="objs" checked style="margin:0"> <span>IWMAC objects found in the picture become objects, not shapes</span></label>' : '') +
+            // v1.78.0: its words read in its own font, as label objects - and the fonts they are read in
+            (how.picture ? '<label style="display:flex;gap:8px;align-items:center;margin-top:6px;cursor:pointer" title="The picture’s words are read ' +
+              'letter by letter in its own font: each one read surely becomes a label object with that text, where the picture had it, and its letters ' +
+              'come out of the picture. A word not read surely stays drawing.">' +
+              '<input type="checkbox" id="text" checked style="margin:0"> <span>Text in the picture becomes label objects</span></label>' +
+              '<div style="margin:2px 0 0 21px;font-size:12px;color:#9a9a9a">read in <span id="fonts"></span> · ' +
+              '<button id="addfont" class="l" title="A picture drawn in Illustrator is mostly in Myriad Pro, which the browser does not have: ' +
+              'Illustrator keeps it in its Support Files › Required › Fonts folder. Drop it here, or choose it">Add the picture’s font…</button></div>' : '') +
             '<div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;margin-top:16px">' +
             // without the .ai (v1.61.0): the picture made vectors; Trace the picture (raster, components found) gone since v1.74.0
             (how.picture ? '<button id="vector" style="' + pillCss(false) + '" title="Without the .ai: the picture turned into vectors - the house symbols ' +
@@ -19401,15 +20364,38 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             '<button id="choose" style="' + pillCss(false) + '">Choose the .ai file…</button>' +
             '<a id="open" target="iwdie-ext" style="' + pillCss(true) + '">Open plant folder</a></div>' +
             '<input id="file" type="file" accept=".ai,.pdf,.eps,application/pdf,application/postscript,application/illustrator" style="display:none">' +
+            '<input id="fontfile" type="file" accept=".otf,.ttf,.woff,.woff2" style="display:none">' +
             '</div><iframe name="iwdie-ext" style="display:none"></iframe></body>');
           doc.close();
         } catch (e) { finish(null); return; }
         var $ = function (k) { try { return doc.getElementById(k); } catch (e) { return null; } };
         var say = function (text, bad) { var el = $('say'); if (el) { el.textContent = text; el.style.color = bad ? '#ff9f9f' : '#9a9a9a'; } };
         var where = function (d) { return [root && root.name].concat(d.path).filter(Boolean).join(' › '); };
+        // v1.78.0: the fonts a picture's words are read in - those kept from the card, and the machine's
+        var fontsSaid = function () {
+          var kept = [];
+          try { kept = GM_getValue(IWDIE_TX_FONTS_KEY, []) || []; } catch (e) { kept = []; }
+          var names = kept.map(function (k) { return String(k.name || '').replace(/\.[^.]+$/, ''); });
+          ['Myriad Pro', 'Roboto', 'Arial', 'Segoe UI'].forEach(function (f) { if ((f === 'Roboto' || vcHasFont(f)) && names.indexOf(f) < 0) names.push(f); });
+          var el = $('fonts');
+          if (el) el.textContent = names.join(', ');
+        };
+        var keepFont = function (f) {
+          var name = String(f.name || 'font');
+          if (f.size > 4194304) { say(name + ' is too big for a font (' + Math.round(f.size / 1048576) + ' MB).', true); return; }
+          f.arrayBuffer().then(function (ab) {
+            var kept = [];
+            try { kept = GM_getValue(IWDIE_TX_FONTS_KEY, []) || []; } catch (e) { kept = []; }
+            kept = kept.filter(function (k) { return k && k.name !== name; }).concat([{ name: name, b64: iwdieBytesToBase64(new Uint8Array(ab)), at: Date.now() }]).slice(-4);
+            try { GM_setValue(IWDIE_TX_FONTS_KEY, kept); } catch (e) {}
+            fontsSaid();
+            say(name + ' kept in this browser: the picture’s words are read in it too.');
+          }, function (e) { say(name + ' could not be read: ' + String((e && e.message) || e), true); });
+        };
         var take = function (f) {
           if (!f || done) return;
           var name = String(f.name || '');
+          if (/\.(otf|ttf|woff2?)$/i.test(name)) { keepFont(f); return; }
           if (!/\.(ai|pdf|eps)$/i.test(name)) { say(name + ' is not an Illustrator file (.ai).', true); return; }
           if (f.size > IWDIE_VC_AI_MAX) {
             say(name + ' is too big to pass along (' + Math.round(f.size / 1048576) + ' MB): trace the picture, or open it in VectorCraft with Open plant .ai….', true);
@@ -19507,6 +20493,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (f) f.handle.getFile().then(take, function (e) { say(f.name + ' could not be read: ' + String((e && e.message) || e), true); });
         };
         input.addEventListener('change', function () { var f = input.files && input.files[0]; input.value = ''; take(f); });
+        var fontInput = $('fontfile');
+        if (fontInput) fontInput.addEventListener('change', function () { var f = fontInput.files && fontInput.files[0]; fontInput.value = ''; if (f) keepFont(f); });
+        fontsSaid();
         doc.addEventListener('click', function (e) {
           var b = e.target && e.target.closest ? e.target.closest('button, #drop') : null;
           if (!b) return;
@@ -19515,9 +20504,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             // v1.77.0: whether the IWMAC objects the picture shows become those objects (the card's box, ticked unless unticked)
             var objs = $('objs');
             info.findObjects = !objs || !!objs.checked;
+            // v1.78.0: whether its words are read as label objects (the card's second box)
+            var tx = $('text');
+            info.readText = !tx || !!tx.checked;
             finish('vector');
           }
           else if (b.id === 'choose' || b.id === 'drop') choose();
+          else if (b.id === 'addfont') { try { $('fontfile').click(); } catch (e2) {} }
           else if (b.id === 'connect') connect();
           else if (b.id === 'allow') allow();
           else if (b.id === 'copy') copy();
@@ -19747,8 +20740,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function vcVectorize(c, paper, info) {
       var w = c.width, h = c.height, data = c.getContext('2d').getImageData(0, 0, w, h).data, t0 = Date.now();
       var objects = (info && info.objects) || [], got = { symbols: [], symbolCount: {}, unders: {}, carried: 0, left: 0, looks: 0 };
-      var said = { palette: ['its colours', 0.52], pills: ['its pills', 0.54], pipes: ['its pipes', 0.56], labels: ['each pixel’s colour, at the edges a blend', 0.58],
-        shapes: ['the shapes, laid over each other and fitted', 0.86], done: ['done', 0.9] };
+      var said = { palette: ['its colours', 0.62], pills: ['its pills', 0.64], pipes: ['its pipes', 0.66], labels: ['each pixel’s colour, at the edges a blend', 0.68],
+        shapes: ['the shapes, laid over each other and fitted', 0.87], done: ['done', 0.9] };
       paper.step('objects', 'their pills', 0.02, 0.05);
       var ground = [204, 204, 204];
       // each step drawn before its work, which holds this page's thread - and the tab's - for a while (v1.77.1)
@@ -19783,6 +20776,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           paper.done(fo.placed.length || fo.twice.length ? (fo.placed.length ? fo.placed.length + ' placed as objects: ' + top.join(', ') + (Object.keys(count).length > 3 ? ', …' : '') : 'none new') +
             (fo.twice.length ? '; ' + fo.twice.length + ' shown again where the panel’s objects stand, taken out' : '') : 'none found', 0.09);
         }, function () { paper.done('not looked for', 0.09); });
+      }).then(function () {
+        // v1.78.0: the picture's words read in its own font, each a label object, their letters out before the house symbols are
+        // looked for - erased, the symbols leave outlines that read as rows of f
+        got.labels = []; got.textRuns = 0; got.textLeft = 0; got.textFont = '';
+        if (info && info.readText === false) { paper.none('text', 'not read: switched off on the card'); return null; }
+        paper.step('text', 'where its words are…', 0.09, 0.1);
+        return paper.breath().then(function () {
+          return vcReadText(data, w, h, info, function (what, a, b) {
+            if (what === 'runs') paper.say(iwdieN(a, 'run', 'runs') + ' of text; which font reads them…', 0.1);
+            else if (what === 'font') { got.textFont = a; paper.say('reading them in ' + a + '…', 0.11); }
+            else if (what === 'read') paper.say(a + ' of ' + b + ' read in ' + got.textFont, 0.11 + 0.08 * a / Math.max(1, b));
+          });
+        }).then(function (rt) {
+          if (!rt || rt.none) {
+            paper.done('not read: ' + ((rt && rt.none) || 'it could not be') + (rt && rt.fonts ? ' (fonts here: ' + (rt.fonts.join(', ') || 'none') + ') - drop the ' +
+              'picture’s font on the card: Myriad Pro is in Illustrator’s Support Files › Required › Fonts' : ''), 0.2);
+            // for the opening toast: the picture's font is what it lacked
+            if (rt && rt.fonts) got.textNone = rt.none;
+            return;
+          }
+          got.labels = rt.labels; got.textRuns = rt.runs; got.textLeft = rt.left; got.textFont = rt.font;
+          var said3 = rt.labels.slice(0, 4).map(function (l) { return l.text; }).join(', ');
+          paper.done(rt.labels.length ? iwdieN(rt.labels.length, 'word', 'words') + ' as labels (' + said3 + (rt.labels.length > 4 ? ', …' : '') + ')' +
+            (rt.left ? '; ' + iwdieN(rt.left, 'run', 'runs') + ' left as drawing' : '') + ' · ' + rt.font : 'none read · ' + rt.font, 0.2);
+        }, function () { paper.done('not read', 0.2); });
       }).then(function () {
         var lib = libSymbols(), items = lib && lib.items ? lib.items : [];
         if (!items.length) { paper.none('symbols', 'no library'); return null; }
@@ -19820,12 +20838,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           paper.done(got.symbols.length ? got.symbols.length + ' found: ' + top + (Object.keys(got.symbolCount).length > 3 ? ', …' : '') : 'none found', 0.5);
         }, function () { paper.done('not looked for', 0.5); });
       }).then(function () {
-        paper.step('vector', 'its colours', 0.5, 0.52);
+        paper.step('vector', 'its colours', 0.6, 0.62);
         // what the picture had transparent (v1.75.1): the panel's colour there, which the trace leaves undrawn
         var clear = info && info.clear && info.clear.mask && info.clear.mask.length === w * h ? { plate: info.clear.plate, clear: info.clear.mask } : {};
         return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, clear], function (p) {
           if (!p || !paper) return;
-          if (p.phase === 'colour') paper.say('the outlines of colour ' + (p.i + 1) + ' of ' + p.n, 0.6 + 0.25 * p.i / Math.max(1, p.n));
+          if (p.phase === 'colour') paper.say('the outlines of colour ' + (p.i + 1) + ' of ' + p.n, 0.7 + 0.16 * p.i / Math.max(1, p.n));
           else if (said[p.phase]) paper.say(said[p.phase][0], said[p.phase][1]);
         });
       }).then(function (vz) {
@@ -22881,6 +23899,31 @@ if (typeof module !== 'undefined' && module.exports) {
     vzTwinKind: iwdieVzTwinKind,
     vzObjectsSeen: iwdieVzObjectsSeen,
     vcFoundPlaceholderSvg: iwdieVcFoundPlaceholderSvg,
+    TX_CHARS: IWDIE_TX_CHARS,
+    TX_HOUSE: IWDIE_TX_HOUSE,
+    TX_FONTS_KEY: IWDIE_TX_FONTS_KEY,
+    txInk: iwdieTxInk,
+    txRuns: iwdieTxRuns,
+    txGains: iwdieTxGains,
+    txKerny: iwdieTxKerny,
+    txSpan: iwdieTxSpan,
+    txResidue: iwdieTxResidue,
+    txRead: iwdieTxRead,
+    txForce: iwdieTxForce,
+    txWordy: iwdieTxWordy,
+    txDist: iwdieTxDist,
+    txCrop: iwdieTxCrop,
+    txShape: iwdieTxShape,
+    txBest: iwdieTxBest,
+    txTaken: iwdieTxTaken,
+    txPieces: iwdieTxPieces,
+    txTries: iwdieTxTries,
+    txSizes: iwdieTxSizes,
+    txReadAll: iwdieTxReadAll,
+    txDistinct: iwdieTxDistinct,
+    txLabelKind: iwdieTxLabelKind,
+    txErase: iwdieTxErase,
+    vcReadLabelSvg: iwdieVcReadLabelSvg,
     svgClassRules: iwdieSvgClassRules,
     SVG_STYLE_ATTRS: IWDIE_SVG_STYLE_ATTRS,
     vcRestoreOriginal: iwdieVcRestoreOriginal,
