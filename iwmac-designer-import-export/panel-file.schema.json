@@ -1,0 +1,1004 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/iwmac-designer-import-export/panel-file.schema.json",
+  "title": "IWMAC Designer panel file",
+  "description": "The file Insert JSON… takes and Export JSON writes (format iwmac-designer-panel, version 1), made by the userscript from the same tables its in-file guide writes. An agent returns one such file per panel, raw JSON, counts equal to the array lengths; for a new picture, its drawing in panel.image_svg. That one file is the whole answer: no .svg, .ai, .png or archive beside it - Insert makes the picture from image_svg, and Background → Illustrator writes the .svg and the .ai.",
+  "type": "object",
+  "required": [
+    "format",
+    "version",
+    "panel"
+  ],
+  "properties": {
+    "format": {
+      "type": "string",
+      "description": "File type marker, always \"iwmac-designer-panel\". Checked before anything else is read; any other value is refused.",
+      "const": "iwmac-designer-panel"
+    },
+    "version": {
+      "type": "integer",
+      "description": "File format version, always 1.",
+      "const": 1
+    },
+    "exported_at": {
+      "type": "string",
+      "description": "When the file was produced."
+    },
+    "generator": {
+      "type": "string",
+      "description": "Who produced the file: \"IWDIE v<version>\" for an export. Write your own agent name when you generate or modify a file."
+    },
+    "contents": {
+      "$ref": "#/$defs/contents",
+      "description": "What this file holds: each key's size and use, the -for-ai.png, Insert's check of the file. Read it first. The importer ignores it."
+    },
+    "ai_guide": {
+      "type": "object",
+      "description": "This guide (guide_version 2). The importer ignores it. Keep it as it is when you return a file, or omit it; never edit it."
+    },
+    "source_plant_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The plant the panel came from; the same value as panel.plant_id. Informational."
+    },
+    "panel_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Copy of panel.panel_name for readers; keep the two equal."
+    },
+    "panel_width": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Copy of panel.panel_width for readers; keep the two equal."
+    },
+    "panel_height": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Copy of panel.panel_height for readers; keep the two equal."
+    },
+    "counts": {
+      "type": "object",
+      "description": "{single_objects, containers, graphics}: the lengths of the three arrays in panel. Recompute after adding or removing anything; the importer warns when they disagree.",
+      "properties": {
+        "single_objects": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "containers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "graphics": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Facts derived from this panel at export time (object types, linking, units, z-index values, extent). Read it to orient; drop it or recompute it when you return a changed file, because a stale summary misleads the next reader."
+    },
+    "overview": {
+      "$ref": "#/$defs/overview",
+      "description": "The plant behind the panel at export time (v1.62.0), for drawing or linking an overview picture: its units, the rows of their parameters, the tagged signals, this panel's links checked against them, and the picture's layout and style, as tables {cols, rows}. Read overview.read_me first; its rows are the plant parameter source. The importer ignores it; leave it out of a file you return."
+    },
+    "background_embedded": {
+      "type": "boolean",
+      "description": "true when image_data carries the background picture."
+    },
+    "background": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "What the image_data blob is (field, mime, width, height, bytes, source_name) so it never has to be opened.",
+      "properties": {
+        "field": {
+          "const": "image_data"
+        },
+        "mime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "width": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "height": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "panel": {
+      "$ref": "#/$defs/panel",
+      "description": "The panel document itself, the only part the importer draws. See schema.panel."
+    },
+    "image_data": {
+      "type": "string",
+      "description": "The background picture as base64, one very long line, deliberately last. Copy it byte-for-byte; omit it only from a new file with no picture to keep. Never retype, re-encode or edit it. Older exports carry it inside panel instead; both places are read."
+    },
+    "image_svg_trace": {
+      "type": "string",
+      "description": "A coarse vector trace of the background, for reading where things are (see structure). Input only: the importer discards it. Never copy it into image_svg."
+    },
+    "change_log": {
+      "type": "array",
+      "description": "Optional. When you modify a file you may append entries {when, by, change} here. It is the only sanctioned place for notes; the importer ignores it."
+    }
+  },
+  "$defs": {
+    "panel": {
+      "type": "object",
+      "description": "The panel document itself, the only part Insert draws.",
+      "required": [
+        "single_objects",
+        "containers",
+        "graphics"
+      ],
+      "properties": {
+        "plant_id": {
+          "type": "string",
+          "description": "The plant the panel belongs to (\"3157\"); \"\" for a plant-neutral template. The plant number is also the prefix of every parameter driver_id on that plant.",
+          "examples": [
+            "3157"
+          ]
+        },
+        "panel_name": {
+          "type": "string",
+          "description": "The panel name as the Designer shows it.",
+          "examples": [
+            "360.001 Ventilasjon"
+          ]
+        },
+        "panel_width": {
+          "type": "string",
+          "description": "Canvas width with the px suffix; \"1400px\" on a standard panel. Without it the panel size is not applied on insert.",
+          "examples": [
+            "1400px"
+          ],
+          "pattern": "^\\d+px$"
+        },
+        "panel_height": {
+          "type": "string",
+          "description": "Canvas height with the px suffix; \"750px\" on a standard panel.",
+          "examples": [
+            "750px"
+          ],
+          "pattern": "^\\d+px$"
+        },
+        "org_image_name": {
+          "type": "string",
+          "description": "Server-side name of the background picture; \"\" when the panel has none.",
+          "examples": [
+            "00-blank-sidebar-1400x750"
+          ]
+        },
+        "image_name": {
+          "type": "string",
+          "description": "Host bookkeeping, normally \"\".",
+          "examples": [
+            ""
+          ]
+        },
+        "saved_by": {
+          "type": "string",
+          "description": "Who saved the panel. Write your agent name when you create or modify a file.",
+          "examples": [
+            "copilot"
+          ]
+        },
+        "single_objects": {
+          "type": "array",
+          "description": "Free objects placed directly on the canvas, in creation order. See schema.object_entry.",
+          "items": {
+            "$ref": "#/$defs/object"
+          }
+        },
+        "containers": {
+          "type": "array",
+          "description": "Grouped objects (table rows, room cards). [] on most panels. See schema.container.",
+          "items": {
+            "$ref": "#/$defs/container"
+          }
+        },
+        "graphics": {
+          "type": "array",
+          "description": "Opaque host graphics records. Preserve verbatim; never author one; [] on almost every panel."
+        },
+        "converted": {
+          "type": "string",
+          "description": "Present as \"true\" when a background picture is embedded in image_data. Allowed: \"true\".",
+          "examples": [
+            "true"
+          ],
+          "const": "true"
+        },
+        "image_svg": {
+          "$ref": "#/$defs/drawing"
+        }
+      }
+    },
+    "object": {
+      "type": "object",
+      "description": "One object: the same 17 fields on every entry of single_objects and of containers[].items, in this order.",
+      "required": [
+        "obj_id",
+        "name",
+        "id",
+        "posWidth",
+        "posHeight",
+        "posLeft",
+        "posTop",
+        "zIndex",
+        "tag_text",
+        "linked",
+        "link_name",
+        "link_tag",
+        "sub_group",
+        "driver_id",
+        "unit_id",
+        "unit_ref",
+        "alias_text"
+      ],
+      "properties": {
+        "obj_id": {
+          "type": "string",
+          "description": "Which palette object this is (its type). An exact id from object_catalogue in this guide or copied from an existing object; an unknown id draws nothing at all. Case and underscores matter.",
+          "examples": [
+            "number_v3_60px_dark_no_conn"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "Sequential label \"object_0\", \"object_1\", ... in array order, no gaps or duplicates within single_objects. The importer renumbers it on insert, so it carries no identity: never match objects between files by name.",
+          "examples": [
+            "object_12"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "description": "A host type marker, identical on every object. Not an identifier and not a parameter id. Never change it. Allowed: the literal \"driver_id\".",
+          "examples": [
+            "driver_id"
+          ],
+          "const": "driver_id"
+        },
+        "posWidth": {
+          "type": "integer",
+          "description": "Box width. Copy it from an existing object of the same obj_id; never derive it from how wide the text looks.",
+          "examples": [
+            62
+          ]
+        },
+        "posHeight": {
+          "type": "integer",
+          "description": "Box height.",
+          "examples": [
+            22
+          ]
+        },
+        "posLeft": {
+          "type": "integer",
+          "description": "X position from the left edge of the canvas (of the container, for a container item). Emit a plain number: a missing or non-numeric value silently lands the object at 0, and a string such as \"120px\" is read as 120.",
+          "examples": [
+            1169
+          ]
+        },
+        "posTop": {
+          "type": "integer",
+          "description": "Y position from the top edge of the canvas (of the container, for a container item).",
+          "examples": [
+            58
+          ]
+        },
+        "zIndex": {
+          "type": "string",
+          "description": "Stacking order; higher paints on top. Copy the value used by objects of the same role in this file. \"default\" makes array order the stacking order, so a label emitted before a duct disappears under it. Allowed: digits as a string (\"110\"), or \"default\".",
+          "examples": [
+            "110"
+          ],
+          "pattern": "^(\\d+|default)$"
+        },
+        "tag_text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The visible caption: an instrument code (\"RT401 °C\"), a header, a label. Objects that show only a value or a symbol ignore it. A single space \" \" is the palette default on live-value widgets and null occurs on container items; preserve either exactly and never turn one into the other.",
+          "examples": [
+            "Tilluft"
+          ]
+        },
+        "linked": {
+          "type": "string",
+          "description": "Whether the host treats the object as bound. Real exports say \"true\" on every object, because the host sets it on load whenever driver_id is not the literal \"driver_id\", even when driver_id is empty. A newly authored unlinked object says \"false\". It proves nothing about whether the binding is valid. Allowed: \"true\" or \"false\".",
+          "examples": [
+            "true"
+          ],
+          "enum": [
+            "true",
+            "false"
+          ]
+        },
+        "link_name": {
+          "type": "string",
+          "description": "Host bookkeeping: the literal \"link_name\" on exported objects, \"\" on newly authored ones. Never a panel name or a destination.",
+          "examples": [
+            "link_name"
+          ]
+        },
+        "link_tag": {
+          "type": "string",
+          "description": "IWMAC system tag written by the host tagger (the Tag column of the parameter export); \"\" or \"NA\" on most objects. Copy it, never compose one.",
+          "examples": [
+            ""
+          ]
+        },
+        "sub_group": {
+          "type": "string",
+          "description": "Parameter instance letter (\"A\", \"B\") from the parameter source (its SGR column); \"\" when not tagged.",
+          "examples": [
+            ""
+          ]
+        },
+        "driver_id": {
+          "type": "string",
+          "description": "The parameter binding: the full plant-prefixed parameter string, \"<plant_id>_<DRIVER>_<address>\", copied verbatim from one row of the plant parameter source (its Driver ID column). \"\" on an exported object that is not linked; the literal \"driver_id\" on a newly authored unlinked object; on sub_page_* navigation objects the numeric id of the target panel (\"16\"). Never construct, edit, translate or guess one.",
+          "examples": [
+            "10242_AK3_AKC_0_111_0_0_2532"
+          ]
+        },
+        "unit_id": {
+          "type": "string",
+          "description": "The unit (controller) the parameter belongs to, as the Designer's UNITS list names it and the parameter export's Unit ID column carries it (\"V01\", \"2180\", \"000:111\"); \"\" when not linked. The literal string \"undefined\" occurs in real exports; preserve it.",
+          "examples": [
+            "000:111"
+          ]
+        },
+        "unit_ref": {
+          "type": "string",
+          "description": "Optional stable unit reference; \"\" in practically every export. Leave it as found.",
+          "examples": [
+            ""
+          ]
+        },
+        "alias_text": {
+          "type": "string",
+          "description": "What the signal is, in words: the parameter description shown to the person who links the object, and the key by which a whole panel is relinked on another plant. \"new text\" is the Designer default on unbound scaffold objects; keep it.",
+          "examples": [
+            "u17 Ther Air"
+          ]
+        }
+      }
+    },
+    "container": {
+      "type": "object",
+      "description": "A container of objects (table rows, room cards), as the host writes a plain objects_container.",
+      "required": [
+        "id",
+        "unique_id",
+        "name",
+        "type",
+        "container_type",
+        "className",
+        "header_footer",
+        "linked",
+        "linked_to",
+        "width",
+        "height",
+        "left",
+        "top",
+        "zIndex",
+        "items"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Container kind; \"objects_container\" on every production container.",
+          "examples": [
+            "objects_container"
+          ]
+        },
+        "unique_id": {
+          "type": "string",
+          "description": "MUST contain \"custom_\" (\"custom_30\"). A container whose unique_id lacks that substring is silently dropped on insert; the host renumbers it anyway.",
+          "examples": [
+            "custom_30"
+          ],
+          "pattern": "custom_"
+        },
+        "name": {
+          "type": "string",
+          "description": "\"objects_container_<n>\", renumbered on insert.",
+          "examples": [
+            "objects_container_30"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "description": "Layout type. Allowed: \"container_c\" (content only), \"container_hc\" (header + content), \"container_hcf\" (header, content, footer), \"container_cf\" (content + footer).",
+          "examples": [
+            "container_c"
+          ]
+        },
+        "container_type": {
+          "type": "string",
+          "description": "Flavour. A table_container carries extra keys (num_of_rows, num_of_col, descr_width, val_width, cells, last_y, header_descr) that must be preserved and must not be added to an objects_container. Allowed: \"objects_container\" or \"table_container\".",
+          "examples": [
+            "objects_container"
+          ]
+        },
+        "className": {
+          "type": "string",
+          "description": "CSS class; equals container_type on production containers.",
+          "examples": [
+            "objects_container"
+          ]
+        },
+        "header_footer": {
+          "type": "array",
+          "description": "Header and footer rows as {type: \"header\" or \"footer\", text, function: \"none\", function_id: \"none\"}; an empty array on a plain container."
+        },
+        "linked": {
+          "type": "string",
+          "description": "Host bookkeeping; \"0\" unless the container is bound to a unit.",
+          "examples": [
+            "0"
+          ]
+        },
+        "linked_to": {
+          "type": "string",
+          "description": "Host bookkeeping; \"0\" unless bound.",
+          "examples": [
+            "0"
+          ]
+        },
+        "width": {
+          "type": "integer",
+          "description": "Container box width. Metadata, not a clip: items may extend past it.",
+          "examples": [
+            52
+          ]
+        },
+        "height": {
+          "type": "integer",
+          "description": "Container box height.",
+          "examples": [
+            44
+          ]
+        },
+        "left": {
+          "type": "integer",
+          "description": "X position of the container on the canvas.",
+          "examples": [
+            920
+          ]
+        },
+        "top": {
+          "type": "integer",
+          "description": "Y position of the container on the canvas.",
+          "examples": [
+            352
+          ]
+        },
+        "zIndex": {
+          "type": "integer",
+          "description": "A JSON number here (4), unlike objects, where it is a string.",
+          "examples": [
+            4
+          ]
+        },
+        "items": {
+          "type": "array",
+          "description": "The objects inside the container: the same 17 fields as single_objects entries, positioned relative to the container. See schema.container_item.",
+          "items": {
+            "$ref": "#/$defs/object"
+          }
+        },
+        "title": {
+          "type": "string",
+          "description": "Custom attribute the host adds; \"Objects Container\" on production containers.",
+          "examples": [
+            "Objects Container"
+          ]
+        }
+      }
+    },
+    "drawing": {
+      "type": "string",
+      "description": "The panel's picture as vectors (authored on Maskin, Oversikt and Energi only, never on Ventilasjon). The root is the panel's size: <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1400\" height=\"750\" viewBox=\"0 0 1400 750\">. Every element at the top level is a layer group with an id and a data-name, in this order: <g id=\"Bakgrunn\" data-name=\"Bakgrunn\">, <g id=\"Ror\" data-name=\"Rør\">, <g id=\"Former\" data-name=\"Former\">, <g id=\"Tekst\" data-name=\"Tekst\">. One element loose at the top, or opacity, a filter or a mask on a layer group, and VectorCraft opens the whole drawing as one layer. Each piece of equipment is a group with an id of its own beside its data-name (<g id=\"Former_MT1\" data-name=\"MT1\">), or a house symbol placed by name (<use data-iwdie-symbol=\"Kompressor\" x=\"120\" y=\"80\"/>). VectorCraft names only what has an id, and dissolves a group without one that holds a single thing. Pipes are stroked paths with fill=\"none\", one sub-group per circuit in Ror; a flow arrow is a small filled path of its own, never a marker. Text stays <text>, its font-family, font-size and fill as attributes; never outlines. Hide with display=\"none\", never visibility=\"hidden\". No <image>, <script>, <foreignObject>, <style> or CSS classes: fills and strokes are attributes. A prefix such as xlink: is declared on <svg> (xmlns:xlink) or not used; Insert refuses one that is not. Insert makes the drawing the panel's picture as a sync from VectorCraft does - a PNG that keeps the drawing, uploaded to the plant's pictures - so Edit in VectorCraft opens its layers, Background → Illustrator writes them as an .ai, and Export JSON hands it back as panel.image_svg, stamped data-iwdie-drawing. A drawing Export handed over carries data-iwdie-drawing on its root, and may hold the picture under it as an <image>.",
+      "pattern": "^<svg\\b[\\s\\S]*</svg>\\s*$",
+      "not": {
+        "pattern": "<script|<foreignObject"
+      },
+      "if": {
+        "not": {
+          "pattern": "^<svg\\b[^>]*\\sdata-iwdie-drawing="
+        }
+      },
+      "then": {
+        "not": {
+          "pattern": "<image\\b|visibility\\s*=\\s*[\"']hidden"
+        }
+      }
+    },
+    "contents": {
+      "type": "object",
+      "description": "What the file holds and where. Reading material: Insert ignores it.",
+      "required": [
+        "what",
+        "read"
+      ],
+      "properties": {
+        "what": {
+          "type": "string"
+        },
+        "files": {
+          "type": "object"
+        },
+        "coordinates": {
+          "type": "string"
+        },
+        "read": {
+          "type": "object",
+          "description": "Each key: its size in kB, its use and what it holds.",
+          "required": [
+            "cols",
+            "rows"
+          ],
+          "properties": {
+            "cols": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "returning": {
+          "type": "string"
+        },
+        "check": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "overview": {
+      "type": "object",
+      "description": "The plant behind the panel, read from the Designer at export time (v1.62.0). Reading material: Insert ignores it.",
+      "required": [
+        "read_me",
+        "plant"
+      ],
+      "properties": {
+        "read_me": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "plant": {
+          "type": "object",
+          "required": [
+            "plant_id",
+            "canvas"
+          ],
+          "properties": {
+            "plant_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "panel_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "canvas": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "units": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "objects": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "linked_objects": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "units_with_rows": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "objects": {
+          "type": "object",
+          "description": "Every object once: id (o0... as the -for-ai.png marks it), name, obj_id, role, its box on the canvas (x, y, w, h), text, alias_text, unit_id, link, check, the pill (P#) and house symbol (S#) it belongs to, its caption, its container (c#).",
+          "required": [
+            "cols",
+            "rows"
+          ],
+          "properties": {
+            "cols": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "units": {
+          "type": "object",
+          "description": "Every unit of the plant.",
+          "required": [
+            "cols",
+            "rows"
+          ],
+          "properties": {
+            "cols": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "bindings": {
+          "type": "object",
+          "description": "Each linked object read against its unit's rows.",
+          "required": [
+            "cols",
+            "rows"
+          ],
+          "properties": {
+            "cols": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "style": {
+          "type": "object",
+          "description": "The picture's colours, pipes, pills and text, measured."
+        },
+        "parts": {
+          "type": "object",
+          "properties": {
+            "objects": {
+              "type": "object",
+              "description": "The kinds of object the panel uses.",
+              "required": [
+                "cols",
+                "rows"
+              ],
+              "properties": {
+                "cols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array"
+                  }
+                }
+              }
+            },
+            "components": {
+              "type": "object"
+            }
+          }
+        },
+        "picture": {
+          "type": "object",
+          "required": [
+            "source"
+          ],
+          "properties": {
+            "source": {
+              "enum": [
+                "traced",
+                "vectorcraft",
+                "svg"
+              ]
+            },
+            "panels": {
+              "type": "object",
+              "description": "Large panels.",
+              "required": [
+                "cols",
+                "rows"
+              ],
+              "properties": {
+                "cols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array"
+                  }
+                }
+              }
+            },
+            "pipes": {
+              "type": "object",
+              "description": "Pipes.",
+              "required": [
+                "cols",
+                "rows"
+              ],
+              "properties": {
+                "cols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array"
+                  }
+                }
+              }
+            },
+            "pills": {
+              "type": "object",
+              "description": "Pills, P1... in this order.",
+              "required": [
+                "cols",
+                "rows"
+              ],
+              "properties": {
+                "cols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array"
+                  }
+                }
+              }
+            },
+            "figures": {
+              "type": "object",
+              "description": "Figures.",
+              "required": [
+                "cols",
+                "rows"
+              ],
+              "properties": {
+                "cols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array"
+                  }
+                }
+              }
+            },
+            "texts": {
+              "type": "object",
+              "description": "Texts.",
+              "required": [
+                "cols",
+                "rows"
+              ],
+              "properties": {
+                "cols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array"
+                  }
+                }
+              }
+            },
+            "symbols": {
+              "type": "object",
+              "description": "House symbols, S1... in this order.",
+              "required": [
+                "cols",
+                "rows"
+              ],
+              "properties": {
+                "cols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array"
+                  }
+                }
+              }
+            },
+            "layers": {
+              "type": "object",
+              "description": "The drawing's layers.",
+              "required": [
+                "cols",
+                "rows"
+              ],
+              "properties": {
+                "cols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array"
+                  }
+                }
+              }
+            },
+            "layout": {
+              "type": "object"
+            }
+          }
+        },
+        "signals": {
+          "type": "object",
+          "description": "Tagged rows.",
+          "required": [
+            "cols",
+            "rows"
+          ],
+          "properties": {
+            "cols": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "required": [
+            "cols",
+            "units"
+          ],
+          "properties": {
+            "cols": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "units": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "unit_id",
+                  "groups"
+                ],
+                "properties": {
+                  "unit_id": {
+                    "type": "string"
+                  },
+                  "rows": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "groups": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "array"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

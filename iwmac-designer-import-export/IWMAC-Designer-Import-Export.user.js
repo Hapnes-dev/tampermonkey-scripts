@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.75.1
+// @version      1.76.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.75.1';
+var IWDIE_VERSION = '1.76.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -261,6 +261,7 @@ function iwdieFileLayout() {
     { key: 'version', type: 'integer', required: 'yes', set_by: 'fixed', meaning: 'File format version, always ' + IWDIE_FORMAT_VERSION + '.' },
     { key: 'exported_at', type: 'string (ISO 8601)', required: 'no', set_by: 'exporter or agent', meaning: 'When the file was produced.' },
     { key: 'generator', type: 'string', required: 'no', set_by: 'exporter or agent', meaning: 'Who produced the file: "IWDIE v' + IWDIE_VERSION + '" for an export. Write your own agent name when you generate or modify a file.' },
+    { key: 'contents', type: 'object', required: 'no', set_by: 'exporter', meaning: 'What this file holds: each key\'s size and use, the -for-ai.png, Insert\'s check of the file. Read it first. The importer ignores it.' },
     { key: 'ai_guide', type: 'object', required: 'no', set_by: 'exporter', meaning: 'This guide (guide_version ' + IWDIE_AI_GUIDE_VERSION + '). The importer ignores it. Keep it as it is when you return a file, or omit it; never edit it.' },
     { key: 'source_plant_id', type: 'string or null', required: 'no', set_by: 'exporter or agent', meaning: 'The plant the panel came from; the same value as panel.plant_id. Informational.' },
     { key: 'panel_name', type: 'string or null', required: 'no', set_by: 'exporter or agent', meaning: 'Copy of panel.panel_name for readers; keep the two equal.' },
@@ -340,13 +341,52 @@ function iwdiePanelJsonSchema() {
   panel.properties.containers.items = { $ref: '#/$defs/container' };
   panel.properties.converted.const = 'true';
   panel.properties.image_svg = { $ref: '#/$defs/drawing' };
+  // v1.76.0: a drawing an agent writes keeps every rule; one Export handed over (stamped data-iwdie-drawing on its root) is
+  // the picture's own, and may hold a picture of pixels under it
   var drawing = { type: 'string', description: 'The panel\'s picture as vectors (authored on Maskin, Oversikt and Energi only, never on Ventilasjon). ' +
-    IWDIE_DRAWING_RULES.join(' '), pattern: '^<svg\\b[\\s\\S]*</svg>\\s*$', not: { pattern: '<script|<foreignObject|<image\\b|visibility\\s*=\\s*["\']hidden' } };
+    IWDIE_DRAWING_RULES.join(' ') + ' A drawing Export handed over carries data-iwdie-drawing on its root, and may hold the picture under it as an <image>.',
+    pattern: '^<svg\\b[\\s\\S]*</svg>\\s*$', not: { pattern: '<script|<foreignObject' },
+    if: { not: { pattern: '^<svg\\b[^>]*\\sdata-iwdie-drawing=' } }, then: { not: { pattern: '<image\\b|visibility\\s*=\\s*["\']hidden' } } };
+  // v1.76.0: the export's reading material, as a reader takes it - a table is {cols, rows}, each row its values in the
+  // order of cols - so that a whole export can be checked against the schema, not its panel alone
+  var table = function (what) {
+    return { type: 'object', description: what, required: ['cols', 'rows'],
+      properties: { cols: { type: 'array', items: { type: 'string' } }, rows: { type: 'array', items: { type: 'array' } } } };
+  };
+  var strings = { type: 'array', items: { type: 'string' } };
+  var overview = { type: 'object', description: 'The plant behind the panel, read from the Designer at export time (v1.62.0). Reading material: Insert ignores it.',
+    required: ['read_me', 'plant'], properties: {
+      read_me: strings,
+      plant: { type: 'object', required: ['plant_id', 'canvas'], properties: { plant_id: { type: ['string', 'null'] }, panel_name: { type: ['string', 'null'] },
+        canvas: { type: 'array', items: { type: ['integer', 'null'] } }, units: { type: 'integer', minimum: 0 }, objects: { type: 'integer', minimum: 0 },
+        linked_objects: { type: 'integer', minimum: 0 }, units_with_rows: strings } },
+      objects: table('Every object once: id (o0... as the -for-ai.png marks it), name, obj_id, role, its box on the canvas (x, y, w, h), text, ' +
+        'alias_text, unit_id, link, check, the pill (P#) and house symbol (S#) it belongs to, its caption, its container (c#).'),
+      units: table('Every unit of the plant.'),
+      bindings: table('Each linked object read against its unit\'s rows.'),
+      style: { type: 'object', description: 'The picture\'s colours, pipes, pills and text, measured.' },
+      parts: { type: 'object', properties: { objects: table('The kinds of object the panel uses.'), components: { type: 'object' } } },
+      picture: { type: 'object', required: ['source'], properties: { source: { enum: ['traced', 'vectorcraft', 'svg'] }, panels: table('Large panels.'),
+        pipes: table('Pipes.'), pills: table('Pills, P1... in this order.'), figures: table('Figures.'), texts: table('Texts.'),
+        symbols: table('House symbols, S1... in this order.'), layers: table('The drawing\'s layers.'), layout: { type: 'object' } } },
+      signals: table('Tagged rows.'),
+      parameters: { type: 'object', required: ['cols', 'units'], properties: { cols: strings, units: { type: 'array', items: { type: 'object',
+        required: ['unit_id', 'groups'], properties: { unit_id: { type: 'string' }, rows: { type: 'integer', minimum: 0 },
+          groups: { type: 'object', additionalProperties: { type: 'array', items: { type: 'array' } } } } } } } }
+    } };
+  var contents = { type: 'object', description: 'What the file holds and where. Reading material: Insert ignores it.', required: ['what', 'read'],
+    properties: { what: { type: 'string' }, files: { type: 'object' }, coordinates: { type: 'string' }, read: table('Each key: its size in kB, its use and what it holds.'),
+      returning: { type: 'string' }, check: { type: ['object', 'null'] } } };
+  var background = { type: ['object', 'null'], properties: { field: { const: 'image_data' }, mime: { type: ['string', 'null'] }, width: { type: ['integer', 'null'] },
+    height: { type: ['integer', 'null'] }, bytes: { type: ['integer', 'null'] }, source_name: { type: ['string', 'null'] } } };
   var file = iwdieFileLayout(), top = props(file, 'key');
   top.format.const = IWDIE_FORMAT;
   top.version.const = IWDIE_FORMAT_VERSION;
   top.panel = { $ref: '#/$defs/panel', description: top.panel.description };
   top.counts.properties = { single_objects: { type: 'integer', minimum: 0 }, containers: { type: 'integer', minimum: 0 }, graphics: { type: 'integer', minimum: 0 } };
+  top.contents = { $ref: '#/$defs/contents', description: top.contents.description };
+  top.overview = { $ref: '#/$defs/overview', description: top.overview.description };
+  top.background.properties = background.properties;
   return {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     $id: 'https://github.com/hapnes-dev/tampermonkey-scripts/blob/main/iwmac-designer-import-export/panel-file.schema.json',
@@ -358,7 +398,7 @@ function iwdiePanelJsonSchema() {
     type: 'object',
     required: needed(file, 'key'),
     properties: top,
-    $defs: { panel: panel, object: object, container: container, drawing: drawing }
+    $defs: { panel: panel, object: object, container: container, drawing: drawing, contents: contents, overview: overview }
   };
 }
 
@@ -603,7 +643,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
   var hasContainers = !!(s && s.objects.containers > 0);
   var onlyContainers = !!(s && s.objects.single_objects === 0 && s.objects.container_items > 0);
 
-  var readOrder = ['counts', 'summary', 'background'];
+  var readOrder = ['contents', 'counts', 'summary', 'background'];
   if (onlyContainers) readOrder.push('panel.containers[].items');
   else {
     readOrder.push('panel.single_objects');
@@ -814,6 +854,87 @@ function iwdieBuildEnvelope(doc, meta) {
   return env;
 }
 
+/** The value at a dotted path of an export ('overview.objects', 'panel.image_svg'), undefined where there is none. */
+function iwdieEnvelopeAt(env, path) {
+  var v = env;
+  String(path).split('.').forEach(function (k) { v = v != null && typeof v === 'object' && Object.prototype.hasOwnProperty.call(v, k) ? v[k] : undefined; });
+  return v;
+}
+
+/**
+ * What an export holds and where (v1.76.0): its `contents`, the first block after the file's identity. A reader - Copilot
+ * reading the start of a long file, or a person - learns there what this panel is, which keys answer which task, how big
+ * each is and which to skip, before the format's rules (ai_guide, 57 kB) and the plant's rows. `read` lists the keys in
+ * the order the task of drawing or linking an overview picture reads them: use is "read first", "read", "search" (a long
+ * table, read by its group or alias), "copy from" (the entries a returned file keeps), "look up" (the rules, by the part
+ * a task names) or "skip". `check` is Insert's own check of this very file, so that a reader tells what the panel had
+ * from what it changed. Pure: `opts` {file, aiPicture: the -for-ai.png's name or null, check: iwdieCheckFile's result}.
+ */
+function iwdieExportContents(env, opts) {
+  opts = opts || {};
+  env = env || {};
+  var panel = env.panel || {}, ov = env.overview || null, sum = env.summary || {}, str = function (v) { return v == null ? '' : String(v); };
+  var kb = function (v) { return v === undefined ? null : Math.max(0.1, Math.round(JSON.stringify(v).length / 102.4) / 10); };
+  var objects = (sum.objects && sum.objects.total_object_entries) || 0, link = sum.linking || {};
+  var units = (sum.units_referenced || []).length, svg = typeof panel.image_svg === 'string' ? panel.image_svg : '';
+  var own = !!svg && iwdieSvgStampIntact(svg), syms = ov && ov.picture && ov.picture.symbols ? ov.picture.symbols.rows.length : 0;
+  var pic = svg ? (own ? 'its picture a ' + str((env.background && env.background.mime) || 'picture').replace(/^image\//, '').toUpperCase() +
+      ' with the drawing it was made from in panel.image_svg (' + iwdieCountSvgShapes(svg) + ' shapes)' : 'its picture drawn as SVG in panel.image_svg')
+    : env.image_data ? 'its picture a ' + str((env.background && env.background.mime) || '').replace(/^image\//, '').toUpperCase() + ' of pixels alone (image_data)'
+    : 'no picture';
+  var what = 'Export JSON of panel "' + str(env.panel_name || panel.panel_name) + '"' + (str(env.source_plant_id) ? ' on plant ' + env.source_plant_id : '') +
+    ', ' + (parseInt(env.panel_width, 10) || '?') + ' x ' + (parseInt(env.panel_height, 10) || '?') + ' px: ' + iwdieN(objects, 'object', 'objects') +
+    (link.linked_to_a_parameter ? ' (' + link.linked_to_a_parameter + ' linked to a parameter' + (units ? ' of ' + iwdieN(units, 'unit', 'units') : '') + ')' : '') +
+    ', ' + pic + (syms ? ', ' + iwdieN(syms, 'house symbol', 'house symbols') + ' in it' : '') + '.';
+  var rows = [], add = function (key, use, text) { var v = iwdieEnvelopeAt(env, key); if (v !== undefined && v !== null) rows.push([key, kb(v), use, text]); };
+  if (ov) {
+    add('overview.read_me', 'read first', 'How the overview reads: its tables, the marks o0, P1 and S1, what each part is for.');
+    add('overview.objects', 'read', 'Each object once: its box on the canvas, role, text and link, and the pill (P#), house symbol (S#) and caption it belongs to.');
+    add('overview.picture', 'read', 'The picture: its panels, pipes, pills, figures and texts, and its house symbols and their layout where they are known.');
+    add('overview.style', 'read', 'The picture\'s colours, pipe circuits, pills and text, measured: what a new picture in its style copies.');
+    add('overview.parts', 'read', 'The kinds of object the panel uses, and the house components a drawing places by name.');
+    add('overview.units', 'read', 'Every unit (controller) of the plant, and how many of this panel\'s objects each has.');
+    add('overview.bindings', 'read', 'Each linked object read against its unit\'s rows: ok, or what is wrong.');
+    add('overview.signals', 'search', 'The rows the plant has tagged with a standard meaning ("Compressor Running"), every unit\'s or the units in scope.');
+    add('overview.parameters', 'search', 'The parameter rows of the units on this panel, by group: find a row by its group and alias_text, copy its driver_id whole.');
+  }
+  add('panel.single_objects', 'copy from', 'The objects as Insert takes them, 17 fields each: the entries a returned file keeps byte for byte.');
+  if ((panel.containers || []).length) add('panel.containers', 'copy from', 'Grouped objects (rows, cards), their items placed relative to the container.');
+  if (svg) add('panel.image_svg', 'read', own ? 'The picture as vectors: its layers are the top-level groups. Edit it to change the picture; unchanged, Insert keeps image_data.'
+    : 'The picture as SVG, drawn by Insert into the panel\'s picture.');
+  add('summary', 'read', 'Facts counted from the objects: roles, sections, value bands, links, extent.');
+  add('background', 'read', 'What image_data is: its kind, size and bytes, without opening it.');
+  add('ai_guide', 'look up', 'The format\'s rules, for an agent without the IWMAC kit: read the parts a task names (ai_guide.read_order_by_task), never all of it.');
+  add('image_data', 'skip', 'The picture as base64, one line: never read it.' + (opts.aiPicture ? ' The -for-ai.png shows it, marked.' : ''));
+  add('image_svg_trace', ov && ov.picture ? 'skip' : 'read', ov && ov.picture ? 'A coarse vector trace of the picture: overview.picture holds what it shows, as tables.'
+    : 'A coarse vector trace of the picture: its outlines, pipe runs and frames, in panel coordinates.');
+  var check = opts.check || null;
+  return {
+    what: what,
+    files: { json: opts.file || null, picture_for_ai: opts.aiPicture || null },
+    coordinates: 'Every box is x, y, w, h in panel pixels from the top left corner, x to the right and y down; overview.objects gives each object\'s box on ' +
+      'the canvas, a container item\'s too. The picture is the canvas, ' + (parseInt(env.panel_width, 10) || '?') + ' x ' + (parseInt(env.panel_height, 10) || '?') + '.',
+    read: { cols: ['key', 'kB', 'use', 'what'], rows: rows },
+    returning: 'A file returned keeps format, version and panel, with counts equal to its arrays; contents, ai_guide, summary and overview are reading ' +
+      'material Insert ignores, and an answer leaves them out or keeps them unchanged.',
+    check: check ? { verdict: check.verdict || null, errors: (check.errors || []).slice(0, 12), warnings: (check.warnings || []).slice(0, 12),
+      note: 'Insert\'s check of this file as exported: what the panel already had, not what an edit did.' } : null
+  };
+}
+
+/** The export with its contents in their place (v1.76.0): after the file's identity (format, version, exported_at,
+ *  generator), before the guide; a contents it had already, replaced. */
+function iwdieEnvelopeWithContents(env, contents) {
+  var out = {}, put = false, after = { format: 1, version: 1, exported_at: 1, generator: 1 };
+  Object.keys(env || {}).forEach(function (k) {
+    if (k === 'contents') return;
+    if (!put && !after[k]) { out.contents = contents; put = true; }
+    out[k] = env[k];
+  });
+  if (!put) out.contents = contents;
+  return out;
+}
+
 /**
  * The panel document as the importer wants it: blobs back inside. Exports
  * written before 1.17.0 keep image_data and image_svg_trace in the panel and
@@ -935,7 +1056,7 @@ function iwdieCountSvgShapes(svg) {
  * the trace description: the two never both apply, and an agent told to read a
  * "coarse trace" would ignore the pristine drawing sitting in panel.image_svg.
  */
-function iwdieNoteArtworkInAiGuide(env, svg) {
+function iwdieNoteArtworkInAiGuide(env, svg, given) {
   if (!env || typeof env !== 'object') return env;
   var guide = env.ai_guide;
   if (!guide || typeof guide !== 'object') return env;
@@ -949,6 +1070,16 @@ function iwdieNoteArtworkInAiGuide(env, svg) {
       'you edit image_svg, Insert draws the edited markup and ignores image_data (a drawing taken from the picture is stamped ' +
       'data-iwdie-drawing, which is how Insert tells). Move an object only together with the part of the drawing it sits on.'
   };
+  // v1.76.0: what Export did to the drawing VectorCraft saved, so that it reads as the drawing rules write one
+  if (given && (given.sized || given.inlined || given.original)) {
+    guide.artwork.what = 'The drawing this panel\'s picture was made from, in VectorCraft or by Insert - the picture as vectors, its ' +
+      'layers its top-level groups.';
+    guide.artwork.form = [given.sized ? 'its root sized from its viewBox' : '', given.inlined ? 'VectorCraft\'s ' + given.rules +
+      ' style classes written on its ' + given.inlined + ' elements as fill, stroke and font attributes, its <style> gone' : '',
+      given.original ? 'the picture on its hidden layer Bakgrunn (original) left to image_data, the layer kept empty and marked ' +
+      'data-iwdie-original="image_data" - keep that mark: Insert puts the picture back from there' : ''].filter(Boolean).join('; ') +
+      '. It draws as the picture does.';
+  }
   return env;
 }
 
@@ -1204,11 +1335,11 @@ var IWDIE_QUICK_START = [
 
 /** Which parts of this file matter for which job, so 45 kB of guide is not read for a one-line edit. */
 var IWDIE_READ_ORDER_BY_TASK = {
-  to_understand_a_panel: ['counts', 'summary.roles', 'summary.layout', 'background', 'panel.single_objects', 'artwork or structure when present'],
+  to_understand_a_panel: ['contents', 'counts', 'summary.roles', 'summary.layout', 'background', 'overview.objects', 'panel.single_objects', 'artwork or structure when present'],
   to_modify_a_panel: ['when_modifying', 'when_adding_objects', 'schema.object_entry', 'linking', 'self_check'],
   to_create_a_panel: ['quick_start', 'parameter_selection', 'signal_to_object', 'layout', 'drawing_style', 'caption_conventions', 'object_catalogue', 'self_check'],
-  to_link_or_relink: ['linking', 'overview.bindings', 'overview.parameters', 'summary.linking', 'summary.units_referenced'],
-  to_draw_an_overview_picture: ['overview.read_me', 'overview.picture', 'overview.style', 'overview.parts', 'overview.units', 'overview.signals', 'overview.parameters', 'drawing_style', 'layout', 'self_check']
+  to_link_or_relink: ['linking', 'overview.objects', 'overview.bindings', 'overview.parameters', 'summary.linking', 'summary.units_referenced'],
+  to_draw_an_overview_picture: ['contents', 'overview.read_me', 'overview.objects', 'overview.picture', 'overview.style', 'overview.parts', 'overview.units', 'overview.signals', 'overview.parameters', 'drawing_style', 'layout', 'self_check']
 };
 
 /** What production writes in tag_text, by role. Read off real panels, not invented. */
@@ -3070,6 +3201,137 @@ function iwdieKeepsOwnPicture(doc) {
     /^data:image\/(png|jpe?g)[;,]/i.test(String(doc.image_data || ''));
 }
 
+/** The CSS properties a class rule of a drawing may set to be written on its elements as attributes (v1.76.0): SVG
+ *  presentation attributes all, each drawing the same as the rule. A sheet that sets anything else stays as it is. */
+var IWDIE_SVG_STYLE_ATTRS = ['display', 'visibility', 'opacity', 'color', 'fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-width',
+  'stroke-opacity', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'clip-rule',
+  'font-family', 'font-size', 'font-weight', 'font-style', 'letter-spacing', 'word-spacing', 'text-anchor', 'dominant-baseline',
+  'text-decoration', 'paint-order'];
+
+/** A drawing's style sheet as class rules (v1.76.0): [{classes: [name...], decls: [[property, value]...]}] in its order, or
+ *  null for a sheet holding anything else - another selector, an at-rule, !important, a property not in
+ *  IWDIE_SVG_STYLE_ATTRS, a value that is not one - which only a browser's CSS reads right. */
+function iwdieSvgClassRules(css) {
+  // as XML has the sheet's text: VectorCraft writes a quoted family as &apos;Source Sans 3&apos;
+  var s = iwdieOvXmlText(css).replace(/\/\*[\s\S]*?\*\//g, '');
+  if (/[@!<>]/.test(s)) return null;
+  var rules = [], re = /([^{}]*)\{([^{}]*)\}/g, m, at = 0;
+  while ((m = re.exec(s))) {
+    if (s.slice(at, m.index).trim()) return null;
+    at = re.lastIndex;
+    var classes = [], decls = [], sels = m[1].split(','), parts = m[2].split(';'), i;
+    for (i = 0; i < sels.length; i++) {
+      var c = /^\s*\.([A-Za-z_][\w-]*)\s*$/.exec(sels[i]);
+      if (!c) return null;
+      classes.push(c[1]);
+    }
+    for (i = 0; i < parts.length; i++) {
+      if (!parts[i].trim()) continue;
+      var d = /^\s*([A-Za-z-]+)\s*:\s*([^:]*?)\s*$/.exec(parts[i]);
+      if (!d || !d[2] || IWDIE_SVG_STYLE_ATTRS.indexOf(d[1].toLowerCase()) < 0) return null;
+      decls.push([d[1].toLowerCase(), d[2]]);
+    }
+    rules.push({ classes: classes, decls: decls });
+  }
+  return s.slice(at).trim() ? null : rules;
+}
+
+/**
+ * A drawing as Export hands it over (v1.76.0): in the form panel.image_svg's rules ask of one, drawing the same - so a
+ * reader finds every fill and stroke on the element it colours, and the kit's checks take the drawing as it came back.
+ * - Sized: width and height on its root from its viewBox, where VectorCraft wrote the viewBox alone.
+ * - Its class rules written on the elements as attributes and its <style> gone: VectorCraft saves every fill, stroke and
+ *   font as a class of one style sheet. Read as the sync draws it (iwdieVcCssLengths: a bare font size in px, a family
+ *   with sans-serif after it), a class's rule over an attribute of the same name, as CSS has it; a length in px written
+ *   bare, as an attribute takes it. A sheet with anything but class rules, or a tag the rules cannot be written on,
+ *   leaves the drawing's style as it is.
+ * - The picture on its hidden layer Bakgrunn (original) left out - the picture the drawing was first made from, a third
+ *   of a vectorized one - and the layer kept, empty, marked data-iwdie-original="image_data": the drawing the panel's
+ *   picture keeps still holds it, and Insert puts it back from there (iwdieVcRestoreOriginal) before it draws the
+ *   drawing changed. Not when anything but that picture is on the layer, or something elsewhere uses it.
+ * Pure. -> {svg, sized, inlined: elements given attributes, rules, original: left out}
+ */
+function iwdieExportDrawing(svg) {
+  var s = String(svg == null ? '' : svg), out = { svg: s, sized: false, inlined: 0, rules: 0, original: false };
+  var root = /<svg\b[^>]*>/i.exec(s);
+  if (!root) return out;
+  if (!/\swidth\s*=/.test(root[0]) || !/\sheight\s*=/.test(root[0])) {
+    var vb = /\sviewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)\s*["']/i.exec(root[0]);
+    if (vb) {
+      var tag = root[0].replace(/\s(?:width|height)\s*=\s*(?:"[^"]*"|'[^']*')/g, '').replace(/\s*>$/, ' width="' + vb[1] + '" height="' + vb[2] + '">');
+      s = s.slice(0, root.index) + tag + s.slice(root.index + root[0].length);
+      out.sized = true;
+    }
+  }
+  // the class rules on the elements
+  var sheets = [], reS = /<style\b[^>]*>([\s\S]*?)<\/style>/gi, ms;
+  while ((ms = reS.exec(s))) sheets.push(ms[1]);
+  var rules = sheets.length ? iwdieSvgClassRules(iwdieVcCssLengths('<style>' + sheets.join('\n') + '</style>').replace(/^<style>|<\/style>$/g, '')) : null;
+  if (rules) {
+    var byClass = {}, n = 0, bare = function (v) { var px = /^(-?(?:\d+(?:\.\d*)?|\.\d+))px$/.exec(v); return px ? px[1] : v; };
+    rules.forEach(function (r, i) { r.classes.forEach(function (c) { (byClass[c] = byClass[c] || []).push(i); }); });
+    var done = s.replace(/<([A-Za-z][\w:.-]*)(\s[^<>]*?)?(\/?)>/g, function (all, name, attrs, shut) {
+      var cm = attrs ? /\sclass\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(attrs) : null;
+      if (!cm) return all;
+      var hit = [];
+      (cm[1] != null ? cm[1] : cm[2]).split(/\s+/).forEach(function (c) {
+        (byClass[c] || []).forEach(function (i) { if (hit.indexOf(i) < 0) hit.push(i); });
+      });
+      hit.sort(function (a, b) { return a - b; });
+      var set = {}, order = [];
+      hit.forEach(function (i) { rules[i].decls.forEach(function (d) { if (!Object.prototype.hasOwnProperty.call(set, d[0])) order.push(d[0]); set[d[0]] = d[1]; }); });
+      var a = attrs.replace(cm[0], '');
+      order.forEach(function (p) {
+        var v = ' ' + p + '="' + iwdieDrawEsc(bare(set[p])) + '"', has = new RegExp('\\s' + p + '\\s*=\\s*(?:"[^"]*"|\'[^\']*\')');
+        a = has.test(a) ? a.replace(has, v) : a + v;
+      });
+      n++;
+      return '<' + name + a + shut + '>';
+    });
+    // every class written out, or none: a tag the pattern could not read keeps its class, and then the sheet must stay
+    if (!/\sclass\s*=\s*["']/.test(done.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ''))) {
+      s = done.replace(/[ \t]*<style\b[^>]*>[\s\S]*?<\/style>[ \t]*\r?\n?/gi, '').replace(/[ \t]*<defs\b[^>]*>\s*<\/defs>[ \t]*\r?\n?/gi, '');
+      out.inlined = n;
+      out.rules = rules.length;
+    }
+  }
+  // the hidden original, left out and marked
+  var og = /<g\b[^>]*\s(?:id="Bakgrunn_+original_*(?:-\d+)?"|data-name="Bakgrunn \(original\)")[^>]*>/.exec(s);
+  if (og && og[0].slice(-2) !== '/>' && !/\sdata-iwdie-original=/.test(og[0]) && /\sdisplay\s*=\s*"none"|display\s*:\s*none/.test(og[0])) {
+    var end = iwdieXmlEnd(s, og.index), close = end > 0 ? s.lastIndexOf('</', end - 1) : -1;
+    var inner = close > 0 ? s.slice(og.index + og[0].length, close) : '';
+    var rest = inner.replace(/<image\b[^>]*\/>|<image\b[^>]*>[\s\S]*?<\/image>/g, '');
+    var ids = [], mi, reI = /<image\b[^>]*\sid="([^"]+)"/g;
+    while ((mi = reI.exec(inner))) ids.push(mi[1]);
+    var used = ids.some(function (id) { return s.indexOf('"#' + id + '"') >= 0; });
+    if (end > 0 && rest !== inner && !rest.trim() && !used) {
+      s = s.slice(0, og.index) + og[0].replace(/\s*>$/, ' data-iwdie-original="image_data">') + '</g>' + s.slice(end);
+      out.original = true;
+    }
+  }
+  out.svg = s;
+  return out;
+}
+
+/** A drawing Export handed over without its hidden original, with it again (v1.76.0): `href` - a PNG or JPEG data URL, the
+ *  picture on the layer Bakgrunn (original) of the drawing the panel's picture keeps (iwdieVcOriginalPicture) - put back
+ *  on the layer Export emptied and marked, over the drawing's whole size, as the edit first put it there. -> svg, as
+ *  given when there is nothing to put back */
+function iwdieVcRestoreOriginal(svg, href) {
+  var s = String(svg == null ? '' : svg), url = String(href == null ? '' : href);
+  if (!/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+\/=]+$/.test(url)) return s;
+  var m = /<g\b[^>]*\sdata-iwdie-original="image_data"[^>]*>/.exec(s), root = /<svg\b[^>]*>/i.exec(s);
+  if (!m || !root) return s;
+  var end = m[0].slice(-2) === '/>' ? m.index + m[0].length : iwdieXmlEnd(s, m.index);
+  if (end < 0) return s;
+  var vb = /\sviewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(root[0]);
+  var w = vb ? vb[1] : (/\swidth\s*=\s*"([\d.]+)/.exec(root[0]) || [])[1], h = vb ? vb[2] : (/\sheight\s*=\s*"([\d.]+)/.exec(root[0]) || [])[1];
+  if (!w || !h) return s;
+  var open = m[0].replace(/\s+data-iwdie-original="image_data"/, '').replace(/\s*\/>$/, '>');
+  var back = s.slice(0, m.index) + open + '<image width="' + w + '" height="' + h + '" preserveAspectRatio="none" xlink:href="' + url + '"/></g>' + s.slice(end);
+  return /\sxmlns:xlink\s*=/.test(root[0]) ? back : back.replace(/<svg\b/i, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
+}
+
 /** A panel file's size as Insert applies it, panel_width and panel_height in pixels (v1.65.0). -> {w, h} | null */
 function iwdiePanelSizeOf(doc) {
   var w = parseInt(doc && doc.panel_width, 10), h = parseInt(doc && doc.panel_height, 10);
@@ -3141,9 +3403,13 @@ function iwdiePrepareExportTrace(env, deps) {
     : Promise.resolve(null);
   return own.then(function (text) {
     var drawing = text ? iwdieNormalizeTraceSvg(iwdieSvgFromDocument(text)) : null;
+    // v1.76.0: in the form the drawing rules ask of one - sized, its classes written out, its hidden original left to the picture
+    var given = drawing ? iwdieExportDrawing(drawing) : null;
+    if (given && iwdieNormalizeTraceSvg(given.svg)) drawing = given.svg;
+    else given = null;
     if (drawing && drawing.length <= IWDIE_DRAWING_MAX) {
       panel.image_svg = iwdieSvgStamp(drawing);
-      iwdieNoteArtworkInAiGuide(env, drawing);
+      iwdieNoteArtworkInAiGuide(env, drawing, given);
       return { env: env, traceNote: ' + its own drawing (' + iwdieCountSvgShapes(drawing) + ' shapes)' };
     }
     return null;
@@ -11956,14 +12222,29 @@ var IWDIE_OV_MAX_SIGNALS = 1500;
  *  goes in. */
 var IWDIE_OV_MAX_UNITS = 3;
 
+/** How long Export looks for the house symbols in a picture of pixels (v1.76.0), at most: 2-11 s on the panels Vectorize
+ *  image was measured on; past this the export goes without them. */
+var IWDIE_OV_SYMBOL_MS = 20000;
+
+/** Which template's house symbols a panel's picture may show, by its name (v1.76.0): an Oversikt's, a Maskin's for any
+ *  other drawn panel, and none for the panels drawn with objects alone - ventilation, curves, lists, room control,
+ *  energy - whose picture is the blank sidebar. -> 'Oversikt' | 'Maskin' | null */
+function iwdieOvSymbolSet(panelName) {
+  var n = String(panelName == null ? '' : panelName);
+  if (/versikt/i.test(n)) return 'Oversikt';
+  if (/ventil|kurve|curve|trend|graf|liste|romkontroll|romplan|energi/i.test(n)) return null;
+  return 'Maskin';
+}
+
 /** What an overview is and how to read it: its first key, so a reader meets it before the tables. */
 var IWDIE_OV_READ_ME = [
   'The plant behind this panel, read from the IWMAC Designer at export time, for drawing or linking an overview picture together with the documentation you were given (drawings, equipment and point lists).',
   'Tables are {cols, rows}: each row holds its values in the order of cols. Boxes are x, y, width, height in panel pixels from the top left corner.',
+  'objects: every object of the panel once - its box on the canvas, role, text, alias and link, and what it belongs to: the pill it stands on (P1...), the house symbol it is by (S1...) and the words that caption it. o0..., P1... and S1... are the marks of the -for-ai.png Export saves beside this file.',
   'units: every unit (controller) of the plant. parameters: every row of the units named in it, by group - the plant\'s own parameter source. signals: the rows the plant has tagged with a standard meaning (signal; its measure and link_tag are in signals.kinds). For a unit whose rows are not here, tick it in the UNITS list of the Parameter Selector (Actions > Open Paramselector Popup) and export again.',
   'Link an object by copying unit_id, alias_text, sub_group and driver_id from one of those rows; never build or edit one. bindings shows how this panel\'s objects are linked, each checked against the rows: ok, alias differs, in unit ..., not in unit, unit not on plant.',
   'picture: where this panel\'s picture has its panels, pipes, pills, figures and texts. style: its colours, pipes (with the circuit each colour draws), pills and text, measured from it. parts: the objects it uses, and the component library kept in this browser. Use them to place things, and to keep a new picture in the same style.',
-  'A picture that is a drawing made with the house symbols also lists them (picture.symbols: name, box, turn) and the layout it follows (picture.layout: rows of like symbols and their spacing, the information column, the circuits, where values stand by each kind of symbol, the text). To change such a picture, keep what it has and add in its rows, at their spacing. parts.components.symbols gives each symbol\'s ports: where its pipes join.',
+  'A picture made with the house symbols lists them (picture.symbols: name, box, turn) - read from its drawing, or found in its pixels when it is a picture alone - and the layout it follows (picture.layout: rows of like symbols and their spacing, the information column, the circuits, where values stand by each kind of symbol, the text). To change such a picture, keep what it has and add in its rows, at their spacing; to draw it again, place the same symbols by name at their boxes. parts.components.symbols gives each symbol\'s ports: where its pipes join.',
   'A new picture goes in panel.image_svg: an <svg> of the panel\'s size whose top-level groups are the layers Bakgrunn, Rør, Former and Tekst - the ground and its panels, the pipes, the equipment drawn, the fixed text. Whatever shows or sets a signal (values, setpoints, alarms, and the linked fans, pumps and valves) is a panel object over it, not drawing. Insert sets the SVG as the background, and Edit in VectorCraft opens it as vectors, layer by layer, to finish by hand.',
   'Insert ignores this block: leave it out of a file you return.'
 ];
@@ -11977,12 +12258,97 @@ function iwdieOvAiMarks(ov, doc) {
   var pills = rows.map(function (r, i) { return { id: 'P' + (i + 1), box: { x: +r[0] || 0, y: +r[1] || 0, w: +r[2] || 0, h: +r[3] || 0 }, objects: [] }; });
   var objects = iwdieOvObjects(doc).map(function (p, i) {
     var box = { x: p.x, y: p.y, w: parseInt(p.o.posWidth, 10) || 0, h: parseInt(p.o.posHeight, 10) || 0 };
-    var cx = box.x + box.w / 2, cy = box.y + box.h / 2, on = null;
-    pills.forEach(function (q) { if (!on && cx >= q.box.x - 1 && cx <= q.box.x + q.box.w + 1 && cy >= q.box.y - 1 && cy <= q.box.y + q.box.h + 1) on = q; });
+    var on = iwdieOvPillOf(box, pills);
     if (on) on.objects.push('o' + i);
     return { id: 'o' + i, name: String(p.o.name || ''), obj_id: String(p.o.obj_id || ''), box: box, pill: on ? on.id : null };
   });
-  return { pills: pills, objects: objects };
+  // v1.76.0: the house symbols, S1, S2... in the order of overview.picture.symbols
+  var srows = (ov && ov.picture && ov.picture.symbols && ov.picture.symbols.rows) || [];
+  var symbols = srows.map(function (r, i) { return { id: 'S' + (i + 1), name: String(r[0] || ''), box: { x: +r[1] || 0, y: +r[2] || 0, w: +r[3] || 0, h: +r[4] || 0 } }; });
+  return { pills: pills, objects: objects, symbols: symbols };
+}
+
+/** The pill an object stands on (v1.64.3): the first of `pills` ([{id, box}]) its box's centre lies on, a pixel's grace. */
+function iwdieOvPillOf(box, pills) {
+  var cx = box.x + box.w / 2, cy = box.y + box.h / 2;
+  for (var i = 0; i < (pills || []).length; i++) {
+    var q = pills[i].box;
+    if (cx >= q.x - 1 && cx <= q.x + q.w + 1 && cy >= q.y - 1 && cy <= q.y + q.h + 1) return pills[i];
+  }
+  return null;
+}
+
+/** The house symbol an object belongs to (v1.76.0): of `symbols` ([{id, box}]) the smallest whose box, 8 px wider all
+ *  round, holds the object's centre - else the nearest by centre within 120 px, as picture.layout reckons a value's. */
+function iwdieOvSymbolOf(box, symbols) {
+  var cx = box.x + box.w / 2, cy = box.y + box.h / 2, inside = null, near = null, bd = 121;
+  (symbols || []).forEach(function (s) {
+    var b = s.box;
+    if (cx >= b.x - 8 && cx <= b.x + b.w + 8 && cy >= b.y - 8 && cy <= b.y + b.h + 8) {
+      if (!inside || b.w * b.h < inside.box.w * inside.box.h) inside = s;
+      return;
+    }
+    var d = Math.abs(b.x + b.w / 2 - cx) + Math.abs(b.y + b.h / 2 - cy);
+    if (d < bd) { bd = d; near = s; }
+  });
+  return inside || near;
+}
+
+/** The words that caption an object (v1.76.0): of `words` ([{box, text}] - the label objects' and the drawing's own texts)
+ *  the nearest that ends left of it on its line, at most 160 px off, or above it across its width, at most 40 px off. */
+function iwdieOvCaptionOf(box, words) {
+  var best = null, bg = 1e9, cy = box.y + box.h / 2;
+  (words || []).forEach(function (t) {
+    var b = t.box, right = b.x + b.w, bottom = b.y + b.h, gap = null;
+    if (b.x < box.x && right <= box.x + Math.min(8, box.w / 2) && box.x - right <= 160 && Math.abs(b.y + b.h / 2 - cy) <= Math.max(box.h, b.h) / 2 + 2) {
+      gap = Math.max(0, box.x - right);
+    } else if (bottom <= box.y + 4 && box.y - bottom <= 40 && b.x < box.x + box.w && right > box.x) {
+      gap = Math.max(0, box.y - bottom) + 0.5;
+    }
+    if (gap !== null && gap < bg) { bg = gap; best = t; }
+  });
+  return best ? best.text : null;
+}
+
+/** How an object is linked (v1.76.0): 'parameter' (a driver_id of the plant's), 'panel <id>' (a navigation button's
+ *  target), 'none', or 'other' - as summary.linking counts them. */
+function iwdieOvLinkOf(o) {
+  var id = String(o && o.driver_id != null ? o.driver_id : '');
+  if (/^\d+_/.test(id)) return 'parameter';
+  if (id === '' || id === 'driver_id') return 'none';
+  if (/^\d+$/.test(id) && /^sub_page/.test(String(o.obj_id || ''))) return 'panel ' + id;
+  return 'other';
+}
+
+/** A picture's house symbols found in its pixels (v1.76.0) as the overview takes a drawing's things: each symbol where it
+ *  was found, turned as it was; the picture's pipes by colour and its large panels from the vectorizer's outline, for the
+ *  layout. `found` [{name, x, y, w, h, turn}]. -> items for iwdieBuildOverview's picture.items */
+function iwdieOvRasterItems(found, outline) {
+  var out = [];
+  (found || []).forEach(function (m, i) {
+    if (m && m.name) out.push({ cid: 'f' + i, kind: 'symbol', symbol: String(m.name), k: (+m.turn || 0) & 3, box: { x: +m.x || 0, y: +m.y || 0, w: +m.w || 0, h: +m.h || 0 } });
+  });
+  ((outline && outline.pipes) || []).forEach(function (p, i) {
+    var pts = String(p[2] || '').split(' ').map(function (q) { return q.split(',').map(Number); }).filter(function (q) { return q.length === 2 && isFinite(q[0]) && isFinite(q[1]); });
+    if (pts.length < 2) return;
+    var xs = pts.map(function (q) { return q[0]; }), ys = pts.map(function (q) { return q[1]; });
+    var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys);
+    out.push({ cid: 'p' + i, kind: 'pipe', colour: p[0], circuit: null, pts: pts, box: { x: x0, y: y0, w: Math.max.apply(null, xs) - x0, h: Math.max.apply(null, ys) - y0 } });
+  });
+  ((outline && outline.panels) || []).forEach(function (r, i) {
+    out.push({ cid: 'b' + i, kind: 'rect', colour: r[4], box: { x: +r[0] || 0, y: +r[1] || 0, w: +r[2] || 0, h: +r[3] || 0 } });
+  });
+  return out;
+}
+
+/** The library's components whose house symbols a picture of a kind may show (v1.76.0): those the templates name, of the
+ *  template `set` ('Oversikt' for an Oversikt, else 'Maskin'), less what an IWMAC object shows. */
+function iwdieSymItemsOfSet(items, set) {
+  var t = iwdieSymTable();
+  return (items || []).filter(function (it) {
+    var fam = it && it.sym ? t.families[t.byName[it.sym.name]] : null;
+    return !!fam && fam.set === set && !iwdieSymIsObject(fam.name);
+  });
 }
 
 /** Text of an XML element, its entities decoded, exactly as it is - a trailing space is part of an alias. */
@@ -12021,18 +12387,18 @@ function iwdieOvBound(o) {
   return !!o && typeof o === 'object' && /^\d+_/.test(String(o.driver_id == null ? '' : o.driver_id));
 }
 
-/** Every object of a panel document, with where it is on the canvas: a container's items placed by the container.
- *  -> [{o, x, y}] */
+/** Every object of a panel document, with where it is on the canvas: a container's items placed by the container, and
+ *  (v1.76.0) which container holds them, its index in panel.containers. -> [{o, x, y, c}] */
 function iwdieOvObjects(doc) {
   var out = [], isObj = function (o) { return o != null && typeof o === 'object' && !Array.isArray(o); };
   (doc && Array.isArray(doc.single_objects) ? doc.single_objects : []).forEach(function (o) {
-    if (isObj(o)) out.push({ o: o, x: parseInt(o.posLeft, 10) || 0, y: parseInt(o.posTop, 10) || 0 });
+    if (isObj(o)) out.push({ o: o, x: parseInt(o.posLeft, 10) || 0, y: parseInt(o.posTop, 10) || 0, c: null });
   });
-  (doc && Array.isArray(doc.containers) ? doc.containers : []).forEach(function (c) {
+  (doc && Array.isArray(doc.containers) ? doc.containers : []).forEach(function (c, ci) {
     if (!isObj(c) || !Array.isArray(c.items)) return;
     var cl = parseInt(c.left, 10) || 0, ct = parseInt(c.top, 10) || 0;
     c.items.forEach(function (o) {
-      if (isObj(o)) out.push({ o: o, x: cl + (parseInt(o.posLeft, 10) || 0), y: ct + (parseInt(o.posTop, 10) || 0) });
+      if (isObj(o)) out.push({ o: o, x: cl + (parseInt(o.posLeft, 10) || 0), y: ct + (parseInt(o.posTop, 10) || 0), c: ci });
     });
   });
   return out;
@@ -12163,8 +12529,8 @@ function iwdieBuildOverview(doc, src) {
   // each bound object read against its unit's rows: what it shows, and whether the plant still has it
   var known = {};
   units.forEach(function (u) { known[str(u.unit_id)] = 1; });
-  var bindRows = [];
-  all.forEach(function (p) {
+  var bindRows = [], checkOf = {};
+  all.forEach(function (p, i) {
     var o = p.o;
     if (!iwdieOvBound(o)) return;
     var u = str(o.unit_id), hit = has(where, str(o.driver_id)) ? where[str(o.driver_id)] : null, row = hit && hit.unit === u ? hit.row : null, check;
@@ -12174,6 +12540,7 @@ function iwdieBuildOverview(doc, src) {
     else if (Array.isArray(rowsOf[u])) check = 'not in unit';
     else check = 'not checked';
     var r2 = row || (hit && hit.row);
+    checkOf[i] = check;
     bindRows.push([str(o.name), str(o.obj_id), p.x, p.y, str(o.tag_text).trim(), u, str(o.alias_text), r2 ? str(r2.group) : '', r2 ? str(r2.type) : '', check]);
   });
 
@@ -12205,6 +12572,9 @@ function iwdieBuildOverview(doc, src) {
     // v1.64.1: a drawing's own house symbols and the layout they follow, as the Claude bridge reads a drawing - the
     // panel's objects along, for where its values stand
     var drawn = Array.isArray(pic.items) && pic.items.length ? pic.items : null;
+    // v1.76.0: a picture of pixels alone has its house symbols found in it at export (pic.found), its pipes and panels
+    // from the outline - the same layout as a drawing's, read off the picture
+    var seen = !!pic.found;
     if (drawn) {
       var r1 = function (v) { return Math.round(v * 10) / 10; };
       var placed = drawn.filter(function (it) { return it.kind === 'symbol' && it.symbol; });
@@ -12217,7 +12587,8 @@ function iwdieBuildOverview(doc, src) {
       });
       var lay = iwdieCbFacts(drawn.concat(objs), size);
       picture.layout = {
-        how: 'As the drawing itself has it. rows: like symbols in a row, the step between them and their y; columns likewise. values: where the value objects stand by each kind of symbol, from its top left (dx, dy) over n of them. circuits: each pipe colour, the circuit it draws, and its reach.',
+        how: (seen ? 'As the picture shows it: the house symbols found in it, its pipes by colour and its large panels. ' : 'As the drawing itself has it. ') +
+          'rows: like symbols in a row, the step between them and their y; columns likewise. values: where the value objects stand by each kind of symbol, from its top left (dx, dy) over n of them. circuits: each pipe colour, the circuit it draws, and its reach.',
         rows: lay.rows.map(function (q) { return { symbol: q.symbol, count: q.cids.length, spacing: q.spacing, y: q.y, from_x: q.from, to_x: q.to }; }),
         columns: lay.columns.map(function (q) { return { symbol: q.symbol, count: q.cids.length, spacing: q.spacing, x: q.x, from_y: q.from, to_y: q.to }; }),
         info_column: lay.infoColumn ? { x: lay.infoColumn.x, w: lay.infoColumn.w } : null,
@@ -12226,6 +12597,12 @@ function iwdieBuildOverview(doc, src) {
         text: lay.text
       };
     }
+    if (seen) {
+      picture.how += ' Its house symbols were looked for in its pixels at export - the ' + (str(pic.found.set) || 'house') + ' template\'s, each at its own ' +
+        'size in four quarter turns - and ' + (picture.symbols ? picture.symbols.rows.length + ' found (picture.symbols)' : 'none found') +
+        '; one drawn at another size or in another style is not found.';
+    }
+    if (picture.symbols) picture.numbered += ' Each house symbol of picture.symbols outlined in green and marked S1, S2... in the order of its rows.';
     var left = (ol.figures || []).length - picture.figures.rows.length + Math.max(0, (ol.pipes || []).length - 200) + Math.max(0, (ol.pills || []).length - 200);
     if (left > 0) picture.left_out = left + ' of the smallest figures or past the caps (200 pipes, 200 pills, 150 figures, 400 texts)';
 
@@ -12342,6 +12719,26 @@ function iwdieBuildOverview(doc, src) {
     }
   }
 
+  // v1.76.0: every object once, where it is on the canvas, what it is and what it belongs to - the pill (P#) it stands
+  // on and the house symbol (S#) it is by, as the -for-ai.png marks them both, and the words that caption it
+  var boxOf = function (p) { return { x: p.x, y: p.y, w: parseInt(p.o.posWidth, 10) || 0, h: parseInt(p.o.posHeight, 10) || 0 }; };
+  var pillList = (picture && picture.pills ? picture.pills.rows : []).map(function (r, i) { return { id: 'P' + (i + 1), box: { x: +r[0] || 0, y: +r[1] || 0, w: +r[2] || 0, h: +r[3] || 0 } }; });
+  var symList = (picture && picture.symbols ? picture.symbols.rows : []).map(function (r, i) { return { id: 'S' + (i + 1), box: { x: +r[1] || 0, y: +r[2] || 0, w: +r[3] || 0, h: +r[4] || 0 } }; });
+  var words = [];
+  all.forEach(function (p) {
+    if (iwdieRoleOf(str(p.o.obj_id)) === 'label' && str(p.o.tag_text).trim()) words.push({ box: boxOf(p), text: str(p.o.tag_text).trim() });
+  });
+  if (picture && picture.texts && picture.texts.cols.indexOf('text') >= 0) {
+    picture.texts.rows.forEach(function (t) { if (str(t[6]).trim()) words.push({ box: { x: +t[0] || 0, y: +t[1] || 0, w: +t[2] || 0, h: +t[3] || 0 }, text: str(t[6]).trim() }); });
+  }
+  var objectRows = all.map(function (p, i) {
+    var o = p.o, b = boxOf(p), role = iwdieRoleOf(str(o.obj_id)), link = iwdieOvLinkOf(o);
+    var pill = iwdieOvPillOf(b, pillList), sym = iwdieOvSymbolOf(b, symList);
+    var caption = /^(label|header|navigation)$/.test(role) ? null : iwdieOvCaptionOf(b, words);
+    return ['o' + i, str(o.name), str(o.obj_id), role, b.x, b.y, b.w, b.h, str(o.tag_text).trim(), str(o.alias_text), link === 'parameter' ? str(o.unit_id) : null,
+      link, has(checkOf, i) ? checkOf[i] : null, pill ? pill.id : null, sym ? sym.id : null, caption, p.c === null || p.c === undefined ? null : 'c' + p.c];
+  });
+
   var nTagged = 0;
   units.forEach(function (u) { nTagged += Array.isArray(u.params) ? u.params.length : 0; });
   var out = {
@@ -12356,6 +12753,15 @@ function iwdieBuildOverview(doc, src) {
       linked_objects: bound,
       units_with_rows: paramUnits.map(function (b) { return b.unit_id; })
     },
+    objects: { cols: ['id', 'name', 'obj_id', 'role', 'x', 'y', 'w', 'h', 'text', 'alias_text', 'unit_id', 'link', 'check', 'pill', 'symbol', 'caption', 'container'],
+      how: 'Every object of the panel once: panel.single_objects, then each container\'s items, o0, o1... as the -for-ai.png marks them. ' +
+        'x, y, w, h: its box on the canvas, a container item\'s too (panel.containers keeps it relative to its container, named in container: c0 is ' +
+        'the first). text: its tag_text, trimmed. link: parameter, panel <id> (a navigation button\'s target), none or other; check: a parameter ' +
+        'link read against the plant\'s rows, as in bindings. pill: the pill it stands on (P1 is the first row of picture.pills); symbol: the house ' +
+        'symbol it belongs to (S1 is the first row of picture.symbols) - the one its centre lies on, else the nearest within 120 px; caption: the ' +
+        'nearest words left of it on its line or just above it, of a label object or the drawing\'s own texts - a guess to check against the ' +
+        '-for-ai.png; null where the picture\'s words are not known. The entries to copy are in panel.',
+      rows: objectRows },
     units: { cols: ['unit_id', 'name', 'model', 'driver', 'regulator', 'status', 'objects', 'signals', 'rows'],
       rows: units.map(function (u) {
         var id = str(u.unit_id);
@@ -14204,6 +14610,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           ctx.textBaseline = 'top';
           ctx.fillText(text, x + 3, y + 1.5);
         };
+        // v1.76.0: the house symbols first, under the rest - each outlined in green, S1... in its top left corner
+        marks.symbols.forEach(function (m) {
+          ctx.save();
+          ctx.strokeStyle = '#1a7f37';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 2]);
+          ctx.strokeRect(m.box.x + 0.5, m.box.y + 0.5, Math.max(1, m.box.w - 1), Math.max(1, m.box.h - 1));
+          ctx.restore();
+          badge(m.id, Math.max(0, Math.min(size.w - 30, m.box.x)), Math.max(0, Math.min(size.h - 13, m.box.y)), 'rgba(26, 127, 55, 0.85)');
+        });
         marks.objects.forEach(function (m) {
           ctx.save();
           ctx.strokeStyle = '#1f6feb';
@@ -14252,6 +14668,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (/^r(o|ø)r$/i.test(ln) && el.localName === 'g' && !el.getAttribute('data-iwdie-symbol')) {
             kids(el).forEach(function (p) { cands.push({ el: p, layer: ln, circuit: nameOf(el) }); });
           } else cands.push({ el: el, layer: ln });
+          // v1.76.0: a house symbol inside a group of the drawing's own - a case's plug, a symbol in an equipment group - is
+          // listed too; not the pieces of one placed whole (an arrangement), which is listed as itself
+          if (el.localName === 'g' && !el.getAttribute('data-iwdie-symbol')) {
+            Array.prototype.forEach.call(el.querySelectorAll('g[data-iwdie-symbol]'), function (s) {
+              for (var a = s.parentNode; a && a !== el; a = a.parentNode) if (a.getAttribute && a.getAttribute('data-iwdie-symbol')) return;
+              cands.push({ el: s, layer: ln });
+            });
+          }
         });
       });
       var attrs = ['data-iwdie-symbol', 'data-iwdie-missing', 'data-iwdie-k', 'fill', 'stroke', 'stroke-width', 'rx', 'd', 'font-size'];
@@ -14339,7 +14763,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** The picture's layout and style: what iwdieVzTrace finds in its pixels (off this page), and the texts of the drawing
      *  it was made from, when it keeps one. -> Promise<{source, outline, texts, layers} | null> */
-    function ovPicture(url, size, fill) {
+    function ovPicture(url, size, fill, set) {
       if (!url) return Promise.resolve(null);
       return fetchBackgroundBytes(url).then(function (bg) {
         var mime = iwdieSniffMime(bg.bytes);
@@ -14349,13 +14773,42 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (svg) { try { got = ovSvgTexts(svg, size); } catch (e) { got = null; } }
           return exportPaint(bg.bytes, mime !== 'application/octet-stream' ? mime : bg.mime, size, fill).then(function (c) {
             var data = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
-            return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, c.width, c.height, { outline: true }], function () {});
-          }).then(function (vz) {
+            // v1.76.0: a picture without its drawing has its house symbols looked for, beside the trace - a search that
+            // fails, however, costs the export its symbols and nothing else
+            var look = !svg && set ? Promise.resolve().then(function () { return ovFindSymbols(c, set, IWDIE_OV_SYMBOL_MS); }).then(null, function () { return null; })
+              : Promise.resolve(null);
+            return Promise.all([vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, c.width, c.height, { outline: true }], function () {}), look]);
+          }).then(function (r) {
+            var vz = r[0], found = r[1];
             if (!vz || !vz.outline) return null;
+            var items = got && got.items && got.items.length ? got.items : found ? iwdieOvRasterItems(found.found, vz.outline) : null;
             return { source: svg ? (mime === 'image/svg+xml' ? 'svg' : 'vectorcraft') : 'traced', outline: vz.outline,
               texts: got && got.texts && got.texts.length ? got.texts : null, layers: got && got.layers && got.layers.length ? got.layers : null,
-              items: got && got.items && got.items.length ? got.items : null };
+              items: items && items.length ? items : null, found: found ? { set: set, looked: found.looked, ms: found.ms } : null };
           });
+        });
+      });
+    }
+
+    /** The house symbols a picture of pixels shows (v1.76.0), found for the export as Vectorize image finds them: the
+     *  templates of `set` ('Oversikt' or 'Maskin') drawn at 1:1 and looked for in four quarter turns, in workers - for at most
+     *  `ms`, then left out. In reading order, top to bottom. -> Promise<{found: [{name, x, y, w, h, turn}], looked, ms} | null> */
+    function ovFindSymbols(c, set, ms) {
+      var t0 = Date.now(), lib = libSymbols(), items = iwdieSymItemsOfSet(lib && lib.items, set);
+      if (!items.length) return Promise.resolve(null);
+      var w = c.width, h = c.height, data = c.getContext('2d').getImageData(0, 0, w, h).data;
+      var ground = (iwdieVzPalette(data, w, h, {})[0] || [204, 204, 204]).slice(0, 3);
+      return vcComponentTemplates(items).then(function (templates) {
+        var looks = iwdieVcSymbolLooks(templates, items, iwdieVcComponentNames(items), ground);
+        if (!looks.length) return { found: [], looked: 0, ms: Date.now() - t0 };
+        var job = vcFindAll(data, w, h, looks, function () {}), timer = setTimeout(function () { job.stop(); }, ms);
+        return job.promise.then(function (found) {
+          clearTimeout(timer);
+          if (!found) return null;
+          return { found: found.map(function (m) {
+            var it = items[m.k];
+            return it && it.sym ? { name: it.sym.name, x: m.x, y: m.y, w: m.w, h: m.h, turn: m.turn || 0 } : null;
+          }).filter(Boolean).sort(function (a, b) { return a.y - b.y || a.x - b.x; }), looked: looks.length, ms: Date.now() - t0 };
         });
       });
     }
@@ -14374,7 +14827,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try { src.tagStyle = ovTagStyle(doc); } catch (e) {}
       try { var lib = libSymbols(); if (lib && lib.items && lib.items.length) src.library = lib; } catch (e) {}
       var rows = ovRowsFor(ids).then(function (got) { src.rows = got.rows; src.failed = got.failed; }, function () {});
-      var pic = ovTimeout(ovPicture(url, size, fill), 60000).then(function (p) { src.picture = p; }, function () { src.picture = null; });
+      var pic = ovTimeout(ovPicture(url, size, fill, iwdieOvSymbolSet(src.panelName)), 60000).then(function (p) { src.picture = p; }, function () { src.picture = null; });
       return Promise.all([rows, pic]).then(function () { return src; });
     }
 
@@ -14538,6 +14991,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        hostOk() calls would just overwrite each other. Returns the filename. */
     function downloadEnvelope(env, traceNote, quiet) {
       var name = iwdieBuildExportFilename(env.source_plant_id, env.panel_name);
+      // v1.76.0: what the file holds and where, first - with Insert's own check of the file as it goes out
+      try {
+        var check = iwdieCheckFile(iwdieStringifyEnvelope(env), { plantId: currentPlantId() });
+        var forAi = env.overview && env.overview.picture ? name.replace(/\.json$/i, '') + '-for-ai.png' : null;
+        env = iwdieEnvelopeWithContents(env, iwdieExportContents(env, { file: name, aiPicture: forAi, check: check }));
+      } catch (e) {}
       var blob = new Blob([iwdieStringifyEnvelope(env)], { type: 'application/json' });
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
@@ -19888,6 +20347,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** A file's drawing with its hidden original back (v1.76.0): Export leaves the picture on the layer Bakgrunn (original)
+     *  out of panel.image_svg, marking the layer, and the picture the file carries (image_data) keeps it in its drawing -
+     *  read from there, so that Edit in VectorCraft can still start again from that picture. -> Promise<svg>: the drawing
+     *  as it is, when there is nothing to put back or it cannot be read */
+    function vcOriginalBack(doc) {
+      var svg = String((doc && doc.image_svg) || '');
+      if (!/\sdata-iwdie-original="image_data"/.test(svg) || !/^data:image\/png[;,]/i.test(String(doc.image_data || ''))) return Promise.resolve(svg);
+      var parsed = iwdieParseDataUrl(doc.image_data);
+      if (!parsed || !parsed.bytes) return Promise.resolve(svg);
+      return vcDocumentOf(parsed.bytes).then(function (kept) {
+        var orig = kept ? iwdieVcOriginalPicture(kept) : null;
+        return orig ? iwdieVcRestoreOriginal(svg, orig) : svg;
+      }).then(null, function () { return svg; });
+    }
+
     /** The drawing open in VectorCraft as an Illustrator file (v1.66.0), as Background → Illustrator writes a drawing: its
      *  own layers - Bakgrunn locked, an emptied IWMAC-objekter left out - every shape a path, every text Arial type in its
      *  place, a picture where it stands, the IWMAC objects on a hidden reference layer, and a page that shows the drawing to
@@ -21018,7 +21492,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // draw here, the drawing is the background as SVG, as before
         if (made === undefined) {
           toast('Drawing the picture from the file’s drawing…', false, 15000);
-          vcDrawingPicture(doc.image_svg, iwdiePanelSizeOf(doc) || exportPanelSize()).then(function (pic) {
+          // v1.76.0: with its hidden original back, which Export left to the picture the file carries
+          vcOriginalBack(doc).then(function (svg) {
+            return vcDrawingPicture(svg, iwdiePanelSizeOf(doc) || exportPanelSize());
+          }).then(function (pic) {
             applyImportDoc(rawDoc, v, picked, replace, existing, bgOnly, pic);
           }, function (e) {
             applyImportDoc(rawDoc, v, picked, replace, existing, bgOnly, { failed: String((e && e.message) || e) });
@@ -22087,6 +22564,21 @@ if (typeof module !== 'undefined' && module.exports) {
     cbPortsOf: iwdieCbPortsOf,
     cbStrayArrows: iwdieCbStrayArrows,
     ovAiMarks: iwdieOvAiMarks,
+    ovPillOf: iwdieOvPillOf,
+    ovSymbolOf: iwdieOvSymbolOf,
+    ovCaptionOf: iwdieOvCaptionOf,
+    ovLinkOf: iwdieOvLinkOf,
+    ovRasterItems: iwdieOvRasterItems,
+    ovSymbolSet: iwdieOvSymbolSet,
+    OV_SYMBOL_MS: IWDIE_OV_SYMBOL_MS,
+    symItemsOfSet: iwdieSymItemsOfSet,
+    exportDrawing: iwdieExportDrawing,
+    svgClassRules: iwdieSvgClassRules,
+    SVG_STYLE_ATTRS: IWDIE_SVG_STYLE_ATTRS,
+    vcRestoreOriginal: iwdieVcRestoreOriginal,
+    exportContents: iwdieExportContents,
+    envelopeWithContents: iwdieEnvelopeWithContents,
+    envelopeAt: iwdieEnvelopeAt,
     hash32: iwdieHash32,
     svgFromDocument: iwdieSvgFromDocument,
     svgStamp: iwdieSvgStamp,
@@ -22097,6 +22589,7 @@ if (typeof module !== 'undefined' && module.exports) {
     svgPathSubs: iwdieSvgPathSubs,
     svgPaint: iwdieSvgPaint,
     svgCssRules: iwdieSvgCssRules,
+    svgOwnProps: iwdieSvgOwnProps,
     svgAiLayers: iwdieSvgAiLayers,
     svgAiLayerLines: iwdieSvgAiLayerLines,
     aiFontOf: iwdieAiFontOf,

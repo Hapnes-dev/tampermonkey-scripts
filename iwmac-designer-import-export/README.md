@@ -305,6 +305,11 @@ by the right names, each turned copy told apart.
   "version": 1,
   "exported_at": "2026-09-10T09:12:00.000Z",
   "generator": "IWDIE v1.22.0",
+  "contents": {
+    // v1.76.0 — what the file holds and where: the panel in a sentence, each key's
+    // size in kB and its use (read first, read, search, copy from, look up, skip),
+    // the -for-ai.png beside it, and Insert's own check of the file as exported
+  },
   "ai_guide": {
     // v1.17.0, rewritten in v1.22.0 — the reading contract: what every key is for,
     // the field-by-field schema, relationships, identifiers, linking, what to
@@ -321,7 +326,8 @@ by the right names, each turned copy told apart.
   },
   "overview": {
     // v1.62.0 — the plant behind the panel, for an agent: units, parameter rows,
-    // tagged signals, links checked, the picture's layout and style. See below.
+    // tagged signals, links checked, the picture's layout and style; since v1.76.0
+    // every object with the pill, house symbol and caption it belongs to. See below.
   },
   "background_embedded": true,
   "background": {
@@ -338,7 +344,8 @@ by the right names, each turned copy told apart.
     // + image_svg when that background is authored artwork (v1.23.0) — the markup
     //   itself, returned so the drawing stays editable across round trips — or
     //   (v1.65.0) the drawing a PNG from VectorCraft or Insert keeps, stamped
-    //   data-iwdie-drawing, in place of image_svg_trace
+    //   data-iwdie-drawing, in place of image_svg_trace - since v1.76.0 sized, its
+    //   classes written on its elements, its hidden original left to image_data
   },
   "image_data": "data:image/png;base64,…",   // v1.17.0: last in the file
   "image_svg_trace": "<svg …>",              // v1.17.0: last in the file
@@ -483,6 +490,57 @@ VectorCraft too, so they keep up with each other.
 - Checked in the stub host on the hosted VectorCraft 0.11.0: an object moved, one deleted and one added in the Designer,
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
+
+### The export as Copilot reads it (v1.76.0)
+
+Thomas: *conduct a comprehensive deep dive into the JSON export functionality … make the exported JSON as easy as
+possible for the Copilot agent to read, understand, and use when generating IWMAC overview pictures … Maintain full
+compatibility*. Measured on four fresh 1.75.1 exports and every kit script that reads one:
+
+- A picture made in VectorCraft came out as VectorCraft saved it: 65 style classes on 1 704 elements, no size on its
+  root, and the picture it was first vectorized from as a hidden base64 `<image>`, 202 kB of 606. The kit's own picture
+  check gave it back, unchanged, about 40 errors.
+- A picture of pixels, which most production panels have, got no house symbols and no layout: only *Vectorize image*
+  looked for them.
+- What each object belongs to, the pill it stands on and the symbol it is by, was drawn on the `-for-ai.png` and
+  written nowhere in the file.
+- The file opened with 57 kB of the format's rules before a word about the panel.
+
+1.76.0 changes reading material and the drawing's form only. The format stays `iwmac-designer-panel` v1, and every file
+Insert took before, it takes now:
+
+- **`contents`**, right after `generator`: what the panel is in one sentence, every key with its size in kB and its use
+  (*read first*, *read*, *search*, *copy from*, *look up*, *skip*), the `-for-ai.png`'s name, and Insert's own check of
+  the file as it went out.
+- **`overview.objects`**: every object once, `o0`… as the `-for-ai.png` marks them. Each has its box on the canvas (a
+  container item's too), role, text, alias, unit, link and binding check, plus the pill (`P#`), house symbol (`S#`)
+  and caption it belongs to.
+- **The house symbols of a picture of pixels**, found at export as *Vectorize image* finds them: the Oversikt template's
+  on an Oversikt, the Maskin template's on another drawn panel, for at most 20 s. `overview.picture.symbols` and
+  `picture.layout` now come for a raster too. A symbol inside a group of the drawing's own counts as well. The
+  `-for-ai.png` outlines each one in green as `S1`…
+- **A drawing VectorCraft saved, handed over in the form the drawing rules ask:**
+  - its root sized;
+  - every fill, stroke and font written on its element, its `<style>` gone;
+  - the hidden original left to `image_data`, its layer kept and marked `data-iwdie-original="image_data"`.
+
+  Unchanged, Insert keeps the picture as before. Changed, Insert puts the original back from the file's picture before
+  it draws the drawing, so *Edit in VectorCraft* can still start again from it.
+- **The schema** covers the whole export and is published beside the script as
+  [`panel-file.schema.json`](panel-file.schema.json), where its `$id` points.
+
+Checked:
+
+- **Stub host.**
+  - The Maskin picture of pixels exported in 3.5 s (2.5 s before) with 7 house symbols, the same seven its drawing
+    lists.
+  - 2349's Oversikt picture exported in 4.3 s with 40 symbols; 121 of its 140 objects are tied to one.
+  - The drawing came out at 397 kB, down from 592.
+  - Inserted unchanged, the picture was the export's own byte for byte. Inserted changed, the new PNG's drawing held
+    the change and the original again.
+- **Drawn in Chrome as the sync draws.** The old and the new drawing differ in 0 of 1 050 000 pixels, and so do three
+  VectorCraft saves full of text, before and after.
+- Not run in the live Designer.
 
 ### A transparent picture stays transparent through an edit in VectorCraft (v1.75.1)
 
