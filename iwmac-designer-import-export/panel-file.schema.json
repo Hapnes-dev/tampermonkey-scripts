@@ -930,6 +930,28 @@
             },
             "layout": {
               "type": "object"
+            },
+            "object_looks": {
+              "type": "object",
+              "description": "IWMAC objects the picture shows as pixels: obj_id, box, and the object (o#) on each, null where the panel lacks one.",
+              "required": [
+                "cols",
+                "rows"
+              ],
+              "properties": {
+                "cols": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array"
+                  }
+                }
+              }
             }
           }
         },

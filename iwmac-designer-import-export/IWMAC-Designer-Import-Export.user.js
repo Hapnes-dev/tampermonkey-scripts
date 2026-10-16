@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.76.0
+// @version      1.77.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.76.0';
+var IWDIE_VERSION = '1.77.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -368,7 +368,8 @@ function iwdiePanelJsonSchema() {
       parts: { type: 'object', properties: { objects: table('The kinds of object the panel uses.'), components: { type: 'object' } } },
       picture: { type: 'object', required: ['source'], properties: { source: { enum: ['traced', 'vectorcraft', 'svg'] }, panels: table('Large panels.'),
         pipes: table('Pipes.'), pills: table('Pills, P1... in this order.'), figures: table('Figures.'), texts: table('Texts.'),
-        symbols: table('House symbols, S1... in this order.'), layers: table('The drawing\'s layers.'), layout: { type: 'object' } } },
+        symbols: table('House symbols, S1... in this order.'), layers: table('The drawing\'s layers.'), layout: { type: 'object' },
+        object_looks: table('IWMAC objects the picture shows as pixels: obj_id, box, and the object (o#) on each, null where the panel lacks one.') } },
       signals: table('Tagged rows.'),
       parameters: { type: 'object', required: ['cols', 'units'], properties: { cols: strings, units: { type: 'array', items: { type: 'object',
         required: ['unit_id', 'groups'], properties: { unit_id: { type: 'string' }, rows: { type: 'integer', minimum: 0 },
@@ -7377,6 +7378,15 @@ function iwdieVcSvg(o) {
   shapes.forEach(function (sh) { out.push('    ' + iwdieDrawShapeSvg(sh)); });
   out.push('  </g>');
   var layer = iwdieVcPanelObjectsLayer(objects, o.looks, used, o.unders);
+  // v1.77.0: the IWMAC objects found in the picture (`found`), each the placeholder of a new object, on the same layer
+  var marks = (Array.isArray(o.found) ? o.found : []).map(function (f) {
+    // as the picture showed it - the state it was found in - else as its kind looks
+    return iwdieVcFoundPlaceholderSvg(f, f.look || (o.looks && o.looks[f.kind]), used);
+  }).filter(Boolean);
+  if (marks.length) {
+    var more = marks.map(function (p) { return '    ' + p; }).join('\n');
+    layer = layer ? layer.replace(/\n {2}<\/g>\n$/, '\n' + more + '\n  </g>\n') : '  <g id="IWMAC-objekter" data-name="IWMAC-objekter">\n' + more + '\n  </g>\n';
+  }
   if (layer) out.push(layer.replace(/\n$/, ''));
   out.push('</svg>');
   return out.join('\n') + '\n';
@@ -8320,6 +8330,10 @@ var IWDIE_VC_OBJ_LOOK = {
 };
 /** Where the Designer leaves the objects' looks for the editor's page: sizes and pictures. */
 var IWDIE_VC_LOOKS_KEY = 'iwdie.vc.looks';
+/** The Designer's pictures of every state of the kinds a picture is searched for (v1.77.0), kept a week. */
+var IWDIE_VC_STATES_KEY = 'iwdie.vc.states';
+/** How long Vectorize image and Export look for IWMAC objects in a picture (v1.77.0), at most. */
+var IWDIE_VZ_OBJECT_MS = 15000;
 
 var iwdieVcObjCache = null;
 
@@ -9339,12 +9353,13 @@ function iwdieVcFindPrepared(ix, t, found) {
 }
 
 /** Templates looked for in all four turns, each look once (`seen` keeps them: twins, round things
- *  turned); `progress(done, of)` hears how far it is. -> every place found */
+ *  turned); `progress(done, of)` hears how far it is. A template with `still` (v1.77.0: an IWMAC object's picture,
+ *  whose turns are other kinds) is looked for unturned. -> every place found */
 function iwdieVcSearch(ix, templates, progress, seen) {
   var found = [];
   seen = seen || {};
   templates.forEach(function (t0, i) {
-    for (var q = 0; q < 4; q++) {
+    for (var q = 0; q < (t0.still ? 1 : 4); q++) {
       var t = iwdieVcPrepare(t0, q);
       if (!t || seen[t.sig]) continue;
       seen[t.sig] = 1;
@@ -12244,6 +12259,7 @@ var IWDIE_OV_READ_ME = [
   'units: every unit (controller) of the plant. parameters: every row of the units named in it, by group - the plant\'s own parameter source. signals: the rows the plant has tagged with a standard meaning (signal; its measure and link_tag are in signals.kinds). For a unit whose rows are not here, tick it in the UNITS list of the Parameter Selector (Actions > Open Paramselector Popup) and export again.',
   'Link an object by copying unit_id, alias_text, sub_group and driver_id from one of those rows; never build or edit one. bindings shows how this panel\'s objects are linked, each checked against the rows: ok, alias differs, in unit ..., not in unit, unit not on plant.',
   'picture: where this panel\'s picture has its panels, pipes, pills, figures and texts. style: its colours, pipes (with the circuit each colour draws), pills and text, measured from it. parts: the objects it uses, and the component library kept in this browser. Use them to place things, and to keep a new picture in the same style.',
+  'picture.object_looks: the IWMAC objects a picture of pixels shows as its own pixels - a compressor, an AK-PC state, a pump, drawn with the Designer\'s own picture of it - each with the panel\'s object on it (o#), or null where the panel lacks it: place that object there, as an object, rather than drawing it.',
   'A picture made with the house symbols lists them (picture.symbols: name, box, turn) - read from its drawing, or found in its pixels when it is a picture alone - and the layout it follows (picture.layout: rows of like symbols and their spacing, the information column, the circuits, where values stand by each kind of symbol, the text). To change such a picture, keep what it has and add in its rows, at their spacing; to draw it again, place the same symbols by name at their boxes. parts.components.symbols gives each symbol\'s ports: where its pipes join.',
   'A new picture goes in panel.image_svg: an <svg> of the panel\'s size whose top-level groups are the layers Bakgrunn, Rør, Former and Tekst - the ground and its panels, the pipes, the equipment drawn, the fixed text. Whatever shows or sets a signal (values, setpoints, alarms, and the linked fans, pumps and valves) is a panel object over it, not drawing. Insert sets the SVG as the background, and Edit in VectorCraft opens it as vectors, layer by layer, to finish by hand.',
   'Insert ignores this block: leave it out of a file you return.'
@@ -12601,6 +12617,16 @@ function iwdieBuildOverview(doc, src) {
       picture.how += ' Its house symbols were looked for in its pixels at export - the ' + (str(pic.found.set) || 'house') + ' template\'s, each at its own ' +
         'size in four quarter turns - and ' + (picture.symbols ? picture.symbols.rows.length + ' found (picture.symbols)' : 'none found') +
         '; one drawn at another size or in another style is not found.';
+    }
+    // v1.77.0: the IWMAC objects the picture shows as pixels, looked for first - the Designer's own pictures of every state of
+    // each kind that shows one - each with the panel's object standing on it, or none where the panel lacks it
+    var ol2 = pic.objectLooks;
+    if (ol2 && ((ol2.placed || []).length || (ol2.twice || []).length)) {
+      picture.object_looks = { cols: ['obj_id', 'x', 'y', 'w', 'h', 'object'], rows: (ol2.placed || []).concat(ol2.twice || []).map(function (f) {
+        return [str(f.kind), f.x, f.y, f.w, f.h, f.index === null || f.index === undefined ? null : 'o' + f.index];
+      }).sort(function (a, b) { return a[2] - b[2] || a[1] - b[1]; }) };
+      picture.how += ' It shows ' + iwdieN(picture.object_looks.rows.length, 'IWMAC object', 'IWMAC objects') + ' as pixels (picture.object_looks), ' +
+        (ol2.placed || []).length + ' with no object of the panel on it.';
     }
     if (picture.symbols) picture.numbered += ' Each house symbol of picture.symbols outlined in green and marked S1, S2... in the order of its rows.';
     var left = (ol.figures || []).length - picture.figures.rows.length + Math.max(0, (ol.pipes || []).length - 200) + Math.max(0, (ol.pills || []).length - 200);
@@ -14000,6 +14026,82 @@ function iwdieVzEraseLooks(pic, W, H, looks) {
   return n;
 }
 
+/* ===================== IWMAC objects found in a picture (v1.77.0) =====================
+   Thomas: *Before vectorizing an image, … check whether any of the elements match existing objects in the IWMAC object
+   archive … automatically replace those elements with the corresponding objects … only vectorize elements that cannot be
+   matched*. A picture may show IWMAC objects as pixels: a compressor drawn with the live compressor's own picture (2349's
+   Maskin, all four), a house drawing's AK-PC states and pumps where no object stands yet, a screenshot. Each one the
+   Designer's own pictures find - every state of each kind that shows a state - becomes that object before the house
+   symbols are looked for and the rest is traced; one an object of its kind stands on already is that object a second
+   time, and goes. */
+
+/** The roles whose objects a picture is searched for (v1.77.0): those that show a state with a picture of their own. Not
+ *  values, labels, headers, ducts, rooms or links: a value stands on the picture's pill, and the rest are drawing. */
+var IWDIE_VZ_OBJECT_ROLES = ['alarm', 'led', 'fan', 'pump', 'valve', 'compressor', 'akpc', 'button', 'damper', 'coil', 'filter'];
+
+/** Whether a picture is searched for objects of kind `id` (v1.77.0): one of IWDIE_VZ_OBJECT_ROLES, no navigation button. */
+function iwdieVzObjectKind(id) {
+  var s = String(id == null ? '' : id);
+  return !!s && !/^sub_page/.test(s) && IWDIE_VZ_OBJECT_ROLES.indexOf(iwdieRoleOf(s)) >= 0;
+}
+
+/** The kinds the found pictures of a picture stand for, one each (v1.77.0). One picture may be several kinds' -
+ *  a grey LED is three LEDs' "off", "Running" four AK-PC kinds' - so each look carries its `kinds`; the one taken is the
+ *  kind the panel uses already (the most of them), else the one whose own picture it is (`main`: the kind's default
+ *  picture, the Designer's `file`), else the first in the catalogue's order. `panel`: the panel's objects. -> the kind */
+function iwdieVzTwinKind(kinds, main, panel) {
+  var list = (kinds || []).filter(Boolean);
+  if (list.length < 2) return list[0] || null;
+  var count = {};
+  (panel || []).forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (list.indexOf(k) >= 0) count[k] = (count[k] || 0) + 1; });
+  var used = list.filter(function (k) { return count[k]; }).sort(function (a, b) { return count[b] - count[a]; });
+  if (used.length) return used[0];
+  var own = list.filter(function (k) { return main && main[k]; });
+  return own[0] || list[0];
+}
+
+/** The IWMAC objects found in a picture, read against the panel's own (v1.77.0). `found`: [{kind, x, y, w, h}] (each
+ *  found look with the kind it stands for); `objects`: the panel's ({name, obj_id, posLeft, posTop, posWidth,
+ *  posHeight}). The object over one - over half of the smaller of the two - says what it is:
+ *  - none: the picture shows an object the panel lacks: `placed`, to become one where it is;
+ *  - one of its role: that object a second time: `twice`, taken out of the picture;
+ *  - one of another (an LED on a compressor): the picture's own, under it: `kept`, for the house symbols and the trace.
+ *  A kind outside the catalogue - one of the panel's own - is never placed: nothing would make it an object.
+ *  -> {placed, twice, kept}, each [{kind, x, y, w, h, on: the object's name, index: its place in `objects`}] */
+function iwdieVzObjectsSeen(found, objects) {
+  var known = iwdieVcObjectIndex(), out = { placed: [], twice: [], kept: [] };
+  (found || []).forEach(function (f) {
+    if (!f || !f.kind) return;
+    var best = null, most = 0, at = null;
+    (objects || []).forEach(function (ob, i) {
+      var x = parseFloat(ob && ob.posLeft), y = parseFloat(ob && ob.posTop), w = parseFloat(ob && ob.posWidth), h = parseFloat(ob && ob.posHeight);
+      if (!ob || !isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0)) return;
+      var a = Math.max(0, Math.min(f.x + f.w, x + w) - Math.max(f.x, x)) * Math.max(0, Math.min(f.y + f.h, y + h) - Math.max(f.y, y));
+      if (a > most && a >= Math.min(f.w * f.h, w * h) * 0.5) { most = a; best = ob; at = i; }
+    });
+    var one = { kind: String(f.kind), x: f.x, y: f.y, w: f.w, h: f.h, on: best ? String(best.name || '') : null, index: at };
+    // the picture it was found by, the state the picture showed: what its placeholder shows (v1.77.0)
+    if (f.look) one.look = f.look;
+    if (!best) (known[one.kind] ? out.placed : out.kept).push(one);
+    else (iwdieRoleOf(String(best.obj_id || '')) === iwdieRoleOf(one.kind) ? out.twice : out.kept).push(one);
+  });
+  return out;
+}
+
+/** An IWMAC object found in the picture as a placeholder of the job's SVG (v1.77.0): as the IWMAC menu places one - the
+ *  Designer's picture of its kind (`look`), in the dashed box - where it was found and at its size, marked
+ *  data-iwdie-found. It stands for no object of the panel, so a sync makes it a new one. '' for a kind outside the
+ *  catalogue. */
+function iwdieVcFoundPlaceholderSvg(f, look, used) {
+  var known = f && iwdieVcObjectIndex()[f.kind], fmt = iwdieDrawFmt, esc = iwdieDrawEsc;
+  if (!known || ![f.x, f.y, f.w, f.h].every(isFinite) || !(f.w > 0) || !(f.h > 0)) return '';
+  var o = { id: known.id, w: f.w, h: f.h, role: known.role, desc: known.desc, kind: known.kind, tag: '', hasTag: false };
+  if (look && typeof look.src === 'string' && /^data:image\/png;base64,/.test(look.src) && look.iw > 0 && look.ih > 0) { o.src = look.src; o.iw = look.iw; o.ih = look.ih; }
+  var name = IWDIE_VC_OBJ_PREFIX + known.id, gid = iwdieVcSvgId(name, used);
+  return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-found="1" transform="translate(' + fmt(f.x) + ' ' + fmt(f.y) + ')">' +
+    iwdieVcItemParts(iwdieVcObjectItem(o)).join('') + '</g>';
+}
+
 /** The looks a picture is searched for its house symbols with (v1.74.0): each look once (twins alike), and none
  *  - of a pill (iwdieVcIsPill: pills are the objects' and the pill step's), a Pille… or a family an IWMAC object shows
  *    (iwdieSymIsObject);
@@ -14763,7 +14865,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** The picture's layout and style: what iwdieVzTrace finds in its pixels (off this page), and the texts of the drawing
      *  it was made from, when it keeps one. -> Promise<{source, outline, texts, layers} | null> */
-    function ovPicture(url, size, fill, set) {
+    function ovPicture(url, size, fill, set, objs) {
       if (!url) return Promise.resolve(null);
       return fetchBackgroundBytes(url).then(function (bg) {
         var mime = iwdieSniffMime(bg.bytes);
@@ -14774,29 +14876,64 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return exportPaint(bg.bytes, mime !== 'application/octet-stream' ? mime : bg.mime, size, fill).then(function (c) {
             var data = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
             // v1.76.0: a picture without its drawing has its house symbols looked for, beside the trace - a search that
-            // fails, however, costs the export its symbols and nothing else
-            var look = !svg && set ? Promise.resolve().then(function () { return ovFindSymbols(c, set, IWDIE_OV_SYMBOL_MS); }).then(null, function () { return null; })
-              : Promise.resolve(null);
-            return Promise.all([vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, c.width, c.height, { outline: true }], function () {}), look]);
+            // fails, however, costs the export its symbols and nothing else. v1.77.0: and first the IWMAC objects it shows,
+            // as Vectorize image looks for them, taken out before the symbols are looked for
+            var pixels = c.getContext('2d').getImageData(0, 0, c.width, c.height).data, seen = null;
+            var look = svg ? Promise.resolve(null) : Promise.resolve().then(function () {
+              // what the panel's objects stand on, and their own looks shown a second time, out first - as Vectorize image
+              // takes them out - or a value's pill under an object reads as a valve
+              return ovClearObjects(pixels, c.width, c.height, objs || []);
+            }).then(function () {
+              return vcFindObjects(pixels, c.width, c.height, objs || [], IWDIE_VZ_OBJECT_MS);
+            }).then(function (fo) {
+              if (fo) { seen = fo; iwdieVcErase(pixels, c.width, c.height, fo.holes); }
+            }, function () {}).then(function () {
+              return set ? ovFindSymbols(c, set, IWDIE_OV_SYMBOL_MS, pixels) : null;
+            }).then(null, function () { return null; });
+            return Promise.all([vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, c.width, c.height, { outline: true }], function () {}), look,
+              look.then(function () { return seen; })]);
           }).then(function (r) {
-            var vz = r[0], found = r[1];
+            var vz = r[0], found = r[1], seen = r[2];
             if (!vz || !vz.outline) return null;
             var items = got && got.items && got.items.length ? got.items : found ? iwdieOvRasterItems(found.found, vz.outline) : null;
             return { source: svg ? (mime === 'image/svg+xml' ? 'svg' : 'vectorcraft') : 'traced', outline: vz.outline,
               texts: got && got.texts && got.texts.length ? got.texts : null, layers: got && got.layers && got.layers.length ? got.layers : null,
-              items: items && items.length ? items : null, found: found ? { set: set, looked: found.looked, ms: found.ms } : null };
+              items: items && items.length ? items : null, found: found ? { set: set, looked: found.looked, ms: found.ms } : null,
+              objectLooks: seen ? { placed: seen.placed, twice: seen.twice } : null };
           });
         });
       });
     }
 
+    /** What the panel's objects stand on in its picture, and their own looks it shows a second time, taken out of `data`
+     *  (RGBA, w x h) for the export as Vectorize image takes them out (v1.77.0): each pill one stands on
+     *  (iwdieVzObjectPills), and each look of one the Designer draws itself (vcLookMasks, iwdieVzEraseLooks). `objs` with
+     *  their places on the canvas; whether each draws itself is asked of the Designer here. -> Promise */
+    function ovClearObjects(data, w, h, objs) {
+      var drawn = {}, kinds = [];
+      (objs || []).forEach(function (ob) {
+        var k = String((ob && ob.obj_id) || '');
+        if (!k) return;
+        if (drawn[k] === undefined) { drawn[k] = vcDrawsItself(k); if (/^[\w.-]+$/.test(k)) kinds.push(k); }
+        if (drawn[k]) ob.iwdieSelf = true;
+      });
+      try {
+        var cols = iwdieVzPalette(data, w, h, {}).map(function (cc) { return cc.slice(0, 3); });
+        iwdieVzObjectPills(data, w, h, cols, objs);
+      } catch (e) {}
+      return vcObjectLooks(kinds).then(function (looks) {
+        return vcLookMasks(objs, looks);
+      }).then(function (masks) { iwdieVzEraseLooks(data, w, h, masks); }, function () {});
+    }
+
     /** The house symbols a picture of pixels shows (v1.76.0), found for the export as Vectorize image finds them: the
      *  templates of `set` ('Oversikt' or 'Maskin') drawn at 1:1 and looked for in four quarter turns, in workers - for at most
      *  `ms`, then left out. In reading order, top to bottom. -> Promise<{found: [{name, x, y, w, h, turn}], looked, ms} | null> */
-    function ovFindSymbols(c, set, ms) {
+    function ovFindSymbols(c, set, ms, pixels) {
       var t0 = Date.now(), lib = libSymbols(), items = iwdieSymItemsOfSet(lib && lib.items, set);
       if (!items.length) return Promise.resolve(null);
-      var w = c.width, h = c.height, data = c.getContext('2d').getImageData(0, 0, w, h).data;
+      // the picture as the object search left it (v1.77.0), else as it is
+      var w = c.width, h = c.height, data = pixels || c.getContext('2d').getImageData(0, 0, w, h).data;
       var ground = (iwdieVzPalette(data, w, h, {})[0] || [204, 204, 204]).slice(0, 3);
       return vcComponentTemplates(items).then(function (templates) {
         var looks = iwdieVcSymbolLooks(templates, items, iwdieVcComponentNames(items), ground);
@@ -14827,7 +14964,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try { src.tagStyle = ovTagStyle(doc); } catch (e) {}
       try { var lib = libSymbols(); if (lib && lib.items && lib.items.length) src.library = lib; } catch (e) {}
       var rows = ovRowsFor(ids).then(function (got) { src.rows = got.rows; src.failed = got.failed; }, function () {});
-      var pic = ovTimeout(ovPicture(url, size, fill, iwdieOvSymbolSet(src.panelName)), 60000).then(function (p) { src.picture = p; }, function () { src.picture = null; });
+      // v1.77.0: the panel's objects where they are on the canvas, for the IWMAC objects the picture shows
+      var placed = iwdieOvObjects(doc).map(function (p) {
+        return { name: p.o.name, obj_id: p.o.obj_id, posLeft: p.x, posTop: p.y, posWidth: parseInt(p.o.posWidth, 10) || 0, posHeight: parseInt(p.o.posHeight, 10) || 0 };
+      });
+      var pic = ovTimeout(ovPicture(url, size, fill, iwdieOvSymbolSet(src.panelName), placed), 60000).then(function (p) { src.picture = p; }, function () { src.picture = null; });
       return Promise.all([rows, pic]).then(function () { return src; });
     }
 
@@ -18252,7 +18393,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // and the house symbols found in it first
           if (ai === 'vector' || (!ai && base)) { info.vector = true; ai = null; lib = null; }
           if (ai) { info.ai = ai; lib = null; }
-          paper = info.vector ? vcPaper(tab, [['objects', 'What the objects stand on'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'],
+          paper = info.vector ? vcPaper(tab, [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'],
             ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']])
             : lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
             ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
@@ -18280,9 +18421,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 paper.done(iwdieN(vz.shapes + vz.pills + vz.pipes, 'shape', 'shapes') + ' in ' + (Math.round(vz.ms / 100) / 10) + ' s', 0.9);
                 paper.step('build', 'its layers' + (nObj ? ', ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : ''), 0.92, 0.97);
                 // the picture as it was on a hidden layer, to read again later (v1.48.0); the house symbols found on Komponenter,
-                // and each value's bubble in its placeholder (v1.74.0)
+                // and each value's bubble in its placeholder (v1.74.0); each IWMAC object found in it a new object's placeholder (v1.77.0)
                 return iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: null, original: picture, vectors: vz.layers, shapes: shapes,
-                  components: vz.symbols, objects: info.objects, looks: info.looks, unders: vz.unders, title: title });
+                  components: vz.symbols, objects: info.objects, looks: info.looks, unders: vz.unders, found: vz.found, title: title });
               });
             }
             // the kept components looked for in the picture (v1.44.0): those found become vectors of their own
@@ -18947,6 +19088,99 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** The Designer's pictures of every state of each kind a picture is searched for (v1.77.0): the catalogue's kinds
+     *  that show a state (iwdieVzObjectKind) and the panel's own of those roles, each with its size as the Designer
+     *  draws it and its pictures - its render definition's `file` and every one of its `status_array` - fetched from
+     *  /iw_icons/ as PNG and kept a week in Tampermonkey's storage, as the objects' looks are. A kind the Designer does
+     *  not define here has none. -> Promise<{kinds: {id: {w, h, pics: [path]}}, main: {id: path}, pics: {path: {src, w, h}}}> */
+    function vcObjectStates(objects) {
+      var ctl = W.controls || {}, ids = [];
+      iwdieVcObjectCatalog().forEach(function (o) { if (iwdieVzObjectKind(o.id)) ids.push(o.id); });
+      (objects || []).forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (iwdieVzObjectKind(k) && ids.indexOf(k) < 0) ids.push(k); });
+      var known = iwdieVcObjectIndex(), kinds = {}, main = {}, want = [];
+      ids.forEach(function (id) {
+        var def = null;
+        try { def = ctl[id]; } catch (e) { def = null; }
+        if (!def) return;
+        var sa = def.status_array || {}, list = [def.file].concat(Array.isArray(sa) ? sa : Object.keys(sa).map(function (k) { return sa[k]; }));
+        var pics = list.filter(function (p, i) { return typeof p === 'string' && /\.(png|gif|jpe?g)$/i.test(p) && !/(^|\/)transp\.gif$/i.test(p) && list.indexOf(p) === i; });
+        var w = parseFloat(def.width), h = parseFloat(def.height), k = known[id];
+        if (!(w >= 8) && k) w = k.w;
+        if (!(h >= 8) && k) h = k.h;
+        if (!pics.length || !(w >= 8) || !(h >= 8) || w > 300 || h > 300) return;
+        kinds[id] = { w: Math.round(w), h: Math.round(h), pics: pics };
+        if (typeof def.file === 'string') main[id] = def.file;
+        pics.forEach(function (p) { if (want.indexOf(p) < 0) want.push(p); });
+      });
+      var kept = null;
+      try { kept = GM_getValue(IWDIE_VC_STATES_KEY, null); } catch (e) { kept = null; }
+      var fresh = !!(kept && kept.v === 1 && kept.pics && kept.at > Date.now() - 7 * 864e5), pics = fresh ? kept.pics : {};
+      var missing = want.filter(function (p) { return !pics[p]; });
+      return Promise.all(missing.map(function (p) {
+        return vcIconPng(vcDesignerUrl('../iw_icons/' + p)).then(function (got) { pics[p] = { src: got.url, w: got.w, h: got.h }; }, function () {});
+      })).then(function () {
+        if (missing.length) { try { GM_setValue(IWDIE_VC_STATES_KEY, { v: 1, at: fresh ? kept.at : Date.now(), pics: pics }); } catch (e) {} }
+        return { kinds: kinds, main: main, pics: pics };
+      });
+    }
+
+    /** The state pictures of vcObjectStates as templates to look for (v1.77.0): each picture drawn at its kinds' size,
+     *  as the Designer draws it, once for all the kinds that show it (`kinds`), unturned (`still`). -> Promise<[{k, w, h,
+     *  rgba, still, kinds, pic}]> */
+    function vcStateTemplates(st) {
+      var by = {}, order = [];
+      Object.keys((st && st.kinds) || {}).forEach(function (id) {
+        var K = st.kinds[id];
+        K.pics.forEach(function (p) {
+          if (!st.pics[p]) return;
+          var key = p + '|' + K.w + 'x' + K.h;
+          if (!by[key]) { by[key] = { pic: p, w: K.w, h: K.h, kinds: [] }; order.push(key); }
+          by[key].kinds.push(id);
+        });
+      });
+      return Promise.all(order.map(function (key, i) {
+        var e = by[key];
+        return loadPicture(st.pics[e.pic].src).then(function (img) {
+          var c = document.createElement('canvas');
+          c.width = e.w; c.height = e.h;
+          var g = c.getContext('2d');
+          g.drawImage(img, 0, 0, e.w, e.h);
+          return { k: i, w: e.w, h: e.h, rgba: g.getImageData(0, 0, e.w, e.h).data, still: true, kinds: e.kinds, pic: e.pic };
+        }, function () { return null; });
+      })).then(function (all) { return all.filter(Boolean); });
+    }
+
+    /** The IWMAC objects a picture shows (v1.77.0): `data` its pixels (RGBA, w x h) over the panel's colour, `objects`
+     *  the panel's. Each state picture of each kind looked for unturned, in workers, at most `ms` long; each found one
+     *  read against the panel's objects (iwdieVzObjectsSeen). `step(done, of)` hears how far it is. -> Promise<{placed,
+     *  twice, kept, holes: [{x, y, w, h, rgba}] of placed and twice, looked: pictures} | null when it ran out of time> */
+    function vcFindObjects(data, w, h, objects, ms, step) {
+      return vcObjectStates(objects).then(function (st) {
+        return vcStateTemplates(st).then(function (templates) {
+          if (!templates.length) return { placed: [], twice: [], kept: [], holes: [], looked: 0 };
+          var job = vcFindAll(data, w, h, templates, step || function () {}), timer = setTimeout(function () { job.stop(); }, ms);
+          return job.promise.then(function (found) {
+            clearTimeout(timer);
+            if (!found) return null;
+            var byK = {};
+            templates.forEach(function (t) { byK[t.k] = t; });
+            var looked = found.map(function (m) {
+              var t = byK[m.k];
+              var pic = t ? st.pics[t.pic] : null;
+              return t ? { kind: iwdieVzTwinKind(t.kinds, st.main, objects), x: m.x, y: m.y, w: m.w, h: m.h, rgba: t.rgba,
+                look: pic ? { src: pic.src, iw: pic.w, ih: pic.h } : null } : null;
+            }).filter(Boolean);
+            var seen = iwdieVzObjectsSeen(looked, objects), rgbaOf = function (f) {
+              for (var i = 0; i < looked.length; i++) if (looked[i].x === f.x && looked[i].y === f.y && looked[i].kind === f.kind) return looked[i].rgba;
+              return null;
+            };
+            var holes = seen.placed.concat(seen.twice).map(function (f) { var r = rgbaOf(f); return r ? { x: f.x, y: f.y, w: f.w, h: f.h, rgba: r } : null; }).filter(Boolean);
+            return { placed: seen.placed, twice: seen.twice, kept: seen.kept, holes: holes, looked: templates.length };
+          });
+        });
+      });
+    }
+
     /* ---------- components, pills and pipes found in the picture (v1.44.0, v1.45.0) ---------- */
     /** Whether the Designer draws an object of kind `id` itself (v1.48.0): its render definition's
      *  picture, or its CSS class's look on an element of its size out of sight (iwdieVcPaintsItself). A
@@ -19142,6 +19376,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             '<div id="drop" style="padding:18px;border:1.5px dashed #6a6a6a;border-radius:6px;text-align:center;cursor:pointer">' +
             'Drag the .ai here from the plant folder, or click to choose it</div>' +
             '<div id="say" style="margin-top:8px;font-size:12px;color:#9a9a9a"></div>' +
+            // v1.77.0: the IWMAC objects the picture shows, as those objects - an LED, a pump, a compressor, an AK-PC state
+            (how.picture ? '<label style="display:flex;gap:8px;align-items:center;margin-top:12px;cursor:pointer" title="Before the picture is ' +
+              'vectorized, the Designer’s own pictures of each object that shows a state are looked for in it: one found where no object of the ' +
+              'panel stands becomes that object, a new one to link; one the panel’s object shows already is taken out. The rest is vectorized.">' +
+              '<input type="checkbox" id="objs" checked style="margin:0"> <span>IWMAC objects found in the picture become objects, not shapes</span></label>' : '') +
             '<div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;margin-top:16px">' +
             // without the .ai (v1.61.0): the picture made vectors; Trace the picture (raster, components found) gone since v1.74.0
             (how.picture ? '<button id="vector" style="' + pillCss(false) + '" title="Without the .ai: the picture turned into vectors - the house symbols ' +
@@ -19261,7 +19500,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var b = e.target && e.target.closest ? e.target.closest('button, #drop') : null;
           if (!b) return;
           if (b.id === 'trace') finish(null);
-          else if (b.id === 'vector') finish('vector');
+          else if (b.id === 'vector') {
+            // v1.77.0: whether the IWMAC objects the picture shows become those objects (the card's box, ticked unless unticked)
+            var objs = $('objs');
+            info.findObjects = !objs || !!objs.checked;
+            finish('vector');
+          }
           else if (b.id === 'choose' || b.id === 'drop') choose();
           else if (b.id === 'connect') connect();
           else if (b.id === 'allow') allow();
@@ -19487,6 +19731,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         got.looks = iwdieVzEraseLooks(data, w, h, masks);
         paper.done(got.carried + got.left + got.looks ? iwdieN(got.carried, 'bubble', 'bubbles') + ' with their values, ' + iwdieN(got.left, 'pill', 'pills') +
           ' and ' + (got.looks ? 'some looks' : 'no look') + ' left to their objects' : 'nothing under them', 0.05);
+        // v1.77.0: the IWMAC objects the picture shows become those objects, before the house symbols and the trace
+        got.found = []; got.twice = 0; got.objectsKept = 0;
+        if (info && info.findObjects === false) { paper.none('found', 'not looked for: switched off on the card'); return null; }
+        paper.step('found', 'the Designer’s pictures of every state of each kind…', 0.05, 0.06);
+        return vcFindObjects(data, w, h, objects, IWDIE_VZ_OBJECT_MS, function (done, of, workers) {
+          paper.say(done + ' of ' + of + ' pictures looked for' + (workers ? ' · ' + iwdieN(workers, 'worker', 'workers') : ' · in this page'), 0.06 + 0.03 * done / Math.max(1, of));
+        }).then(function (fo) {
+          if (!fo) { paper.done('not finished in time: none placed', 0.09); return; }
+          iwdieVcErase(data, w, h, fo.holes);
+          got.found = fo.placed; got.twice = fo.twice.length; got.objectsKept = fo.kept.length;
+          var count = {};
+          fo.placed.forEach(function (f) { var d = (iwdieVcObjectIndex()[f.kind] || {}).desc || f.kind; count[d] = (count[d] || 0) + 1; });
+          var top = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 3).map(function (d) { return d + (count[d] > 1 ? ' ×' + count[d] : ''); });
+          paper.done(fo.placed.length || fo.twice.length ? (fo.placed.length ? fo.placed.length + ' placed as objects: ' + top.join(', ') + (Object.keys(count).length > 3 ? ', …' : '') : 'none new') +
+            (fo.twice.length ? '; ' + fo.twice.length + ' shown again where the panel’s objects stand, taken out' : '') : 'none found', 0.09);
+        }, function () { paper.done('not looked for', 0.09); });
+      }).then(function () {
         var lib = libSymbols(), items = lib && lib.items ? lib.items : [];
         if (!items.length) { paper.none('symbols', 'no library'); return null; }
         paper.step('symbols', iwdieN(items.length, 'symbol', 'symbols') + ' of ' + (lib.builtin ? 'the house templates' : '“' + (lib.file || 'the library') + '” and the house templates') +
@@ -22573,6 +22834,13 @@ if (typeof module !== 'undefined' && module.exports) {
     OV_SYMBOL_MS: IWDIE_OV_SYMBOL_MS,
     symItemsOfSet: iwdieSymItemsOfSet,
     exportDrawing: iwdieExportDrawing,
+    VZ_OBJECT_ROLES: IWDIE_VZ_OBJECT_ROLES,
+    VZ_OBJECT_MS: IWDIE_VZ_OBJECT_MS,
+    VC_STATES_KEY: IWDIE_VC_STATES_KEY,
+    vzObjectKind: iwdieVzObjectKind,
+    vzTwinKind: iwdieVzTwinKind,
+    vzObjectsSeen: iwdieVzObjectsSeen,
+    vcFoundPlaceholderSvg: iwdieVcFoundPlaceholderSvg,
     svgClassRules: iwdieSvgClassRules,
     SVG_STYLE_ATTRS: IWDIE_SVG_STYLE_ATTRS,
     vcRestoreOriginal: iwdieVcRestoreOriginal,

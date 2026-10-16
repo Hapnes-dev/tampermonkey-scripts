@@ -327,7 +327,9 @@ by the right names, each turned copy told apart.
   "overview": {
     // v1.62.0 — the plant behind the panel, for an agent: units, parameter rows,
     // tagged signals, links checked, the picture's layout and style; since v1.76.0
-    // every object with the pill, house symbol and caption it belongs to. See below.
+    // every object with the pill, house symbol and caption it belongs to; since
+    // v1.77.0 the IWMAC objects a picture of pixels shows (picture.object_looks).
+    // See below.
   },
   "background_embedded": true,
   "background": {
@@ -490,6 +492,70 @@ VectorCraft too, so they keep up with each other.
 - Checked in the stub host on the hosted VectorCraft 0.11.0: an object moved, one deleted and one added in the Designer,
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
+
+### IWMAC objects found in the picture become objects (v1.77.0)
+
+Thomas: *Before vectorizing an image, … check whether any of the elements match existing objects in the IWMAC object
+archive … automatically replace those elements with the corresponding objects … only vectorize elements that cannot be
+matched*.
+
+House symbols have been matched since 1.74.0; IWMAC objects were not. Where a picture showed one as pixels, drawn with
+the Designer's own picture of it and with no object of the panel on it, *Vectorize image* traced it into shapes:
+
+- 2349's Maskin shows its four compressors with the live compressor's own picture (*Kompressor ON*), and no object of
+  the panel stands on any of them. 1.76.0 put the Maskin template's *Kompressor* symbol there.
+- A house drawing shows AK-PC states (*Manuel*, *Alarm*) and a pump where no object stands yet.
+
+Now, before the house symbols are looked for and the rest is traced:
+
+- **The archive.** Every kind of the object catalogue that shows a state with a picture of its own: alarms, LEDs, fans,
+  pumps, valves, compressors, AK-PC, buttons, dampers, coils and filters, and the panel's own kinds of those roles. Not
+  values, labels, headers, ducts, rooms or navigation buttons: a value stands on the picture's pill, and the rest is
+  drawing.
+- **Every state.** Each kind's pictures as the Designer defines them, its default picture and every picture of its status
+  array, fetched from the Designer's `iw_icons` (GETs only) and kept a week in Tampermonkey's storage
+  (`iwdie.vc.states`). Each is drawn at its kind's size and looked for at 1:1, unturned, in workers, for at most 15 s. A
+  picture several kinds share is looked for once.
+- **Which kind.** A shared picture (a grey LED is three LEDs' *off*, *Running* four AK-PC kinds') becomes the kind the
+  panel uses most, else the kind whose default picture it is, else the first in the catalogue.
+- **Read against the panel's objects**, the one over at least half of the smaller box:
+  - **None there:** the picture shows an object the panel lacks. It comes out of the picture and goes on the layer
+    *IWMAC-objekter* as that object's placeholder (`IWMAC <kind>`, marked `data-iwdie-found`), showing the state the
+    picture showed. Ctrl+S in VectorCraft places it as a new object, unlinked, to link as any new object; the toast
+    says so.
+  - **One of its role:** that object a second time. It comes out, as 1.74.0 took an object's own look out.
+  - **One of another role** (an LED on a compressor): left in the picture for the house symbols and the trace.
+- **Then the rest, as before.** The house symbols are looked for on what is left, and the rest is vectorized.
+- **Off on the card.** The card has a box, ticked: *IWMAC objects found in the picture become objects, not shapes*.
+  Untick it to vectorize them as before. The paper shows the step as *IWMAC objects in the picture*.
+- **The export reads a picture of pixels the same way** before it looks for its house symbols: what the objects stand
+  on and their own looks out first, then the IWMAC objects the picture shows. `overview.picture.object_looks` lists
+  them (kind, box, and the object on each as `o#`, or null where the panel lacks one) and `picture.how` counts them, so
+  Copilot places those as objects instead of drawing them. Taking the objects' pills out first also ended two false
+  valves on 2349's Maskin: the 1.76.0 export, which searched the picture as it was, found an actuator valve where the
+  *Manuel* pills meet and a solenoid valve on an *M-T* pill.
+
+Checked in the stub host, through the card and the hosted VectorCraft 0.11.0:
+
+- **A house drawing** (`maskin-ref.png`) with 9 objects. Found: five AK-PC condenser controllers showing *Manuel*, an
+  AK-PC controller showing *Alarm*, and a running pump. After them, the heat exchanger and five compressors as house
+  symbols. Ctrl+S placed the seven as new objects: 9 objects became 16.
+- **2349's Maskin** with its 58 objects. Found: the four compressors, as `V3_co2_compressor_31x35_nrm`, running. After
+  them, the heat exchanger and the oil separator (*Beholder*) as house symbols. The job took 3.7 s (3.5 s unticked).
+  Its export, in 2.7 s, lists the four in `object_looks`, and the kit's `validate-export.py` finds no error in it.
+- **2349's Oversikt.** No IWMAC object found; its 40 house symbols as before.
+- **Unticked.** None found; the compressors stayed *Kompressor* symbols.
+- **Three of Thomas's own exports of the day** (made with 1.74.0), their pictures and objects:
+  - 4559's Maskin (10245's is the same picture): its three compressor pictures found, each with no object on it (the
+    AK-PC strips stand below them), and the oil separator as a house symbol.
+  - 4559's Oversikt: no IWMAC object found, and its 10 cases as house symbols.
+
+  On such a Maskin the compressors drawn into the picture become compressor objects, unlinked: link them, or untick the
+  box to keep them as drawing.
+- Not run in the live Designer.
+
+Not found: an object drawn at another size than the Designer's, or turned. Found when it should not be: a legend's
+sample of an object's picture becomes an object too, so delete it in VectorCraft before Ctrl+S.
 
 ### The export as Copilot reads it (v1.76.0)
 
