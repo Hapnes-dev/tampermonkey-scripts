@@ -493,6 +493,66 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### What the first run on 10214 showed, put right (v1.78.1)
+
+Thomas, after 1.78.0 on 10214's Oversikt, with screenshots of the panel before and after: *you can see there is some
+differences / do more deep dive and check*.
+
+- **The cases' red circles became bells.** Not this script. The Designer's alarm picture, `BellPumping_34.gif`, is a
+  45-frame animation of 1.35 s whose frames 4 to 7 are a red circle without the bell, and the two screenshots caught
+  different frames.
+- **The words were read in Segoe UI, not in the picture's Myriad Pro.** That is why the legend's *Kjøl* and the case
+  code *K12* stayed drawing (the legend's *ø* traced as a filled dot), *F76* became *F 76*, and the labels came out 11,
+  12 and 14 px. 1.78.0 took the first font that read one of the four widest runs at 0.1 or better. Segoe UI did that on
+  the Oversikt, while Myriad Pro failed that same test on Energi.
+  - **A font you give now wins.** A font dropped on the card, or Myriad Pro installed in Windows, is used whenever it
+    reads the picture at all. Roboto, Arial and Segoe UI are used only when one reads it very well. Each font is tried
+    on up to eight runs most like single words, scored by the median cost of their readings (`iwdieTxFit`,
+    `iwdieTxFontChoice`).
+  - **Why so strict.** Measured on five of his pictures, Myriad Pro scored 0.05 to 0.17, Segoe UI 0.07 to 0.19, Roboto
+    0.07 to 0.26 and Arial 0.11 to 0.25. A wrong font can fit one picture better than the right font fits another, so
+    a font nobody gave is taken only at 0.05 or better.
+  - **Without the picture's font nothing is read**, and the paper and the opening toast say so: *not read: its font is
+    not here (fonts here: Roboto, Arial, Segoe UI) - drop the picture's font on the card …*
+  - **Roboto now loads.** It was never tried before: Google Fonts now serves it as one variable face of weight
+    *400 700*, and the reader only took weight 400.
+  - **Faster.** A font you give that reads the picture ends the search, so the other fonts are tried only when needed.
+- **The labels looked bigger than the picture's words.** The Designer draws its labels in `roboto, sans-serif`, weight
+  500, colour #3C505E (`V3_iw_xo_components.css`). His PC has no Roboto, so they show in Arial. Both are wider than
+  Myriad Pro, so a label as tall as its word (1.78.0) stands out past it.
+  - **Size.** Each label's size is now weighed between its word's width and its capitals' height, measured in the
+    label's own font as the Designer draws it, with standing out wider counting half again.
+  - **Consistency.** Each word takes the size that is best for it and for the words read within half a pixel of its
+    size, so a legend's words match and a code read a pixel off takes its group's size.
+  - **On 10214's Oversikt:** the legend is 12 px, the cases' codes and rooms 11 px, the title 16 px.
+  - **Not used:** the Designer's 8 and 10 px labels, which it draws at 11 px.
+  - **Still darker** than the picture's grey: that is the colour of the Designer's labels.
+- **The legend's Kjøl pill became a case end with grey stubs.** The Oversikt template's `KjølGavl` (60 × 29, its corners
+  a little round) was placed on it. It is taller than the pill's fill, so a whole side of it lay on the pill's light rim,
+  yet the whole still matched.
+  - **The fix:** a house symbol must now also match along each of its sides, its three outer rows or columns there, or
+    one pixel across (for an outline a pixel off).
+  - **10214's freezer islands:** each `FrysKvadratStor` square spanned two freezer cases and the gap between them. They
+    are now two `FrysDisk` cases each.
+  - **2349's Oversikt:** its islands are now their `FrysGavl` ends and `FrysDisk` cases (47 symbols where 1.77.0 found
+    40), and its legend's pills are left alone.
+  - **IWMAC objects (1.77.0)** are still matched on the whole: their sides differ a little from one object to another.
+- **One of 10214's Maskin objects was rewritten at every sync** (since before 1.78). It is a custom JSON object of
+  40 × 20 whose placeholder says *Free wi…*, and each sync took that as its new text, because the caption was compared
+  at the catalogue's size. It is now compared at the object's own size.
+
+Checked in the stub host, with the live Designer's label rules on the stub page:
+
+- **10214's Oversikt, Myriad Pro kept on the card:** 42 words, all right (legend 12 px, codes and rooms 11, title 16), 31
+  symbols with the legend's pills left alone. Ctrl+S in the hosted VectorCraft gave *✓ Synced · 42 placed*. The job took
+  10.2 s.
+- **10214's Maskin:** 71 words. Ctrl+S gave *✓ Synced · 76 placed* (its 5 IWMAC objects found too), and no object of
+  the panel changed. The job took 13.8 s.
+- **Without the font, on all five pictures:** no word read, and the paper says why.
+- **Symbols and objects against 1.77:** 2349's and 4559's Maskin are unchanged. The house Maskin drawing keeps its 6
+  symbols and 7 objects. 4559's Oversikt only loses its legend's `KjølGavl`. 2349's Oversikt changes as above.
+- Not run in the live Designer.
+
 ### Text in the picture becomes label objects (v1.78.0)
 
 Thomas, with 10214's Oversikt legend and a crop of *K13* and *K14* beside their cases: *i think more can be replaced with

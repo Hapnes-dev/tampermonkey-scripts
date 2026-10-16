@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.78.0
+// @version      1.78.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.78.0';
+var IWDIE_VERSION = '1.78.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8340,6 +8340,9 @@ var IWDIE_VZ_OBJECT_MS = 15000;
 var IWDIE_TX_FONTS_KEY = 'iwdie.tx.fonts';
 /** How long a picture's words are read (v1.78.0), at most: what is read by then is kept. */
 var IWDIE_TX_READ_MS = 30000;
+/** The sizes the Designer draws its labels at (v1.78.1), `number_v3_label_<n>px_…`: its 8 and 10 px labels are drawn at
+ *  11 px (V3_iw_xo_components.css), so a label is one of these. */
+var IWDIE_TX_LABEL_PX = [9, 11, 12, 14, 16, 18, 20];
 
 var iwdieVcObjCache = null;
 
@@ -8947,8 +8950,10 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
     taken[e.name] = 1;
     var x = Math.round(f.x), y = Math.round(f.y), w = Math.max(1, Math.round(f.w)), h = Math.max(1, Math.round(f.h));
     var o = known[f.id], was = iwdieVcTagOf(e), text = String(f.text || '').replace(/\s+/g, ' ').trim();
-    // a text it cannot have, or the one a placeholder without the object's picture says, is no change
-    var caption = iwdieVcObjectCaption(o || { id: f.id, w: parseFloat(e.posWidth), h: parseFloat(e.posHeight), role: '', desc: f.id });
+    // a text it cannot have, or the one a placeholder without the object's picture says, is no change - that placeholder
+    // says it at the object's own size (v1.78.1: 10214's custom JSON object, 40 x 20, said "Free wi…", and each sync
+    // wrote it as the object's text, the caption at the catalogue's size being longer)
+    var caption = iwdieVcObjectCaption(Object.assign({}, o || { role: '', desc: f.id }, { id: f.id, w: parseFloat(e.posWidth), h: parseFloat(e.posHeight) }));
     if (text === caption || (o && o.kind !== 'label' && o.kind !== 'bar' && !o.hasTag)) text = was;
     var moved = !(near(e.posLeft, x) && near(e.posTop, y) && near(e.posWidth, w) && near(e.posHeight, h));
     // linked to another parameter (v1.63.0): its placeholder renamed, the new one resolved by the sync
@@ -9262,7 +9267,17 @@ function iwdieVcPrepare(t0, q) {
     I = [0, 0, 0];
     ink.forEach(function (q4) { I[0] += px[q4 + 2] / ink.length; I[1] += px[q4 + 3] / ink.length; I[2] += px[q4 + 4] / ink.length; });
   }
+  // (v1.78.1) its sides: the solid pixels of its three outer rows or columns on each side, each side to match by itself
+  var sides = [[], [], [], []];
+  if (w >= 10 && h >= 10) for (var p6 = 0; p6 < px.length; p6 += 6) {
+    if (px[p6 + 1] <= 2) sides[0].push(p6);
+    if (px[p6 + 1] >= h - 3) sides[1].push(p6);
+    if (px[p6] <= 2) sides[2].push(p6);
+    if (px[p6] >= w - 3) sides[3].push(p6);
+  }
   return { k: t.k, turn: q, w: w, h: h, px: px, np: px.length / 6, ink: ink, M: M, I: I, one: !other,
+    // each: its pixels, and whether it is a left or right side (a pixel across is then a pixel left or right)
+    sides: sides.map(function (sd, i) { return { q: sd, across: i >= 2 }; }).filter(function (sd) { return sd.q.length >= 10; }),
     anchors: other ? spread(ink, 10).concat(spread(rim, 6)) : spread(rim, 16),
     clear: clear, clearAll: all, ring: ring, probe: probe, edge: edge, sig: w + 'x' + h + ':' + iwdieVcPixelHash(raw) };
 }
@@ -9276,7 +9291,10 @@ function iwdieVcPrepare(t0, q) {
  *    solid pixels, and within 36 on those of its other colours.
  *  - And it must not be a piece of something bigger in its colours: of its clear pixels at most a
  *    quarter may be of its colours (not the background). One of one colour: neither its clear
- *    pixels nor the ring two outside it, nor any one side of that ring for 40 %. */
+ *    pixels nor the ring two outside it, nor any one side of that ring for 40 %.
+ *  - (v1.78.1) And along each of its sides: its three outer rows or columns there within 45 on average, there or a
+ *    pixel across (an outline a pixel off). The Oversikt template's case end was placed on a legend's pill of its
+ *    colour, a whole side of it on the pill's rim. */
 function iwdieVcFindPrepared(ix, t, found) {
   var W = ix.W, H = ix.H, P = ix.P, R = ix.R, px = t.px, M = t.M, I = t.I, tw = t.w, th = t.h, a, q5;
   if (tw > W || th > H) return;
@@ -9323,6 +9341,18 @@ function iwdieVcFindPrepared(ix, t, found) {
       if (sInk > limInk) continue;
       for (q5 = 0; q5 < px.length && sAll <= limAll; q5 += 6) sAll += diff(((y0 + px[q5 + 1]) * W + x0 + px[q5]) * 4, q5);
       if (sAll > limAll) continue;
+      var sideOff = false;
+      for (var sd = 0; sd < (t.sides || []).length && !sideOff; sd++) {
+        var band = t.sides[sd].q, across = t.sides[sd].across, bestBand = Infinity;
+        for (var sh = -1; sh <= 1; sh++) {
+          var dxs = across ? sh : 0, dys = across ? 0 : sh, sBand = 0;
+          if (x0 + dxs < 0 || y0 + dys < 0 || x0 + dxs + tw > W || y0 + dys + th > H) continue;
+          for (q5 = 0; q5 < band.length && sBand <= 45 * band.length; q5++) sBand += diff(((y0 + dys + px[band[q5] + 1]) * W + x0 + dxs + px[band[q5]]) * 4, band[q5]);
+          if (sBand < bestBand) bestBand = sBand;
+        }
+        if (bestBand > 45 * band.length) sideOff = true;
+      }
+      if (sideOff) continue;
       var lr = 0, lg = 0, lb = 0, ln = 0;
       if (!t.one) {
         var inky = 0;
@@ -9378,6 +9408,9 @@ function iwdieVcSearch(ix, templates, progress, seen) {
       var t = iwdieVcPrepare(t0, q);
       if (!t || seen[t.sig]) continue;
       seen[t.sig] = 1;
+      // an IWMAC object's picture is matched on the whole, as in v1.77.0: its sides (a state's text, a strip's ends) differ
+      // a little from object to object - of the house drawing's seven objects one was left without this (v1.78.1)
+      if (t0.still) t.sides = [];
       iwdieVcFindPrepared(ix, t, found);
     }
     if (progress) progress(i + 1, templates.length);
@@ -14731,13 +14764,73 @@ function iwdieTxDistinct(boxes) {
   return kept.sort(function (a, b) { return a - b; });
 }
 
-/** The label a reading becomes (v1.78.0): the Designer's label size whose capitals stand as high as the picture's -
- *  `cap` px over its baseline - in the label's own font (`ratio`: its capitals' height over its size, the Designer's
- *  measured by vcTxLabelLook; Roboto's 0.711 without), white where the text is light on a dark ground. -> obj_id */
-function iwdieTxLabelKind(cap, white, ratio) {
-  var want = cap / (ratio || 0.711), best = 12;
-  [8, 9, 10, 11, 12, 14, 16, 18, 20].forEach(function (s) { if (Math.abs(s - want) < Math.abs(best - want)) best = s; });
-  return 'number_v3_label_' + best + 'px_norm' + (white ? '_white' : '');
+/** The label a reading becomes (v1.78.0): the Designer's label of `px` (v1.78.1: one of IWDIE_TX_LABEL_PX, chosen by
+ *  iwdieTxLabelSizes), white where the text is light on a dark ground. -> obj_id */
+function iwdieTxLabelKind(px, white) {
+  return 'number_v3_label_' + px + 'px_norm' + (white ? '_white' : '');
+}
+
+/** The sizes of the labels words read become (v1.78.1). The label's font is the Designer's, wider than Illustrator's
+ *  Myriad Pro, so a label cannot stand both as wide and as tall as its word: of IWDIE_TX_LABEL_PX, the size whose ink is
+ *  nearest the word's width and whose capitals are nearest its capitals' height - each as a share of the word's, standing
+ *  out past the word weighing half again (Thomas: the legend's words at 14 px, as tall as the picture's, looked bigger
+ *  than the picture's). `w` the word's ink width, `per` the label's ink width in its own font a px of size, `cap` the
+ *  picture's capitals' height, `ratio` the label font's capitals over its size. Each word takes the size best for it and
+ *  the words read within half a pixel of its size (`white` alike), so a legend's words are alike and a code read a little
+ *  off its size takes the codes' size. `items` [{size, w, per, cap, ratio, white}] -> [px] by item */
+function iwdieTxLabelSizes(items) {
+  var err = function (it, p) {
+    var e = 0;
+    if (it.per > 0 && it.w > 0) { var r = p * it.per / it.w; e += r > 1 ? 1.5 * (r - 1) : 1 - r; }
+    if (it.ratio > 0 && it.cap > 0) e += Math.abs(p * it.ratio / it.cap - 1);
+    return e;
+  };
+  return items.map(function (it) {
+    var within = function (d) { return items.filter(function (o) { return !!o.white === !!it.white && Math.abs(o.size - it.size) <= d; }); };
+    // a word alone within half a pixel - read a pixel off, as one of 10214's codes - looks a pixel round
+    var near = within(0.5);
+    if (near.length < 2) near = within(1);
+    var px = 12, bestE = Infinity;
+    IWDIE_TX_LABEL_PX.forEach(function (p) {
+      var e = near.reduce(function (sum, o) { return sum + err(o, p); }, 0);
+      if (e < bestE - 1e-9) { bestE = e; px = p; }
+    });
+    return px;
+  });
+}
+
+/** How well a font reads runs, to know the picture's font by (v1.78.1): each run read whole (iwdieTxBest over the sizes
+ *  `banks` has, `opts.runMs` each), its reading's cost - 1 for none, or a run hardly off its ground. `say([i, cost])`
+ *  hears each. -> [cost] by run */
+function iwdieTxFit(runs, banks, vocab, opts, say) {
+  var sizes = Object.keys(banks).map(Number).sort(function (a, b) { return a - b; });
+  return (runs || []).map(function (R, i) {
+    var g = null;
+    if (R.I.contrast >= 40) {
+      var tries = iwdieTxTries(R.h, R.bottom, sizes).map(function (t) { return [banks[t[0]], t[1]]; }).filter(function (t) { return !!t[0]; });
+      g = iwdieTxBest(R.I, tries, vocab, Object.assign({}, opts || {}, { until: Date.now() + ((opts && opts.runMs) || 1500) }));
+    }
+    var c = g ? g.cost : 1;
+    if (say) say([i, c]);
+    return c;
+  });
+}
+
+/** The font a picture's words are read in (v1.78.1), of `scores` [{trusted, fit}] - `fit` the median cost of a few runs'
+ *  readings in it (iwdieTxFit). A font given - dropped on the card, or Myriad Pro installed (`trusted`) - is the
+ *  picture's when it reads them at all (0.25), the best of them; one nobody gave (Roboto, Arial, Segoe UI) only when it
+ *  reads them very well (0.05) and better than those given by 0.02. Read in a font not the picture's, S reads as 5, H as
+ *  FI and a code in two, and such a font read Thomas's Myriad Pro Oversikt at 0.12 - near what Myriad Pro read his
+ *  2349 Maskin at - so one nobody gave that reads only fairly is none. -> index in scores | -1 */
+function iwdieTxFontChoice(scores) {
+  var best = function (trusted) {
+    var b = -1;
+    scores.forEach(function (sc, i) { if (!!sc.trusted === trusted && (b < 0 || sc.fit < scores[b].fit)) b = i; });
+    return b;
+  };
+  var g = best(true), o = best(false);
+  if (o >= 0 && scores[o].fit <= 0.05 && (g < 0 || scores[o].fit < scores[g].fit - 0.02)) return o;
+  return g >= 0 && scores[g].fit <= 0.25 ? g : -1;
 }
 
 /** A reading's letters out of the picture (v1.78.0): within box `b` ({x, y, w, h}), each pixel on the way from `ground`
@@ -19881,9 +19974,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       return Promise.all((Array.isArray(kept) ? kept : []).map(function (f) {
         var fam = 'IWDIE ' + String(f.name || 'font').replace(/\.[^.]+$/, '').replace(/[^\w -]/g, '');
-        return load(fam, iwdieBase64ToBytes(String(f.b64 || ''))).then(function (ok) { if (ok) out.push({ family: fam, label: String(f.name) }); });
+        return load(fam, iwdieBase64ToBytes(String(f.b64 || ''))).then(function (ok) { if (ok) out.push({ family: fam, label: String(f.name), trusted: true }); });
       })).then(function () {
-        if (vcHasFont('Myriad Pro')) out.push({ family: 'Myriad Pro', label: 'Myriad Pro' });
+        // given: the card's fonts, and Myriad Pro installed - Illustrator's own, Thomas's pictures' font
+        if (vcHasFont('Myriad Pro')) out.push({ family: 'Myriad Pro', label: 'Myriad Pro', trusted: true });
         if (vcHasFont('Roboto')) { out.push({ family: 'Roboto', label: 'Roboto' }); return null; }
         var cache = {};
         try { cache = GM_getValue(IWDIE_VC_FONTS_KEY, {}) || {}; } catch (e) { cache = {}; }
@@ -19893,9 +19987,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           try { GM_setValue(IWDIE_VC_FONTS_KEY, cache); } catch (e) {}
           return faces;
         }, function () { return []; })).then(function (faces) {
-          var mine = (faces || []).filter(function (fc) { return String(fc.weight) === '400'; });
+          // its regular face - Google Fonts gives Roboto as one variable face of weight "400 700" (v1.78.1)
+          var mine = (faces || []).filter(function (fc) {
+            var ws = String(fc.weight || '400').split(/\s+/).map(Number);
+            return ws.length > 1 ? ws[0] <= 400 && 400 <= ws[1] : ws[0] === 400;
+          });
           return Promise.all(mine.map(function (fc) {
-            return load('IWDIE Roboto', iwdieBase64ToBytes(fc.b64), fc.range ? { weight: '400', unicodeRange: fc.range } : { weight: '400' });
+            return load('IWDIE Roboto', iwdieBase64ToBytes(fc.b64), fc.range ? { weight: String(fc.weight), unicodeRange: fc.range } : { weight: String(fc.weight) });
           })).then(function (oks) { if (oks.some(Boolean)) out.push({ family: 'IWDIE Roboto', label: 'Roboto' }); });
         });
       }).then(function () {
@@ -19997,10 +20095,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /** Runs of a picture's text read in a worker of their own (v1.78.0): iwdieTxReadAll with `args`, each run's reading
-     *  heard as it comes (`onRun([i, readings])`), the worker ended once it is done or `ms` are up - what came by then
-     *  kept. A worker that cannot run it reads nothing: the page's thread is not held for it. -> Promise (done) */
-    function vcTxWorker(args, onRun, ms) {
+    /** Runs of a picture's text read in a worker of their own (v1.78.0): `main` (iwdieTxReadAll, or v1.78.1 iwdieTxFit)
+     *  with `args`, each run's result heard as it comes (`onRun([i, result])`), the worker ended once it is done or `ms`
+     *  are up - what came by then kept. A worker that cannot run it reads nothing: the page's thread is not held for it.
+     *  -> Promise (done) */
+    function vcTxWorker(main, args, onRun, ms) {
       return new Promise(function (resolve) {
         var url = null, wk = null, timer = null, over = false;
         var end = function () {
@@ -20012,8 +20111,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           resolve();
         };
         try {
-          url = URL.createObjectURL(new Blob([vcTxDeps().concat([iwdieTxReadAll]).map(String).join('\n') +
-            '\nonmessage = function (ev) {\n  try { iwdieTxReadAll.apply(null, ev.data.concat([function (p) { postMessage({ run: p }); }])); } catch (e) {}\n' +
+          url = URL.createObjectURL(new Blob([vcTxDeps().concat([main]).map(String).join('\n') +
+            '\nonmessage = function (ev) {\n  try { ' + main.name + '.apply(null, ev.data.concat([function (p) { postMessage({ run: p }); }])); } catch (e) {}\n' +
             '  postMessage({ done: 1 });\n};\n'], { type: 'text/javascript' }));
           wk = new Worker(url);
         } catch (e) { end(); return; }
@@ -20036,7 +20135,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** The picture's words read in its own font, each to be a label object (v1.78.0). The tracer finds them (iwdieVzTrace
      *  `words`, off this page: their boxes, and the picture without its pills' rings and pipes, to read them on); they are
-     *  read in the first font this page has (vcTxFonts) that reads one of its widest runs surely - none, and they stay
+     *  read in the picture's font of those this page has (vcTxFonts, iwdieTxFontChoice) - none, and they stay
      *  drawing - each run in a worker
      *  (iwdieTxReadAll) against the panel's, plant's and house's words (vcTxVocab). Each word taken is a label of the
      *  Designer's whose capitals stand as high (iwdieTxLabelKind) where it draws them as the picture did (vcTxLabelLook),
@@ -20070,34 +20169,37 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return vcTxFonts().then(function (fonts) {
           var labels = fonts.map(function (f) { return f.label; });
           if (!fonts.length) return { none: 'no font to read it in', fonts: labels };
-          // the font: in order - the card's, Myriad Pro, Roboto, the machine's - the first that reads one of the four widest
-          // runs shaped like text surely (cost 0.1 at most; one an icon in a word may read as none, so one is enough)
-          var probe = R.filter(function (x) { return x.h >= 7 && x.h <= 26 && x.I.w <= 25 * x.h; }).sort(function (a, b) { return b.I.w - a.I.w; }).slice(0, 4);
-          if (!probe.length) probe = R.slice(0, 4);
+          // the font (v1.78.1): in order - the card's, Myriad Pro, Roboto, the machine's - each on up to eight runs most like
+          // single words (the widest runs are phrases with icons in them, which read poorly in any font), by the median cost
+          // of their readings; the picture's of them is iwdieTxFontChoice's. A font given that reads them at all ends the search
+          var probe = R.filter(function (x) { return x.h >= 7 && x.h <= 20 && x.I.w >= 2 * x.h && x.I.w <= 14 * x.h; });
+          if (probe.length < 3) probe = R.filter(function (x) { return x.h >= 7 && x.h <= 26 && x.I.w <= 25 * x.h; });
+          if (!probe.length) probe = R.slice();
+          probe = probe.sort(function (a, b) { return b.I.w - a.I.w; }).slice(0, 8);
           var scores = [];
           var tryFont = function (k) {
             if (k >= fonts.length) return Promise.resolve();
-            var f = fonts[k];
-            var res = [];
+            var f = fonts[k], costs = [];
             return banksFor(f.family, probe, true).then(function (banks) {
-              // each run in a worker of its own, side by side
-              return Promise.all(probe.map(function (x, j) {
-                return vcTxWorker([[lean(x)], banks, vocab, {}], function (p) { if (p) res[j] = p[1]; }, 12000);
+              var n = Math.min(4, probe.length), parts = [], j;
+              for (j = 0; j < n; j++) parts.push([]);
+              probe.forEach(function (x, i) { parts[i % n].push(i); });
+              return Promise.all(parts.map(function (is) {
+                return vcTxWorker(iwdieTxFit, [is.map(function (i) { return lean(probe[i]); }), banks, vocab, {}], function (p) { if (p) costs[is[p[0]]] = p[1]; }, 12000);
               }));
             }).then(function () {
-              var taken = 0, cost = 0, sure = 0;
-              res.forEach(function (r) { (r || []).forEach(function (l) { taken++; cost += l.cost; if (l.cost <= 0.1) sure++; }); });
-              return { f: f, taken: taken, sure: sure, cost: taken ? cost / taken : 1 };
-            }, function () { return { f: f, taken: 0, cost: 1 }; }).then(function (sc) {
+              var c = probe.map(function (x, i) { return costs[i] == null ? 1 : costs[i]; }).sort(function (a, b) { return a - b; });
+              return { f: f, trusted: !!f.trusted, fit: c[Math.floor(c.length / 2)] };
+            }, function () { return { f: f, trusted: !!f.trusted, fit: 1 }; }).then(function (sc) {
               scores.push(sc);
-              if (sc.sure >= 1) return;
+              if (sc.trusted && sc.fit <= 0.25) return;
               return tryFont(k + 1);
             });
           };
           return tryFont(0).then(function () {
-            // none that does: the words stay drawing - read in a font not the picture's, S reads as 5 and H as FI, and is taken
-            var best = scores.filter(function (sc) { return sc.sure >= 1; })[0];
-            if (!best) return { none: 'none of the fonts here reads it surely', fonts: labels };
+            // none that is the picture's: the words stay drawing - read in a font not the picture's, S reads as 5, H as FI
+            var pick = iwdieTxFontChoice(scores), best = pick >= 0 ? scores[pick] : null;
+            if (!best) return { none: scores.some(function (sc) { return sc.trusted; }) ? 'the font given does not read it' : 'its font is not here', fonts: labels };
             step('font', best.f.label);
             // every run, shared among up to four workers, each with every size's glyphs: a run's pieces are lower than it
             var n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1, R.length)), parts = [], i;
@@ -20107,7 +20209,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               var got = {}, count = 0;
               return Promise.all(parts.map(function (ks) {
                 var mine = ks.map(function (k) { return R[k]; });
-                return vcTxWorker([mine.map(lean), banks, vocab, {}], function (p) {
+                return vcTxWorker(iwdieTxReadAll, [mine.map(lean), banks, vocab, {}], function (p) {
                   if (!p || !(p[0] >= 0) || got[ks[p[0]]] !== undefined) return;
                   got[ks[p[0]]] = p[1] || null;
                   step('read', ++count, R.length);
@@ -20127,18 +20229,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 });
               });
               // words read twice - by an icon's run grown over them and by their own - kept once
-              iwdieTxDistinct(read).forEach(function (i) {
-                var x = read[i].x, l = read[i].l;
-                var lum = function (c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; };
-                var white = lum(x.I.text) > 170 && lum(x.I.text) > lum(x.I.ground) + 40;
-                var kind = iwdieTxLabelKind(bankCap * l.size, white, vcTxLabelLook('number_v3_label_12px_norm').cap), look = vcTxLabelLook(kind);
+              var kept = iwdieTxDistinct(read).map(function (i) { return read[i]; });
+              var lum = function (c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; };
+              var isWhite = function (x) { return lum(x.I.text) > 170 && lum(x.I.text) > lum(x.I.ground) + 40; };
+              // (v1.78.1) each label's size weighed between its word's width and height, words of one size alike - measured in the
+              // label's own font as the Designer draws it
+              var ref = vcTxLabelLook('number_v3_label_12px_norm'), g1 = document.createElement('canvas').getContext('2d');
+              g1.font = ref.font;
+              var px = iwdieTxLabelSizes(kept.map(function (c) {
+                var m = g1.measureText(c.l.text), ink = (m.actualBoundingBoxLeft || 0) + (m.actualBoundingBoxRight || m.width);
+                return { size: c.l.size, w: c.l.x1 - c.l.x0, per: ink / ref.px, cap: bankCap * c.l.size, ratio: ref.cap, white: isWhite(c.x) };
+              }));
+              kept.forEach(function (c, i) {
+                var x = c.x, l = c.l, kind = iwdieTxLabelKind(px[i], isWhite(x)), look = vcTxLabelLook(kind);
                 var g2 = document.createElement('canvas').getContext('2d');
                 g2.font = look.font;
                 var inkLeft = x.I.x + l.x0, baseY = x.I.y + l.base;
                 out.push({ kind: kind, text: l.text, cost: Math.round(l.cost * 1000) / 1000, x: Math.round(inkLeft - look.left), y: Math.round(baseY - look.base),
                   w: Math.max(6, Math.ceil(g2.measureText(l.text).width) + 2), h: Math.round(look.px * 1.2) + 2 });
                 // its letters out of the picture, so the trace leaves them
-                iwdieTxErase(data, w, h, { x: inkLeft - 1, y: read[i].y0, w: l.x1 - l.x0 + 2, h: read[i].y1 - read[i].y0 }, x.I.ground, x.I.text);
+                iwdieTxErase(data, w, h, { x: inkLeft - 1, y: c.y0, w: l.x1 - l.x0 + 2, h: c.y1 - c.y0 }, x.I.ground, x.I.text);
               });
               return { labels: out, runs: R.length + long, font: best.f.label, fonts: labels, left: left + long };
             });
@@ -23922,6 +24032,10 @@ if (typeof module !== 'undefined' && module.exports) {
     txReadAll: iwdieTxReadAll,
     txDistinct: iwdieTxDistinct,
     txLabelKind: iwdieTxLabelKind,
+    txLabelSizes: iwdieTxLabelSizes,
+    txFit: iwdieTxFit,
+    txFontChoice: iwdieTxFontChoice,
+    TX_LABEL_PX: IWDIE_TX_LABEL_PX,
     txErase: iwdieTxErase,
     vcReadLabelSvg: iwdieVcReadLabelSvg,
     svgClassRules: iwdieSvgClassRules,
