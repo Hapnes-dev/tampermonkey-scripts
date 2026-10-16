@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.75.0
+// @version      1.75.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.75.0';
+var IWDIE_VERSION = '1.75.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -7021,6 +7021,35 @@ function iwdieLibForVc(kept) {
   return out;
 }
 
+/** The group the panel's own colour stands in at the bottom of Bakgrunn (v1.75.1): there in VectorCraft, so the drawing
+ *  shows as the Designer shows it, and left out of the panel's picture by a sync (iwdieVcDropPlate). */
+var IWDIE_VC_PLATE = 'Bakgrunnsfarge';
+
+/** A drawing without the panel's own colour under it (v1.75.1): the group IWDIE_VC_PLATE - by its id, which VectorCraft
+ *  names it by ("Bakgrunnsfarge", "-2" added to a copy), or its data-name - and all it holds, left out wherever it stands.
+ *  A sync draws the panel's picture from this, so what the picture had transparent stays so: the Designer shows its own
+ *  colour there, the plant's page its own. -> {svg, dropped: how many} */
+function iwdieVcDropPlate(svg) {
+  var s = String(svg || ''), re = /<g\b[^>]*\s(?:id="Bakgrunnsfarge(?:-\d+)?"|data-name="Bakgrunnsfarge")[^>]*>/g, m, out = '', from = 0, dropped = 0;
+  while ((m = re.exec(s))) {
+    var end = iwdieVcElementEnd(s, m.index, 'g');
+    if (end < 0) break;
+    out += s.slice(from, m.index);
+    from = end;
+    re.lastIndex = end;
+    dropped++;
+  }
+  return { svg: dropped ? out + s.slice(from) : s, dropped: dropped };
+}
+
+/** Where a picture is transparent (v1.75.1): of its pixels (`rgba`, RGBA), those less than half covered, as 1s - or null
+ *  for a picture with fewer than 64 such, which is opaque for what an edit does with it. -> Uint8Array or null */
+function iwdieVcClearMask(rgba) {
+  var n = Math.floor((rgba ? rgba.length : 0) / 4), mask = new Uint8Array(n), count = 0;
+  for (var i = 0; i < n; i++) if (rgba[i * 4 + 3] < 128) { mask[i] = 1; count++; }
+  return count >= 64 ? mask : null;
+}
+
 /** The panel as an SVG VectorCraft opens with layers: Bakgrunn (the canvas colour and the
  *  picture), Tegning (Draw's shapes) and, on top, IWMAC-objekter: the panel's objects as
  *  placeholders, with `looks` by obj_id (v1.46.0; before, each object's box and label on a hidden
@@ -7028,7 +7057,8 @@ function iwdieLibForVc(kept) {
  *  With components found in the picture (v1.44.0, `components`), those go on a layer of their own,
  *  Komponenter, and the picture as it was (`original`) on a hidden one under the rest. Pills found
  *  (v1.45.0, `kind` 'pill') go with the components; pipes (`pipes`) on a layer of their own, Rør,
- *  under them. The picture vectorized (v1.61.0, `vectors`) goes in its place, layers and all. */
+ *  under them. The picture vectorized (v1.61.0, `vectors`) goes in its place, layers and all. The canvas
+ *  colour (`plate`) stands in a group of its own since v1.75.1, IWDIE_VC_PLATE, which a sync leaves out. */
 function iwdieVcSvg(o) {
   var W = Math.max(1, Math.round(o.width)), H = Math.max(1, Math.round(o.height)), esc = iwdieDrawEsc, f = iwdieDrawFmt;
   var shapes = Array.isArray(o.shapes) ? o.shapes : [], objects = Array.isArray(o.objects) ? o.objects : [];
@@ -7045,8 +7075,10 @@ function iwdieVcSvg(o) {
   }
   // which version read the picture (v1.48.0): an edit of a later one may read it again
   out.push('  <g id="Bakgrunn" data-name="Bakgrunn" data-iwdie-made="' + esc(IWDIE_VERSION) + '">');
+  // the panel's own colour, as the Designer shows it under the picture - in a group of its own (v1.75.1), Bakgrunnsfarge,
+  // which a sync leaves out of the panel's picture (iwdieVcDropPlate): what was transparent stays so
   var plate = iwdieDrawColor(o.plate);
-  if (plate) out.push('    <rect width="' + W + '" height="' + H + '" fill="' + plate + '"/>');
+  if (plate) out.push('    <g id="' + IWDIE_VC_PLATE + '" data-name="' + IWDIE_VC_PLATE + '"><rect width="' + W + '" height="' + H + '" fill="' + plate + '"/></g>');
   // the picture vectorized (v1.61.0, `vectors`: iwdieVzTrace's layers) in its place: its ground and panels here, the
   // rest on layers of their own over it
   var vec = Array.isArray(o.vectors) ? o.vectors.filter(function (l) { return l && typeof l.svg === 'string' && l.svg; }) : [];
@@ -7060,7 +7092,7 @@ function iwdieVcSvg(o) {
     if (vecOf(lr[0])) out.push('  <g id="' + lr[1] + '" data-name="' + lr[0] + '">\n' + vecOf(lr[0]) + '\n  </g>');
   });
   var found = Array.isArray(o.components) ? o.components : [], pipes = Array.isArray(o.pipes) ? o.pipes : [];
-  var used = { Bakgrunn: 1, Bakgrunn_original: 1, Ror: 1, Komponenter: 1, Tegning: 1, Former: 1, Tekst: 1, 'IWMAC-objekter': 1 };
+  var used = { Bakgrunn: 1, Bakgrunn_original: 1, Bakgrunnsfarge: 1, Ror: 1, Komponenter: 1, Tegning: 1, Former: 1, Tekst: 1, 'IWMAC-objekter': 1 };
   if (pipes.length) {
     out.push('  <g id="Ror" data-name="Rør">');
     pipes.forEach(function (L) { out.push('    ' + iwdieVcLineSvg(L, used)); });
@@ -13388,6 +13420,26 @@ function iwdieVzTrace(pic, W, H, opts, say) {
   // the ground whole, as a rectangle, where it covers nearly all of the picture
   var root = shapes[0];
   if (root && root.area >= 0.9 * area) root.svg = '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="' + hex(cols[root.c]) + '"/>';
+  // what the picture had transparent (v1.75.1; `opts.clear` 1 where it was, `opts.plate` the colour it was read over): a
+  // shape of that colour whose pixels were mostly transparent is no drawing but the panel's colour showing through -
+  // left undrawn, so the picture a sync makes is transparent there again
+  if (opts.clear && opts.plate) {
+    var P = opts.plate, M = opts.clear;
+    shapes.forEach(function (s) {
+      var cc = cols[s.c];
+      if (!s.svg || Math.abs(cc[0] - P[0]) > 4 || Math.abs(cc[1] - P[1]) > 4 || Math.abs(cc[2] - P[2]) > 4) return;
+      var x0 = Math.max(0, Math.floor(s.box[0])), y0 = Math.max(0, Math.floor(s.box[1]));
+      var x1 = Math.min(W - 1, Math.ceil(s.box[2])), y1 = Math.min(H - 1, Math.ceil(s.box[3]));
+      var step = Math.max(1, Math.floor(Math.sqrt((x1 - x0 + 1) * (y1 - y0 + 1) / 900))), mine = 0, gone = 0;
+      for (var sy = y0; sy <= y1; sy += step) for (var sx = x0; sx <= x1; sx += step) {
+        var q = sy * W + sx;
+        if (L.lab[q] !== s.c) continue;
+        mine++;
+        if (M[q]) gone++;
+      }
+      if (mine && gone >= 0.5 * mine) s.svg = '';
+    });
+  }
   // the letters into words - near alike in colour (a letter's shades may differ), side by side on a line, close; one on
   // its own is no word but a figure - an arrow, a dot, a square
   var letters = shapes.filter(function (s) { return s.svg && s.layer === 3; }), up = letters.map(function (s, k) { return k; });
@@ -17752,10 +17804,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
           if (!info.vector && !lib) paper.step('build', base ? 'the picture' + (nObj ? ' and ' + iwdieN(nObj, 'object', 'objects') + ' of the panel' : '') : 'an empty canvas', 0.3, 0.9);
           // over the panel's own colour, as the Designer shows it (v1.48.2): a picture whose ground is
-          // transparent reads black on a bare canvas, and what is taken out of it was filled with that black
-          return exportPaint(base && base.bytes, base && base.mime, size, fill).then(function (c) {
+          // transparent reads black on a bare canvas, and what is taken out of it was filled with that black. And as it is
+          // (v1.75.1): where it is transparent, the copies VectorCraft gets stay so - the picture under the drawing, the
+          // original kept to read again - and Vectorize image leaves what was transparent undrawn, so a sync gives a
+          // transparent picture back
+          return Promise.all([exportPaint(base && base.bytes, base && base.mime, size, fill),
+            base ? exportPaint(base.bytes, base.mime, size, null) : Promise.resolve(null)]).then(function (cs) {
+            var c = cs[0], raw = cs[1], clear = raw ? iwdieVcClearMask(raw.getContext('2d').getImageData(0, 0, raw.width, raw.height).data) : null;
             var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
-            var picture = base ? c.toDataURL('image/png') : null;
+            var picture = base ? (clear ? raw : c).toDataURL('image/png') : null;
+            info.clear = clear ? { plate: iwdieParseCssColor(fill).slice(0, 3), mask: clear } : null;
             var title = (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '');
             if (info.vector) {
               return vcVectorize(c, paper, info).then(function (vz) {
@@ -19003,7 +19061,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }, function () { paper.done('not looked for', 0.5); });
       }).then(function () {
         paper.step('vector', 'its colours', 0.5, 0.52);
-        return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, {}], function (p) {
+        // what the picture had transparent (v1.75.1): the panel's colour there, which the trace leaves undrawn
+        var clear = info && info.clear && info.clear.mask && info.clear.mask.length === w * h ? { plate: info.clear.plate, clear: info.clear.mask } : {};
+        return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, clear], function (p) {
           if (!p || !paper) return;
           if (p.phase === 'colour') paper.say('the outlines of colour ' + (p.i + 1) + ' of ' + p.n, 0.6 + 0.25 * p.i / Math.max(1, p.n));
           else if (said[p.phase]) paper.say(said[p.phase][0], said[p.phase][1]);
@@ -19820,7 +19880,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function vcDrawingPicture(svg, size) {
       var doc = iwdieVcGiven(svg, size);
       if (!doc) return Promise.reject(new Error('it is no SVG'));
-      return vcRenderPng(doc, size, null).then(function (png) {
+      return vcRenderPng(iwdieVcDropPlate(doc).svg, size, null).then(function (png) {
         return vcPack(doc).then(function (pack) {
           var withDoc = iwdieVcEmbed(png, pack.data, pack.type);
           return { bytes: withDoc, dataUrl: 'data:image/png;base64,' + iwdieBytesToBase64(withDoc), name: 'iwdie-drawing.png', w: size.w, h: size.h, lean: pack.lean };
@@ -19918,9 +19978,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // left on the panel, and said so - never taken off unseen
       var lost = kf.lost.filter(function (e) { return !e.sent || !inSave[e.key]; });
       // drawn as VectorCraft means it (vcRenderPng, v1.58.0) - on nothing since v1.75.0, so what the drawing leaves
-      // transparent stays so (a picture opened in VectorCraft from a PNG carries the panel's colour as its own ground).
-      // The SVG kept in the PNG for the next edit stays as VectorCraft saved it.
-      return vcRenderPng(svg, size, null).then(function (pngBytes) {
+      // transparent stays so - and without the panel's own colour a picture opened from a PNG carries under it (v1.75.1,
+      // iwdieVcDropPlate). The SVG kept in the PNG for the next edit stays as VectorCraft saved it, that colour and all.
+      return vcRenderPng(iwdieVcDropPlate(svg).svg, size, null).then(function (pngBytes) {
         return vcPack(svg).then(function (pack) { return { png: pngBytes, pack: pack }; });
       }).then(function (r) {
         // the parameters the placeholders' names give (v1.63.0), read against the plant before anything changes
@@ -21986,6 +22046,9 @@ if (typeof module !== 'undefined' && module.exports) {
     vcSvgId: iwdieVcSvgId,
     vcNamedSvg: iwdieVcNamedSvg,
     vcComponentFileSvg: iwdieVcComponentFileSvg,
+    VC_PLATE: IWDIE_VC_PLATE,
+    vcDropPlate: iwdieVcDropPlate,
+    vcClearMask: iwdieVcClearMask,
     vcComponentSvg: iwdieVcComponentSvg,
     SYMBOLS: IWDIE_SYMBOLS,
     symPrint: iwdieSymPrint,

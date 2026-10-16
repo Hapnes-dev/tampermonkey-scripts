@@ -484,6 +484,31 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### A transparent picture stays transparent through an edit in VectorCraft (v1.75.1)
+
+Thomas: *Keep transparent pictures transparent in VectorCraft edits* - the gap 1.75.0 left. A panel picture that keeps no
+drawing, a PNG from Illustrator or one saved before 1.38.0, went to VectorCraft over the Designer's grey in three ways:
+a grey rect at the bottom of Bakgrunn, the picture itself and its hidden original painted over that grey, and Vectorize
+image tracing the grey where the picture was transparent. A sync drew all three into the panel's picture, so a
+transparent Maskin or Oversikt came back opaque grey on the plant's page.
+
+- **The panel's colour in a group of its own.** It stands at the bottom of Bakgrunn as *Bakgrunnsfarge*. VectorCraft
+  still shows the drawing over the Designer's grey. A sync, and Insert, leave the group out of the picture they make;
+  the drawing kept in the PNG keeps it for the next edit.
+- **The picture as it is.** Where the picture is transparent, the copies VectorCraft gets stay transparent: the picture
+  under the drawing, and the hidden original that *Start again from the picture* reads.
+- **Vectorize image** leaves undrawn what was transparent in the picture: a shape of the panel's colour whose pixels were
+  mostly transparent. A grey the picture drew itself stays.
+- A drawing an edit made before 1.75.1 stays opaque: its colour is a bare rect, and the picture it kept was painted
+  over it.
+- Checked in the stub host on the hosted VectorCraft 0.11.0, the stub's panel colour set to the Designer's grey. The
+  sketch's Oversikt was given as a transparent PNG that keeps no drawing: 693 097 transparent pixels. Edit in
+  VectorCraft vectorized it, showed it grey under the drawing, and kept the hidden original transparent. VectorCraft
+  saved the colour back as `<g id="Bakgrunnsfarge">` holding a path. Ctrl+S gave a PNG transparent at (50, 50),
+  (600, 700) and (1000, 100), the legend column `#cdd2d7` and a case `#b0e0ef`. It has 691 277 transparent pixels; the
+  vectorized shapes' edges cover the rest. A second edit, from the drawing the PNG kept, gave the same PNG pixel for
+  pixel. Not run in the live Designer.
+
 ### The Oversikt template's arrangements, placed whole (v1.75.0)
 
 Thomas, with the template's *Kjøle*, *Fryse* and *Diverse Symboler* sheets: *can you also make it this is groupe object
