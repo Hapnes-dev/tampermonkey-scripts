@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.7
+// @version      1.82.8
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.82.7';
+var IWDIE_VERSION = '1.82.8';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -13896,7 +13896,9 @@ function iwdieVzSample(pts, sign) {
  *  the ground round the shape shows through it, as in a letter - and fitted (iwdieVzFit). Sorted into layers:
  *  Bakgrunn (the ground and large panels), Rør, Former (each figure a group) and Tekst (letters, grouped into words).
  *  v1.79.0: `opts.circuits` [[name, colour]] - the house's (IWDIE_CB_CIRCUITS) - puts each pipe of a circuit's colour in
- *  that circuit's group on Rør, in its colour exactly.
+ *  that circuit's group on Rør, in its colour exactly. v1.82.8: `opts.reach` [[x, y, w, h]], what draws over a pipe (an
+ *  object that draws itself, a house symbol): a pipe's straight end 6 px or less short of one, on its line, runs on 2 px
+ *  into it.
  *  `say({phase, i, n})` hears how far it is. -> {layers: [{name, svg}], colours, pills, pipes, shapes, letters, words, nodes, ms} */
 function iwdieVzTrace(pic, W, H, opts, say) {
   opts = opts || {};
@@ -14217,6 +14219,30 @@ function iwdieVzTrace(pic, W, H, opts, say) {
       });
     }
   }
+  // (v1.82.8) a pipe meets what stands on its end: a straight end that stops 6 px or less short of something that draws
+  // over the pipe (`opts.reach` [[x, y, w, h]]: an object that draws itself, a house symbol), on its line, runs on 2 px
+  // into it - under its look, as the picture had it. The picture's pipe ran on under the object, whose look came out of
+  // the picture with a pixel round it, so the traced pipe stopped short: 11087's V3gc valve stood 2 px off its pipe
+  var reach = (opts.reach || []).filter(function (o) { return o && o.length >= 4 && o.every(isFinite) && o[2] > 0 && o[3] > 0; });
+  if (reach.length) runs.forEach(function (Rn) {
+    [0, 1].forEach(function (e) {
+      var n = Rn.pts.length, p = e ? Rn.pts[n - 1] : Rn.pts[0], q = e ? Rn.pts[n - 2] : Rn.pts[1];
+      var ax = Math.abs(p[1] - q[1]) < 0.6 ? 0 : Math.abs(p[0] - q[0]) < 0.6 ? 1 : -1;
+      if (ax < 0) return;
+      var s = p[ax] > q[ax] ? 1 : -1, best = null;
+      reach.forEach(function (o) {
+        var lo = ax ? o[0] : o[1], span = ax ? o[2] : o[3], at = ax ? o[1] : o[0], len = ax ? o[3] : o[2];
+        if (p[1 - ax] < lo - 0.5 || p[1 - ax] > lo + span + 0.5) return;
+        var edge = s > 0 ? at : at + len, gap = (edge - p[ax]) * s;
+        if (gap < -1 || gap > 6 || len < 4) return;
+        if (!best || gap < best.gap) best = { gap: gap, to: edge + s * Math.min(2, len / 2) };
+      });
+      if (!best) return;
+      var to = p.slice();
+      to[ax] = best.to;
+      if (e) Rn.pts[n - 1] = to; else Rn.pts[0] = to;
+    });
+  });
   runs.forEach(function (Rn) {
     var path = '<path' + (Rn.c && Rn.c.family ? ' data-name="' + Rn.c.family + '"' : '') + ' d="' + Rn.pts.map(function (p, k) { return (k ? 'L' : 'M') + f2(p[0]) + ' ' + f2(p[1]); }).join(' ') +
       '" fill="none" stroke="' + (Rn.c ? Rn.c.hex : hex(Rn.colour)) + '" stroke-width="' + f2(Rn.width) + '" stroke-linejoin="miter" stroke-linecap="butt"/>';
@@ -14705,7 +14731,7 @@ var IWDIE_TX_HOUSE = ['Symbolforklaring', 'Varme', 'Kjøl', 'Frys', 'Kommunikasj
   'Plugin', 'Information', 'Machine status', 'Room temperature', 'CO2 Alarm', 'Heat recovery information', 'Capacity %', 'Runtime',
   'Runtime h', 'Run Cap. %', 'Reg Cap. %', 'Reg cap %', 'Run Cap %', 'VSD %', 'Ref', 'Ref °C', 'To °C', 'To offset', 'SH K', 'Suct.°C', 'Pc Bar', 'Tc °C',
   'Pgc bar', 'Prec bar', 'Shp °C', 'Sgc °C', 'Liq. consumer', 'M-T', 'L-T', 'M-T Suct.', 'L-T Suct.', 'M-T Sd °C', 'L-T Sd °C', 'Gascooler', 'Hr enable',
-  'Oil-sep.', 'Low-level', 'Oil-', 'sep.', 'Low-', 'level', 'Pump %', 'Consumer Ref %', 'Manuel', 'Running', 'Enabled', 'Meierirom', 'Fryserom', 'Kjølerom', 'Tekniskrom',
+  'Oil-sep.', 'Low-level', 'Oil-', 'sep.', 'Low-', 'level', 'High-level', 'High-', 'Pump %', 'Consumer Ref %', 'Manuel', 'Running', 'Enabled', 'Meierirom', 'Fryserom', 'Kjølerom', 'Tekniskrom',
   'Maskinrom', 'Lager', 'Butikk', 'Hovedinntak', 'Total energi (kWh)', 'Effekt (kW)', 'Kjøl og Frys', 'Maskin', 'Ventilasjon',
   'Varmegjenvinning', 'Tilluft', 'Avtrekk', 'Uteluft', 'Avkast', 'Inngang', 'Kasse', 'Frukt', 'Bakeri', 'Hr active', 'Gc-bypass active',
   '= Hr active', '= Gc-bypass active', 'Varmluftsport', 'inngangsparti', 'Aerotemper', 'Varmepumpe', 'Gulvvarme', 'Radiator',
@@ -14805,11 +14831,13 @@ function iwdieTxRuns(words, pic, W, H, gap, ground) {
     var y0 = Math.max(0, B[1]), y1 = Math.min(H, B[3]);
     var I = iwdieTxInk(pic, W, H, { x: B[0], y: B[1], w: B[2] - B[0], h: B[3] - B[1] }, 1), g = I.ground, t = I.text;
     var d2 = function (j, c) { var dr = pic[j] - c[0], dg = pic[j + 1] - c[1], db = pic[j + 2] - c[2]; return dr * dr + dg * dg + db * db; };
+    // (v1.82.8) never the picture's own ground (within 40): a light word - 11087's level gauge, its white glass in a grey
+    // frame - took that ground for its letters, grew over 96 px of it each way and swallowed "Low-" beside it
     var inkCol = function (x) {
       if (x < 0 || x >= W) return false;
       for (var yy = y0; yy < y1; yy++) {
         var j = (yy * W + x) * 4, toT = d2(j, t);
-        if (toT < d2(j, g) && toT < 3600) return true;
+        if (toT < d2(j, g) && toT < 3600 && !(gr && Math.abs(pic[j] - gr[0]) + Math.abs(pic[j + 1] - gr[1]) + Math.abs(pic[j + 2] - gr[2]) <= 40)) return true;
       }
       return false;
     };
@@ -15099,7 +15127,9 @@ function iwdieTxBest(I, tries, vocab, opts) {
   opts = opts || {};
   var late = function () { return opts.until && Date.now() > opts.until; };
   var ALIKE = [['rn', 'm'], ['rr', 'n'], ['m', 'rn'], ['q', 'g'], ['g', 'q'], ['h', 'b'], ['b', 'h'], ['S', '5'], ['5', 'S'], ['O', '0'], ['0', 'O'],
-    ['I', 'l'], ['l', 'I'], ['1', 'l'], ['l', '1'], ['I', '1'], ['1', 'I'], ['I.', 'L'], ['cl', 'd'], ['vv', 'w'], ['c', 'e'], ['e', 'c'], ['ii', 'u'], ['ri', 'n']];
+    ['I', 'l'], ['l', 'I'], ['1', 'l'], ['l', '1'], ['I', '1'], ['1', 'I'], ['I.', 'L'], ['cl', 'd'], ['vv', 'w'], ['c', 'e'], ['e', 'c'], ['ii', 'u'], ['ri', 'n'],
+    // (v1.82.8) a closing bracket read as a straight stroke: 11087's Daggpunkt (°C) as (°CI - an open one weighs more below
+    ['I', ')'], ['l', ')'], ['1', ')']];
   var UNITS = ['bar', '°C', '%', 'K', 'h', 'kW', 'kWh', '(kW)', '(kWh)', 'ppm', 'Pa', 'kPa', 'm3/h', 'l/s', 'Hz', 'rpm', 'min'];
   var best = null, tried = [];
   (tries || []).forEach(function (tb) {
@@ -15125,6 +15155,8 @@ function iwdieTxBest(I, tries, vocab, opts) {
     var recased = r && kb.text !== r.text && kb.text.toLowerCase() === r.text.toLowerCase() && kb.cost <= r.cost + 0.15 &&
       kb.text.split('').every(function (ch, u) { return ch === r.text.charAt(u) || 'cosuvwxzl'.indexOf(ch.toLowerCase()) >= 0; });
     if (r && iwdieTxTaken(r, opts) && !recased && (r.known || kb.cost > r.cost + 0.05)) return r;
+    // (v1.82.8) nor a known word that is what was read with a full stop more or less, which the ink does not read as well
+    if (r && iwdieTxTaken(r, opts) && kb.text !== r.text && kb.text.replace(/\.$/, '') === r.text.replace(/\.$/, '') && kb.cost > r.cost) return r;
     return { text: kb.text, cost: kb.cost, known: true, bank: kb.bank, base: kb.base, x0: spI ? spI[0] : 0, x1: spI ? spI[1] + 1 : I.w };
   };
   var L = best.letters, a = 0, b = L.length - 1;
@@ -15160,9 +15192,11 @@ function iwdieTxBest(I, tries, vocab, opts) {
   var score = function (t, cost) {
     var toks = t.split(' '), kw = toks.filter(function (w) { return !!lows[w.toLowerCase()]; }).length, kx = toks.filter(function (w) { return !!words[w]; }).length;
     // the share of its words that are known, and that look like panels' words: a word split in two is not two words -
-    // (v1.79.0) and a q not before a u, rare in any word the house writes (V3qc% for V3gc%), a little heavier
+    // (v1.79.0) and a q not before a u, rare in any word the house writes (V3qc% for V3gc%), a little heavier - (v1.82.8)
+    // and a bracket left open or closed alone much heavier
     return cost - (known(t) ? (exact(t) ? 0.04 : 0.02) : 0) - 0.02 * (kw + kx) / toks.length - 0.02 * iwdieTxShape(t) / (2 * toks.length) +
-      0.012 * t.replace(/ /g, '').length + 0.01 * (t.match(/q(?!u)/g) || []).length;
+      0.012 * t.replace(/ /g, '').length + 0.01 * (t.match(/q(?!u)/g) || []).length +
+      0.04 * Math.abs((t.match(/\(/g) || []).length - (t.match(/\)/g) || []).length);
   };
   var weighed = {}, weigh = function (t) {
     if (t in weighed) return weighed[t];
@@ -15206,6 +15240,8 @@ function iwdieTxBest(I, tries, vocab, opts) {
     });
     // a space between two lower-case letters (a word read in two): read off
     s0.replace(/[a-zæøå] [a-zæøå]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
+    // (v1.82.8) a full stop after the last letter (a speck read as one: 11087's Room temp as Room temp.): read off
+    if (/[A-Za-zÆØÅæøå]\.$/.test(s0)) add(s0.slice(0, -1));
     // a stray mark between two letters or digits (a speck read as a comma): read off
     s0.replace(/[A-Za-zÆØÅæøå0-9][,.:'][A-Za-zÆØÅæøå0-9]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
     // a code read with a space in it (F 76): without (v1.79.0)
@@ -15233,14 +15269,24 @@ function iwdieTxBest(I, tries, vocab, opts) {
     return Object.keys(out);
   };
   var pick = weigh(text0);
+  // (v1.82.8) what the ink reads well (0.14) stands against a word it explains worse by more than 0.015, known or not:
+  // 11087's Hr Req % read so and became Hr Reg % for its known words (0.145 against 0.123), 4559's K03 and K08 became
+  // K02 and K06, 3214's bakeri Bakeri - but a reading that closes a bracket the ink's left open may: (°CI is (°C)
+  var open = function (t) { return (t.match(/\(/g) || []).length !== (t.match(/\)/g) || []).length; };
+  // and a full stop the ink reads or not as it does: 11087's Room temp, without one, was Room temp. for a known temp.
+  var stop = function (t) { return t.replace(/\.$/, ''); };
+  var free = pick, fits = function (w) {
+    if (free && w.text !== free.text && stop(w.text) === stop(free.text)) return w.cost <= free.cost;
+    return !free || free.cost > 0.14 || w.cost <= free.cost + 0.015 || (open(free.text) && !open(w.text));
+  };
   asWide.forEach(function (p) {
     if (late()) return;
     var w2 = weigh(p[0]);
-    if (w2 && w2.score < pick.score) pick = w2;
+    if (w2 && w2.score < pick.score && fits(w2)) pick = w2;
   });
   for (var round = 0; round < 3 && pick && !late(); round++) {
     var better = pick;
-    variants(pick.text).forEach(function (t) { if (late()) return; var w = weigh(t); if (w && w.score < better.score) better = w; });
+    variants(pick.text).forEach(function (t) { if (late()) return; var w = weigh(t); if (w && w.score < better.score && fits(w)) better = w; });
     if (better === pick) break;
     pick = better;
   }
@@ -15284,13 +15330,15 @@ function iwdieTxPieces(I, gapMin) {
 /** The sizes and baselines a run whose ink stands `h` rows high, its lowest on row `bottom`, is read at (v1.78.0): a size
  *  from that height as capitals and ascenders stand on the baseline (0.66 to 0.71 of the size), and as descenders reach
  *  under it (0.88 to 0.93 of the size in all, the baseline 0.21 of the size up), each on its baseline and a row either
- *  way, among `sizes`, the sizes there are banks for. -> [[size, base]] */
+ *  way, among `sizes`, the sizes there are banks for; (v1.82.8) and a run 8 rows high or less as small letters alone
+ *  (0.48 to 0.55 of the size): 3214's "rom" under Oppvask- was read at a size too small. -> [[size, base]] */
 function iwdieTxTries(h, bottom, sizes) {
   var out = [];
   (sizes || []).forEach(function (s) {
     var d;
     if (s >= h / 0.71 - 1 && s <= h / 0.66 + 1) for (d = -1; d <= 1; d++) out.push([s, bottom + d]);
     if (s >= h / 0.93 - 1 && s <= h / 0.88 + 1) for (d = -1; d <= 1; d++) out.push([s, Math.round(bottom - 0.21 * s) + d]);
+    if (h <= 8 && s >= h / 0.55 - 0.5 && s <= h / 0.48 + 0.5 && !(s >= h / 0.71 - 1 && s <= h / 0.66 + 1)) for (d = -1; d <= 1; d++) out.push([s, bottom + d]);
   });
   return out;
 }
@@ -15301,6 +15349,8 @@ function iwdieTxSizes(h) {
   var out = [], add = function (lo, hi) { for (var s = Math.ceil(lo * 2) / 2; s <= hi + 1e-9; s += 0.5) if (out.indexOf(s) < 0) out.push(s); };
   add(h / 0.71 - 1, h / 0.66 + 1);
   add(h / 0.93 - 1, h / 0.88 + 1);
+  // (v1.82.8) small letters alone
+  if (h <= 8) add(h / 0.55 - 0.5, h / 0.48 + 0.5);
   return out.sort(function (a, b) { return a - b; });
 }
 
@@ -15336,14 +15386,15 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
           return;
         }
         // (v1.79.0) a unit on its own beside the words before it - the °C of Sc3 °C, alone read as no words - weighed on
-        // their baseline at their size or a half pixel either side, joins them where it explains its ink
+        // their baseline at their size or a half pixel either side, joins them where it explains its ink; (v1.82.8) a unit
+        // in brackets too, 11087's Daggpunkt (°C)
         var prev = parts[parts.length - 1], sp = iwdieTxSpan(C.ink, C.w, C.h), unit = null;
         if (prev && sp && off + sp[0] - prev.x1 <= 1.5 * Math.max(prev.space, 2)) {
           [prev.size - 0.5, prev.size, prev.size + 0.5].forEach(function (sz) {
             var bk = banks[sz];
             if (!bk) return;
             var gu = iwdieTxGains(C.ink, C.w, C.h, prev.base, bk);
-            ['°C', '%', 'bar', 'K', 'h'].forEach(function (t) {
+            ['°C', '%', 'bar', 'K', 'h', '(°C)', '(%)', '(%rh)', '(A)', '(V)', '(Hz)', '(kW)', '(kWh)'].forEach(function (t) {
               var f = iwdieTxForce(C.ink, C.w, C.h, prev.base, bk, gu, C.total, t, opts);
               if (f && f.cost <= 0.2 && (!unit || f.cost < unit.cost)) unit = { text: t, cost: f.cost };
             });
@@ -21211,17 +21262,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /** How the Designer draws a label of `kind` (v1.78.0), measured on an element of its class out of sight: its font,
      *  its capitals' height over its size, where its baseline stands below the object's top and its first letter right of
      *  its left. Where the page has no such style (it is not the Designer's), the house's: Roboto, 0.711, the baseline
-     *  0.93 of the size down, a pixel in. -> {font, px, cap, base, left} */
+     *  0.93 of the size down, a pixel in. (v1.82.8) The baseline's mark is an element no style sheet of the page names,
+     *  with no margin: the Designer's styles give every span a margin of 2 px (`#tags_detail_wr div p, span`), and an
+     *  empty inline block stands on its margin's bottom, so a span measured the baseline 2 px high and every label read
+     *  from a picture stood 2 px low. -> {font, px, cap, base, left} */
     var vcTxLookCache = {};
     function vcTxLabelLook(kind) {
       if (vcTxLookCache[kind]) return vcTxLookCache[kind];
       var px = +(/(\d+)px/.exec(kind) || [0, 12])[1], look = { font: (/bold/.test(kind) ? '700 ' : '') + px + 'px Roboto, Arial, sans-serif', px: px, cap: 0.711, base: Math.round(px * 0.93), left: 1 };
       try {
-        var def = (W.controls || {})[kind] || {}, el = document.createElement('div'), mark = document.createElement('span');
+        var def = (W.controls || {})[kind] || {}, el = document.createElement('div'), mark = document.createElement('iwdie-mark');
         el.className = def.classname || ('css_' + kind);
         el.style.cssText = 'position:absolute;left:-9999px;top:-9999px;white-space:nowrap';
         el.appendChild(document.createTextNode('Hx'));
-        mark.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline';
+        mark.style.cssText = 'display:inline-block;width:0;height:0;margin:0;padding:0;border:0;vertical-align:baseline';
         el.appendChild(mark);
         document.body.appendChild(el);
         var cs = getComputedStyle(el), size = parseFloat(cs.fontSize);
@@ -22352,6 +22406,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         clear.over = got.symbols.map(function (sy) { var q1 = (sy.turn || 0) & 1; return [sy.x, sy.y, q1 ? sy.h0 : sy.w0, q1 ? sy.w0 : sy.h0]; })
           .concat(got.found.map(function (fo) { return [fo.x, fo.y, fo.w, fo.h]; }), (got.labels || []).map(function (l) { return [l.x, l.y, l.w, l.h]; }),
             objects.map(function (ob) { return ob ? [parseFloat(ob.posLeft), parseFloat(ob.posTop), parseFloat(ob.posWidth), parseFloat(ob.posHeight)] : null; }))
+          .filter(function (o) { return o && o.every(isFinite); });
+        // (v1.82.8) what draws over a pipe, which its end runs on into: the house symbols, the objects found and the panel's
+        // own that draw themselves - not a word, nor a bare value, whose pipe would show through
+        clear.reach = got.symbols.map(function (sy) { var q1 = (sy.turn || 0) & 1; return [sy.x, sy.y, q1 ? sy.h0 : sy.w0, q1 ? sy.w0 : sy.h0]; })
+          .concat(got.found.filter(function (fo) { return !/^number_v3_label_/.test(String(fo.kind || '')); }).map(function (fo) { return [fo.x, fo.y, fo.w, fo.h]; }),
+            objects.filter(function (ob) { return ob && ob.iwdieSelf; }).map(function (ob) { return [parseFloat(ob.posLeft), parseFloat(ob.posTop), parseFloat(ob.posWidth), parseFloat(ob.posHeight)]; }))
           .filter(function (o) { return o && o.every(isFinite); });
         return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, clear], function (p) {
           if (!p || !paper) return;

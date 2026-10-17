@@ -493,6 +493,40 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Labels where the picture had its words, pipes up to the valves, words read beside drawings (v1.82.8)
+
+Thomas synced 11087's KA1 back from VectorCraft and compared it with the Designer before. He reported: *all the object
+text are a few pixels off that on top of bobbles*, and *some places the pipes are not fully connected to the object*.
+
+- **Each label read from a picture stood 2 px low.** A label's baseline is measured on an element of its class out of
+  sight, using an empty mark at the baseline. That mark was a span, and the Designer's style sheet gives every span a
+  2 px margin (`#tags_detail_wr div p, span` in `V3_designer.css`). An empty inline block stands on its margin's bottom,
+  so the measurement came out 8 px instead of 10 for an 11 px label. The mark is now an element no style sheet names,
+  with no margin. Labels placed by an earlier sync stay where they are; nudge them up 2 px, or edit the panel again from
+  its picture.
+- **A pipe now runs on into the object that stands on its end** (`opts.reach`).
+  - **Why it stopped short:** the picture's pipe ran on under the valve, but the object's look came out of the picture
+    with a pixel round it, so the traced pipe stopped 2 px or more short.
+  - **The rule:** a straight end 6 px or less short of something that draws over it, on its line, runs on 2 px into it.
+    That something is a house symbol, an object found in the picture, or one of the panel's objects that draws itself.
+    Words and bare values do not count, since a pipe would show through them.
+  - **Where it showed:** on KA1 it closed the gaps at the V3gc, Vhp and Vrec valves, the pump and the oil separator.
+- **The words step reads beside drawings.**
+  - **Not over the picture's ground:** a word's run no longer grows over that ground. The gauge's white glass had taken
+    the ground for its letters, grown 96 px each way and swallowed "Low-" beside it.
+  - **Small letters alone:** a run 8 rows high or less is tried as small letters too. 3214's "rom" under "Oppvask-"
+    is now read.
+  - **The ink over a known word:** a reading the ink explains well is no longer replaced by a known word the ink
+    explains worse by more than 0.015.
+    - "Hr Req %" had become Hr Reg %, and 4559's K03 and K08 had become K02 and K06.
+    - A full stop is kept only where the ink shows one: "Room temp" had become Room temp.
+  - **Brackets:** a reading that leaves a bracket open weighs more, and a unit in brackets joins the words before it.
+    11087's Energi now reads "L1-L2 (V)", and "Daggpunkt (°CI" is no longer written; its "(°C)" stays drawn.
+  - **House words:** the receiver's "High-level" and "High-" are house words now (it read "HIgh").
+- Checked by reading the words step again in Node on 20 panels from nine plants, with each page's own glyphs. Thirteen
+  labels are now right that were wrong or missing, one wrong label is gone, and no label got worse. 2349's "K-11c" is
+  still read wrong, in another way.
+
 ### A receiver stays the picture's (v1.82.7)
 
 Thomas showed 11087's KA1 in VectorCraft beside the Designer: *look like it messes up tank here*. The receiver's outline
