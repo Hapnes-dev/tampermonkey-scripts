@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.2
+// @version      1.82.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.82.2';
+var IWDIE_VERSION = '1.82.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -15452,6 +15452,51 @@ var IWDIE_VZ_PIPE_FAMILY = { 'HP': 'RørHøytrykk', 'Liquid': 'RørVæske', 'MT 
 /** How long the house's closest components are looked for in a picture (v1.81.0), at most. */
 var IWDIE_VZ_CLOSEST_MS = 25000;
 
+/** A sensor's template's dot and lead, as turned (v1.82.3): its solid ink's box (alpha 128 or more) - the dot - and the end
+ *  it is at ('up', 'down', 'left', 'right', across the lead's length), the lead's length. `t` {w, h, rgba}. ->
+ *  {cx, cy, dir, len} | null */
+function iwdieVzLeadOf(t) {
+  if (!t || !t.rgba) return null;
+  var x0 = t.w, y0 = t.h, x1 = -1, y1 = -1;
+  for (var y = 0; y < t.h; y++) for (var x = 0; x < t.w; x++) {
+    if (t.rgba[(y * t.w + x) * 4 + 3] < 128) continue;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  if (x1 < 0) return null;
+  var cx = (x0 + x1 + 1) / 2, cy = (y0 + y1 + 1) / 2, along = t.h >= t.w;
+  return { cx: cx, cy: cy, len: along ? t.h : t.w, dir: along ? (cy > t.h / 2 ? 'down' : 'up') : (cx > t.w / 2 ? 'right' : 'left') };
+}
+
+/** The house's sensor placed as long as the picture's lead (v1.82.3). The closest search took `m` ({k, turn, x, y, w, h}) for
+ *  the element in box `el` [x, y, w, h]; of `family` - the sensor's templates [{k, w, h, rgba}] - the one, unturned before
+ *  turned, whose dot is at the same end and whose lead is the shortest that reaches the element's far end, its dot where
+ *  the found one's is. -> {k, turn, x, y, w, h}: `m` where none is shorter */
+function iwdieVzLeadFit(m, el, family) {
+  var mt = null;
+  (family || []).forEach(function (t) { if (t.k === m.k) mt = t; });
+  var ml = mt ? iwdieVzLeadOf(iwdieVcTurn(mt, m.turn || 0)) : null;
+  if (!ml || !el) return m;
+  var dotX = m.x + ml.cx, dotY = m.y + ml.cy;
+  // how far the element runs from the dot's far side: the lead must reach that
+  var need = ml.dir === 'down' ? dotY - el[1] : ml.dir === 'up' ? el[1] + el[3] - dotY : ml.dir === 'right' ? dotX - el[0] : el[0] + el[2] - dotX;
+  var best = null;
+  (family || []).forEach(function (t) {
+    for (var q = 0; q < 4; q++) {
+      var tt = iwdieVcTurn(t, q), l = iwdieVzLeadOf(tt);
+      if (!l || l.dir !== ml.dir) continue;
+      // the lead from the dot's centre to its far end
+      var reach = l.dir === 'down' ? l.cy : l.dir === 'up' ? tt.h - l.cy : l.dir === 'right' ? l.cx : tt.w - l.cx;
+      if (reach < need - 1) continue;
+      if (!best || l.len < best.len || (l.len === best.len && q < best.turn)) best = { k: t.k, turn: q, len: l.len, cx: l.cx, cy: l.cy, w: tt.w, h: tt.h };
+    }
+  });
+  if (!best || best.len >= ml.len) return m;
+  return { k: best.k, turn: best.turn, x: Math.round(dotX - best.cx), y: Math.round(dotY - best.cy), w: best.w, h: best.h };
+}
+
 /** The house's components closest to what is left of a picture (v1.81.0). `pic` RGBA, W x H, after the IWMAC objects,
  *  the words, the boxes and the exact house symbols came out of it; `templates` [{k, w, h, rgba}] the house's components
  *  drawn at 1:1, turned here (iwdieVcTurn) - or (`still`) an IWMAC object's picture, never turned. Its ink: neither one of its grounds (its commonest colour and any of a
@@ -15462,6 +15507,9 @@ var IWDIE_VZ_CLOSEST_MS = 25000;
  *  element's within a pixel, R the share of the element's ink with the template's within a pixel, F their harmonic mean;
  *  with the exact overlap (IoU) as much again, or up to three times as much the more ink there is - which tells a right
  *  arrow from a left one, and an oval from a box - less what their colours differ past 40 where both have solid ink. The best is taken at F 0.85 or more (0.95 under 30 pixels of ink) with its
+ *  (v1.82.3) A template's faint pixels apart from its solid ink are ink the element may have or not (the house's sensor
+ *  draws its lead faint): within a pixel of them counts, on them overlaps, and the element may be as long as its solid ink,
+ *  the whole, or between. The best is taken at F 0.85 or more as above, its
  *  colours within 60 - or 80 where it fits wholly (F 0.95, IoU 0.7), or (`opts.shape`, an object's own pictures - v1.82.1:
  *  or a template's own `shape`) 130 where it fits closely (F 0.95, IoU 0.6); an object's picture (`still`, v1.82.1) only
  *  where it covers the element half or more (IoU 0.5). A big element nothing fits (2 000 px of box or
@@ -15563,23 +15611,44 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
   var T = [];
   (templates || []).forEach(function (t0) {
     for (var tq = 0; tq < (t0.still ? 1 : 4); tq++) {
-      var t = iwdieVcTurn(t0, tq), m = new Uint8Array(t.w * t.h), solid = new Uint8Array(t.w * t.h), tc = 0;
+      var t = iwdieVcTurn(t0, tq), m = new Uint8Array(t.w * t.h), solid = new Uint8Array(t.w * t.h), faint = new Uint8Array(t.w * t.h), tc = 0, fc = 0;
       for (var k = 0; k < t.w * t.h; k++) {
         var al = t.rgba[k * 4 + 3] / 255;
-        if (al < 0.5) continue;
+        if (al < 0.5) {
+          // (v1.82.3) faint, its own colour apart from the ground: maybe ink (a sensor's dotted lead), sorted below
+          if (al >= 0.06 && Math.abs(t.rgba[k * 4] - g0[0]) + Math.abs(t.rgba[k * 4 + 1] - g0[1]) + Math.abs(t.rgba[k * 4 + 2] - g0[2]) > 36) faint[k] = 2;
+          continue;
+        }
         var cr = t.rgba[k * 4] * al + g0[0] * (1 - al), cg = t.rgba[k * 4 + 1] * al + g0[1] * (1 - al), cb = t.rgba[k * 4 + 2] * al + g0[2] * (1 - al);
         if (Math.abs(cr - g0[0]) + Math.abs(cg - g0[1]) + Math.abs(cb - g0[2]) <= 36) continue;
         m[k] = 1; tc++;
         if (al >= 0.98) solid[k] = 1;
       }
       if (tc < 6) continue;
+      // (v1.82.3) its faint pixels apart from its solid ink - not within a pixel of it, as an edge's blend is - are ink the
+      // element may have or not: the house's sensor (Føler) draws its lead faint, and the picture's lead runs as long as it
+      // needs. And the box of its solid ink: an element as long as that is it too
+      var cx0 = t.w, cy0 = t.h, cx1 = -1, cy1 = -1;
+      for (var fy = 0; fy < t.h; fy++) for (var fx = 0; fx < t.w; fx++) {
+        var fk = fy * t.w + fx;
+        if (m[fk]) { if (fx < cx0) cx0 = fx; if (fx > cx1) cx1 = fx; if (fy < cy0) cy0 = fy; if (fy > cy1) cy1 = fy; }
+        if (faint[fk] !== 2) continue;
+        var touch = false;
+        for (var dy = -1; dy <= 1 && !touch; dy++) for (var dx = -1; dx <= 1; dx++) {
+          var qx = fx + dx, qy = fy + dy;
+          if (qx >= 0 && qy >= 0 && qx < t.w && qy < t.h && m[qy * t.w + qx]) { touch = true; break; }
+        }
+        faint[fk] = touch ? 0 : 1;
+        if (!touch) fc++;
+      }
       // within a pixel of its ink, a pixel round its box included: (w + 2) x (h + 2), one in
       var near = new Uint8Array((t.w + 2) * (t.h + 2));
       for (var ty = 0; ty < t.h; ty++) for (var tx = 0; tx < t.w; tx++) {
-        if (!m[ty * t.w + tx]) continue;
+        if (!m[ty * t.w + tx] && faint[ty * t.w + tx] !== 1) continue;
         for (var ey = 0; ey <= 2; ey++) for (var ex = 0; ex <= 2; ex++) near[(ty + ey) * (t.w + 2) + tx + ex] = 1;
       }
-      T.push({ k: t0.k, turn: tq, w: t.w, h: t.h, m: m, solid: solid, near: near, rgba: t.rgba, cnt: tc, shape: t0.shape == null ? !!opts.shape : !!t0.shape, still: !!t0.still });
+      T.push({ k: t0.k, turn: tq, w: t.w, h: t.h, m: m, solid: solid, near: near, rgba: t.rgba, cnt: tc, shape: t0.shape == null ? !!opts.shape : !!t0.shape, still: !!t0.still,
+        faint: faint, fc: fc, core: [cx0, cy0, cx1, cy1], sc: solid.reduce(function (a2, b2) { return a2 + b2; }, 0) });
     }
   });
   // the template that fits an element best, or null
@@ -15591,14 +15660,56 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
       if (!mine[yy * bw + xx]) continue;
       for (var ny = Math.max(0, yy - 1); ny <= Math.min(bh - 1, yy + 1); ny++) for (var nx = Math.max(0, xx - 1); nx <= Math.min(bw - 1, xx + 1); nx++) near1[ny * bw + nx] = 1;
     }
-    var best = null;
+    var best = null, blob = null;
+    // (v1.82.3) whether the element has a dot - a block of 3 x 2 or 2 x 3 of its ink, each pixel inked fully (150 from the
+    // ground): a sensor's dot is filled, an arrow's head is strokes of a pixel
+    var hasBlob = function () {
+      if (blob !== null) return blob;
+      blob = false;
+      var full = function (lx, ly) {
+        if (lx < 0 || ly < 0 || lx >= bw || ly >= bh || !mine[ly * bw + lx]) return false;
+        var pj = ((ly0 + ly) * W + lx0 + lx) * 4;
+        return Math.abs(pic[pj] - g0[0]) + Math.abs(pic[pj + 1] - g0[1]) + Math.abs(pic[pj + 2] - g0[2]) >= 150;
+      };
+      var sx0 = bw, sy0 = bh, sx1 = -1, sy1 = -1;
+      for (var by = 0; by < bh; by++) for (var bx = 0; bx < bw; bx++) {
+        if (!full(bx, by)) continue;
+        if (bx < sx0) sx0 = bx;
+        if (bx > sx1) sx1 = bx;
+        if (by < sy0) sy0 = by;
+        if (by > sy1) sy1 = by;
+        if (blob || !full(bx + 1, by) || !full(bx, by + 1) || !full(bx + 1, by + 1)) continue;
+        if ((full(bx + 2, by) && full(bx + 2, by + 1)) || (full(bx, by + 2) && full(bx + 1, by + 2))) blob = true;
+      }
+      // or its fully inked pixels together at one end, 6 px at most each way, and its lead - lighter - running on from
+      // them 4 px or more: a dot a step before took a row of
+      if (!blob && sx1 >= 0 && sx1 - sx0 < 6 && sy1 - sy0 < 6 && (ew - (sx1 - sx0 + 1) >= 4 || eh - (sy1 - sy0 + 1) >= 4)) blob = true;
+      return blob;
+    };
     T.forEach(function (t) {
-      if (Math.abs(t.w - ew) > Math.max(3, 0.25 * ew) || Math.abs(t.h - eh) > Math.max(3, 0.25 * eh)) return;
-      for (var oy = -3; oy <= 3; oy++) for (var ox = -3; ox <= 3; ox++) {
-        var px = e.x0 + ((ew - t.w) >> 1) + ox, py = e.y0 + ((eh - t.h) >> 1) + oy, hitT = 0, exact = 0, cd = 0, cn = 0, hitE = 0, u, v;
+      // (v1.82.3) one with a lead (the house's sensor) only for an element with a dot
+      if (t.fc && !hasBlob()) return;
+      var okW = Math.abs(t.w - ew) <= Math.max(3, 0.25 * ew), okH = Math.abs(t.h - eh) <= Math.max(3, 0.25 * eh);
+      // (v1.82.3) one with ink the element may have or not (a sensor's lead): as long as its solid ink, as the whole, or
+      // between - and weighed at each offset along it
+      if (t.fc && !(okW && okH)) {
+        okW = ew >= t.core[2] - t.core[0] - 2 && ew <= t.w + 3;
+        okH = eh >= t.core[3] - t.core[1] - 2 && eh <= t.h + 3;
+      }
+      if (!okW || !okH) return;
+      var rx = t.fc ? Math.max(3, Math.ceil(Math.abs(t.w - ew) / 2) + 1) : 3, ry = t.fc ? Math.max(3, Math.ceil(Math.abs(t.h - eh) / 2) + 1) : 3;
+      for (var oy = -ry; oy <= ry; oy++) for (var ox = -rx; ox <= rx; ox++) {
+        var px = e.x0 + ((ew - t.w) >> 1) + ox, py = e.y0 + ((eh - t.h) >> 1) + oy, hitT = 0, exact = 0, exactF = 0, strong = 0, cd = 0, cn = 0, hitE = 0, u, v;
         for (v = 0; v < t.h; v++) for (u = 0; u < t.w; u++) {
           var ti = v * t.w + u;
-          if (!t.m[ti]) continue;
+          if (!t.m[ti]) {
+            // (v1.82.3) the element's ink on the template's faint ink overlaps it
+            if (t.faint[ti] === 1) {
+              var lxf = px + u - lx0, lyf = py + v - ly0;
+              if (lxf >= 0 && lyf >= 0 && lxf < bw && lyf < bh && mine[lyf * bw + lxf]) exactF++;
+            }
+            continue;
+          }
           var lx = px + u - lx0, ly = py + v - ly0;
           if (lx < 0 || ly < 0 || lx >= bw || ly >= bh) continue;
           var li = ly * bw + lx;
@@ -15606,9 +15717,11 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
           if (mine[li]) {
             exact++;
             if (t.solid[ti]) {
-              var pj = ((ly0 + ly) * W + lx0 + lx) * 4;
-              cd += Math.abs(pic[pj] - t.rgba[ti * 4]) + Math.abs(pic[pj + 1] - t.rgba[ti * 4 + 1]) + Math.abs(pic[pj + 2] - t.rgba[ti * 4 + 2]);
+              var pj = ((ly0 + ly) * W + lx0 + lx) * 4, dd = Math.abs(pic[pj] - t.rgba[ti * 4]) + Math.abs(pic[pj + 1] - t.rgba[ti * 4 + 1]) + Math.abs(pic[pj + 2] - t.rgba[ti * 4 + 2]);
+              cd += dd;
               cn++;
+              // (v1.82.3) inked fully: nearer the template's colour than half way from the ground to it
+              if (t.fc && dd < 0.5 * (Math.abs(g0[0] - t.rgba[ti * 4]) + Math.abs(g0[1] - t.rgba[ti * 4 + 1]) + Math.abs(g0[2] - t.rgba[ti * 4 + 2]))) strong++;
             }
           }
         }
@@ -15617,7 +15730,10 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
           var tu = lx0 + u - px + 1, tv = ly0 + v - py + 1;
           if (tu >= 0 && tv >= 0 && tu < t.w + 2 && tv < t.h + 2 && t.near[tv * (t.w + 2) + tu]) hitE++;
         }
-        var Pp = hitT / t.cnt, Rr = hitE / e.cnt, F = Pp + Rr ? 2 * Pp * Rr / (Pp + Rr) : 0, iou = exact / (t.cnt + e.cnt - exact), col = cn ? cd / cn : 999;
+        // (v1.82.3) one with a lead: its solid ink - the sensor's dot - half of it inked fully in the element at least: the dot
+        // on the dot (a step before may have taken a row of it)
+        if (t.fc && strong < 0.5 * t.sc) continue;
+        var Pp = hitT / t.cnt, Rr = hitE / e.cnt, F = Pp + Rr ? 2 * Pp * Rr / (Pp + Rr) : 0, iou = (exact + exactF) / (t.cnt + e.cnt - exact), col = cn ? cd / cn : 999;
         // the exact overlap counts the more, the more ink: a big shape is told by its outline (an oval from a box)
         // (v1.82.0) an object's own picture (`opts.shape`, v1.82.1 or the picture's own `shape`): its colours count half - its
         // state is its own - but still tell its sides
@@ -20579,12 +20695,40 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  the catalogue's, and (v1.46.0) the kinds in `extra`, the panel's own. One its CSS paints is
      *  painted as that does (v1.60.0, vcPaintCss), its class's picture before the catalogue's. Kept a
      *  week; what they lack, or failed to get, is fetched and added. -> Promise<looks> */
+    /** A picture of white text on a box - the palette's white_val_only.png, "12.3 °C" on a grey box - as the white text alone
+     *  (v1.82.3): each pixel white, as opaque as it is lighter than the box (its commonest opaque colour), the outer two
+     *  pixels - the box's ring - left out. `p` {url, w, h} as vcIconPng gives it. -> Promise<{url, w, h}> */
+    function vcWhiteTextOnly(p) {
+      return loadPicture(p.url).then(function (img) {
+        var c = document.createElement('canvas');
+        c.width = p.w; c.height = p.h;
+        var g = c.getContext('2d');
+        g.drawImage(img, 0, 0, p.w, p.h);
+        var d = g.getImageData(0, 0, p.w, p.h), a = d.data, tally = {}, best = null, i;
+        for (i = 0; i < p.w * p.h; i++) {
+          if (a[i * 4 + 3] < 250) continue;
+          var key = a[i * 4] + ',' + a[i * 4 + 1] + ',' + a[i * 4 + 2], e = tally[key] || (tally[key] = { n: 0, l: (a[i * 4] + a[i * 4 + 1] + a[i * 4 + 2]) / 3 });
+          if (++e.n > (best ? best.n : 0)) best = e;
+        }
+        if (!best) return p;
+        for (var y = 0; y < p.h; y++) for (var x = 0; x < p.w; x++) {
+          var j = (y * p.w + x) * 4, ring = x < 2 || y < 2 || x >= p.w - 2 || y >= p.h - 2;
+          var lum = (a[j] + a[j + 1] + a[j + 2]) / 3, op = ring ? 0 : Math.max(0, Math.min(1, (lum - best.l) / Math.max(1, 255 - best.l))) * a[j + 3] / 255;
+          a[j] = a[j + 1] = a[j + 2] = 255;
+          a[j + 3] = Math.round(op * 255);
+        }
+        g.putImageData(d, 0, 0);
+        return { url: c.toDataURL('image/png'), w: p.w, h: p.h };
+      }, function () { return p; });
+    }
+
     function vcObjectLooks(extra) {
       var cat = iwdieVcObjectCatalog(), kept = null, known = iwdieVcObjectIndex(), want = cat.map(function (o) { return o.id; });
       (extra || []).forEach(function (id) { if (want.indexOf(id) < 0) want.push(id); });
       try { kept = GM_getValue(IWDIE_VC_LOOKS_KEY, null); } catch (e) { kept = null; }
-      // those kept before 1.60.0 have the CSS-painted kinds scaled from the catalogue's pictures
-      var fresh = !!(kept && kept.v === 2 && kept.items && kept.at > Date.now() - 7 * 864e5);
+      // those kept before 1.60.0 have the CSS-painted kinds scaled from the catalogue's pictures, (v1.82.3) and before 1.82.3
+      // the white value in its palette picture's grey box
+      var fresh = !!(kept && kept.v === 3 && kept.items && kept.at > Date.now() - 7 * 864e5);
       var have = function (id) { return kept.items[id] && !kept.items[id].failed; };
       if (fresh && want.every(have)) return Promise.resolve(kept.items);
       var ctl = W.controls || {}, items = {};
@@ -20599,9 +20743,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (typeof live.file === 'string' && live.file) pic = live.file;
         }
         var look = items[id] = { w: w, h: h };
+        // (v1.82.3) a value the Designer writes in white, on the picture's own pill (css_v3_white_iw_values): its palette
+        // picture's grey box out, the white text alone - as the black value is its text alone
+        var white = /^number_v3_white_value_only$/.test(id) || (!!live && /white_iw_values/.test(String(live.classname || '')));
         var fromPic = function () {
           if (!pic) return null;
-          return vcIconPng(vcDesignerUrl('../iw_icons/' + pic)).then(function (p) {
+          return vcIconPng(vcDesignerUrl('../iw_icons/' + pic)).then(function (p) { return white ? vcWhiteTextOnly(p) : p; }).then(function (p) {
             look.src = p.url; look.iw = p.w; look.ih = p.h;
             if (p.mean) look.bar = p.mean;
           }, function () { look.failed = true; });
@@ -20613,7 +20760,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (p.look.mean) look.bar = p.look.mean;
         }, fromPic);
       })).then(function () {
-        try { GM_setValue(IWDIE_VC_LOOKS_KEY, { v: 2, at: fresh ? kept.at : Date.now(), items: items }); } catch (e) {}
+        try { GM_setValue(IWDIE_VC_LOOKS_KEY, { v: 3, at: fresh ? kept.at : Date.now(), items: items }); } catch (e) {}
         return items;
       });
     }
@@ -21877,10 +22024,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 var byK = {}, names2 = iwdieVcComponentNames(items), holes2 = [];
                 all.forEach(function (t) { byK[t.k] = t; });
                 got.tplK = byK;
+                // (v1.82.3) the house's sensors, as long as the picture's leads
+                var sensors = all.filter(function (t) { var it0 = items[t.k]; return String((it0 && it0.sym && it0.sym.name) || names2[t.k]) === 'Føler'; });
                 ((res && res.found) || []).forEach(function (m) {
                   var it = items[m.k], t = byK[m.k];
                   if (!it || !t) return;
                   var nm = String((it.sym && it.sym.name) || names2[m.k]);
+                  if (nm === 'Føler' && m.hole) {
+                    var fit = iwdieVzLeadFit(m, [m.hole.x + 4, m.hole.y + 4, m.hole.w - 8, m.hole.h - 8], sensors);
+                    if (fit !== m && items[fit.k] && byK[fit.k]) { m = Object.assign({}, m, fit); it = items[m.k]; t = byK[m.k]; }
+                  }
                   holes2.push({ x: m.x, y: m.y, w: m.w, h: m.h, rgba: iwdieVcTurn(t, m.turn).rgba });
                   if (m.hole) holes2.push(m.hole);
                   got.symbols.push({ kind: 'symbol', name: nm, sym: !!(it.sym && it.sym.name), shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, w0: it.w, h0: it.h, close: 1,
@@ -25071,6 +25224,8 @@ if (typeof module !== 'undefined' && module.exports) {
     vzFolderRole: iwdieVzFolderRole,
     vcKnowKinds: iwdieVcKnowKinds,
     vzClosest: iwdieVzClosest,
+    vzLeadFit: iwdieVzLeadFit,
+    vzLeadOf: iwdieVzLeadOf,
     VZ_PIPE_FAMILY: IWDIE_VZ_PIPE_FAMILY,
     VZ_PIPE_COLOURS: IWDIE_VZ_PIPE_COLOURS,
     vzBoxEdgesOff: iwdieVzBoxEdgesOff,

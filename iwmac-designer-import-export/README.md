@@ -493,6 +493,36 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The house's sensor where the picture has one, and the white value as white text (v1.82.3)
+
+Thomas, on 10214's Maskin in VectorCraft: *look like some places you have arrorw but you should instead have føler object
+instead*. He showed the house symbol `Føler` in VectorCraft's layers. Of the white value objects he wrote: *can you just
+dislay as white text without square round / like you have on the black text object text but only for white / its
+display right in iwmac designer but not the same in vectorCraft*.
+
+- **Sensors, not arrows.**
+  - **What went wrong.** The house's `Føler` is a filled dot with a dotted lead, and the lead is drawn faint: it
+    counted as no ink for the closest search. The template also has a fixed length (15, 27 or 39 px), but the
+    picture's lead runs as long as it needs. A sensor whose lead ran 11 px was weighed against the arrow `PilLiten`
+    alone and taken for one: 4 of 10214 Maskin's 15 arrows were sensors.
+  - **The fix.** A template's faint pixels apart from its solid ink are now ink the element may have or not
+    (`iwdieVzClosest`). Such a template is weighed against an element as long as its dot, as long as the whole, or
+    anything between.
+  - **No arrows taken for sensors.** A sensor's dot is filled. Only an element with a filled block of 3 × 2 pixels,
+    or a compact dark end with a lighter lead running on from it, is weighed against it. An arrow's head is a V of
+    one-pixel strokes and is never weighed against it.
+- **As long as the picture's lead.** A sensor found with a longer lead than the picture's is swapped for the shortest
+  one that reaches the element's far end, with its dot kept where it was (`iwdieVzLeadFit`).
+- **The white value as white text.** VectorCraft drew `number_v3_white_value_only` with the palette's
+  `white_val_only.png`, which is white text on a grey box. The Designer draws that class as the white text alone, on
+  the picture's own pill. Its look is now the text alone: each pixel white, as opaque as it is lighter than the box,
+  with the box's ring left out. The looks kept a week are fetched again once.
+
+Checked in the stub host with the Designer's CSS:
+- **10214 Maskin.** Its 14 sensors are `Føler` and its 11 arrows `PilLiten`, before 7 and 15. Each sensor's dot sits
+  on the picture's dot, its lead the shortest that reaches.
+- **The white values** show their white text on the picture's dark pill.
+
 ### The clocks count on while the page is held (v1.82.2)
 
 Thomas sent a screenshot of Chrome's *Pages Unresponsive* dialog over the progress tab, which stood at *What the objects
