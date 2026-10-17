@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.5
+// @version      1.82.6
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.82.5';
+var IWDIE_VERSION = '1.82.6';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8399,6 +8399,14 @@ var IWDIE_VC_OBJ_LOOK = {
 };
 /** Where the Designer leaves the objects' looks for the editor's page: sizes and pictures. */
 var IWDIE_VC_LOOKS_KEY = 'iwdie.vc.looks';
+
+/** The value the Designer writes in a value object while it designs (v1.82.6): "12.3", with no unit. Thomas showed it next to
+ *  VectorCraft's "12.3 °C", which came from the palette's picture of the kind, in another size and weight: *the object
+ *  text does not display the same as on iwmac designer*. The kinds that show one, by their render definition's obj_type:
+ *  a bare value (value_txt, css_v3_iw_values: Roboto 11 px bold, centred, 4 px from the top) and a text box with or
+ *  without its tag (textbox, textbox_tag: the same text over the box their class paints). */
+var IWDIE_VC_VALUE_TEXT = '12.3';
+var IWDIE_VC_VALUE_KINDS = /^(?:value_txt|textbox|textbox_tag)$/;
 /** The Designer's pictures of every state of the kinds a picture is searched for (v1.77.0), kept a week. */
 var IWDIE_VC_STATES_KEY = 'iwdie.vc.states';
 /** How long Vectorize image and Export look for IWMAC objects in a picture (v1.77.0), at most. */
@@ -20709,9 +20717,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  text). Given its tag text `tag`, where the tag's own class writes it: {x, y (the baseline), size, color}.
      *  -> Promise<{look: {src, iw, ih, mean} | null, tag: {x, y, size, color} | null}> */
     function vcPaintCss(def, w, h, tag, paint) {
-      var el = document.createElement('div'), t = null, st = null, at = null;
+      var el = document.createElement('div'), t = null, st = null, at = null, v = null, val = null;
       el.className = String(def.classname || '') + ' iw_css_ctrl_common';
       el.style.cssText = 'position:absolute;left:-30000px;top:0;width:' + w + 'px;height:' + h + 'px';
+      // (v1.82.6) a value or text box: the value the Designer writes in it while it designs, in its class's own font
+      if (paint && IWDIE_VC_VALUE_KINDS.test(String(def.obj_type || ''))) {
+        v = document.createTextNode(IWDIE_VC_VALUE_TEXT);
+        el.appendChild(v);
+      }
       if (tag && def.tag_text_classname) {
         t = document.createElement('div');
         t.className = String(def.tag_text_classname);
@@ -20723,16 +20736,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var s = getComputedStyle(el), style = s.borderTopStyle;
         st = { image: s.backgroundImage, colour: iwdieCssHex(s.backgroundColor), pos: s.backgroundPosition, size: s.backgroundSize, repeat: s.backgroundRepeat,
           bw: style !== 'none' && style !== 'hidden' ? parseFloat(s.borderTopWidth) || 0 : 0, bc: s.borderTopColor, radius: parseFloat(s.borderTopLeftRadius) || 0 };
+        var r0 = el.getBoundingClientRect(), r2 = function (n) { return Math.round(n * 100) / 100; };
         if (t && t.firstChild) {
-          var r0 = el.getBoundingClientRect(), range = document.createRange(), ts = getComputedStyle(t), size = parseFloat(ts.fontSize) || 11;
+          var range = document.createRange(), ts = getComputedStyle(t), size = parseFloat(ts.fontSize) || 11;
           range.selectNodeContents(t);
-          var r = range.getBoundingClientRect(), r2 = function (v) { return Math.round(v * 100) / 100; };
+          var r = range.getBoundingClientRect();
           if (r.width > 0 || r.height > 0) at = { x: r2(r.left - r0.left), y: r2(r.top - r0.top + (r.height + size * 0.7) / 2), size: size, color: iwdieCssHex(ts.color) };
+        }
+        if (v) {
+          // where its text stands, as the class lays it out: its padding, its alignment, its line
+          var vr = document.createRange(), vsize = parseFloat(s.fontSize) || 11;
+          vr.selectNode(v);
+          var rv = vr.getBoundingClientRect();
+          if (rv.width > 0) {
+            val = { x: r2(rv.left - r0.left), y: r2(rv.top - r0.top + (rv.height + vsize * 0.7) / 2), color: s.color,
+              font: [s.fontStyle, s.fontWeight, s.fontSize, s.fontFamily].join(' ') };
+          }
         }
       } finally { if (el.parentNode) el.parentNode.removeChild(el); }
       var url = paint ? (/url\(\s*["']?([^"')]+)["']?\s*\)/.exec(st.image || '') || [])[1] || '' : '';
-      if (!paint || (!url && !st.colour && !(st.bw > 0))) return Promise.resolve({ look: null, tag: at });
-      return (url ? vcCssPic(url) : Promise.resolve(null)).then(function (img) {
+      if (!paint || (!url && !st.colour && !(st.bw > 0) && !val)) return Promise.resolve({ look: null, tag: at });
+      // its font loaded before it is drawn, or the canvas writes it in another
+      var ready = val && document.fonts && document.fonts.load ? document.fonts.load(val.font, IWDIE_VC_VALUE_TEXT).then(null, function () {}) : Promise.resolve();
+      return Promise.all([url ? vcCssPic(url) : Promise.resolve(null), ready]).then(function (got) {
+        var img = got[0];
         var c = document.createElement('canvas'), g;
         c.width = w; c.height = h;
         g = c.getContext('2d');
@@ -20756,6 +20783,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var d = g.getImageData(0, 0, w, h).data, sum = [0, 0, 0], n = 0;
         for (var i = 0; i < d.length; i += 16) if (d[i + 3] > 200) { sum[0] += d[i]; sum[1] += d[i + 1]; sum[2] += d[i + 2]; n++; }
         var mean = n ? iwdieCssHex('rgb(' + sum.map(function (v) { return Math.round(v / n); }).join(',') + ')') : '';
+        // the value over its box, the box's colour (`mean`) read before
+        if (val) { g.font = val.font; g.fillStyle = val.color; g.textBaseline = 'alphabetic'; g.fillText(IWDIE_VC_VALUE_TEXT, val.x, val.y); }
         return { look: { src: c.toDataURL('image/png'), iw: w, ih: h, mean: mean }, tag: at };
       });
     }
@@ -20819,8 +20848,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       (extra || []).forEach(function (id) { if (want.indexOf(id) < 0) want.push(id); });
       try { kept = GM_getValue(IWDIE_VC_LOOKS_KEY, null); } catch (e) { kept = null; }
       // those kept before 1.60.0 have the CSS-painted kinds scaled from the catalogue's pictures, (v1.82.3) and before 1.82.3
-      // the white value in its palette picture's grey box
-      var fresh = !!(kept && kept.v === 3 && kept.items && kept.at > Date.now() - 7 * 864e5);
+      // the white value in its palette picture's grey box, (v1.82.6) and before 1.82.6 the values as the palette's "12.3 °C"
+      var fresh = !!(kept && kept.v === 4 && kept.items && kept.at > Date.now() - 7 * 864e5);
       var have = function (id) { return kept.items[id] && !kept.items[id].failed; };
       if (fresh && want.every(have)) return Promise.resolve(kept.items);
       var ctl = W.controls || {}, items = {};
@@ -20852,7 +20881,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (p.look.mean) look.bar = p.look.mean;
         }, fromPic);
       })).then(function () {
-        try { GM_setValue(IWDIE_VC_LOOKS_KEY, { v: 3, at: fresh ? kept.at : Date.now(), items: items }); } catch (e) {}
+        try { GM_setValue(IWDIE_VC_LOOKS_KEY, { v: 4, at: fresh ? kept.at : Date.now(), items: items }); } catch (e) {}
         return items;
       });
     }

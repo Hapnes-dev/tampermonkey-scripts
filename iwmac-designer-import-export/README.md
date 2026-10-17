@@ -493,6 +493,30 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Values as the Designer writes them: "12.3", in its own font (v1.82.6)
+
+Thomas showed the Designer's values next to VectorCraft's: *also i see that the object text does not display the same as
+on iwmac designer*. The Designer wrote "12.3" in bold. VectorCraft, and since 1.82.5 the Illustrator export, showed
+"12.3 °C" in another size and weight.
+
+- **Why.** A bare value (`number_v3_value_only`, `number_v3_white_value_only`) is text in its class's font, and its CSS
+  paints nothing else. Its look therefore fell back to the palette's picture of the kind, which says "12.3 °C". A text
+  box (the 60 px box, the white `custom_json` pill and the rest of `textbox` and `textbox_tag`) was painted as its box
+  alone, with no value in it.
+- **Now each one is painted as its class lays it out,** with the value the Designer writes while it designs: "12.3",
+  with no unit. The value is placed where the class puts it, in its own font. `.css_v3_iw_values`, for example, is Roboto
+  11 px bold in `#3C505E`, centred, 4 px from the top, and the white value is the same in white. The text is drawn over the
+  box its class paints.
+- **The looks kept a week are fetched again once,** as version 4 of the looks' cache.
+- **This applies everywhere these looks are used:** VectorCraft's placeholders, the Illustrator export, and the page
+  other viewers show.
+
+Checked in the stub host with the Designer's own render definitions and CSS, on 10214's Maskin:
+- The dark pills read "12.3" in white bold and the white pills "12.3" in dark bold, as in Thomas's screenshot, both in
+  VectorCraft and in the Illustrator export.
+- The 60 px box and the `custom_json` pill, empty before, now read "12.3".
+- The job finds and places 77 objects, as before.
+
 ### The panel's objects in the Illustrator export, as the Designer shows them (v1.82.5)
 
 Thomas, on an export of 10214's Maskin: *When exporting to adobe illustrator look like you don't add all the objects
