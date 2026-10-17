@@ -493,6 +493,27 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The clocks count on while the page is held (v1.82.2)
+
+Thomas sent a screenshot of Chrome's *Pages Unresponsive* dialog over the progress tab, which stood at *What the objects
+stand on - their pills, 0.0 s*. He wrote: *look like it freezes but works after a while / can you make it som progress
+look better so it actually display seconds on each part so it dosen't look stuck*.
+
+- **Why it stood still.** The progress tab is `about:blank`, written by the Designer's page, so it runs on that page's
+  thread. Its clocks were set by a timer on that thread. While the work held the thread, they stopped. Version 1.77.1
+  had already moved the running step's ring and the bar's sheen to the browser's compositor for the same reason.
+- **Now the clocks count on too.** The total and the running step's own time are rows of digit strips: hundreds, tens,
+  seconds and tenths. Each strip moves with a stepped CSS transform, so the compositor turns it while the page is held.
+  The tens appear at 10 s and the hundreds at 100 s. A finished step shows its measured time as before.
+  - In the stub host, a screencast of the tab during a 4 s hold showed the running step's clock going 1.0 → 3.4 s and
+    the total 1.4 → 3.8 s.
+- **Where the page was held.** A step that the page's long tasks held for 2 s or more now says so after its result, as
+  in *none found · the page held 31 s*. In the stub host the page is never held for more than 0.4 s, so his live
+  Designer holds it somewhere the stub host does not show. The next screenshot will name the step.
+  - In the stub host, a 3.5 s hold added on purpose showed as *the page held 3.5 s*.
+- **Less work in the erase.** Since 1.82.1, its search for holes made four arrays for each pixel of each hole. It now
+  makes none.
+
 ### What 10214's Oversikt read wrong in the live Designer, put right (v1.82.1)
 
 Thomas, on 10214's Oversikt with 1.82.0 (job `mvbzwcll0lqh8z`): *Kjøl and K12 you did not find on … kjøl is no object

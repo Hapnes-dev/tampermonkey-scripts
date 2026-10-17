@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.1
+// @version      1.82.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.82.1';
+var IWDIE_VERSION = '1.82.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9574,13 +9574,14 @@ function iwdieVcEraseMask(pic, W, H, M) {
     stack.push(p0);
     while (stack.length) {
       var p = stack.pop(), px = p % W, py = (p - px) / W;
-      [[px - 1, py], [px + 1, py], [px, py - 1], [px, py + 1]].forEach(function (q) {
-        if (q[0] < 0 || q[1] < 0 || q[0] >= W || q[1] >= H) return;
-        var k = q[1] * W + q[0];
-        if (M[k]) { if (hole[k] < 0) { hole[k] = id; stack.push(k); } return; }
-        var key = (src[k * 4] >> 3) + ',' + (src[k * 4 + 1] >> 3) + ',' + (src[k * 4 + 2] >> 3), e = tally[key] || (tally[key] = { n: 0, i: k * 4 });
+      for (var nb = 0; nb < 4; nb++) {
+        var qx = nb === 0 ? px - 1 : nb === 1 ? px + 1 : px, qy = nb === 2 ? py - 1 : nb === 3 ? py + 1 : py;
+        if (qx < 0 || qy < 0 || qx >= W || qy >= H) continue;
+        var k = qy * W + qx;
+        if (M[k]) { if (hole[k] < 0) { hole[k] = id; stack.push(k); } continue; }
+        var key = (src[k * 4] >> 3) << 10 | (src[k * 4 + 1] >> 3) << 5 | (src[k * 4 + 2] >> 3), e = tally[key] || (tally[key] = { n: 0, i: k * 4 });
         if (++e.n > (top ? top.n : 0)) top = e;
-      });
+      }
     }
     round.push(top ? top.i : -1);
   }
@@ -21449,7 +21450,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  It runs on this page's thread, so a step that holds the thread held the tab too: its clock stood at 0.0 s and
      *  nothing showed running, as if it had stopped (v1.77.1). Now the running step's ring and a sheen along the bar
      *  turn in the browser's compositor (CSS transforms), which goes on while the thread is held; and `breath()` lets
-     *  the tab draw a step before its work starts. */
+     *  the tab draw a step before its work starts. (v1.82.2) The clocks too - the total and the running step's own -
+     *  are digit strips moved by stepped transforms (`odo`), so the seconds count on while the page is held; and a
+     *  step the page's long tasks held 2 s or more says so ("the page held 31 s"). */
     function vcPaper(tab, steps, skip) {
       var doc = null, skipped = false, onSkip = null, cur = null, t0 = Date.now(), began = 0, at = 0;
       try { doc = tab && !tab.closed ? tab.document : null; } catch (e) { doc = null; }
@@ -21460,6 +21463,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           doc.write('<!doctype html><meta charset="utf-8"><title>IWMAC Designer → VectorCraft</title>' +
             // what moves by itself (v1.77.1): transforms alone, each on a layer of its own, so the compositor turns them
             '<style>@keyframes iwdie-turn{to{transform:rotate(360deg)}}@keyframes iwdie-sheen{from{transform:translateX(-100%)}to{transform:translateX(500%)}}' +
+            // the clocks (v1.82.2): each digit a strip of 0-9 moved a tenth of its length a step, its own period - tenths of a
+            // second 1 s, seconds 10 s, tens 100 s, hundreds 1000 s - the leading two shown once reached
+            '@keyframes iwdie-dg{to{transform:translateY(-12em)}}@keyframes iwdie-on{to{opacity:1}}' +
+            // each part a box one line high on the same line, so the digits stand on the text's own baseline
+            '.odo{display:inline-block;height:1.2em;line-height:1.2em;white-space:nowrap;overflow:clip;font-variant-numeric:tabular-nums}' +
+            '.dg{display:inline-block;vertical-align:top;height:1.2em;overflow:clip}' +
+            '.dg>b{display:block;font-weight:inherit;line-height:1.2em;animation:iwdie-dg var(--p) steps(10,end) infinite;will-change:transform}' +
+            // the strip's digits its own content, not the page's text: a copy of the tab's text says no 0123456789
+            '.dg>b::before{content:"0\\A 1\\A 2\\A 3\\A 4\\A 5\\A 6\\A 7\\A 8\\A 9";white-space:pre}' +
+            '.dg.lead{opacity:0;animation:iwdie-on .01s linear var(--at) forwards;will-change:opacity}' +
             '.ring{display:inline-block;width:10px;height:10px;box-sizing:border-box;border:2px solid #378ef0;border-right-color:transparent;border-radius:50%;' +
             'vertical-align:-1px;animation:iwdie-turn .8s linear infinite;will-change:transform}' +
             '#sheen{position:absolute;top:0;left:0;width:20%;height:6px;background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.3),rgba(255,255,255,0));' +
@@ -21486,6 +21499,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }
       var $ = function (id) { try { return doc ? doc.getElementById(id) : null; } catch (e) { return null; } };
       var secs = function (ms) { return ms < 10000 ? (Math.round(ms / 100) / 10).toFixed(1) + ' s' : Math.round(ms / 1000) + ' s'; };
+      // a clock that counts on in the compositor from when it is drawn (v1.82.2)
+      var odo = function () {
+        var col = function (p, lead) {
+          return '<span class="dg' + (lead ? ' lead' : '') + '" style="--p:' + p + 's' + (lead ? ';--at:' + (p / 10) + 's' : '') + '"><b></b></span>';
+        };
+        return '<span class="odo">' + col(1000, true) + col(100, true) + col(10) + '.' + col(1) + '&nbsp;s</span>';
+      };
+      var clockOn = function (id) { var el = $(id); if (el) try { el.innerHTML = odo(); } catch (e) {} };
       var put = function (id, text, css) { var el = $(id); if (!el) return; if (text !== null) el.textContent = text; if (css) el.style.cssText += css; };
       var bar = function (part) {
         if (typeof part !== 'number' || !isFinite(part)) return;
@@ -21504,18 +21525,46 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (detail !== undefined && detail !== null) put('d-' + key, detail);
         if (time) put('t-' + key, time);
       };
-      var tick = function () { put('clock', secs(Date.now() - t0)); };
+      // the total's clock counts on by itself (v1.82.2); `tick` is no longer needed for it
+      var tick = function () {};
+      clockOn('clock');
+      // where the page was held, by the page's long tasks (v1.82.2): each step's longest, said 2 s or more
+      var held = {}, said = {}, spans = {};
+      var heldSay = function (key) {
+        var ms = held[key] || 0;
+        if (ms < 2000 || said[key] === ms) return;
+        said[key] = ms;
+        var d = $('d-' + key);
+        if (!d) return;
+        var base = d.getAttribute('data-said');
+        if (base === null) { base = d.textContent; d.setAttribute('data-said', base); }
+        d.textContent = (base ? base + ' · ' : '') + 'the page held ' + secs(ms);
+      };
+      var obs = null;
+      try {
+        obs = new PerformanceObserver(function (list) {
+          list.getEntries().forEach(function (e) {
+            Object.keys(spans).forEach(function (k) {
+              var sp = spans[k];
+              if (e.startTime + e.duration < sp[0] || (sp[1] !== null && e.startTime > sp[1])) return;
+              if (e.duration > (held[k] || 0)) { held[k] = e.duration; heldSay(k); }
+            });
+          });
+        });
+        obs.observe({ type: 'longtask', buffered: false });
+      } catch (e) { obs = null; }
       // the time runs on by itself (v1.48.1): the clock, the running step's own time, and the bar
       // creeping on towards the step's end (`to`) while nothing is heard - in the tab's own timer, not
       // this page's, which a page behind another runs once a second
       var from = 0, to = 0, creepAt = 0, timer = null, owner = null;
-      var stopLive = function () { if (timer !== null) { try { owner.clearInterval(timer); } catch (e) {} timer = null; } };
+      var stopLive = function () {
+        if (timer !== null) { try { owner.clearInterval(timer); } catch (e) {} timer = null; }
+        if (obs) { try { obs.disconnect(); } catch (e) {} obs = null; }
+      };
       var live = function () {
         var gone = true;
         try { gone = !tab || tab.closed || tab.document !== doc; } catch (e) { gone = true; }
         if (gone) { stopLive(); return; }
-        tick();
-        if (cur) put('t-' + cur, secs(Date.now() - began));
         if (to > from) bar(from + (to - from) * (1 - Math.exp(-(Date.now() - creepAt) / 2500)));
       };
       if (doc) {
@@ -21526,21 +21575,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         step: function (key, detail, part, until) {
           // the step already running goes on, with its time (v1.77.1): started before the picture is read, say
           if (cur && cur !== key) paper.done(null);
-          if (cur !== key) { cur = key; began = Date.now(); }
+          if (cur !== key) {
+            cur = key; began = Date.now();
+            // (v1.82.2) its own clock, counting on in the compositor; and its span, for the page's holds in it
+            clockOn('t-' + key);
+            spans[key] = [performance.now(), null];
+            var dd = $('d-' + key);
+            if (dd) dd.removeAttribute('data-said');
+          }
           show(key, 'now', detail || '');
           bar(part);
           from = at; to = typeof until === 'number' ? Math.max(at, until) : at; creepAt = Date.now();
           tick();
         },
         say: function (detail, part) {
-          if (cur) show(cur, 'now', detail);
+          if (cur) { show(cur, 'now', detail); var dd = $('d-' + cur); if (dd && detail !== undefined && detail !== null) dd.removeAttribute('data-said'); said[cur] = 0; heldSay(cur); }
           bar(part);
           if (typeof part === 'number') { from = at; creepAt = Date.now(); }
           tick();
         },
         done: function (detail, part) {
           if (!cur) return;
+          var dd = $('d-' + cur);
+          if (dd && detail !== undefined && detail !== null) dd.removeAttribute('data-said');
           show(cur, 'done', detail, secs(Date.now() - began));
+          if (spans[cur]) spans[cur][1] = performance.now();
+          said[cur] = 0;
+          heldSay(cur);
           cur = null;
           bar(part);
           from = to = at;
