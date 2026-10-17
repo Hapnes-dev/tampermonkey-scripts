@@ -493,6 +493,47 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### What 10214's Oversikt read wrong in the live Designer, put right (v1.82.1)
+
+Thomas, on 10214's Oversikt with 1.82.0 (job `mvbzwcll0lqh8z`): *Kjøl and K12 you did not find on … kjøl is no object
+text and K12 is no Object text*. Of the legend's icons he said: *also you did not find any objects here*.
+
+- **Why the stub host had not seen it.** The stub host painted the panel's objects without the Designer's component
+  CSS (`V3_iw_xo_components.css`) and its pictures. So the looks the live Designer paints - the value boxes' pills,
+  the 360 units, the fans and the LEDs - were never taken out of the picture there. Once the live CSS was loaded, 1.82.0
+  in the stub host gave exactly his result: 40 words read, without K12 and Kjøl, and `FrysDiskKort` on an AC unit. His
+  panel's picture is byte for byte the stub's.
+- **K12.** Taking the AC units' fan and LED out of the picture left streaks behind. The pixels were filled from the
+  nearest of their four neighbours, which drew the lines round each hole into it. The streaks' new colours split K12's
+  letters among more of the tracer's colours, so the letters no longer read as a word.
+  - **The fix.** A pixel whose row and column disagree now takes the commonest colour round its hole
+    (`iwdieVcEraseMask`).
+- **Kjøl.** One of those streaks, in the ground's colour, was read as a word. It grew along its rows, which were all
+  ground, to the picture's edge, and took Kjøl into a run too long to be a caption.
+  - **The fix.** A word of the ground's colour is no word. A run now grows over its own letters at most eight times its
+    height on each side (`iwdieTxRuns`).
+- **The legend's icons were found, but showed nothing.** Their placeholders went to VectorCraft without their picture,
+  because an object found by shape had no picture size in its placeholder. Now each shows the Designer's picture.
+  - A kind beyond the catalogue is now also known on the Designer's page before a sync takes the placeholders out.
+    Before, a page reloaded since the vectorizing left them in the picture as dashed boxes.
+- **The AC units' grey stripes.** 10214's two AC units are `number_360_kb` objects: dummies with no states, whose
+  look hides what is under it in every state. Under such a look, all of the picture now goes, not only what matches the
+  Designer's picture. Value boxes are not included: one lay a pixel over K11 and took a stroke of its K.
+- **No false objects by shape.**
+  - **IoU floor.** An object's own picture is now taken only where it covers half of the element or more (IoU 0.5).
+  - **Shape over colour, for mechanical objects only.** That relaxation now applies only to valves, pumps,
+    compressors, fans, dampers, coils and filters.
+  - **Why.** With every picture fetched, the IWT legend's needle had been taken for a 16 px LED.
+
+Checked in the stub host with the live Designer's CSS, 1.82.0 against 1.82.1 on the same pictures:
+
+| Picture | Words read (runs left as drawing) | IWMAC objects by shape | House symbols | Vector |
+|---|---|---|---|---|
+| 10214 Oversikt | 40 (7) → 42 (3): K12 and Kjøl | the legend's 3 | `FrysDiskKort` on an AC unit gone; `Nål`, `Plugg` | only the *Kommunikasjonsfeil* icon, for which the Designer has no object |
+| 2349 Oversikt, 10214 Maskin, VGV, 360.01 Ventilasjon | as before | as before | as before | as before (10214 Maskin: a few specks fewer) |
+
+Not run in the live Designer.
+
 ### Display cases and the Designer's other objects, native wherever one fits (v1.82.0)
 
 Thomas, with screenshots of the Designer's palette (the `R_dummy` cases for medium, low and heated temperature, lying

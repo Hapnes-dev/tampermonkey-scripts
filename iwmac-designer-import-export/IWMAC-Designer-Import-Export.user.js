@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.0
+// @version      1.82.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.82.0';
+var IWDIE_VERSION = '1.82.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9561,9 +9561,29 @@ function iwdieVcCrop(pic, W, H, M, x0, y0, x1, y1) {
 
 /** The picture with the pixels of `mask` (1) filled from the nearest pixels left: on their row when
  *  those on either side agree (a pipe running through), else on their column when those agree, else
- *  the nearest of the four. Changes `pic` and returns it. */
+ *  (v1.82.1) the commonest colour round their hole - the nearest of the four drew the lines round a hole into it as
+ *  streaks, which the tracer took for letters. Changes `pic` and returns it. */
 function iwdieVcEraseMask(pic, W, H, M) {
   var src = new Uint8ClampedArray(pic), x, y, c;
+  // each hole (its masked pixels four ways joined) and the commonest colour of the pixels round it
+  var hole = new Int32Array(W * H).fill(-1), round = [], stack = [];
+  for (var p0 = 0; p0 < W * H; p0++) {
+    if (!M[p0] || hole[p0] >= 0) continue;
+    var id = round.length, tally = {}, top = null;
+    hole[p0] = id;
+    stack.push(p0);
+    while (stack.length) {
+      var p = stack.pop(), px = p % W, py = (p - px) / W;
+      [[px - 1, py], [px + 1, py], [px, py - 1], [px, py + 1]].forEach(function (q) {
+        if (q[0] < 0 || q[1] < 0 || q[0] >= W || q[1] >= H) return;
+        var k = q[1] * W + q[0];
+        if (M[k]) { if (hole[k] < 0) { hole[k] = id; stack.push(k); } return; }
+        var key = (src[k * 4] >> 3) + ',' + (src[k * 4 + 1] >> 3) + ',' + (src[k * 4 + 2] >> 3), e = tally[key] || (tally[key] = { n: 0, i: k * 4 });
+        if (++e.n > (top ? top.n : 0)) top = e;
+      });
+    }
+    round.push(top ? top.i : -1);
+  }
   var near = function (x0, y0, dx, dy) {
     for (var s = 1; s <= 240; s++) {
       var X = x0 + dx * s, Y = y0 + dy * s;
@@ -9582,8 +9602,10 @@ function iwdieVcEraseMask(pic, W, H, M) {
       for (c = 0; c < 4; c++) pic[o + c] = src[a.i + c] * (1 - t) + src[b.i + c] * t;
       continue;
     }
+    var ri = round[hole[y * W + x]];
+    if (ri >= 0) { for (c = 0; c < 4; c++) pic[o + c] = src[ri + c]; continue; }
     var best = null;
-    [l, r, u, d].forEach(function (p) { if (p && (!best || p.s < best.s)) best = p; });
+    [l, r, u, d].forEach(function (q) { if (q && (!best || q.s < best.s)) best = q; });
     if (best) for (c = 0; c < 4; c++) pic[o + c] = src[best.i + c];
   }
   return pic;
@@ -13988,7 +14010,7 @@ function iwdieVzTrace(pic, W, H, opts, say) {
         list.forEach(function (q) { b[0] = Math.min(b[0], q.box[0]); b[1] = Math.min(b[1], q.box[1]); b[2] = Math.max(b[2], q.box[2]); b[3] = Math.max(b[3], q.box[3]); });
         return [Math.round(b[0]), Math.round(b[1]), Math.round(b[2] - b[0]), Math.round(b[3] - b[1]), hex(cols[list[0].c]), list.length];
       }),
-      work: work === pic ? null : work, ms: Date.now() - t0
+      work: work === pic ? null : work, ground: ground, ms: Date.now() - t0
     };
   }
   // Former: each figure - a shape of the layer on one of a lower layer - a group with what lies on it there
@@ -14178,8 +14200,9 @@ function iwdieVzObjectPills(pic, W, H, cols, objects) {
  *  each the Designer's picture of one of the panel's objects that draws itself, drawn at its box. Where a look covers a
  *  pixel (alpha 128 or more) and the picture is that colour there (within 60, red, green and blue together), the
  *  picture shows the object a second time: those pixels, and one round each, are filled from round them
- *  (iwdieVcEraseMask). What the object does not cover - a pipe through its corners - and what differs from it stay.
- *  Changes `pic`. -> how many pixels were taken out */
+ *  (iwdieVcEraseMask). What the object does not cover - a pipe through its corners - and what differs from it stay;
+ *  (v1.82.1) but under the look of one with no states (`all`: the Designer's dummies, a 360 unit, a frame, a room),
+ *  drawn in every state, all of it: hidden by the object always. Changes `pic`. -> how many pixels were taken out */
 function iwdieVzEraseLooks(pic, W, H, looks) {
   var M = new Uint8Array(W * H), n = 0;
   (looks || []).forEach(function (L) {
@@ -14188,7 +14211,7 @@ function iwdieVzEraseLooks(pic, W, H, looks) {
       var X = L.x + x, Y = L.y + y, s = (y * L.w + x) * 4;
       if (X < 0 || Y < 0 || X >= W || Y >= H || L.rgba[s + 3] < 128) continue;
       var j = (Y * W + X) * 4;
-      if (Math.abs(pic[j] - L.rgba[s]) + Math.abs(pic[j + 1] - L.rgba[s + 1]) + Math.abs(pic[j + 2] - L.rgba[s + 2]) > 60) continue;
+      if (!L.all && Math.abs(pic[j] - L.rgba[s]) + Math.abs(pic[j + 1] - L.rgba[s + 1]) + Math.abs(pic[j + 2] - L.rgba[s + 2]) > 60) continue;
       for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
         var X2 = X + dx, Y2 = Y + dy;
         if (X2 >= 0 && Y2 >= 0 && X2 < W && Y2 < H && !M[Y2 * W + X2]) { M[Y2 * W + X2] = 1; n++; }
@@ -14628,9 +14651,16 @@ function iwdieTxInk(pic, W, H, b, pad) {
  *  overlap or nearly touch are one - the tracer splits a small word by the shades of its letters - at like heights (an
  *  icon beside a word stays apart, a dot or an accent joins it); each grown over its own letters beside it on its rows
  *  (a pixel nearer its text's colour than its ground, and near that colour), up to half its height of ground at a time -
- *  a thin 1 the tracer left out as a figure. `gap` that ground, when given. -> [{x, y, w, h}] */
-function iwdieTxRuns(words, pic, W, H, gap) {
-  var boxes = (words || []).filter(function (r) { return r && r[2] >= 3 && r[3] >= 5 && r[5] >= 2; }).map(function (r) {
+ *  a thin 1 the tracer left out as a figure - (v1.82.1) and eight times its height a side at most. `gap` that ground, when
+ *  given. (v1.82.1) A word of the picture's ground (`ground`, within 40) is none: the ground showing through what
+ *  was erased, which grew along its rows - all ground - to the picture's edge, over the words on them. -> [{x, y, w, h}] */
+function iwdieTxRuns(words, pic, W, H, gap, ground) {
+  var gr = ground && ground.length >= 3 ? ground : null, hx = function (s) { s = String(s || '').replace('#', ''); return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)]; };
+  var boxes = (words || []).filter(function (r) {
+    if (!(r && r[2] >= 3 && r[3] >= 5 && r[5] >= 2)) return false;
+    var c = gr ? hx(r[4]) : null;
+    return !(c && c.every(isFinite) && Math.abs(c[0] - gr[0]) + Math.abs(c[1] - gr[1]) + Math.abs(c[2] - gr[2]) <= 40);
+  }).map(function (r) {
     return [r[0], r[1], r[0] + r[2], r[1] + r[3]];
   });
   var merge = function () {
@@ -14663,11 +14693,11 @@ function iwdieTxRuns(words, pic, W, H, gap) {
       }
       return false;
     };
-    var x1 = B[2], run = 0, x, room = gap == null ? Math.max(4, Math.round((y1 - y0) / 2)) : gap;
-    for (x = B[2]; x < W && run <= room; x++) { if (inkCol(x)) { run = 0; x1 = x + 1; } else run++; }
+    var x1 = B[2], run = 0, x, room = gap == null ? Math.max(4, Math.round((y1 - y0) / 2)) : gap, most = 8 * Math.max(4, y1 - y0);
+    for (x = B[2]; x < W && x < B[2] + most && run <= room; x++) { if (inkCol(x)) { run = 0; x1 = x + 1; } else run++; }
     var x0 = B[0];
     run = 0;
-    for (x = B[0] - 1; x >= 0 && run <= room; x--) { if (inkCol(x)) { run = 0; x0 = x; } else run++; }
+    for (x = B[0] - 1; x >= 0 && x >= B[0] - most && run <= room; x--) { if (inkCol(x)) { run = 0; x0 = x; } else run++; }
     return [x0, B[1], x1, B[3]];
   });
   merge();
@@ -15431,8 +15461,9 @@ var IWDIE_VZ_CLOSEST_MS = 25000;
  *  element's within a pixel, R the share of the element's ink with the template's within a pixel, F their harmonic mean;
  *  with the exact overlap (IoU) as much again, or up to three times as much the more ink there is - which tells a right
  *  arrow from a left one, and an oval from a box - less what their colours differ past 40 where both have solid ink. The best is taken at F 0.85 or more (0.95 under 30 pixels of ink) with its
- *  colours within 60 - or 80 where it fits wholly (F 0.95, IoU 0.7), or (`opts.shape`, an object's own pictures) 130
- *  where it fits closely (F 0.95, IoU 0.6). A big element nothing fits (2 000 px of box or
+ *  colours within 60 - or 80 where it fits wholly (F 0.95, IoU 0.7), or (`opts.shape`, an object's own pictures - v1.82.1:
+ *  or a template's own `shape`) 130 where it fits closely (F 0.95, IoU 0.6); an object's picture (`still`, v1.82.1) only
+ *  where it covers the element half or more (IoU 0.5). A big element nothing fits (2 000 px of box or
  *  more) is weighed again in its parts, its own commonest colour then its ground: a panel with things on it. An element
  *  of under 10 pixels with no other within 4 px is a speck - what came out left it. `opts.until` ends it.
  *  -> {found: [{k, turn, x, y, w, h, f, iou, col, hole: {x, y, w, h, rgba}: the element's ink and a pixel round it}],
@@ -15547,7 +15578,7 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
         if (!m[ty * t.w + tx]) continue;
         for (var ey = 0; ey <= 2; ey++) for (var ex = 0; ex <= 2; ex++) near[(ty + ey) * (t.w + 2) + tx + ex] = 1;
       }
-      T.push({ k: t0.k, turn: tq, w: t.w, h: t.h, m: m, solid: solid, near: near, rgba: t.rgba, cnt: tc });
+      T.push({ k: t0.k, turn: tq, w: t.w, h: t.h, m: m, solid: solid, near: near, rgba: t.rgba, cnt: tc, shape: t0.shape == null ? !!opts.shape : !!t0.shape, still: !!t0.still });
     }
   });
   // the template that fits an element best, or null
@@ -15587,15 +15618,18 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
         }
         var Pp = hitT / t.cnt, Rr = hitE / e.cnt, F = Pp + Rr ? 2 * Pp * Rr / (Pp + Rr) : 0, iou = exact / (t.cnt + e.cnt - exact), col = cn ? cd / cn : 999;
         // the exact overlap counts the more, the more ink: a big shape is told by its outline (an oval from a box)
-        // (v1.82.0) an object's own picture (`opts.shape`): its colours count half - its state is its own - but still tell its sides
-        var wi = Math.min(0.75, 0.5 + e.cnt / 4000), score = (1 - wi) * F + wi * iou - Math.max(0, col - 40) / (opts.shape ? 600 : 300);
-        if (!best || score > best.score) best = { score: score, k: t.k, turn: t.turn, x: px, y: py, w: t.w, h: t.h, f: F, iou: iou, col: col };
+        // (v1.82.0) an object's own picture (`opts.shape`, v1.82.1 or the picture's own `shape`): its colours count half - its
+        // state is its own - but still tell its sides
+        var wi = Math.min(0.75, 0.5 + e.cnt / 4000), score = (1 - wi) * F + wi * iou - Math.max(0, col - 40) / (t.shape ? 600 : 300);
+        if (!best || score > best.score) best = { score: score, k: t.k, turn: t.turn, x: px, y: py, w: t.w, h: t.h, f: F, iou: iou, col: col, shape: t.shape, still: t.still };
       }
     });
     // (v1.82.0) an IWMAC object's own picture (`opts.shape`): its colours may differ further where the shapes fit closely -
     // its state picture is its own (a valve's white port on another side, green for running)
     if (!best || best.f < (e.cnt < 30 ? 0.95 : 0.85) || !(best.col <= 60 || (best.col <= 80 && best.f >= 0.95 && best.iou >= 0.7) ||
-      (opts.shape && best.col <= 130 && best.f >= 0.95 && best.iou >= 0.6))) return null;
+      (best.shape && best.col <= 130 && best.f >= 0.95 && best.iou >= 0.6))) return null;
+    // (v1.82.1) an object's own picture covering the element half or more: F within a pixel forgives a disc for a pin
+    if (best.still && best.iou < 0.5) return null;
     // the element's ink, and a pixel round it, to take out of the picture: what the component lacks of it goes with it
     var hole = new Uint8ClampedArray(bw * bh * 4);
     for (var hk = 0; hk < bw * bh; hk++) if (near1[hk]) hole[hk * 4 + 3] = 255;
@@ -20075,6 +20109,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  still has them (and whose check of the drawing no longer matches it), so the next edit
      *  opens what is left. -> {svg, found, skipped} */
     function vcPlaceholders(svg, size, job) {
+      // (v1.82.1) the kinds found by shape beyond the catalogue, known here too: this page may have been loaded since
+      try { vcKnowDesignerKinds(); } catch (e) {}
       // what a paste of the objects leaves (v1.55.0): the frame came with them, so their layer is in the save; the anchor
       // marks a drawing whose objects come only so - one without the frame did not get them. Neither stays in the picture.
       var framed = /\s(?:id|data-name)\s*=\s*"IWMAC-ramme"/.test(svg), anchored = /\s(?:id|data-name)\s*=\s*"IWMAC-anker"/.test(svg);
@@ -20588,28 +20624,35 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  not define here has none. `fetched(done, of)`, when given, hears how far the fetching is (v1.77.1). With `all`
      *  (v1.82.0), every kind the Designer has whose pictures are its objects' (IWDIE_VZ_OBJECT_FOLDERS).
      *  -> Promise<{kinds: {id: {w, h, pics: [path]}}, main: {id: path}, pics: {path: {src, w, h}}}> */
+    /** The Designer's kinds whose own pictures are its objects' (IWDIE_VZ_OBJECT_FOLDERS), 8 to 120 px, beyond the
+     *  catalogue (v1.82.0), known by name (iwdieVcKnowKinds) - (v1.82.1) on this page whenever asked, a sync's too: one
+     *  found by shape on a page loaded since was a placeholder the sync did not know, left in the picture.
+     *  -> [{id, w, h, role, desc, pic, hasTag}] */
+    function vcKnowDesignerKinds() {
+      var ctl = W.controls || {}, cat = {}, extra = [];
+      iwdieVcObjectCatalog().forEach(function (o) { cat[o.id] = 1; });
+      Object.keys(ctl).forEach(function (id) {
+        if (cat[id] || /^sub_page/.test(id)) return;
+        var def = ctl[id];
+        if (!def || typeof def !== 'object') return;
+        var sa0 = def.status_array || {}, ps = [def.file].concat(Array.isArray(sa0) ? sa0 : Object.keys(sa0).map(function (k) { return sa0[k]; }));
+        var role = '';
+        ps.forEach(function (p) { if (!role && typeof p === 'string') role = iwdieVzFolderRole(p); });
+        var dw = parseFloat(def.width), dh = parseFloat(def.height);
+        if (!role || !(dw >= 8) || !(dh >= 8) || dw > 120 || dh > 120) return;
+        extra.push({ id: id, w: dw, h: dh, role: role, desc: String(def.name || id), pic: typeof def.file === 'string' ? def.file.replace(/^\/+/, '') : '', hasTag: !!def.hasTag });
+      });
+      iwdieVcKnowKinds(extra);
+      return extra;
+    }
+
     function vcObjectStates(objects, fetched, all) {
       var ctl = W.controls || {}, ids = [];
       iwdieVcObjectCatalog().forEach(function (o) { if (iwdieVzObjectKind(o.id)) ids.push(o.id); });
       (objects || []).forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (iwdieVzObjectKind(k) && ids.indexOf(k) < 0) ids.push(k); });
       // (v1.82.0, `all`) every kind the Designer has whose own pictures are its objects' (IWDIE_VZ_OBJECT_FOLDERS), 8 to 120 px:
       // known by name, so one found becomes an object
-      if (all) {
-        var extra = [];
-        Object.keys(ctl).forEach(function (id) {
-          if (ids.indexOf(id) >= 0 || /^sub_page/.test(id)) return;
-          var def = ctl[id];
-          if (!def || typeof def !== 'object') return;
-          var sa0 = def.status_array || {}, ps = [def.file].concat(Array.isArray(sa0) ? sa0 : Object.keys(sa0).map(function (k) { return sa0[k]; }));
-          var role = '';
-          ps.forEach(function (p) { if (!role && typeof p === 'string') role = iwdieVzFolderRole(p); });
-          var dw = parseFloat(def.width), dh = parseFloat(def.height);
-          if (!role || !(dw >= 8) || !(dh >= 8) || dw > 120 || dh > 120) return;
-          ids.push(id);
-          extra.push({ id: id, w: dw, h: dh, role: role, desc: String(def.name || id), pic: typeof def.file === 'string' ? def.file.replace(/^\/+/, '') : '', hasTag: !!def.hasTag });
-        });
-        iwdieVcKnowKinds(extra);
-      }
+      if (all) vcKnowDesignerKinds().forEach(function (o) { if (ids.indexOf(o.id) < 0) ids.push(o.id); });
       var known = iwdieVcObjectIndex(), kinds = {}, main = {}, want = [];
       ids.forEach(function (id) {
         var def = null;
@@ -20891,7 +20934,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var work = (tr && tr.work && tr.work.length === data.length) ? tr.work : data;
         // (v1.80.0) the edges of the boxes the Designer draws itself out of the way: a word beside a case read its edge as a letter
         work = iwdieVzBoxEdgesOff(work, w, h, iwdieVzBoxes(work, w, h, { inside: 0.8 }));
-        var runs = iwdieTxRuns((tr && tr.words) || [], work, w, h);
+        var runs = iwdieTxRuns((tr && tr.words) || [], work, w, h, undefined, tr && tr.ground);
         if (!runs.length) return { labels: [], runs: 0, none: 'no words in it' };
         step('runs', runs.length);
         // no caption is longer than 400 px or 30 times its height: a run that is, a pipe with its arrows or a border, stays drawing
@@ -21703,14 +21746,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return vcObjectStates(objects, null, true).then(function (st) {
           return vcStateTemplates(st).then(function (tpl) {
             if (!tpl.length) return null;
-            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn], [data, w, h, tpl.map(function (t) { return { k: t.k, w: t.w, h: t.h, rgba: t.rgba, still: true }; }),
-              { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS, shape: true }], function () {}).then(function (res) {
+            // (v1.82.1) the shape's say over the colours only for the mechanical objects, whose state pictures differ in their
+            // parts' colours: an LED or a status symbol is a disc, each of its states a picture looked for
+            var mech = ['valve', 'pump', 'compressor', 'fan', 'damper', 'coil', 'filter'];
+            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn], [data, w, h, tpl.map(function (t) {
+              return { k: t.k, w: t.w, h: t.h, rgba: t.rgba, still: true, shape: mech.indexOf(iwdieVzFolderRole(t.pic)) >= 0 };
+            }), { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {}).then(function (res) {
               var byK = {}, holes3 = [], list = [];
               tpl.forEach(function (t) { byK[t.k] = t; });
               ((res && res.found) || []).forEach(function (m) {
                 var t = byK[m.k];
                 if (!t) return;
-                list.push({ kind: iwdieVzTwinKind(t.kinds, st.main, objects, t.pic, st.kinds), x: m.x, y: m.y, w: m.w, h: m.h, look: st.pics[t.pic] || null, m: m, t: t });
+                list.push({ kind: iwdieVzTwinKind(t.kinds, st.main, objects, t.pic, st.kinds), x: m.x, y: m.y, w: m.w, h: m.h, look: st.pics[t.pic] ? { src: st.pics[t.pic].src, iw: st.pics[t.pic].w, ih: st.pics[t.pic].h } : null, m: m, t: t });
               });
               var seen = iwdieVzObjectsSeen(list, objects), at = function (o) { return o.kind + '@' + o.x + ',' + o.y; }, take = {};
               seen.placed.concat(seen.twice).forEach(function (o) { take[at(o)] = 1; });
@@ -21876,11 +21923,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** The Designer's own looks of the panel's objects that draw themselves (v1.74.0), each drawn at its object's box, for
-     *  iwdieVzEraseLooks: the one the Designer paints by CSS (`ob.iwdieLook`, v1.60.0), else its kind's (`looks[obj_id]`).
-     *  -> Promise<[{x, y, w, h, rgba}]> */
+     *  iwdieVzEraseLooks: the one the Designer paints by CSS (`ob.iwdieLook`, v1.60.0), else its kind's (`looks[obj_id]`) -
+     *  (v1.82.1) `all` for a dummy with no states (obj_type dummy_tag: a 360 unit, a frame, a room), whose look hides what
+     *  is under it always - not a value box, whose pill the objects' first step takes out, and whose edge may lie a pixel
+     *  over a word beside it.
+     *  -> Promise<[{x, y, w, h, rgba, all}]> */
     function vcLookMasks(objects, looks) {
+      var stateless = function (id) {
+        var def = null;
+        try { def = (W.controls || {})[id]; } catch (e) { def = null; }
+        if (!def || typeof def !== 'object') return false;
+        var sa = def.status_array;
+        return /dummy/i.test(String(def.obj_type || '')) && !(sa && typeof sa === 'object' && (Array.isArray(sa) ? sa.length : Object.keys(sa).length));
+      };
       var jobs = (objects || []).filter(function (ob) { return ob && ob.iwdieSelf; }).map(function (ob) {
-        var l = ob.iwdieLook && ob.iwdieLook.src ? ob.iwdieLook : looks && looks[ob.obj_id];
+        var l = ob.iwdieLook && ob.iwdieLook.src ? ob.iwdieLook : looks && looks[ob.obj_id], all = stateless(String(ob.obj_id || ''));
         var x = Math.round(parseFloat(ob.posLeft)), y = Math.round(parseFloat(ob.posTop)), w = Math.round(parseFloat(ob.posWidth)), h = Math.round(parseFloat(ob.posHeight));
         if (!l || !/^data:image\//.test(String(l.src || '')) || !isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0) || w > 2000 || h > 2000) return null;
         return loadPicture(l.src).then(function (img) {
@@ -21888,10 +21945,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           cv.width = w; cv.height = h;
           var g = cv.getContext('2d');
           g.drawImage(img, 0, 0, w, h);
-          return { x: x, y: y, w: w, h: h, rgba: g.getImageData(0, 0, w, h).data };
+          return { x: x, y: y, w: w, h: h, rgba: g.getImageData(0, 0, w, h).data, all: all };
         }, function () { return null; });
       }).filter(Boolean);
-      return Promise.all(jobs).then(function (all) { return all.filter(Boolean); }, function () { return []; });
+      return Promise.all(jobs).then(function (got) { return got.filter(Boolean); }, function () { return []; });
     }
 
     /** `fn` for each of `list`, a few at a time (v1.48.1): between them the editor's tab shows how far
