@@ -493,6 +493,41 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The panel's objects in the Illustrator export, as the Designer shows them (v1.82.5)
+
+Thomas, on an export of 10214's Maskin: *When exporting to adobe illustrator look like you don't add all the objects
+in the .ai export / should be the same*.
+
+- **What went wrong.** Background → Illustrator, and VectorCraft's own *Save .ai for Illustrator*, wrote each of the
+  panel's objects as a dashed blue box with its name, on a hidden layer, Panelobjekter, that did not print. In
+  Illustrator the panel had none of its values, labels, LEDs or compressors.
+- **Now the objects go on top, shown, locked and printing,** on the layer Panelobjekter. Each object is a group of
+  what its placeholder in VectorCraft shows:
+  - its look as the Designer draws it, embedded at its size: the Designer's own picture of its kind, or the one its
+    CSS paints at the object's size;
+  - a box the Designer draws itself, as a path;
+  - its words as Arial type, bold where they are: the tag where the Designer writes it, and a label's or the header's
+    own text.
+
+  The dashed box that marks a placeholder in VectorCraft is no part of the panel and stays out. An object whose
+  picture cannot be read is drawn as the light box with what it is in it, and the message says how many.
+- **The page other viewers show,** such as Windows' preview or a PDF viewer, has the objects too.
+- **The dialog** offers *Panel objects, as the Designer shows them (N)*, ticked by default.
+- **A degree sign made Illustrator refuse the whole file.** An object's name becomes an XML id, and the label
+  *Ref °C* was written with the degree sign's UTF-8 bytes in it. Only letters now stay as they are within Latin-1, so
+  *Føler* opens as before. Other signs are escaped, as `_xB0_` for the degree sign. This also broke the hidden layer
+  before 1.82.5, whenever the panel's objects were exported.
+- **Never twice, and never in the picture.** A drawing that already holds a Panelobjekter layer from an earlier export
+  is exported with that layer drawn anew, not twice. A sync from VectorCraft leaves a layer called Panelobjekter out of
+  the panel's picture. So an exported .ai opened in VectorCraft and synced does not paint the objects under the
+  objects themselves.
+
+Checked in the stub host with the Designer's CSS, on 10214's Maskin after Edit in VectorCraft and a sync:
+- **Both exports** put 140 objects on Panelobjekter, with 69 pictures and 71 texts, and open in Illustrator, each
+  object where the panel has it.
+- **Before the XML id fix,** Illustrator refused the file ("the operation was cancelled"). Halving the objects layer
+  found the label *Ref °C*.
+
 ### Smoother drags in VectorCraft: the placeholders' dashed boxes drawn opaque (v1.82.4)
 
 Thomas: *can you see if you can improve and optimize when moving objects on vectorcraft so it gets more smooth? do deep

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.4
+// @version      1.82.5
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.82.4';
+var IWDIE_VERSION = '1.82.5';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6078,7 +6078,9 @@ function iwdieAiXmlId(name) {
     // beyond Latin-1 escaped as an ASCII one is (v1.66.0): its UTF-8 bytes - an ellipsis's hold 0x80 - made Illustrator
     // refuse the whole file
     else if (c > 255) out += '_x' + c.toString(16).toUpperCase() + '_';
-    else if (c > 127) out += ch;
+    // within Latin-1 only the letters (and the middle dot after the first), which an XML name may hold: a degree sign - a
+    // value label's "Ref °C" - made Illustrator refuse the whole file, where "Føler" opens (v1.82.5)
+    else if (c > 127 && ((c >= 0xC0 && c !== 0xD7 && c !== 0xF7) || (c === 0xB7 && i > 0))) out += ch;
     else if (/[A-Za-z0-9_.\-]/.test(ch) && !(i === 0 && /[0-9.\-]/.test(ch))) out += ch;
     else out += '_x' + c.toString(16).toUpperCase() + '_';
   }
@@ -6400,13 +6402,17 @@ function iwdieAiProgram(o) {
     if (layer.raster) {
       // the picture goes last in its layer, over the layer's own lines (the canvas plate)
       var r = layer.raster, end = L.lastIndexOf('LB'), at = typeof r.at === 'number' && r.at >= 0 ? Math.min(end, 5 + r.at) : end;
-      flush(text.concat(L.slice(0, at), r.head));
-      chunks.push('XI\n');
-      chunks.push(r.data);
-      text = r.tail.concat(L.slice(at));
-    } else {
-      text = text.concat(L);
+      L = L.slice(0, at).concat([r], L.slice(at));
     }
+    // a picture among the lines (v1.82.5: one in each of the panel's objects, iwdieAiPanelObjectLines) is written where it
+    // stands, its samples between its text before and after
+    L.forEach(function (line) {
+      if (typeof line === 'string') { text.push(line); return; }
+      flush(text.concat(line.head));
+      chunks.push('XI\n');
+      chunks.push(line.data);
+      text = line.tail.slice();
+    });
   });
   flush(text.concat(['%%PageTrailer', 'gsave annotatepage grestore showpage', '%%Trailer', '%%EOF']));
   // names are made unique across the whole document, then the text is joined
@@ -6485,8 +6491,57 @@ function iwdieAiPrivateData(meta, compressed) {
   return out;
 }
 
-/** The panel's objects as a reference layer: each one's box and its label, where the live
- *  values will sit over the background. */
+/** The panel's objects as the Designer shows them (v1.82.5), as an Illustrator layer's lines. Thomas, on an export of
+ *  10214's Maskin: *look like you don't add all the objects in the .ai export / should be the same*. Each object is a
+ *  group, named as its reference box was, of what its placeholder in VectorCraft shows (iwdieVcPanelItem):
+ *  - its look, embedded at its size as large as fits, centred - `pix` holds each look's pixels by its data URL, {rgba, w, h};
+ *  - a box the Designer draws itself, as a path;
+ *  - its texts, as type: the tag where the Designer writes it, a label's or the header's own words, bold where they are.
+ *  The dashed box that marks a placeholder in VectorCraft is no part of the panel, and stays out. An object whose look has
+ *  no pixels here is drawn as the light box with what it is in it. Stacked as the Designer stacks them (iwdieVcStacked).
+ *  `looks` by obj_id. -> {lines, objects: how many drawn, pictures: how many embedded, bare: how many without their look} */
+function iwdieAiPanelObjectLines(objects, looks, pix) {
+  var out = [], drawn = 0, pictures = 0, bare = 0;
+  iwdieVcStacked(objects).forEach(function (ob) {
+    var p = iwdieVcPanelItem(ob, looks && ob ? looks[ob.obj_id] : null, false);
+    if (!p) return;
+    var lacks = function (q) { return q.item.shapes.some(function (s) { return s.t === 'image' && !(pix && pix[s.src]); }); };
+    if (lacks(p)) { p = iwdieVcPanelItem(ob, null, false, true); bare++; }
+    var label = (ob.tag_text && String(ob.tag_text).trim()) || (ob.alias_text && String(ob.alias_text).trim()) || String(ob.obj_id || 'object');
+    var parts = [];
+    p.item.shapes.forEach(function (s) {
+      if (s.t === 'image') {
+        var px = pix[s.src], k = Math.min(s.w / px.w, s.h / px.h), dw = px.w * k, dh = px.h * k;
+        parts.push(iwdieAiRasterParts(px.rgba, px.w, px.h, p.x + s.x + (s.w - dw) / 2, p.y + s.y + (s.h - dh) / 2, dw, dh, label));
+        pictures++;
+        return;
+      }
+      if (s.t === 'd' && s.st && s.st.da && !s.st.fill) return;
+      var m = iwdieDrawMap(s, 1, p.x, 1, p.y);
+      if (s.t === 'text' && s.bold) m.font = '_Arial-BoldMT';
+      parts = parts.concat(iwdieAiShapeLines(m));
+    });
+    if (!parts.length) return;
+    drawn++;
+    out = out.concat(['0 A', '0 Xw', 'u'], parts, ['U'], iwdieAiNameLines(label));
+  });
+  return { lines: out, objects: drawn, pictures: pictures, bare: bare };
+}
+
+/** The data URLs of the looks iwdieAiPanelObjectLines embeds for these objects (v1.82.5), each once: the pixels an export
+ *  must have read first. -> [data URL] */
+function iwdieAiPanelObjectPictures(objects, looks) {
+  var seen = {}, out = [];
+  (objects || []).forEach(function (ob) {
+    var p = iwdieVcPanelItem(ob, looks && ob ? looks[ob.obj_id] : null, false);
+    (p ? p.item.shapes : []).forEach(function (s) { if (s.t === 'image' && s.src && !seen[s.src]) { seen[s.src] = 1; out.push(s.src); } });
+  });
+  return out;
+}
+
+/** The panel's objects as a reference layer: each one's box and its label, where the live values will sit over the
+ *  background. The exports' Panelobjekter before v1.82.5, hidden; since then it draws the objects as the Designer shows
+ *  them (iwdieAiPanelObjectLines). */
 function iwdieAiObjectLines(objects) {
   var out = [];
   (objects || []).forEach(function (o) {
@@ -6502,16 +6557,19 @@ function iwdieAiObjectLines(objects) {
 
 /** The layers of an Illustrator document of a drawing (v1.66.0), for Background → Illustrator and for Save .ai for
  *  Illustrator in VectorCraft alike: iwdieSvgAiLayers' layers (`conv`) as iwdieSvgAiLayerLines built them (`built`), each
- *  with its picture's raster parts (`rasters`, or null), an emptied IWMAC-objekter layer left out; then the panel's objects
- *  ({posLeft, posTop, posWidth, posHeight, obj_id, alias_text}) as a hidden reference layer that does not print. */
+ *  with its picture's raster parts (`rasters`, or null), an emptied IWMAC-objekter layer left out; then, on top, the panel's
+ *  objects (`objects`: iwdieAiPanelObjectLines' result) on a layer of their own, Panelobjekter: shown, as the Designer shows
+ *  them, and locked, so the drawing under them is what one edits. Before v1.82.5 a hidden reference layer of boxes. */
 function iwdieAiDrawingLayers(conv, built, rasters, objects) {
   var layers = [];
   ((conv && conv.layers) || []).forEach(function (L, i) {
     var b = built[i] || { lines: [] }, r = (rasters && rasters[i]) || null;
     if (/^IWMAC-objekter$/i.test(L.name) && !b.lines.length && !r) return;
+    // (v1.82.5) the objects an earlier export drew, opened and synced back: drawn anew on top, never twice
+    if (/^Panelobjekter(?:-\d+)?$/i.test(L.name)) return;
     layers.push({ name: L.name, visible: L.visible, locked: L.locked, lines: b.lines, raster: r });
   });
-  if (objects && objects.length) layers.push({ name: 'Panelobjekter', visible: false, print: false, lines: iwdieAiObjectLines(objects) });
+  if (objects && objects.lines && objects.lines.length) layers.push({ name: 'Panelobjekter', locked: true, lines: objects.lines });
   return layers;
 }
 
@@ -7295,9 +7353,11 @@ var IWDIE_VC_PLATE = 'Bakgrunnsfarge';
 /** A drawing without the panel's own colour under it (v1.75.1): the group IWDIE_VC_PLATE - by its id, which VectorCraft
  *  names it by ("Bakgrunnsfarge", "-2" added to a copy), or its data-name - and all it holds, left out wherever it stands.
  *  A sync draws the panel's picture from this, so what the picture had transparent stays so: the Designer shows its own
- *  colour there, the plant's page its own. -> {svg, dropped: how many} */
+ *  colour there, the plant's page its own. Since v1.82.5 the layer Panelobjekter goes too: an Illustrator export draws
+ *  the panel's objects there as the Designer shows them, and an .ai opened in VectorCraft and synced would otherwise put
+ *  them in the picture, under the objects themselves. -> {svg, dropped: how many} */
 function iwdieVcDropPlate(svg) {
-  var s = String(svg || ''), re = /<g\b[^>]*\s(?:id="Bakgrunnsfarge(?:-\d+)?"|data-name="Bakgrunnsfarge")[^>]*>/g, m, out = '', from = 0, dropped = 0;
+  var s = String(svg || ''), re = /<g\b[^>]*\s(?:id="(?:Bakgrunnsfarge|Panelobjekter)(?:-\d+)?"|data-name="(?:Bakgrunnsfarge|Panelobjekter)")[^>]*>/g, m, out = '', from = 0, dropped = 0;
   while ((m = re.exec(s))) {
     var end = iwdieVcElementEnd(s, m.index, 'g');
     if (end < 0) break;
@@ -8802,19 +8862,7 @@ function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
   var x = parseFloat(ob && ob.posLeft), y = parseFloat(ob && ob.posTop), w = parseFloat(ob && ob.posWidth), h = parseFloat(ob && ob.posHeight);
   var id = String((ob && ob.obj_id) || '');
   if (!isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0) || !/^[\w.-]+$/.test(id)) return '';
-  var known = iwdieVcObjectIndex()[id], tag = iwdieVcTagOf(ob), f = iwdieDrawFmt, esc = iwdieDrawEsc;
-  var o = { id: id, w: w, h: h, role: known ? known.role : '', desc: known ? known.desc : id, kind: known ? known.kind : 'picture',
-    tag: tag, hasTag: known ? known.hasTag || !!tag : !!tag };
-  var own = ob.iwdieLook, at = ob.iwdieTag, png = function (l) { return l && typeof l.src === 'string' && /^data:image\/png;base64,/.test(l.src) && l.iw > 0 && l.ih > 0; };
-  if (png(own)) look = { src: own.src, iw: own.iw, ih: own.ih, bar: look && look.bar };
-  if (at && [at.x, at.y, at.size].every(isFinite) && at.size > 0) o.tagAt = { x: at.x, y: at.y, size: at.size, color: /^#[0-9a-f]{6}$/i.test(at.color || '') ? at.color : '' };
-  if (png(look)) { o.src = look.src; o.iw = look.iw; o.ih = look.ih; }
-  if (look && /^#[0-9a-f]{6}$/i.test(look.bar || '')) o.bar = look.bar;
-  // (v1.80.0) a box the Designer draws itself: its corners as round, its colour where no look gave one
-  var bxk = iwdieVzBoxOf(id);
-  if (bxk) { o.round = bxk.round; if (!o.bar) o.bar = bxk.colour; }
-  // a label's or the header's text is its own; without one it says nothing rather than "Label"
-  if ((o.kind === 'label' || o.kind === 'bar') && !tag) o.tag = ' ';
+  var f = iwdieDrawFmt, esc = iwdieDrawEsc;
   var art = (under || []).map(function (u) {
     if (u && typeof u.markup === 'string' && u.box && [u.box.x, u.box.y, u.box.w, u.box.h].every(isFinite)) {
       return '<g data-name="Ramme" data-iwdie-under="1" data-iwdie-fat="' + [u.box.x, u.box.y, u.box.w, u.box.h].map(f).join(' ') +
@@ -8825,22 +8873,55 @@ function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
       '" width="' + f(u.w) + '" height="' + f(u.h) + '" preserveAspectRatio="none" xlink:href="' + u.href + '"/>';
   }).join('');
   // the art it carries shows through: the bubble of a value that is bare text, as the Designer shows it
-  if (art) o.see = true;
+  var it = iwdieVcPanelItem(ob, look, !!art).item;
   // the parameter it shows (v1.63.0, `ob.iwdieBind`: {driver, label}) in its name, and as it was, to tell a rename
   var bd = ob.iwdieBind && ob.iwdieBind.label ? ob.iwdieBind : null;
-  var it = iwdieVcObjectItem(o), name = IWDIE_VC_OBJ_PREFIX + id + (bd ? ' ' + bd.label : ''), gid = iwdieVcSvgId(name, used);
+  var name = IWDIE_VC_OBJ_PREFIX + id + (bd ? ' ' + bd.label : ''), gid = iwdieVcSvgId(name, used);
   return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-ref="' + esc(String(ob.name || '')) + '" data-iwdie-obj="' + esc(id) +
     '" data-iwdie-at="' + [x, y, w, h].map(f).join(' ') + '"' + (bd ? ' data-iwdie-bind="' + esc(String(bd.driver || '')) + '" data-iwdie-label="' + esc(bd.label) + '"' : '') +
     ' transform="translate(' + f(x) + ' ' + f(y) + ')">' + art + iwdieVcItemParts(it).join('') + '</g>';
 }
 
+/** One of the panel's objects as its placeholder shows it (v1.82.5, out of iwdieVcPanelPlaceholderSvg, so the Illustrator
+ *  export draws the objects as VectorCraft does): where it is, and the library item (iwdieVcObjectItem) of what it shows.
+ *  Its own look (`ob.iwdieLook`, one the Designer paints by CSS) goes before its kind's (`look`, {src, iw, ih, bar}), its
+ *  tag text where the Designer writes it (`ob.iwdieTag`), a box the Designer draws itself with its corners round, and a
+ *  label's or the header's own words. `see`: it stands on art it carries, which shows through it. `bare`: no look at all,
+ *  so the light box with what it is in it. -> {x, y, w, h, id, item}, or null for one without a place, a size or an obj_id */
+function iwdieVcPanelItem(ob, look, see, bare) {
+  var x = parseFloat(ob && ob.posLeft), y = parseFloat(ob && ob.posTop), w = parseFloat(ob && ob.posWidth), h = parseFloat(ob && ob.posHeight);
+  var id = String((ob && ob.obj_id) || '');
+  if (!isFinite(x) || !isFinite(y) || !(w > 0) || !(h > 0) || !/^[\w.-]+$/.test(id)) return null;
+  var known = iwdieVcObjectIndex()[id], tag = iwdieVcTagOf(ob);
+  var o = { id: id, w: w, h: h, role: known ? known.role : '', desc: known ? known.desc : id, kind: known ? known.kind : 'picture',
+    tag: tag, hasTag: known ? known.hasTag || !!tag : !!tag };
+  var own = bare ? null : ob.iwdieLook, at = ob.iwdieTag, png = function (l) { return l && typeof l.src === 'string' && /^data:image\/png;base64,/.test(l.src) && l.iw > 0 && l.ih > 0; };
+  if (bare) look = null;
+  if (png(own)) look = { src: own.src, iw: own.iw, ih: own.ih, bar: look && look.bar };
+  if (at && [at.x, at.y, at.size].every(isFinite) && at.size > 0) o.tagAt = { x: at.x, y: at.y, size: at.size, color: /^#[0-9a-f]{6}$/i.test(at.color || '') ? at.color : '' };
+  if (png(look)) { o.src = look.src; o.iw = look.iw; o.ih = look.ih; }
+  if (look && /^#[0-9a-f]{6}$/i.test(look.bar || '')) o.bar = look.bar;
+  // (v1.80.0) a box the Designer draws itself: its corners as round, its colour where no look gave one
+  var bxk = iwdieVzBoxOf(id);
+  if (bxk) { o.round = bxk.round; if (!o.bar) o.bar = bxk.colour; }
+  // a label's or the header's text is its own; without one it says nothing rather than "Label"
+  if ((o.kind === 'label' || o.kind === 'bar') && !tag) o.tag = ' ';
+  if (see) o.see = true;
+  return { x: x, y: y, w: w, h: h, id: id, item: iwdieVcObjectItem(o) };
+}
+
+/** The panel's objects stacked as the Designer stacks them (v1.60.0): by their zIndex, those alike in the panel's order. A
+ *  room picture over the values in it hid them. */
+function iwdieVcStacked(objects) {
+  return (objects || []).map(function (ob, i) { var z = parseFloat(ob && ob.zIndex); return { ob: ob, i: i, z: isFinite(z) ? z : 0 }; })
+    .sort(function (a, b) { return a.z - b.z || a.i - b.i; }).map(function (e) { return e.ob; });
+}
+
 /** The panel's objects as a layer of placeholders, IWMAC-objekter, with `looks` by obj_id and the
- *  art each stands on, `unders` by name (v1.47.0). Stacked as the Designer stacks them (v1.60.0), by
- *  their zIndex, those alike in the panel's order: a room picture over the values in it hid them.
+ *  art each stands on, `unders` by name (v1.47.0), stacked as the Designer stacks them (iwdieVcStacked).
  *  -> SVG markup, '' when none has a place. */
 function iwdieVcPanelObjectsLayer(objects, looks, used, unders) {
-  var stacked = (objects || []).map(function (ob, i) { var z = parseFloat(ob && ob.zIndex); return { ob: ob, i: i, z: isFinite(z) ? z : 0 }; })
-    .sort(function (a, b) { return a.z - b.z || a.i - b.i; }).map(function (e) { return e.ob; });
+  var stacked = iwdieVcStacked(objects);
   var parts = stacked.map(function (ob) {
     return iwdieVcPanelPlaceholderSvg(ob, looks && ob && looks[ob.obj_id], used, unders && ob && Object.prototype.hasOwnProperty.call(unders, ob.name) ? unders[ob.name] : null);
   }).filter(Boolean);
@@ -18635,7 +18716,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         { act: 'json', label: 'Open IWMAC JSON…', title: 'A panel file - exported, or written by Copilot - inserted in the Designer’s tab as Insert JSON… ' +
           'inserts it, with its check and its questions there; then the panel opens here again: its drawing as layers, its objects as placeholders. ' +
           'An edit file Copilot wrote for this panel is made here instead: what it would change is said first, and it is made as a version of its own.' },
-        { act: 'aiout', label: 'Save .ai for Illustrator', title: 'The drawing as it stands here, as an Illustrator file of its own layers - Bakgrunn locked, every text Arial type in its place, the IWMAC objects on a hidden layer - as Background → Illustrator writes it. VectorCraft’s own Save As › .ai keeps none of the layers and breaks the letters of a font it lacks. Nothing is synced.' },
+        { act: 'aiout', label: 'Save .ai for Illustrator', title: 'The drawing as it stands here, as an Illustrator file of its own layers - Bakgrunn locked, every text Arial type in its place, the IWMAC objects on top as the Designer shows them, locked - as Background → Illustrator writes it. VectorCraft’s own Save As › .ai keeps none of the layers and breaks the letters of a font it lacks. Nothing is synced.' },
         { act: 'trace', label: 'Image Trace copy', title: 'A copy whose picture is enlarged and set to its own flat colours, so Image Trace makes clean shapes of it' }]);
       var note = ui.note;
       // each row's how and why, on its label and its text alike
@@ -19025,7 +19106,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }).then(function (file) {
           downloadBytes(file.bytes, file.name, 'application/pdf');
           note('✓ <b>' + esc2(file.name) + '</b> is in Downloads: the drawing’s ' + iwdieN(file.layers, 'layer', 'layers') + ' as Illustrator’s own, ' +
-            'Bakgrunn locked' + (file.objects ? ', the ' + iwdieN(file.objects, 'IWMAC object', 'IWMAC objects') + ' on the hidden layer Panelobjekter' : '') +
+            'Bakgrunn locked' + (file.objects ? ', the ' + iwdieN(file.objects, 'IWMAC object', 'IWMAC objects') + ' on top as the Designer shows them, on the locked layer Panelobjekter' +
+              (file.bare ? ' (' + file.bare + ' without a picture to show, as a box)' : '') : '') +
             '. Illustrator asks to update the text: either way it stands where it should. Nothing was synced.', false, true);
         }, function (e) {
           note('The Illustrator file could not be written: ' + esc2(String((e && e.message) || e)), true);
@@ -22998,10 +23080,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var objects = (ph.found || []).map(function (f) {
         // what it is: its parameter when it is bound, else its kind and which of the panel's objects it is - not the words
         // its look shows ("Value Only")
-        return { posLeft: f.x, posTop: f.y, posWidth: f.w, posHeight: f.h, obj_id: f.id,
+        // (v1.82.5) and the words written in it - a label's, a fan's JV50 - which it shows
+        return { posLeft: f.x, posTop: f.y, posWidth: f.w, posHeight: f.h, obj_id: f.id, tag_text: f.text || '',
           alias_text: f.label || f.bind || (f.ref ? f.id + ' (' + f.ref + ')' : f.id) };
       });
       var name = iwdieBuildBackgroundFilename(job.plant, job.panel, 'ai');
+      // (v1.82.5) the objects as the Designer shows them, with the looks the Designer's page last kept: as Background →
+      // Illustrator writes them, on top and locked
+      var looks = null, pix = {}, objs = null;
+      try { looks = (GM_getValue(IWDIE_VC_LOOKS_KEY, null) || {}).items || null; } catch (e) { looks = null; }
       // a picture's pixels, at most 4096 a side, as Background → Illustrator takes them
       var pixels = function (href) {
         return loadPicture(href).then(function (img) {
@@ -23013,7 +23100,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return { rgba: g.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height };
         });
       };
-      return Promise.all(built.map(function (b) {
+      return Promise.all([Promise.all(built.map(function (b) {
         if (!b.picture) return null;
         var im = b.picture.img;
         return pixels(im.href).then(function (px) {
@@ -23021,8 +23108,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           r.at = b.picture.at;
           return r;
         }, function () { return null; });
-      })).then(function (rasters) {
-        var layers = iwdieAiDrawingLayers(conv, built, rasters, objects);
+      })), exportLookPixels(iwdieAiPanelObjectPictures(objects, looks), pix)]).then(function (got) {
+        var rasters = got[0];
+        objs = objects.length ? iwdieAiPanelObjectLines(objects, looks, pix) : null;
+        var layers = iwdieAiDrawingLayers(conv, built, rasters, objs);
         var doc = { width: size.w, height: size.h, title: name, layers: layers, artboardName: job.panel || 'Panel' };
         var header = iwdieAiHeaderLines(doc).join('\r\n') + '\r\n';
         return Promise.all([deflateBytes(iwdieAiProgram(doc)), vcRenderPng(drawing, size, '#ffffff')]).then(function (r) {
@@ -23033,12 +23122,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             var c = document.createElement('canvas');
             c.width = size.w; c.height = size.h;
             c.getContext('2d').drawImage(img, 0, 0, size.w, size.h);
+            if (objs) exportPaintObjects(c, objects, looks, pix);
             var jpeg = iwdieParseDataUrl(c.toDataURL('image/jpeg', 0.9));
             var pdf = iwdieAiPdf({
               width: size.w, height: size.h, meta: header, privateData: iwdieAiPrivateData(header, r[0]),
               preview: { width: size.w, height: size.h, filter: 'DCTDecode', data: jpeg.bytes }, title: name, version: IWDIE_VERSION
             });
-            return { bytes: pdf, name: name, conv: conv, layers: layers.length - (objects.length ? 1 : 0), objects: objects.length };
+            var drawn = objs ? objs.objects : 0;
+            return { bytes: pdf, name: name, conv: conv, layers: layers.length - (drawn ? 1 : 0), objects: drawn, bare: objs ? objs.bare : 0 };
           });
         });
       });
@@ -23256,14 +23347,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           '<div class="iwdie-vc-cards" role="radiogroup">',
           conv ? card('ai', 'Illustrator document (.ai)',
             'The drawing as Illustrator’s own: its layers (' + esc2(names.slice(0, 6).join(', ') + (names.length > 6 ? ', …' : '')) + '), each shape a path and each ' +
-            'text type, to select and edit. The panel’s objects go on a hidden reference layer.',
-            opt('objects', 'Panel objects, on a hidden layer', objects.length ? '(' + objects.length + ')' : '(none found)', !!objects.length, !objects.length) +
+            'text type, to select and edit. The panel’s objects go on top, as the Designer shows them, on a locked layer of their own.',
+            opt('objects', 'Panel objects, as the Designer shows them', objects.length ? '(' + objects.length + ')' : '(none found)', !!objects.length, !objects.length) +
             opt('picture', 'The picture as the Designer shows it, on a hidden locked layer', '(to compare)', false, false),
             true, false) :
           card('ai', 'Illustrator document (.ai)',
-            'Opens in Illustrator with layers: the picture locked at the bottom, the drawing as editable shapes on top, the panel’s objects on a hidden reference layer.',
+            'Opens in Illustrator with layers: the picture locked at the bottom, the drawing as editable shapes over it, the panel’s objects on top as the Designer shows them, locked.',
             opt('drawing', 'Drawing as editable shapes', nShapes ? '(' + iwdieN(nShapes, 'shape', 'shapes') + ')' : '(this background has none)', !!nShapes, !nShapes) +
-            opt('objects', 'Panel objects, on a hidden layer', objects.length ? '(' + objects.length + ')' : '(none found)', !!objects.length, !objects.length) +
+            opt('objects', 'Panel objects, as the Designer shows them', objects.length ? '(' + objects.length + ')' : '(none found)', !!objects.length, !objects.length) +
             opt('trace', 'Vector trace of the picture, on a hidden layer', IWDIE_TRACER ? '(seconds to minutes)' : '(not available here)', false, !IWDIE_TRACER),
             true, false),
           conv ? card('svg', 'SVG — the drawing itself',
@@ -23397,20 +23488,105 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** The panel's objects for an Illustrator document (v1.82.5), as the Designer shows them and VectorCraft's placeholders
+     *  draw them: their kinds' looks (vcObjectLooks), each one's own where its CSS paints it (vcPaintObjects), and every
+     *  look's pixels, to embed. -> Promise<iwdieAiPanelObjectLines' result with its `looks` and `pix`, or null for none> */
+    function exportObjectLayer(objects) {
+      if (!objects || !objects.length) return Promise.resolve(null);
+      var ids = [];
+      objects.forEach(function (ob) { var id = ob && ob.obj_id ? String(ob.obj_id) : ''; if (id && ids.indexOf(id) < 0) ids.push(id); });
+      return Promise.all([
+        vcObjectLooks(ids).then(null, function () { return {}; }),
+        vcPaintObjects(objects).then(null, function () { return null; })
+      ]).then(function (r) {
+        var looks = r[0] || {}, pix = {};
+        return exportLookPixels(iwdieAiPanelObjectPictures(objects, looks), pix).then(function () {
+          var res = iwdieAiPanelObjectLines(objects, looks, pix);
+          res.looks = looks;
+          res.pix = pix;
+          return res;
+        });
+      });
+    }
+
+    /** Each look's pixels, by its data URL, into `pix`: {rgba, w, h, canvas}. One that cannot be read is left out, and its
+     *  object drawn as a light box. -> Promise */
+    function exportLookPixels(srcs, pix) {
+      return Promise.all(srcs.map(function (src) {
+        return loadPicture(src).then(function (img) {
+          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+          if (!(w > 0 && h > 0)) return;
+          var c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          var g = c.getContext('2d');
+          g.drawImage(img, 0, 0);
+          pix[src] = { rgba: g.getImageData(0, 0, w, h).data, w: w, h: h, canvas: c };
+        }, function () {});
+      }));
+    }
+
+    /** A copy of a canvas, to paint on. */
+    function exportCopyCanvas(canvas) {
+      var c = document.createElement('canvas');
+      c.width = canvas.width; c.height = canvas.height;
+      c.getContext('2d').drawImage(canvas, 0, 0);
+      return c;
+    }
+
+    /** The panel's objects painted over a canvas of the panel (v1.82.5), as iwdieAiPanelObjectLines draws them in the
+     *  document: the page every viewer but Illustrator shows has them too. -> the canvas */
+    function exportPaintObjects(canvas, objects, looks, pix) {
+      var g = canvas.getContext('2d');
+      iwdieVcStacked(objects).forEach(function (ob) {
+        var p = iwdieVcPanelItem(ob, looks && ob ? looks[ob.obj_id] : null, false);
+        if (!p) return;
+        if (p.item.shapes.some(function (s) { return s.t === 'image' && !(pix && pix[s.src]); })) p = iwdieVcPanelItem(ob, null, false, true);
+        p.item.shapes.forEach(function (s) {
+          var st = s.st || {};
+          if (s.t === 'd' && st.da && !st.fill) return;
+          g.save();
+          g.translate(p.x, p.y);
+          if (s.t === 'image') {
+            var px = pix[s.src], k = Math.min(s.w / px.w, s.h / px.h), dw = px.w * k, dh = px.h * k;
+            g.drawImage(px.canvas, s.x + (s.w - dw) / 2, s.y + (s.h - dh) / 2, dw, dh);
+          } else if (s.t === 'd') {
+            var path = new Path2D(s.d);
+            if (typeof st.op === 'number' && st.op < 1) g.globalAlpha = st.op;
+            if (st.fill) { g.fillStyle = st.fill; g.fill(path); }
+            if (st.stroke && st.sw > 0) { g.strokeStyle = st.stroke; g.lineWidth = st.sw; if (st.da) g.setLineDash(st.da); g.stroke(path); }
+          } else if (s.t === 'text') {
+            g.fillStyle = st.fill || '#000000';
+            g.font = (s.bold ? 'bold ' : '') + (s.size || 11) + 'px Arial, sans-serif';
+            g.fillText(s.text, s.x, s.y);
+          }
+          g.restore();
+        });
+      });
+      return canvas;
+    }
+
+    /** What an Illustrator export says of the panel's objects (v1.82.5): '' without them. */
+    function exportObjectsSaid(objs) {
+      if (!objs || !objs.objects) return '';
+      return '; the panel’s ' + iwdieN(objs.objects, 'object', 'objects') + ' on Panelobjekter, locked, as the Designer shows them' +
+        (objs.bare ? ' (' + objs.bare + ' of them without a picture to show, drawn as a box)' : '');
+    }
+
     /** The .ai: the picture under the drawing on a locked layer, the drawing's shapes as
-     *  Illustrator objects, the panel's objects and (on request) a trace on hidden layers -
-     *  Illustrator's own editing data inside a PDF whose page shows the panel as it looks. */
+     *  Illustrator objects, the panel's objects (since v1.82.5 as the Designer shows them, locked, on top) and (on
+     *  request) a trace on a hidden layer - Illustrator's own editing data inside a PDF whose page shows the panel as it
+     *  looks. */
     function exportIllustratorDocument(info, opts) {
       var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea';
       var name = iwdieBuildBackgroundFilename(info.plant, info.panel, 'ai');
       var base = info.found ? info.found.base : (info.bg ? { mime: info.bg.mime, bytes: info.bg.bytes } : null);
       var shapes = (opts.drawing && info.found) ? info.found.drawing.shapes : [];
       var objects = opts.objects ? info.objects : [];
-      var t0 = Date.now(), traceShapes = [];
+      var t0 = Date.now(), traceShapes = [], objs = null;
       toast('Writing the Illustrator document…', false, 4000);
       exportPaint(base && base.bytes, base && base.mime, size, null).then(function (picCanvas) {
         var job = opts.trace ? exportTrace(picCanvas, size, fill).then(function (svg) { traceShapes = iwdieAiTraceShapes(svg); }) : Promise.resolve();
-        return job.then(function () { return picCanvas; });
+        return Promise.all([job, exportObjectLayer(objects).then(function (o) { objs = o; })]).then(function () { return picCanvas; });
       }).then(function (picCanvas) {
         var rgba = base ? picCanvas.getContext('2d').getImageData(0, 0, size.w, size.h).data : null;
         var lines = function (list) { var out = []; list.forEach(function (sh) { out = out.concat(iwdieAiShapeLines(sh)); }); return out; };
@@ -23421,13 +23597,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }];
         if (traceShapes.length) layers.push({ name: 'Sporing', visible: false, lines: lines(traceShapes) });
         layers.push({ name: 'Tegning', lines: lines(shapes) });
-        if (objects.length) layers.push({ name: 'Panelobjekter', visible: false, print: false, lines: iwdieAiObjectLines(objects) });
+        // (v1.82.5) the panel's objects as the Designer shows them, on top and locked: before, boxes on a hidden layer
+        if (objs && objs.lines.length) layers.push({ name: 'Panelobjekter', locked: true, lines: objs.lines });
         var doc = { width: size.w, height: size.h, title: name, layers: layers, artboardName: info.panel || 'Panel' };
         var header = iwdieAiHeaderLines(doc).join('\r\n') + '\r\n';
         var program = iwdieAiProgram(doc);
-        // what other viewers see: the panel as the canvas shows it, drawing included
+        // what other viewers see: the panel as the canvas shows it, drawing included, and (v1.82.5) its objects
         return Promise.all([deflateBytes(program), exportPaint(info.bg && info.bg.bytes, info.bg && info.bg.mime, size, fill)]).then(function (r) {
-          var jpeg = iwdieParseDataUrl(r[1].toDataURL('image/jpeg', 0.9));
+          var page = objs ? exportPaintObjects(r[1], objects, objs.looks, objs.pix) : r[1];
+          var jpeg = iwdieParseDataUrl(page.toDataURL('image/jpeg', 0.9));
           var pdf = iwdieAiPdf({
             width: size.w, height: size.h, meta: header, privateData: iwdieAiPrivateData(header, r[0]),
             preview: { width: size.w, height: size.h, filter: 'DCTDecode', data: jpeg.bytes }, title: name, version: IWDIE_VERSION
@@ -23436,7 +23614,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var bits = ['Bakgrunn (' + (rgba ? 'the picture, locked' : 'no picture') + ')'];
           if (traceShapes.length) bits.push('Sporing (' + iwdieN(traceShapes.length, 'traced object', 'traced objects') + ', hidden)');
           bits.push('Tegning (' + (shapes.length ? iwdieN(shapes.length, 'shape', 'shapes') : 'empty, to draw on') + ')');
-          if (objects.length) bits.push('Panelobjekter (' + objects.length + ', hidden)');
+          if (objs && objs.objects) bits.push('Panelobjekter (' + objs.objects + ', locked, as the Designer shows them' + (objs.bare ? '; ' + objs.bare + ' as a box' : '') + ')');
           hostOk('Illustrator document saved in ' + Math.max(1, Math.round((Date.now() - t0) / 100) / 10) + ' s → ' + name + ' (' + Math.round(pdf.length / 1024) + ' kB). Layers: ' +
             bits.join(', ') + '. Illustrator asks to update the text the first time - choose Update.');
         });
@@ -23447,8 +23625,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** The drawing a background is, as an .ai of its own layers (v1.65.0): each top-level group a layer, each shape a path,
-     *  each text type, each picture in it where it stands - and, when asked, the panel's objects and the picture as the
-     *  Designer shows it on hidden layers - Illustrator's editing data in a PDF whose page shows the panel. */
+     *  each text type, each picture in it where it stands. When asked, it also has the panel's objects, since v1.82.5 on top as
+     *  the Designer shows them and locked, and the picture as the Designer shows it on a hidden layer. Illustrator's editing
+     *  data in a PDF whose page shows the panel, its objects too. */
     function exportDrawingAi(info, opts) {
       var size = info.size, fill = grabBackgroundFillColor() || '#e5e7ea', conv = info.conv, t0 = Date.now();
       var name = iwdieBuildBackgroundFilename(info.plant, info.panel, 'ai');
@@ -23466,7 +23645,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       };
       var lost = 0;
-      Promise.all(built.map(function (b) {
+      Promise.all([Promise.all(built.map(function (b) {
         if (!b.picture) return null;
         var im = b.picture.img;
         return pixels(im.href).then(function (px) {
@@ -23474,8 +23653,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           r.at = b.picture.at;
           return r;
         }, function () { lost++; return null; });
-      })).then(function (rasters) {
-        var layers = iwdieAiDrawingLayers(conv, built, rasters, opts.objects ? info.objects : null);
+      })), opts.objects ? exportObjectLayer(info.objects) : null]).then(function (got) {
+        var rasters = got[0], objs = got[1];
+        var layers = iwdieAiDrawingLayers(conv, built, rasters, objs);
         return exportPaint(info.bg && info.bg.bytes, info.bg && info.bg.mime, size, fill).then(function (shown) {
           if (opts.picture) {
             layers.unshift({ name: 'Bilde', visible: false, locked: true, lines: [],
@@ -23484,7 +23664,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var doc = { width: size.w, height: size.h, title: name, layers: layers, artboardName: info.panel || 'Panel' };
           var header = iwdieAiHeaderLines(doc).join('\r\n') + '\r\n';
           return deflateBytes(iwdieAiProgram(doc)).then(function (z) {
-            var jpeg = iwdieParseDataUrl(shown.toDataURL('image/jpeg', 0.9));
+            // the page other viewers show: the panel as the canvas shows it, its objects too (v1.82.5)
+            var page = objs ? exportPaintObjects(exportCopyCanvas(shown), info.objects, objs.looks, objs.pix) : shown;
+            var jpeg = iwdieParseDataUrl(page.toDataURL('image/jpeg', 0.9));
             var pdf = iwdieAiPdf({
               width: size.w, height: size.h, meta: header, privateData: iwdieAiPrivateData(header, z),
               preview: { width: size.w, height: size.h, filter: 'DCTDecode', data: jpeg.bytes }, title: name, version: IWDIE_VERSION
@@ -23499,8 +23681,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             hostOk('Illustrator document saved in ' + Math.max(1, Math.round((Date.now() - t0) / 100) / 10) + ' s → ' + name + ' (' + Math.round(pdf.length / 1024) +
               ' kB): the drawing’s ' + iwdieN(conv.layers.length, 'layer', 'layers') + ' (' + conv.layers.map(function (L) { return L.name; }).join(', ') + '), ' +
               iwdieN(conv.counts.shapes, 'shape', 'shapes') + ', ' + iwdieN(conv.counts.texts, 'text', 'texts') + ' and ' + iwdieN(conv.counts.groups, 'group', 'groups') +
-              ' as Illustrator’s own' + (nearest.length ? '; drawn nearest: ' + nearest.join(', ') : '') + (left.length ? '; left out: ' + left.join(', ') : '') +
-              '. Illustrator asks to update the text the first time - choose Update.');
+              ' as Illustrator’s own' + exportObjectsSaid(objs) + (nearest.length ? '; drawn nearest: ' + nearest.join(', ') : '') +
+              (left.length ? '; left out: ' + left.join(', ') : '') + '. Illustrator asks to update the text the first time - choose Update.');
           });
         });
       }).then(null, function (e) {
@@ -25002,6 +25184,10 @@ if (typeof module !== 'undefined' && module.exports) {
     aiPdf: iwdieAiPdf,
     aiPrivateData: iwdieAiPrivateData,
     aiObjectLines: iwdieAiObjectLines,
+    aiPanelObjectLines: iwdieAiPanelObjectLines,
+    aiPanelObjectPictures: iwdieAiPanelObjectPictures,
+    vcPanelItem: iwdieVcPanelItem,
+    vcStacked: iwdieVcStacked,
     aiQuadToCubic: iwdieAiQuadToCubic,
     aiTraceShapes: iwdieAiTraceShapes,
     VC_URL: IWDIE_VC_URL,
