@@ -526,6 +526,9 @@ dive*.
   byte.
 - **Only new edits.** A document opened in VectorCraft before 1.82.4, or one it restores from then, keeps its old boxes.
   Edit in VectorCraft makes a new one.
+- **Quicker still, in the hosted build (2026-10-17).** VectorCraft's official web release is built without
+  WebAssembly SIMD. The hosted copy is now built with it, and draws the Maskin's drag frames in 5.0 ms instead of
+  11.3 ms. See *The hosted copy* under *Edit in VectorCraft*.
 - **Quicker still, by hand.** VectorCraft skips a hidden layer: with the IWMAC-objekter layer taken out, the Maskin drew
   in 2.9 ms a frame, so hiding that layer while arranging the drawing makes drags quicker still. A smaller window helps
   too. Outline Mode does not: with Ctrl+Y, VectorCraft drew the same Maskin in 21.5 ms a frame, against 11.4 ms in
@@ -2440,12 +2443,13 @@ rule now, so a test sees what the live page shows.
 
 [VectorCraft](https://github.com/storytold/vectorcraft) is an open-source vector editor
 modelled on Illustrator, written in Rust (MIT OR Apache-2.0, by the ArtCraft team and the
-VectorCraft contributors). Its official web build runs entirely in the browser
-(WebAssembly, drawing with WebGPU or WebGL2). An unmodified copy of that build is hosted at
+VectorCraft contributors). Its web build runs entirely in the browser (WebAssembly, drawing
+with WebGPU or WebGL2). A build of it is hosted at
 **<https://hapnes-dev.github.io/iwmac-vector/app/>** (repository
-[Hapnes-dev/iwmac-vector](https://github.com/Hapnes-dev/iwmac-vector)). This script bridges
-the Designer and that page, so a background can be edited as vectors without leaving the
-browser.
+[Hapnes-dev/iwmac-vector](https://github.com/Hapnes-dev/iwmac-vector)). Since 2026-10-17 it is
+built from the official source with WebAssembly SIMD and without the ArtCraft name (see *The
+hosted copy* below). This script bridges the Designer and that page, so a background can be
+edited as vectors without leaving the browser.
 
 **Opening.** **Edit in VectorCraft…** on the sidebar (v1.36.0, in place of *Draw
 background…*; in v1.35.0 it was a choice under *Background → Illustrator*). A new tab opens
@@ -3384,7 +3388,7 @@ again with the value moved, the other two were skipped.
 
 **The IWMAC menu (v1.41.0).** VectorCraft draws its own menus on its canvas, and they take
 nothing from outside: an item in the **Object** menu would mean changing the app, and the
-hosted build stays unmodified. So the objects have a menu of their own in the same bar,
+hosted build carries none of this script's changes. So the objects have a menu of their own in the same bar,
 **IWMAC**, after *Help*, drawn in VectorCraft's own style.
 - Each role opens a submenu of its objects, with a preview, the description and the size.
 - The search field at the top finds objects by id, description or role: `fan`, `value tag 45`.
@@ -3447,17 +3451,29 @@ Documents*: choose *Discard* unless you want them back.
    same storage.
 4. The Designer acknowledges each save.
 
-The hosted files stay exactly as released. The script only adds the banner and catches the
-save while the page runs. Nothing leaves the browser: the editor is a static page, and the
-panel goes from tab to tab through Tampermonkey's storage.
+The hosted build carries none of this script's changes. The script only adds the banner and
+catches the save while the page runs. Nothing leaves the browser: the editor is a static page,
+and the panel goes from tab to tab through Tampermonkey's storage.
 
-**The hosted copy.** It is VectorCraft's official web build 0.11.0 (0.10.0 until 2026-10-15, 0.9.0 until 2026-10-12), byte for byte, with its
-licences and notices. To move to a newer release, run the repository's *Update VectorCraft*
-workflow with the release tag.
+**The hosted copy.** It is VectorCraft 0.11.0, built from the official source at that release
+with its licences and notices. Until 2026-10-17 it was the official web build byte for byte
+(0.10.0 until 2026-10-15, 0.9.0 until 2026-10-12). Since then it differs in two ways:
+- **WebAssembly SIMD is on.** The official web release is built without it, so its canvas renderer
+  runs scalar code. With SIMD, VectorCraft draws a frame of a drag on 10214's Maskin in 5.0 ms
+  instead of 11.5 ms, and in 7.1 ms instead of 17.4 ms at 1920 × 1080. The pixels are the same.
+- **The ArtCraft name is taken out** (the repository's `build/debrand.py`): the Discord button and
+  the Help menu's ArtCraft links.
 
-The ArtCraft name and marks belong to the ArtCraft team and are not open source. They appear
-only inside that unmodified build, as its brand terms allow. This script's own dialog follows
-VectorCraft's colours but carries none of those marks. VectorCraft calls itself alpha.
+The repository's `build/build.sh` makes it from a release tag. To move to a newer release, run its
+*Update VectorCraft* workflow with the tag; untick *commit* to try the build first. VectorCraft
+0.12.0 changed its Save As dialog: this script's keys no longer reach SVG there, and its first
+save falls back to clicks, so update the script before moving to 0.12.0.
+
+The ArtCraft name and marks belong to the ArtCraft team and are not open source. Their brand
+terms ask a published modified build to carry none of them, so the hosted build has them taken
+out. Its About box says it is based on VectorCraft by the ArtCraft team. This script's own
+dialog follows VectorCraft's colours but carries none of those marks. VectorCraft calls itself
+alpha.
 
 The kit's `tests/test-vectorcraft-bridge.js` holds the SVG the Designer sends, the sizing,
 the merge, the PNG chunk, the component library as a `.vclibrary`, the script header and the
