@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.6
+// @version      1.82.7
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.82.6';
+var IWDIE_VERSION = '1.82.7';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6068,7 +6068,9 @@ function iwdieAiUtf8Text(s) {
 
 /** A name in Illustrator's own unique-id form (its SVG id scheme): spaces become
  *  "_", letters, digits, "_", "." and "-" stay, anything else in ASCII becomes
- *  _xHH_, and the rest goes in as UTF-8 bytes - which is how Illustrator writes Rør.
+ *  _xHH_. Of the rest, Latin-1's letters (and the middle dot after the first) go in
+ *  as UTF-8 bytes - which is how Illustrator writes Rør - and every other sign, the
+ *  degree sign among them, and anything beyond Latin-1 becomes _xHH_ too (v1.82.5).
  *  A leading digit, "." or "-" is encoded too, as XML ids cannot start with one. */
 function iwdieAiXmlId(name) {
   var s = String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, 120), out = '';
@@ -14431,6 +14433,12 @@ var IWDIE_VZ_BOXES = [
   ['#3c505e', 0, 'number_v3_header_appgrey', 'number_v3_header_appgrey']
 ];
 
+/** The boxes' colours a picture is not searched for (v1.82.7): white. A white patch of a picture is a shape's own fill -
+ *  a receiver between its seams, a room between its walls, an air handler inside its frame, a gap between pipes - and
+ *  not the Designer's white header: of 49 pictures of nine plants, 21 white patches passed as boxes and none was a header.
+ *  11087's KA1 lost its receiver that way: its middle became a header, its two ends value pills. */
+var IWDIE_VZ_BOXES_UNSEEN = ['#ffffff'];
+
 /** The folders the Designer keeps its objects' own pictures in, and the role of an object whose picture is in one
  *  (v1.82.0): its valves, pumps, compressors, fans, LEDs and status symbols, the ventilation's dampers, fans, coils and
  *  filters. */
@@ -14505,7 +14513,7 @@ function iwdieVzBoxOf(id) {
 }
 
 /** The boxes the Designer draws itself in a picture (v1.80.0): each patch of one of IWDIE_VZ_BOXES' colours (within 8,
- *  red, green and blue summed) that is such a box - at least 12 x 8 and under two fifths of the picture; its sides, past
+ *  red, green and blue summed; v1.82.7: not IWDIE_VZ_BOXES_UNSEEN's white) that is such a box - at least 12 x 8 and under two fifths of the picture; its sides, past
  *  its corners, nine tenths of its colour; its corners no rounder than its kind's (at most 12 of the 36 pixels of each
  *  corner's square off its colour, a header's square corners at most one of four) - or (v1.82.0) a case's colour as a
  *  pill, round ends and all, under 40 px across (the Oversikt legend's: `pill`, what it takes out of the picture); and
@@ -14516,7 +14524,7 @@ function iwdieVzBoxOf(id) {
 function iwdieVzBoxes(pic, W, H, opts) {
   opts = opts || {};
   var now = opts.now && opts.now.length === pic.length ? opts.now : null, share = opts.inside > 0 ? opts.inside : 0.98;
-  var kinds = IWDIE_VZ_BOXES.map(function (b) {
+  var kinds = IWDIE_VZ_BOXES.filter(function (b) { return IWDIE_VZ_BOXES_UNSEEN.indexOf(b[0]) < 0; }).map(function (b) {
     var h6 = b[0].slice(1);
     return { hex: b[0], rgb: [parseInt(h6.slice(0, 2), 16), parseInt(h6.slice(2, 4), 16), parseInt(h6.slice(4, 6), 16)], r: b[1], up: b[2], lying: b[3] };
   });
@@ -14706,7 +14714,8 @@ var IWDIE_TX_HOUSE = ['Symbolforklaring', 'Varme', 'Kjøl', 'Frys', 'Kommunikasj
 
 /** A word's ink (v1.78.0): how far each pixel of box `b` ({x, y, w, h}, grown by `pad`) of picture `pic` (RGBA, W x H) is
  *  from the box's ground - its commonest colour - towards its text's colour - the mean of its farthest pixels. 0..1, row
- *  by row. -> {ink: Float32Array, w, h, x, y, ground: [r, g, b], text: [r, g, b], total: the ink's sum of squares} */
+ *  by row; (v1.82.7) none on an upright line through the box. -> {ink: Float32Array, w, h, x, y, ground: [r, g, b], text: [r, g, b],
+ *  total: the ink's sum of squares} */
 function iwdieTxInk(pic, W, H, b, pad) {
   pad = pad == null ? 3 : pad;
   var x0 = Math.max(0, Math.floor(b.x) - pad), y0 = Math.max(0, Math.floor(b.y) - pad);
@@ -14737,13 +14746,24 @@ function iwdieTxInk(pic, W, H, b, pad) {
   if (m) { text[0] /= m; text[1] /= m; text[2] /= m; }
   var t = [text[0] - ground[0], text[1] - ground[1], text[2] - ground[2]], span = Math.max(1, t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
   var ink = new Float32Array(n), total = 0;
-  for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
-    j = ((y0 + y) * W + x0 + x) * 4;
-    var v = ((pic[j] - ground[0]) * t[0] + (pic[j + 1] - ground[1]) * t[1] + (pic[j + 2] - ground[2]) * t[2]) / span;
-    v = v < 0 ? 0 : v > 1 ? 1 : v;
-    ink[y * w + x] = v;
-    total += v * v;
+  var inkAt = function (xx, yy) {
+    if (xx < 0 || yy < 0 || xx >= W || yy >= H) return 0;
+    var q = (yy * W + xx) * 4, vv = ((pic[q] - ground[0]) * t[0] + (pic[q + 1] - ground[1]) * t[1] + (pic[q + 2] - ground[2]) * t[2]) / span;
+    return vv < 0 ? 0 : vv > 1 ? 1 : vv;
+  };
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++) ink[y * w + x] = inkAt(x0 + x, y0 + y);
+  // (v1.82.7) an upright line through the box is no letter: a column inked from its top to its bottom whose ink runs on
+  // past both (a fifth of the text's colour or more) is taken out - a vessel's wall beside a word: 11087's "sep." was read
+  // "sep.l" and left as drawing. Every such column, the word's margin's and its own: taken out in the margin alone, a
+  // table's line on the box's edge was cut in half and 11087's Energi read "L1 Strom (A)" as "L1". Rows stay: a bar's edge
+  // across a word let 11087's "Karmvärmestyrning" be read, as "Karmvårmestyming", which the picture's letters say better
+  var through, k2;
+  for (x = 0; x < w; x++) {
+    through = h > 0 && inkAt(x0 + x, y0 - 1) >= 0.2 && inkAt(x0 + x, y1) >= 0.2;
+    for (k2 = 0; k2 < h && through; k2++) if (ink[k2 * w + x] < 0.2) through = false;
+    if (through) for (k2 = 0; k2 < h; k2++) ink[k2 * w + x] = 0;
   }
+  for (i = 0; i < n; i++) total += ink[i] * ink[i];
   return { ink: ink, w: w, h: h, x: x0, y: y0, ground: ground, text: text, total: total, contrast: Math.sqrt(span) };
 }
 
@@ -15596,6 +15616,81 @@ function iwdieVzLeadFit(m, el, family) {
   return { k: best.k, turn: best.turn, x: Math.round(dotX - best.cx), y: Math.round(dotY - best.cy), w: best.w, h: best.h };
 }
 
+/** What an element of a picture draws that a component placed on it lacks (v1.82.7): the biggest piece (pixels, eight
+ *  ways joined) of the element's lines inside the component's box two pixels or more from any of the component's lines.
+ *  Lines are each one's ink away from its commonest colour - its fill - by more than 90 (red, green and blue summed):
+ *  a receiver's outline, seams, window and coil on its white, a pill's words; an element without a fill (a third of its
+ *  ink inside its commonest colour) has none, and lacks nothing here. `pic` RGBA, W wide; `mine` the element's
+ *  ink, bw x bh from (lx0, ly0); `t` the component {w, h, m: its ink, rgba} placed at (px, py). The house's receivers
+ *  lack 10214's and 4559's coils (227 and 289 pixels) and 11087's second seam (112); a value pill lacks its words (25);
+ *  a sensor, valve, arrow or gas cooler that is the picture's lacks 5 at most. -> pixels */
+function iwdieVzLacks(pic, W, mine, lx0, ly0, bw, bh, t, px, py) {
+  if (!t || !t.m || !t.rgba) return 0;
+  var u, v, j, top = function (n, at) {
+    var tally = {}, best = null;
+    for (var i = 0; i < n; i++) {
+      var c = at(i);
+      if (!c) continue;
+      var key = (c[0] >> 3) + ',' + (c[1] >> 3) + ',' + (c[2] >> 3), e = tally[key] || (tally[key] = { n: 0, c: c });
+      if (++e.n > (best ? best.n : 0)) best = e;
+    }
+    return best && best.c;
+  };
+  var ePx = function (i) { if (!mine[i]) return null; var q = ((ly0 + ((i / bw) | 0)) * W + lx0 + i % bw) * 4; return [pic[q], pic[q + 1], pic[q + 2]]; };
+  var tPx = function (i) { return t.m[i] ? [t.rgba[i * 4], t.rgba[i * 4 + 1], t.rgba[i * 4 + 2]] : null; };
+  var eFill = top(bw * bh, ePx), tFill = top(t.w * t.h, tPx);
+  if (!eFill || !tFill) return 0;
+  // only a shape with a fill has lines on it: a third of its ink or more its commonest colour all round (within 24). An
+  // arrow's or a lead's strokes have none - their own outline tells them - and their blend with the ground is no line
+  var isFill = function (xx, yy) {
+    if (xx < 0 || yy < 0 || xx >= bw || yy >= bh) return false;
+    var c = ePx(yy * bw + xx);
+    return !!c && Math.abs(c[0] - eFill[0]) + Math.abs(c[1] - eFill[1]) + Math.abs(c[2] - eFill[2]) <= 24;
+  };
+  var ink = 0, inner = 0, ox, oy;
+  for (v = 0; v < bh; v++) for (u = 0; u < bw; u++) {
+    if (!mine[v * bw + u]) continue;
+    ink++;
+    var all9 = true;
+    for (oy = -1; oy <= 1 && all9; oy++) for (ox = -1; ox <= 1 && all9; ox++) if (!isFill(u + ox, v + oy)) all9 = false;
+    if (all9) inner++;
+  }
+  if (inner < ink / 3) return 0;
+  var far = function (c, f) { return Math.abs(c[0] - f[0]) + Math.abs(c[1] - f[1]) + Math.abs(c[2] - f[2]) > 90; };
+  // the component's lines, grown two pixels each way
+  var tNear = new Uint8Array(t.w * t.h);
+  for (v = 0; v < t.h; v++) for (u = 0; u < t.w; u++) {
+    var tc = tPx(v * t.w + u);
+    if (!tc || !far(tc, tFill)) continue;
+    for (var gy = Math.max(0, v - 2); gy <= Math.min(t.h - 1, v + 2); gy++) for (var gx = Math.max(0, u - 2); gx <= Math.min(t.w - 1, u + 2); gx++) tNear[gy * t.w + gx] = 1;
+  }
+  // the element's lines inside the component's box that none of them comes near
+  var miss = new Uint8Array(bw * bh), any = false;
+  for (v = 0; v < bh; v++) for (u = 0; u < bw; u++) {
+    var tu = lx0 + u - px, tv = ly0 + v - py;
+    if (tu < 0 || tv < 0 || tu >= t.w || tv >= t.h || tNear[tv * t.w + tu]) continue;
+    var ec = ePx(v * bw + u);
+    if (ec && far(ec, eFill)) { miss[v * bw + u] = 1; any = true; }
+  }
+  if (!any) return 0;
+  var seen = new Uint8Array(bw * bh), stack = [], most = 0;
+  for (j = 0; j < bw * bh; j++) {
+    if (!miss[j] || seen[j]) continue;
+    var n = 0;
+    stack.push(j); seen[j] = 1;
+    while (stack.length) {
+      var q2 = stack.pop(), qx = q2 % bw, qy = (q2 / bw) | 0;
+      n++;
+      for (var ny = Math.max(0, qy - 1); ny <= Math.min(bh - 1, qy + 1); ny++) for (var nx = Math.max(0, qx - 1); nx <= Math.min(bw - 1, qx + 1); nx++) {
+        var nq = ny * bw + nx;
+        if (miss[nq] && !seen[nq]) { seen[nq] = 1; stack.push(nq); }
+      }
+    }
+    if (n > most) most = n;
+  }
+  return most;
+}
+
 /** The house's components closest to what is left of a picture (v1.81.0). `pic` RGBA, W x H, after the IWMAC objects,
  *  the words, the boxes and the exact house symbols came out of it; `templates` [{k, w, h, rgba}] the house's components
  *  drawn at 1:1, turned here (iwdieVcTurn) - or (`still`) an IWMAC object's picture, never turned. Its ink: neither one of its grounds (its commonest colour and any of a
@@ -15611,7 +15706,10 @@ function iwdieVzLeadFit(m, el, family) {
  *  the whole, or between. The best is taken at F 0.85 or more as above, its
  *  colours within 60 - or 80 where it fits wholly (F 0.95, IoU 0.7), or (`opts.shape`, an object's own pictures - v1.82.1:
  *  or a template's own `shape`) 130 where it fits closely (F 0.95, IoU 0.6); an object's picture (`still`, v1.82.1) only
- *  where it covers the element half or more (IoU 0.5). A big element nothing fits (2 000 px of box or
+ *  where it covers the element half or more (IoU 0.5). (v1.82.7) Never a house component with under 85 % of the element's
+ *  ink within a pixel and under 60 % exactly on it (a letter p for a sensor), nor one that lacks a piece of the element's
+ *  lines of 12 pixels or more (iwdieVzLacks: a receiver's coil, a pill's words; a sensor's lead may run on): what the
+ *  component cannot draw stays drawn. A big element nothing fits (2 000 px of box or
  *  more) is weighed again in its parts, its own commonest colour then its ground: a panel with things on it. An element
  *  of under 10 pixels with no other within 4 px is a speck - what came out left it. `opts.until` ends it.
  *  -> {found: [{k, turn, x, y, w, h, f, iou, col, hole: {x, y, w, h, rgba}: the element's ink and a pixel round it}],
@@ -15837,7 +15935,9 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
         // (v1.82.0) an object's own picture (`opts.shape`, v1.82.1 or the picture's own `shape`): its colours count half - its
         // state is its own - but still tell its sides
         var wi = Math.min(0.75, 0.5 + e.cnt / 4000), score = (1 - wi) * F + wi * iou - Math.max(0, col - 40) / (t.shape ? 600 : 300);
-        if (!best || score > best.score) best = { score: score, k: t.k, turn: t.turn, x: px, y: py, w: t.w, h: t.h, f: F, iou: iou, col: col, shape: t.shape, still: t.still };
+        if (!best || score > best.score) {
+          best = { score: score, k: t.k, turn: t.turn, x: px, y: py, w: t.w, h: t.h, f: F, iou: iou, col: col, shape: t.shape, still: t.still, r: Rr, fc: !!t.fc, tpl: t };
+        }
       }
     });
     // (v1.82.0) an IWMAC object's own picture (`opts.shape`): its colours may differ further where the shapes fit closely -
@@ -15846,7 +15946,15 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
       (best.shape && best.col <= 130 && best.f >= 0.95 && best.iou >= 0.6))) return null;
     // (v1.82.1) an object's own picture covering the element half or more: F within a pixel forgives a disc for a pin
     if (best.still && best.iou < 0.5) return null;
-    // the element's ink, and a pixel round it, to take out of the picture: what the component lacks of it goes with it
+    // (v1.82.7) a shape like it is not it: a component that has under 85 % of the element's ink within a pixel and lies
+    // exactly on under 60 % of it - 11087's letter p taken for a sensor or a pipe bend, 4559's small vessel for a compressor
+    if (!best.still && best.r < 0.85 && best.iou < 0.6) return null;
+    // (v1.82.7) what the element draws that the component lacks stays: a piece of its lines of 12 pixels or more inside the
+    // component's box that the component does not draw (iwdieVzLacks) - a receiver's coil or second seam, a pill's words -
+    // and the component is not taken. A sensor's lead may run on past the house's.
+    if (!best.fc && iwdieVzLacks(pic, W, mine, lx0, ly0, bw, bh, best.tpl, best.x, best.y) >= 12) return null;
+    // the element's ink, and a pixel round it, to take out of the picture: what the component lacks of it goes with it -
+    // since v1.82.7 never a piece of its lines, only a lead, a speck or a fill's edge
     var hole = new Uint8ClampedArray(bw * bh * 4);
     for (var hk = 0; hk < bw * bh; hk++) if (near1[hk]) hole[hk * 4 + 3] = 255;
     return { k: best.k, turn: best.turn, x: best.x, y: best.y, w: best.w, h: best.h, f: Math.round(best.f * 100) / 100, iou: Math.round(best.iou * 100) / 100,
@@ -22078,7 +22186,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             // (v1.82.1) the shape's say over the colours only for the mechanical objects, whose state pictures differ in their
             // parts' colours: an LED or a status symbol is a disc, each of its states a picture looked for
             var mech = ['valve', 'pump', 'compressor', 'fan', 'damper', 'coil', 'filter'];
-            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn], [data, w, h, tpl.map(function (t) {
+            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn, iwdieVzLacks], [data, w, h, tpl.map(function (t) {
               return { k: t.k, w: t.w, h: t.h, rgba: t.rgba, still: true, shape: mech.indexOf(iwdieVzFolderRole(t.pic)) >= 0 };
             }), { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {}).then(function (res) {
               var byK = {}, holes3 = [], list = [];
@@ -22140,7 +22248,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (paper.skipped()) return null;
           paper.say('the rest weighed against the house’s components by their shapes…', 0.46);
           return vcComponentTemplates(items, 3).then(function (all) {
-            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn], [data, w, h, all, { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {})
+            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn, iwdieVzLacks], [data, w, h, all, { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {})
               .then(function (res) {
                 var byK = {}, names2 = iwdieVcComponentNames(items), holes2 = [];
                 all.forEach(function (t) { byK[t.k] = t; });
@@ -25449,6 +25557,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vzFolderRole: iwdieVzFolderRole,
     vcKnowKinds: iwdieVcKnowKinds,
     vzClosest: iwdieVzClosest,
+    vzLacks: iwdieVzLacks,
     vzLeadFit: iwdieVzLeadFit,
     vzLeadOf: iwdieVzLeadOf,
     VZ_PIPE_FAMILY: IWDIE_VZ_PIPE_FAMILY,
@@ -25456,6 +25565,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vzBoxEdgesOff: iwdieVzBoxEdgesOff,
     vzBoxOf: iwdieVzBoxOf,
     VZ_BOXES: IWDIE_VZ_BOXES,
+    VZ_BOXES_UNSEEN: IWDIE_VZ_BOXES_UNSEEN,
     txFontChoice: iwdieTxFontChoice,
     TX_LABEL_PX: IWDIE_TX_LABEL_PX,
     txErase: iwdieTxErase,

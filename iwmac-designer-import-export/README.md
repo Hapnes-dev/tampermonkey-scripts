@@ -493,6 +493,46 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### A receiver stays the picture's (v1.82.7)
+
+Thomas showed 11087's KA1 in VectorCraft beside the Designer: *look like it messes up tank here*. The receiver's outline
+was broken, its two ends were value pills, and a white box sat in its middle. The p of "Oil-sep." beside it had become a
+sensor.
+
+- **A white patch is no longer searched as a box** (`IWDIE_VZ_BOXES_UNSEEN`). The receiver's middle, white between its
+  two seams, had passed as the Designer's white header. It became that object, and the picture under it was taken out.
+  The two ends left behind then passed as the house's 60 x 20 value pill, `KjølGrader`. Across 49 pictures from nine
+  plants, 21 white patches had passed as boxes, and none of them was a header. They were receivers between their seams,
+  rooms between their walls, air handlers inside their frames and gaps between pipes. The grey headers and the cases are
+  searched as before.
+- **The closest search takes no house component that lacks part of what the picture draws** (`iwdieVzLacks`). Two
+  rules decide this:
+  - Lines are each one's ink set off from its fill. The component is refused when the element's lines inside its box
+    include a piece of 12 pixels or more that the component's lines do not come within two pixels of.
+  - The component is also refused when it has under 85 % of the element's ink and lies exactly on under 60 % of it.
+
+  The search judged by outline, so a component that differed only inside was taken, and what it lacked was taken out
+  with it:
+  - 11087's receiver became `BeholderNivå`, with one seam and another gauge.
+  - 10214's receiver (and the same drawing on five more plants) became `BeholderVindu`, which has no coil.
+  - 4559's receiver became `Tank`, which has no coil either.
+  - 3694's info pill lost its "2,7℃", and a tank on 2349's heat recovery became a gas cooler with four fans.
+  - Letters became symbols: the p of "sep.", "K-30b" and "F-85" on 2349's Oversikt, "K03" on 3214's, and parts of
+    3694's case names. A small vessel became a compressor.
+
+  Each of these now stays drawn as the picture has it. A sensor's lead may still run on past the house's, and the gas
+  coolers, valves, arrows and sensors that match the picture are placed as before.
+- **An upright line through a word's box is no letter** (`iwdieTxInk`). A column inked from the box's top to its
+  bottom, whose ink runs on past both, has its ink taken out. "sep." beside its vessel's wall had been read as "sep.l"
+  and left as drawing; it is now a label. Rows across a word stay as they were. With rows taken out too, a word in a
+  bar was read with wrong letters ("Karmvärmestyrning" as "Karmvårmestyming").
+- Checked in the stub host against 1.82.6 on 22 panels from nine plants, each fetched read-only:
+  - The receivers, the pill, the tank and the letters changed as above.
+  - Two misread labels (*rorn* and *rpm* for "rom" on 3214's Oversikt) are now the picture's drawn letters.
+  - Every other label and every IWMAC object stayed the same.
+- 11087's "Low-" beside its gauge is no longer a label. 1.82.6 read it only because the false white header's edges
+  had been painted out before the words were read. It stays in the picture's own letters.
+
 ### Values as the Designer writes them: "12.3", in its own font (v1.82.6)
 
 Thomas showed the Designer's values next to VectorCraft's: *also i see that the object text does not display the same as
