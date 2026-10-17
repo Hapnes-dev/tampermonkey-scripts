@@ -493,6 +493,44 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Smoother drags in VectorCraft: the placeholders' dashed boxes drawn opaque (v1.82.4)
+
+Thomas: *can you see if you can improve and optimize when moving objects on vectorcraft so it gets more smooth? do deep
+dive*.
+
+- **Where the time went.** VectorCraft draws the whole drawing again on each frame of a drag, on the CPU, and its status
+  bar shows how long each frame took to draw (*render*). On 10214's Maskin in a 1400 × 900 window that was 27 ms a
+  frame, and on its Oversikt 48 ms. Taking the job's parts out one at a time showed where the time went:
+  - the house's components and the pipes, shapes and text traced from the picture: 3 ms together;
+  - the placeholders' pictures, their captions and the pills under them: about 2 ms each;
+  - the dashed blue box round each placeholder: 15 ms for the Maskin's 140 boxes and 34 ms for the Oversikt's 235.
+- **Why the boxes.** VectorCraft draws a shape the quick way, from outlines it keeps between frames, when the shape is
+  opaque or has a single solid paint that can take its opacity, and it does not count a dashed line as such a paint
+  (`draw_arc_body` and `painted_items` in its `crates/render/src/lib.rs`). So each dashed box at 60 % was drawn through a
+  see-through layer as wide as the whole canvas, on every frame, with its dashes worked out again each time. The same
+  box drawn opaque, or drawn solid at 60 %, takes the quick way.
+- **The fix.** The box is now drawn opaque, in the blue it showed at 60 % over the panel's grey (`#819eeb`). On the grey
+  it looks exactly as before. The light box of an object without a picture keeps its opacity: VectorCraft draws that
+  one the quick way, because it is filled.
+- **Measured** on a local copy of the hosted VectorCraft 0.11.0, dragging one object over 60 steps:
+
+  | Job | Window | 1.82.3 | 1.82.4 |
+  |---|---|---|---|
+  | 10214 Maskin | 1400 × 900 | 27.5 ms a frame | 11.3 ms |
+  | 10214 Oversikt | 1400 × 900 | 47.8 ms | 13.9 ms |
+  | 10214 Maskin | 1920 × 1080 | 47.4 ms | 16.7 ms |
+
+  The time grows with the number of screen pixels, so a larger window, or Windows scaling above 100 %, makes each frame
+  slower in both versions.
+- **Otherwise the same job.** Apart from the boxes, 1.82.4's jobs for both panels are the same as 1.82.3's, byte for
+  byte.
+- **Only new edits.** A document opened in VectorCraft before 1.82.4, or one it restores from then, keeps its old boxes.
+  Edit in VectorCraft makes a new one.
+- **Quicker still, by hand.** VectorCraft skips a hidden layer: with the IWMAC-objekter layer taken out, the Maskin drew
+  in 2.9 ms a frame, so hiding that layer while arranging the drawing makes drags quicker still. A smaller window helps
+  too. Outline Mode does not: with Ctrl+Y, VectorCraft drew the same Maskin in 21.5 ms a frame, against 11.4 ms in
+  Preview, because it strokes every path and every letter again on each frame.
+
 ### The house's sensor where the picture has one, and the white value as white text (v1.82.3)
 
 Thomas, on 10214's Maskin in VectorCraft: *look like some places you have arrorw but you should instead have føler object

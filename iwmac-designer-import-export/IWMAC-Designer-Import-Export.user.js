@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.3
+// @version      1.82.4
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.82.3';
+var IWDIE_VERSION = '1.82.4';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8436,8 +8436,14 @@ function iwdieVcObjectCaption(o) {
   return (whole.length >= (room - 1) * 0.6 ? whole : trim(cut)) + '…';
 }
 
+/** The dashed box round a placeholder (v1.82.4): the blue of the hidden layer of panel objects as it
+ *  showed at 60 % over the panel's grey (#cccccc), drawn opaque. VectorCraft draws the whole drawing
+ *  again on each frame of a drag, and it draws a dashed line with an opacity of its own the slow way:
+ *  10214's Maskin took 26 ms a frame with its 140 boxes at 60 %, and 12 ms with them opaque. */
+var IWDIE_VC_OUTLINE = '#819eeb';
+
 /** One object's placeholder as a library item, at the size the Designer draws it, inside a dashed
- *  box in the blue of the hidden layer of panel objects (v1.43.0):
+ *  box in the blue of the hidden layer of panel objects (v1.43.0; opaque since v1.82.4):
  *  - a label: its text, at the label's own size and weight;
  *  - the header: its bar, with its text in white;
  *  - anything else, with the Designer's picture of it: that picture, and its tag text under it
@@ -8446,29 +8452,33 @@ function iwdieVcObjectCaption(o) {
  *  - without the picture: the light box of v1.40.0, with what the object is in it. */
 function iwdieVcObjectItem(o) {
   var w = o.w, h = o.h, box = 'M0 0 L' + w + ' 0 L' + w + ' ' + h + ' L0 ' + h + ' Z', shapes = [];
-  var line = function (fill, op) { return { t: 'd', d: box, rule: '', st: { stroke: '#4f80ff', fill: fill, sw: 1, dash: false, arrow: false, da: [3, 2], op: op } }; };
+  // the box opaque (IWDIE_VC_OUTLINE); the light box keeps its opacity, which VectorCraft draws the quick way under a fill
+  var line = function (fill, op) {
+    return { t: 'd', d: box, rule: '', st: fill ? { stroke: '#4f80ff', fill: fill, sw: 1, dash: false, arrow: false, da: [3, 2], op: op }
+      : { stroke: IWDIE_VC_OUTLINE, fill: null, sw: 1, dash: false, arrow: false, da: [3, 2] } };
+  };
   var text = function (x, y, s, size, fill, bold) {
     return { t: 'text', x: x, y: Math.round(y * 100) / 100, text: s, size: size, bold: !!bold, st: { stroke: null, fill: fill, sw: 0, dash: false, arrow: false } };
   };
   if (o.kind === 'label') {
     var px = +(/(\d+)px/.exec(o.id) || [0, 11])[1];
-    shapes.push(line(null, 0.6), text(2, (h + px * 0.7) / 2, o.tag || 'Label', px, /_white$/.test(o.id) ? '#ffffff' : '#3c4650', /bold/.test(o.id)));
+    shapes.push(line(null), text(2, (h + px * 0.7) / 2, o.tag || 'Label', px, /_white$/.test(o.id) ? '#ffffff' : '#3c4650', /bold/.test(o.id)));
   } else if (o.kind === 'bar') {
     // (v1.80.0) a case's or a room's box with its corners as round (`o.round`); one found in a picture (`o.bare`) says nothing
     var rr = Math.min(o.round || 0, w / 2, h / 2), f2 = iwdieDrawFmt;
     var face = rr ? 'M' + f2(rr) + ' 0 L' + f2(w - rr) + ' 0 Q' + f2(w) + ' 0 ' + f2(w) + ' ' + f2(rr) + ' L' + f2(w) + ' ' + f2(h - rr) + ' Q' + f2(w) + ' ' + f2(h) + ' ' +
       f2(w - rr) + ' ' + f2(h) + ' L' + f2(rr) + ' ' + f2(h) + ' Q0 ' + f2(h) + ' 0 ' + f2(h - rr) + ' L0 ' + f2(rr) + ' Q0 0 ' + f2(rr) + ' 0 Z' : box;
     shapes.push({ t: 'd', d: face, rule: '', st: { stroke: null, fill: o.bar || '#6b7782', sw: 0, dash: false, arrow: false } });
-    shapes.push(line(null, 0.6));
+    shapes.push(line(null));
     if (!o.bare) shapes.push(text(6, (h + 11 * 0.7) / 2, o.tag || 'Header', 11, '#ffffff', true));
   } else if (o.src) {
     shapes.push({ t: 'image', x: 0, y: 0, w: w, h: h, src: o.src, iw: o.iw, ih: o.ih });
-    shapes.push(line(null, 0.6));
+    shapes.push(line(null));
     var at = o.tagAt;
     if (o.hasTag && o.tag) shapes.push(at ? text(at.x, at.y, o.tag, at.size, at.color || '#3c4650') : text(0, h + 9, o.tag, 8, '#3c4650'));
   } else {
     // see-through over the bubble it carries (v1.48.0), else a light box
-    shapes.push(o.see ? line(null, 0.6) : line('#eaf1ff', 0.8));
+    shapes.push(o.see ? line(null) : line('#eaf1ff', 0.8));
     var caption = iwdieVcObjectCaption(o), size = iwdieVcObjectTextSize(o);
     if (caption) shapes.push(text(3, (h + size * 0.7) / 2, caption, size, '#2f5fbf'));
   }
