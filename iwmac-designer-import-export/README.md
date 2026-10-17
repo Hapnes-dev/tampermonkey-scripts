@@ -3464,10 +3464,27 @@ with its licences and notices. Until 2026-10-17 it was the official web build by
 - **The ArtCraft name is taken out** (the repository's `build/debrand.py`): the Discord button and
   the Help menu's ArtCraft links.
 
-The repository's `build/build.sh` makes it from a release tag. To move to a newer release, run its
-*Update VectorCraft* workflow with the tag; untick *commit* to try the build first. VectorCraft
-0.12.0 changed its Save As dialog: this script's keys no longer reach SVG there, and its first
-save falls back to clicks, so update the script before moving to 0.12.0.
+The repository's `build/build.sh` makes it from a release tag. **To move to a newer release, follow
+[UPDATING.md](https://github.com/Hapnes-dev/iwmac-vector/blob/main/UPDATING.md)**:
+1. Build it to try with the *Update VectorCraft* workflow, *commit* unticked.
+2. Check it with `build/check.py`.
+3. Test this script on it.
+4. Publish.
+5. Check the live site.
+
+**What this script relies on in VectorCraft.** It drives the editor from outside, so a release can break the
+bridge without breaking anything else. It relies on these:
+- **A dropped file opens** on `#vectorcraft_canvas` (`vcDropFile`).
+- **A save is a blob download.** The script catches it by an `<a download>` click.
+- **Ctrl+S saves straight away** once the document has a format, and the first save opens Save As (`vcSaveSync`).
+- **Save As takes keys**: Tab, Space, five Tabs to SVG, Space, Enter, then Enter in SVG Options. If not, clicks at
+  fixed places round the window's centre (`answerSaveAs`: `byKeys`, `byClicks`).
+- **The title starts with `*`** while there are unsaved changes, which auto-sync watches.
+
+**VectorCraft 0.12.0 changed Save As.** Its format list stays open after a key takes SVG, so the keys can no longer
+reach OK, and Escape closes the dialog. The first save then falls back to clicks: it works, but it is ready after
+16.5 s instead of 10.8 s. Change `answerSaveAs` before moving to 0.12.0: use the clicks first, or click OK once the
+keys have taken SVG.
 
 The ArtCraft name and marks belong to the ArtCraft team and are not open source. Their brand
 terms ask a published modified build to carry none of them, so the hosted build has them taken
