@@ -21,7 +21,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.5.0', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.6.0', PROTOCOL = 1;
 const PORT = parseInt(process.env.IWDIE_BRIDGE_PORT || '47913', 10);
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY = 64 * 1024 * 1024;
@@ -188,6 +188,43 @@ function status() {
   };
 }
 
+/** The text a placeholder binds a unit's row by: `alias @ unit` where the alias is plain and the unit has it once, else
+ *  `[driver_id]`. */
+function bindOf(P, u, r) {
+  const name = {}, twice = {};
+  (P.units || []).forEach(x => { name[x[0]] = x[1]; });
+  (P.rows[u] || []).forEach(x => { const k = lower(String(x[0]).trim()); twice[k] = (twice[k] || 0) + 1; });
+  const alias = String(r[0]).replace(/\s+/g, ' ').trim(), plain = /^[\w æøåÆØÅ.,%°()+#'-]+$/;
+  return alias && plain.test(alias) && plain.test(name[u] || '') && twice[lower(alias)] === 1 ? alias + ' @ ' + name[u] : '[' + r[1] + ']';
+}
+
+/** A case's cluster rows (userscript 1.84.0): its value, its alarm, its cooling and its defrost, picked from a unit's rows
+ *  by their aliases as the house's case controllers name them - AK-CC: u56 Display air, --- High t.alarm, u58 Comp1/LLSV,
+ *  u60 Def. relay. A second section's rows (... B, ...2) are left for the user to ask for. -> {role: [alias, bind]} */
+const ROLE_RE = {
+  value: [/^u56\b/i, /display\s*air(?!\s*2)/i, /air\s*temp/i, /^s4\b/i],
+  alarm: [/high\s*t(emp)?\.?\s*alarm(?!.*\bb\b)/i, /^-+\s*high\s*t(emp)?\.?(?!.*\bb\b)/i],
+  cooling: [/^u58\b/i, /\bllsv\b/i, /comp\s*1\b/i],
+  defrost: [/^u60\b/i, /def(rost)?\.?\s*relay/i]
+};
+function caseRoles(P, u) {
+  const rows = (P && P.rows && P.rows[u]) || [], out = {};
+  Object.keys(ROLE_RE).forEach(role => {
+    for (const re of ROLE_RE[role]) {
+      const r = rows.find(x => re.test(String(x[0]).trim()));
+      if (r) { out[role] = [String(r[0]).trim(), bindOf(P, u, r)]; break; }
+    }
+  });
+  return out;
+}
+
+/** A unit of the edit's context by its id or its name. -> unit_id | null */
+function unitOf(P, q) {
+  if (!P || !P.units || q === undefined || q === null) return null;
+  const u = P.units.find(x => lower(x[0]) === lower(q)) || P.units.find(x => lower(x[1]) === lower(q)) || P.units.find(x => fold(x[1]) === fold(q));
+  return u ? u[0] : null;
+}
+
 function find(a) {
   if (!page) throw new Error(NOT_ATTACHED);
   const c = page.context, what = a.what, q = a.query || '', limit = Math.max(1, Math.min(500, a.limit || 40));
@@ -231,11 +268,29 @@ function find(a) {
     return { cols: ['unit', 'unit_id', 'group', 'alias', 'rw', 'type', 'eng', 'driver_id', 'bind'], rows: out.slice(0, limit), more: Math.max(0, out.length - limit),
       kinds: P.kinds || undefined };
   }
+  if (what === 'cases') {
+    // (userscript 1.84.0) the units whose rows carry a case's cluster: the bind text of each role, for a case op's roles,
+    // or give the case op unit and its roles are filled from these
+    const P = c.params;
+    if (!P || !P.rows) return { rows: [], note: 'no parameter rows came with this edit (see iwmac_status): tick the case controllers in the Parameter Selector, then Edit in VectorCraft again; or read an Export JSON with iwmac_export' };
+    const name = {};
+    (P.units || []).forEach(x => { name[x[0]] = x[1]; });
+    const out = [], other = [];
+    Object.keys(P.rows).forEach(u => {
+      if (q && !hits(u + ' ' + (name[u] || ''), q)) return;
+      const r = caseRoles(P, u);
+      if (!r.value && !r.alarm) { other.push(name[u] || u); return; }
+      out.push([name[u] || u, u].concat(['value', 'alarm', 'cooling', 'defrost'].map(k => r[k] ? r[k][1] : '')));
+    });
+    return { cols: ['unit', 'unit_id', 'value', 'alarm', 'cooling', 'defrost'], rows: out.slice(0, limit), more: Math.max(0, out.length - limit),
+      not_cases: other.length ? other.slice(0, 40) : undefined,
+      note: 'a case op with unit: <unit_id or name> takes these; an empty cell is a role that unit has no row for, left out' };
+  }
   if (what === 'ports') {
     const p = (c.ports || {})[a.query] || null;
     return { symbol: a.query, ports: p, sides: ['top', 'bottom', 'left', 'right'], note: 'each port: [u, v] on the box at turn 0 and the way a pipe leaves it' };
   }
-  throw new Error('what is symbols, objects, parameters or ports');
+  throw new Error('what is symbols, objects, parameters, cases or ports');
 }
 
 /* ---------------- an Export JSON, read on this computer ---------------- */
@@ -310,9 +365,9 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { layer: { type: 'string' }, kind: { type: 'string' }, near: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, query: { type: 'string' }, limit: { type: 'integer' }, facts: { type: 'boolean' } }, additionalProperties: false } },
   { name: 'iwmac_preview', description: 'A picture of the drawing as it stands (JPEG): the whole panel, or box [x,y,w,h] in panel pixels to look closer. max is the longer side in pixels (1000). Each IWMAC object shows as its look in a dashed blue box; a value or text box reads 12.3, the Designer\'s design-time value, not a reading.',
     inputSchema: { type: 'object', properties: { box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, max: { type: 'integer' } }, additionalProperties: false } },
-  { name: 'iwmac_find', description: 'Search what can be placed. what: symbols (every component VectorCraft offers - the house symbols, pipe pieces and colour samples - with the template each comes from, sizes and ports; set: Maskin or Oversikt keeps one template\'s: Oversikt is the floor plan kit, its cases light blue for cooling (KjølDisk, KjølGavl, KjølSirkel, KjølRom ...) and dark blue for freezer (FrysDisk ...), and Inngang, Handlevogn, Kasse, SelvbetjentKasse, Kondensator2-4, Plugg, Nål; and its arrangements, placed whole: islands, rows and checkouts as the template lays them out (KjølØy3Stående, FrysØyRund, KjølHjørnerad, Kassepar ..., marked [arrangement] in what); all: true adds those an IWMAC object shows, which a drawing should not place), objects (the IWMAC objects the IWMAC menu offers, with obj_id, role and size: values, labels, LEDs, alarms, compressors, fans, pumps, valves, AK-PC strips ...), parameters (the plant\'s rows, with the bind text a placeholder takes; unit narrows it), ports (one symbol\'s connection points, query = its name).',
-    inputSchema: { type: 'object', properties: { what: { type: 'string', enum: ['symbols', 'objects', 'parameters', 'ports'] }, query: { type: 'string' }, unit: { type: 'string' }, set: { type: 'string', enum: ['Maskin', 'Oversikt'] }, limit: { type: 'integer' }, all: { type: 'boolean' } }, required: ['what'], additionalProperties: false } },
-  { name: 'iwmac_edit', description: 'Change the drawing. ops, in order, each {op, ...}: symbol {name, at, w?, h?, turn?, flip?, ref?, label?, labels?} (the name of an arrangement places it whole, one group, with a label object where each of its cases is named: labels the names in reading order - null skips one, false none - else the template\'s own K1/F1); bank {name, count, at, spacing?, axis?, refs?, labels?} (near one of a row of the same symbol, along it, it carries that row on); object {obj_id, at, bind?, text?, ref?}; value {bind, at, dark?, label?, ref?} (a value on its pill); pill {at, dark?}; box {at, w, h}, rx?, fill?, stroke?, layer? (layer Bakgrunn: a panel of the information column; never draw anything under an IWMAC object - it draws itself; only a value stands on its pill, which value makes); pipe {points|d, circuit?, colour?, width?}; connect {from, to, circuit?} (routed between ports); text {text, at, size?, anchor?}; move {target, dx?, dy?, at?}; delete {target}; set_text {target, text}; bind {target, bind}; align {targets, how}; distribute {targets, axis, gap?}. at is {x,y} (top left), {cx,cy}, or {near: target, side: right|left|above|below|on, gap?, align?: start|center|end}; free: true finds the nearest free place. A target is {cid}, {ref} (placed earlier in this edit), {object: name} (a panel object by its own name, object_N) or {find: {kind?, symbol?, obj_id?, text?, name?, layer?, circuit?, bind?, near?: [x, y], within?}} (the one thing that matches, nearest near, within 30 px); from/to add port (in, out, branch, tip, top, bottom, left, right). circuit: HP, Liquid, MT suction, LT suction, Heat recovery. dry_run: true plans without changing anything. The result opens in VectorCraft as a new document; the version before stays in its tab.',
+  { name: 'iwmac_find', description: 'Search what can be placed. what: symbols (every component VectorCraft offers - the house symbols, pipe pieces and colour samples - with the template each comes from, sizes and ports; set: Maskin or Oversikt keeps one template\'s: Oversikt is the floor plan kit, its cases light blue for cooling (KjølDisk, KjølGavl, KjølSirkel, KjølRom ...) and dark blue for freezer (FrysDisk ...), and Inngang, Handlevogn, Kasse, SelvbetjentKasse, Kondensator2-4, Plugg, Nål; and its arrangements, placed whole: islands, rows and checkouts as the template lays them out (KjølØy3Stående, FrysØyRund, KjølHjørnerad, Kassepar ..., marked [arrangement] in what); all: true adds those an IWMAC object shows, which a drawing should not place), objects (the IWMAC objects the IWMAC menu offers, with obj_id, role and size: values, labels, LEDs, alarms, compressors, fans, pumps, valves, AK-PC strips ...), parameters (the plant\'s rows, with the bind text a placeholder takes; unit narrows it), cases (an Oversikt\'s case controllers: each unit\'s value, alarm, cooling and defrost rows as bind texts, for a case op\'s roles - or give the op unit), ports (one symbol\'s connection points, query = its name).',
+    inputSchema: { type: 'object', properties: { what: { type: 'string', enum: ['symbols', 'objects', 'parameters', 'cases', 'ports'] }, query: { type: 'string' }, unit: { type: 'string' }, set: { type: 'string', enum: ['Maskin', 'Oversikt'] }, limit: { type: 'integer' }, all: { type: 'boolean' } }, required: ['what'], additionalProperties: false } },
+  { name: 'iwmac_edit', description: 'Change the drawing. ops, in order, each {op, ...}: symbol {name, at, w?, h?, turn?, flip?, ref?, label?, labels?} (the name of an arrangement places it whole, one group, with a label object where each of its cases is named: labels the names in reading order - null skips one, false none - else the template\'s own K1/F1); bank {name, count, at, spacing?, axis?, refs?, labels?} (near one of a row of the same symbol, along it, it carries that row on); object {obj_id, at, bind?, text?, ref?}; value {bind, at, dark?, label?, ref?} (a value on its pill); pill {at, dark?}; box {at, w, h}, rx?, fill?, stroke?, layer? (layer Bakgrunn: a panel of the information column; never draw anything under an IWMAC object - it draws itself; only a value stands on its pill, which value makes); pipe {points|d, circuit?, colour?, width?}; connect {from, to, circuit?} (routed between ports); text {text, at, size?, anchor?}; move {target, dx?, dy?, at?}; delete {target}; set_text {target, text}; bind {target, bind}; align {targets, how}; distribute {targets, axis, gap?}. An Oversikt (userscript 1.84.0): case {kind: cold|freezer, rect [x,y,w,h] | at+w+h, label, unit? | roles? {value, alarm, cooling, defrost: bind text or null}, wall?, caption?, room?, plug?, more?, ref?} draws the case in the template\'s blue and places its cluster (value, bell, cooling, defrost where his live panels hang them by how the case stands) and its name as a label object - as Copilot\'s oversikt.py does, number for number; room {rect, name} a grey room with its name inside; cluster {target, unit?|roles?, label?} a cluster on a case already drawn; name {text, over: [targets] | at} a name over a group of cases; legend {} the Symbolforklaring column; an arrangement symbol op takes cases: [name or {label, unit|roles} or null, ...] in its names\' order, or clusters: true. at is {x,y} (top left), {cx,cy}, or {near: target, side: right|left|above|below|on, gap?, align?: start|center|end}; free: true finds the nearest free place. A target is {cid}, {ref} (placed earlier in this edit), {object: name} (a panel object by its own name, object_N) or {find: {kind?, symbol?, obj_id?, text?, name?, layer?, circuit?, bind?, near?: [x, y], within?}} (the one thing that matches, nearest near, within 30 px); from/to add port (in, out, branch, tip, top, bottom, left, right). circuit: HP, Liquid, MT suction, LT suction, Heat recovery. dry_run: true plans without changing anything. The result opens in VectorCraft as a new document; the version before stays in its tab.',
     inputSchema: { type: 'object', properties: { ops: { type: 'array', items: { type: 'object' } }, dry_run: { type: 'boolean' }, partial: { type: 'boolean' }, preview: { type: 'boolean' } }, required: ['ops'], additionalProperties: false } },
   { name: 'iwmac_check', description: 'What is wrong with the drawing before the user syncs it: objects off the panel or on each other, symbols missing from the library or shown by objects, values without a pill, symbols overlapping, pipes that are not orthogonal, flow arrows not on a pipe running their way, drawn numbers or states, placeholders bound to no parameter of the plant.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -327,7 +382,8 @@ const INSTRUCTIONS = 'Reads and edits the IWMAC Designer panel open in VectorCra
   'layout conventions) and look at it with iwmac_preview. Find house symbols, IWMAC objects and the plant\'s parameters with iwmac_find. ' +
   'Change it with iwmac_edit - one batch of ops per request, dry_run first for a large one; each edit opens as a new document and ' +
   'iwmac_undo goes back. Run iwmac_check before telling the user it is done. You cannot sync: the user reviews and presses Ctrl+S in ' +
-  'VectorCraft. Load the iwmac-vectorcraft skill for IWMAC\'s layout rules, symbols, objects and bindings before drawing.';
+  'VectorCraft. Load the iwmac-vectorcraft skill for IWMAC\'s layout rules, symbols, objects and bindings before drawing. ' +
+  'For an Oversikt floor plan, case ops draw each case with its cluster and name in one go; iwmac_find cases gives their rows.';
 
 const text = v => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v) }] });
 
@@ -341,6 +397,33 @@ function sameDrawing() {
       ' - not the drawing you read. Nothing was changed. Read it with iwmac_scene first, and make sure it is the panel the user means.'
       : 'Read the drawing with iwmac_scene before changing it (plant ' + job.plant + ', panel ' + JSON.stringify(job.panel) + '). Nothing was changed.');
   }
+}
+
+/** An edit's cases with `unit` (userscript 1.84.0): each role the op does not give itself filled with the bind text of
+ *  that unit's row (caseRoles); what could not be is said. -> {ops, notes} */
+function fillUnits(ops) {
+  const notes = [], P = page && page.context.params;
+  const fill = (o, where) => {
+    if (!o || typeof o !== 'object' || o.unit === undefined || o.unit === null || o.unit === '') return o;
+    const out = Object.assign({}, o), u = unitOf(P, o.unit);
+    delete out.unit;
+    if (!u) { notes.push(where + ': no rows came for unit ' + JSON.stringify(o.unit) + ' - its cluster is placed unbound (iwmac_status says which units came)'); return out; }
+    const r = caseRoles(P, u), given = o.roles && typeof o.roles === 'object' ? o.roles : null, roles = {};
+    ['value', 'alarm', 'cooling', 'defrost'].forEach(k => {
+      if (given && Object.prototype.hasOwnProperty.call(given, k)) { if (given[k] !== false) roles[k] = given[k]; return; }
+      if (r[k]) roles[k] = r[k][1];
+    });
+    if (!roles.value && !roles.alarm) notes.push(where + ': unit ' + JSON.stringify(o.unit) + ' has no case rows (value, alarm) - its cluster is placed unbound');
+    out.roles = Object.keys(roles).length ? roles : undefined;
+    return out;
+  };
+  const out = (ops || []).map((o, i) => {
+    if (!o || typeof o !== 'object') return o;
+    if ((o.op === 'case' || o.op === 'cluster') && o.unit !== undefined) return fill(o, 'op ' + (i + 1));
+    if (o.op === 'symbol' && Array.isArray(o.cases)) return Object.assign({}, o, { cases: o.cases.map((e, j) => e && typeof e === 'object' ? fill(e, 'op ' + (i + 1) + ' case ' + (j + 1)) : e) });
+    return o;
+  });
+  return { ops: out, notes };
 }
 
 async function call(name, a) {
@@ -360,7 +443,9 @@ async function call(name, a) {
     case 'iwmac_find': return text(find(a));
     case 'iwmac_edit': {
       sameDrawing();
-      const r = await ask('edit', { ops: a.ops, dry_run: !!a.dry_run, partial: !!a.partial }, 180000);
+      const f = fillUnits(a.ops);
+      const r = await ask('edit', { ops: f.ops, dry_run: !!a.dry_run, partial: !!a.partial }, 180000);
+      if (r && f.notes.length) r.notes = (Array.isArray(r.notes) ? r.notes : []).concat(f.notes);
       if (a.preview && r && r.applied) {
         const p = await ask('preview', {}, 90000);
         return { content: [{ type: 'text', text: JSON.stringify(r) }, { type: 'image', data: p.data, mimeType: p.mime || 'image/jpeg' }] };

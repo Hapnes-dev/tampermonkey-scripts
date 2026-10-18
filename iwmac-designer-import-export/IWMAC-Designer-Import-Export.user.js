@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.83.2
+// @version      1.84.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.83.2';
+var IWDIE_VERSION = '1.84.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -10798,7 +10798,9 @@ function iwdieCbMedian(list) {
 /** What a drawing's own layout says (v1.64.0), for new things to follow it: the rows and columns of like symbols, with
  *  their spacing; the information column; each circuit with its colour, its pipes and its reach; where value objects sit
  *  by each kind of symbol; the text size and colour most used. `items` as the scene gives them (iwdieCbSceneItem);
- *  `size` {w, h}. -> {rows, columns, infoColumn, circuits, values, text} */
+ *  `size` {w, h}. An Oversikt's (v1.84.0): its cases, cooling and freezer, those with a value on them, its names as
+ *  label objects, its legend column and where its drawing area ends. -> {rows, columns, infoColumn, circuits, values,
+ *  text, oversikt?} */
 function iwdieCbFacts(items, size) {
   var sym = items.filter(function (it) { return it.kind === 'symbol' && it.symbol; });
   var lines = function (axis) {
@@ -10868,14 +10870,30 @@ function iwdieCbFacts(items, size) {
     if (it.colour) colours[it.colour] = (colours[it.colour] || 0) + 1;
   });
   var most = function (o) { var b = null; Object.keys(o).forEach(function (k) { if (b === null || o[k] > o[b]) b = k; }); return b; };
-  return { rows: lines('x'), columns: lines('y'), infoColumn: info, circuits: circuits, values: values,
+  var facts = { rows: lines('x'), columns: lines('y'), infoColumn: info, circuits: circuits, values: values,
     text: { size: most(sizes) ? +most(sizes) : null, colour: most(colours) } };
+  // an Oversikt (v1.84.0)
+  var cases = items.filter(function (it) { return iwdieOvCaseKind(it); });
+  if (cases.length) {
+    var vals = items.filter(function (o) { return o.kind === 'object' && (o.obj_id === 'number_v3_40px_no_conn_no_tag' || o.role === 'value'); });
+    var legend = items.some(function (it) { return (it.kind === 'text' && /symbolforklaring/i.test(it.text || '')) || (it.layer === 'Bakgrunn' && it.box && Math.abs(it.box.x - IWDIE_OV_LEGEND.x) < 2 && it.box.w > 200); });
+    var bare = cases.filter(function (c) {
+      return !vals.some(function (v) { var cx = v.box.x + v.box.w / 2, cy = v.box.y + v.box.h / 2; return cx >= c.box.x - 3 && cx <= c.box.x + c.box.w + 3 && cy >= c.box.y - 3 && cy <= c.box.y + c.box.h + 3; });
+    });
+    facts.oversikt = { cases: cases.length, cold: cases.filter(function (c) { return iwdieOvCaseKind(c) === 'cold'; }).length,
+      freezer: cases.filter(function (c) { return iwdieOvCaseKind(c) === 'freezer'; }).length, withoutValue: bare.map(function (c) { return c.cid; }),
+      names: items.filter(function (o) { return o.kind === 'object' && /^number_v3_label_/.test(o.obj_id || ''); }).length,
+      drawnText: items.filter(function (t) { return t.kind === 'text' && t.box && t.box.x < IWDIE_OV_LEGEND.x - 1; }).length,
+      legend: legend, areaRight: legend ? IWDIE_OV_LEGEND.x : (size && size.w) || 1400 };
+  }
+  return facts;
 }
 
 /** What is wrong with a drawing before it is synced (v1.64.0): an IWMAC object off the panel, live objects on each
  *  other, a symbol the library lacked, a symbol an object should show, a value with no pill under it, symbols on each
  *  other, a pipe that is not straight runs, drawn text that is a number or a state, and - given `opts.resolve(bind)`,
- *  which answers why a binding does not resolve or '' - a placeholder bound to nothing. -> [{level, rule, what, cids}] */
+ *  which answers why a binding does not resolve or '' - a placeholder bound to nothing. An Oversikt (v1.84.0: two cases
+ *  or more) also: a case with no value on it, a name drawn as text, no legend column. -> [{level, rule, what, cids}] */
 function iwdieCbCheck(items, size, opts) {
   opts = opts || {};
   var out = [], W = size && size.w ? size.w : 1400, H = size && size.h ? size.h : 750, st = iwdieSymTable();
@@ -10886,8 +10904,26 @@ function iwdieCbCheck(items, size, opts) {
     if (b.x < 0 || b.y < 0 || b.x + b.w > W + 0.5 || b.y + b.h > H + 0.5) add('error', 'CB-O01', (o.obj_id || 'an object') + ' lies off the ' + W + ' x ' + H + ' panel', [o.cid]);
   });
   var live = objs.filter(function (o) { return IWDIE_LIVE_ROLES[o.role]; });
+  // an Oversikt's cluster (v1.84.0): the house hangs the bell, the cooling and the defrost icon on the value's end, and
+  // cooling and defrost share one spot (one shows at a time), so the objects of one cluster lie on each other by design.
+  // A state or bell belongs to the nearest value within 10 px of it.
+  var ovValues = objs.filter(function (o) { return o.obj_id === IWDIE_OV_ROLE.value[0]; });
+  var ovBadge = function (o) { return /^V3_R_\d+px_circular_(alarm|cooling|defrost)/.test(o.obj_id || ''); };
+  var ownValue = function (o) {
+    var cx = o.box.x + o.box.w / 2, cy = o.box.y + o.box.h / 2, best = null, bd = Infinity;
+    ovValues.forEach(function (v) {
+      if (!iwdieCbHit(o.box, v.box, 10)) return;
+      var dx = v.box.x + v.box.w / 2 - cx, dy = v.box.y + v.box.h / 2 - cy, d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = v; }
+    });
+    return best;
+  };
+  var oneCluster = function (a, b) {
+    if (ovBadge(a) && ovBadge(b)) { var va = ownValue(a); return !!va && va === ownValue(b); }
+    return (ovBadge(a) && ownValue(a) === b) || (ovBadge(b) && ownValue(b) === a);
+  };
   for (var i = 0; i < live.length; i++) for (var j = i + 1; j < live.length; j++) {
-    if (iwdieCbHit(live[i].box, live[j].box, -1)) add('error', 'CB-O02', live[i].obj_id + ' and ' + live[j].obj_id + ' lie on each other', [live[i].cid, live[j].cid]);
+    if (iwdieCbHit(live[i].box, live[j].box, -1) && !oneCluster(live[i], live[j])) add('error', 'CB-O02', live[i].obj_id + ' and ' + live[j].obj_id + ' lie on each other', [live[i].cid, live[j].cid]);
   }
   var syms = items.filter(function (it) { return it.kind === 'symbol'; });
   syms.forEach(function (s) {
@@ -10923,6 +10959,27 @@ function iwdieCbCheck(items, size, opts) {
       if (why) add('warning', 'CB-B01', why, [it.cid]);
     }
   });
+  // an Oversikt (v1.84.0): each case its value; every name a label object (Thomas, 2026-10-16: "should have been object
+  // text that is renamed instead"); the legend column
+  var cases = items.filter(function (it) { return iwdieOvCaseKind(it); });
+  if (cases.length >= 2) {
+    var values = objs.filter(function (o) { return /^number_v3_(40px|30px|50px|60px)?_?(no_conn|value)|^number_v3_value_only/.test(o.obj_id || '') || o.role === 'value'; });
+    cases.forEach(function (c) {
+      if (c.kind === 'object' && !/^number_v3_R_dummy_/.test(c.obj_id || '')) return;
+      var b = c.box, on = values.some(function (v) {
+        var cx = v.box.x + v.box.w / 2, cy = v.box.y + v.box.h / 2;
+        return cx >= b.x - 3 && cx <= b.x + b.w + 3 && cy >= b.y - 3 && cy <= b.y + b.h + 3;
+      });
+      if (!on) add('warning', 'CB-C01', 'the case at (' + Math.round(b.x) + ', ' + Math.round(b.y) + ') has no value on it: {op: cluster, target: {cid: "' + c.cid + '"}} hangs its cluster on it', [c.cid]);
+    });
+    items.forEach(function (it) {
+      if (it.kind !== 'text' || !it.box || it.box.x >= IWDIE_OV_LEGEND.x - 1 || !String(it.text || '').trim()) return;
+      if (/^\s*[-+]?\d+([.,]\d+)?\s*(%|°c|°|bar|k|kw|kwh|rpm|hz|a|v)?\s*$|^\s*(on|off|auto|ok|alarm|running|stopped|av|på)\s*$/i.test(it.text || '')) return;
+      add('warning', 'CB-C02', 'the name "' + it.text + '" is drawn as text: on an Oversikt every name is a label object - delete it and place it with a name or case op', [it.cid]);
+    });
+    var legend = items.some(function (it) { return (it.kind === 'text' && /symbolforklaring/i.test(it.text || '')) || (it.layer === 'Bakgrunn' && it.box && Math.abs(it.box.x - IWDIE_OV_LEGEND.x) < 2 && it.box.w > 200); });
+    if (!legend) add('info', 'CB-C03', 'no legend column (Symbolforklaring): {op: legend} draws the house\'s', []);
+  }
   // flow arrows (v1.64.2): each on a pipe that runs its way - unless a pipe with a curve might be under it
   iwdieCbStrayArrows(items).forEach(function (s) {
     add('warning', 'CB-F01', s.symbol + ' at (' + Math.round(s.box.x) + ', ' + Math.round(s.box.y) + ') is not on a pipe running its way: an arrow shows a pipe\'s flow', [s.cid]);
@@ -11125,6 +11182,350 @@ function iwdieVcEditFile(doc, job) {
   return { ok: !problems.length, ops: ops || [], problems: problems, summary: typeof doc.summary === 'string' ? doc.summary : '', plant: doc.plant, panel: doc.panel };
 }
 
+/* ===================== An Oversikt's cases through Claude's bridge (v1.84.0) =====================
+   Thomas, 2026-10-18: "kan du gå over MCP for se om du finner noen forbedringer slik at den kan enkelt hjelpe meg lage
+   oversiktbilder". The bridge's ops drew a Maskin; an Oversikt also wants each case's cluster - its value in the middle,
+   the bell, the cooling and the defrost where his live panels hang them by how the case stands - and its name as a label
+   object in the first free spot, a walk-in room's inside it. These are the Copilot kit's oversikt.py (copilot-skill/
+   iwmac-overview-picture) ported number for number, so a case placed through MCP or an edit file and one Copilot builds
+   look alike; the kit's tests hold the two to each other. */
+
+/** The Oversikt template's colours as his v6 pictures use them (oversikt.py's PALETTE): cooling cases and cold rooms
+ *  light blue, freezer cases and freezer rooms dark blue, the rooms that are no cooling position light grey. */
+var IWDIE_OV_PALETTE = { cold: '#b0e0ef', freezer: '#8eb2d1', room: '#e4e7ea' };
+
+/** A case's cluster (oversikt.py's ROLE): each role's object kind, its width and its height. */
+var IWDIE_OV_ROLE = {
+  value: ['number_v3_40px_no_conn_no_tag', 42, 22], alarm: ['V3_R_34px_circular_alarm_nrm', 34, 34],
+  cooling: ['V3_R_28px_circular_cooling_nrm', 28, 28], defrost: ['V3_R_28px_circular_defrost_nrm', 28, 28]
+};
+var IWDIE_OV_ROLES = ['value', 'alarm', 'cooling', 'defrost'];
+
+/** A case's name: a 12 px label object, 14 high (oversikt.py's LABEL). */
+var IWDIE_OV_LABEL = 'number_v3_label_12px_norm';
+
+/** Where a cluster hangs its bell and its states, from its value's top left, by how its case stands - Thomas's live
+ *  Oversikt panels, measured 2026-10-16 (4632's 119 objects, 10112's wall cases): the first spot first, the rest in
+ *  order where it is taken (oversikt.py's HOUSE). `compact`: the bell above, the states below (its COMPACT). */
+var IWDIE_OV_HOUSE = {
+  lying: { alarm: [[31, -22], [31, 10], [-23, -22], [4, -36], [4, 24]], state: [[34, 5], [-34, 5], [7, 23], [7, -31]] },
+  'lying-bottom': { alarm: [[4, -36], [31, -22], [-23, -22]], state: [[34, 5], [-34, 5], [7, 23]] },
+  upright: { alarm: [[29, 15], [29, -27], [4, -36], [4, 24]], state: [[6, 24], [6, -30], [29, -6]] },
+  'column-L': { alarm: [[-36, -6], [4, -36], [4, 24], [-20, -30], [-20, 18]], state: [[-30, 18], [-30, -24], [7, 24], [7, -30]] },
+  'column-R': { alarm: [[44, -6], [4, -36], [4, 24], [28, -30], [28, 18]], state: [[44, 18], [44, -24], [7, 24], [7, -30]] },
+  'row-T': { alarm: [[31, -22], [20, -40], [4, -36], [-23, -22]], state: [[34, 5], [-34, 5]] },
+  'row-B': { alarm: [[31, 10], [20, 30], [4, 24], [-23, 10]], state: [[34, 5], [-34, 5]] }
+};
+var IWDIE_OV_COMPACT = { alarm: [4, -35], cooling: [7, 23], defrost: [7, 23] };
+
+/** Arial's advance widths in thousandths of the size: characters 32 to 126, then some beyond (the kit's check.py ARIAL
+ *  and LATIN1) - how wide oversikt.py measures a name. */
+var IWDIE_OV_ARIAL = [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556,
+  556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722,
+  778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556,
+  222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584];
+var IWDIE_OV_LATIN1 = {"°": 400, "Æ": 1000, "Ø": 778, "Å": 667, "æ": 889, "ø": 611, "å": 556, "é": 556, "è": 556, "ü": 556, "ö": 556, "ä": 556, "Ö": 778, "Ä": 667, "Ü": 722, "µ": 556, "²": 333, "³": 333, "·": 278, "–": 556, "—": 1000, "×": 584};
+
+/** The legend column, Symbolforklaring, as his v6 Oversikt pictures draw it: the kit's assets/oversikt-legend.json, cut
+ *  from 10112 Bunnpris Betna's v6 .ai, its symbols written out in place. `shapes` go in Bakgrunn, `words` in Tekst; the
+ *  drawing area ends where it begins. */
+var IWDIE_OV_LEGEND = { x: 1151.25, shapes: "<g data-name=\"Symbolforklaring\"><g id=\"Grå_Side\"><rect x=\"1151.25\" width=\"248.75\" height=\"750\" fill=\"#cdd2d7\"></rect></g><g><path d=\"M1190.03,103.65c-6.06,0-11-4.93-11-11s4.94-11,11-11h40c6.07,0,11,4.94,11,11s-4.93,11-11,11H1190.03Z\" fill=\"#f3c96a\"></path><path d=\"M1230.03,82.65c5.53,0,10,4.48,10,10s-4.47,10-10,10h-40c-5.52,0-10-4.47-10-10s4.48-10,10-10H1230.03M1230.03,80.65h-40c-6.61,0-12,5.39-12,12s5.39,12,12,12h40c6.62,0,12-5.38,12-12S1236.65,80.65,1230.03,80.65H1230.03Z\" fill=\"#e6e8ea\"></path></g><g><path d=\"M1190.03,143.87c-6.06,0-11-4.94-11-11s4.94-11,11-11h40c6.07,0,11,4.93,11,11s-4.93,11-11,11H1190.03Z\" fill=\"#b0e0ef\"></path><path d=\"M1230.03,122.87c5.53,0,10,4.47,10,10s-4.47,10-10,10h-40c-5.52,0-10-4.48-10-10s4.48-10,10-10H1230.03M1230.03,120.87h-40c-6.61,0-12,5.38-12,12s5.39,12,12,12h40c6.62,0,12-5.39,12-12S1236.65,120.87,1230.03,120.87H1230.03Z\" fill=\"#e6e8ea\"></path></g><g><path d=\"M1190.03,184.08c-6.06,0-11-4.93-11-11s4.94-11,11-11h40c6.07,0,11,4.94,11,11s-4.93,11-11,11H1190.03Z\" fill=\"#8eb2d1\"></path><path d=\"M1230.03,163.08c5.53,0,10,4.48,10,10s-4.47,10-10,10h-40c-5.52,0-10-4.48-10-10s4.48-10,10-10H1230.03M1230.03,161.08h-40c-6.61,0-12,5.38-12,12s5.39,12,12,12h40c6.62,0,12-5.38,12-12S1236.65,161.08,1230.03,161.08H1230.03Z\" fill=\"#e6e8ea\"></path></g><g transform=\"translate(1198.0331 281.7252)\"><g><g><path d=\"M12,23c-6.07,0-11-4.93-11-11S5.93,1,12,1s11,4.93,11,11S18.07,23,12,23Z\" fill=\"#3c505e\"></path><path d=\"M12,2c5.51,0,10,4.49,10,10s-4.49,10-10,10S2,17.51,2,12,6.49,2,12,2M12,0C5.37,0,0,5.37,0,12s5.37,12,12,12,12-5.37,12-12S18.63,0,12,0H12Z\" fill=\"#fff\"></path></g><g><g><line x1=\"12\" y1=\"4\" x2=\"12\" y2=\"20\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></line><polyline points=\"14.44 5.98 12 8.42 9.56 5.98\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline><polyline points=\"9.56 18.02 12 15.58 14.44 18.02\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline></g><g><line x1=\"5.08\" y1=\"8\" x2=\"18.92\" y2=\"16\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></line><polyline points=\"8.01 6.88 8.9 10.21 5.58 11.1\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline><polyline points=\"15.99 17.12 15.1 13.79 18.42 12.9\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline></g><g><line x1=\"18.92\" y1=\"8\" x2=\"5.08\" y2=\"16\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></line><polyline points=\"18.42 11.1 15.1 10.21 15.99 6.88\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline><polyline points=\"5.58 12.9 8.9 13.79 8.01 17.12\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline></g></g></g></g><g transform=\"translate(1198.0331 321.9398)\"><g><g><path d=\"M12,23c-6.07,0-11-4.93-11-11S5.93,1,12,1s11,4.93,11,11S18.07,23,12,23Z\" fill=\"#3c505e\"></path><path d=\"M12,2c5.51,0,10,4.49,10,10s-4.49,10-10,10S2,17.51,2,12,6.49,2,12,2M12,0C5.37,0,0,5.37,0,12s5.37,12,12,12,12-5.37,12-12S18.63,0,12,0H12Z\" fill=\"#fff\"></path></g><g><path d=\"M12.53,15.86c0,1.37-1.11,2.48-2.48,2.48s-2.48-1.11-2.48-2.48c0-2.12,2.48-5.81,2.48-5.81C10.05,10.05,12.53,13.74,12.53,15.86Z\" fill=\"#fff\"></path><path d=\"M16.43,10.06c0,.96-.77,1.73-1.73,1.73s-1.72-.77-1.72-1.73c0-1.48,1.72-4.04,1.72-4.04C14.7,6.02,16.43,8.58,16.43,10.06Z\" fill=\"#fff\"></path></g></g></g><g transform=\"translate(1193.0331 236.5106)\"><g><g><path d=\"M17,33c-8.82,0-16-7.18-16-16S8.18,1,17,1s16,7.18,16,16S25.82,33,17,33Z\" fill=\"#ee473b\"></path><path d=\"M17,2c8.27,0,15,6.73,15,15s-6.73,15-15,15S2,25.27,2,17,8.73,2,17,2M17,0C7.61,0,0,7.61,0,17s7.61,17,17,17,17-7.61,17-17S26.39,0,17,0H17Z\" fill=\"#fff\"></path></g><g id=\"Alarm_Active_Button\"><g><g><path d=\"M24.63,12.66l-1.39,1.27c2.52,2.77,2.52,7.27,0,10.04l1.39,1.27C27.79,21.77,27.79,16.13,24.63,12.66\" fill=\"#fff\"></path><path d=\"M10.76,13.93l-1.39-1.27c-3.16,3.47-3.16,9.11,0,12.58l1.39-1.27C8.24,21.2,8.24,16.7,10.76,13.93\" fill=\"#fff\"></path><rect x=\"10.17\" y=\"20.09\" width=\"13.67\" height=\"1.95\" fill=\"#fff\"></rect><path d=\"M17,5.45c.54,0,.98.43.98.97s-.44.98-.98.98-.98-.44-.98-.98S16.46,5.45,17,5.45\" fill=\"#fff\"></path><path d=\"M18.45,23.15c-.77.47-2.13.47-2.9,0l-.83-.5-1.01,1.67.83.51c.69.41,1.58.62,2.46.62s1.77-.21,2.46-.62l.83-.51-1.01-1.67L18.45,23.15Z\" fill=\"#fff\"></path><path d=\"M14.33,11.76c.93-1.09,1.59-1.43,2.67-1.43s1.74.34,2.67,1.43c.1,4.01,1.78,8.33,4.16,8.33v-1.96c-.53-.05-2.21-2.59-2.21-6.72v-.35l-.22-.27c-1.2-1.49-2.36-2.41-4.4-2.41s-3.2.92-4.4,2.41l-.22.27v.35c0,4.13-1.68,6.67-2.21,6.72v1.96C12.55,20.09,14.23,15.77,14.33,11.76\" fill=\"#fff\"></path></g></g></g></g></g><g><rect x=\"1209.1\" y=\"378.2\" width=\"1.88\" height=\"10\" fill=\"#3d4f5f\"></rect><path d=\"M1214.32,369.97c-1.15-1.14-2.67-1.77-4.29-1.77s-3.14.63-4.28,1.77c-1.15,1.15-1.78,2.67-1.78,4.29s.63,3.14,1.78,4.29l1.32-1.33c-.79-.79-1.22-1.84-1.22-2.96s.43-2.17,1.22-2.96c1.58-1.58,4.34-1.58,5.92,0,.8.79,1.23,1.84,1.23,2.96s-.43,2.17-1.23,2.96l1.33,1.33c1.15-1.15,1.78-2.67,1.78-4.29S1215.47,371.12,1214.32,369.97\" fill=\"#3d4f5f\"></path><path d=\"M1210.03,373.04c.61,0,1.1.49,1.1,1.1s-.49,1.09-1.1,1.09-1.09-.49-1.09-1.09S1209.43,373.04,1210.03,373.04\" fill=\"#3d4f5f\"></path></g><g><g><path d=\"M1215.01,410.67l-3.18,3.18,1.48,1.49,3.19-3.19c.41-.41.41-1.07,0-1.48S1215.42,410.26,1215.01,410.67Z\" fill=\"#3c505e\"></path><path d=\"M1218.16,413.81l-3.19,3.19,1.49,1.48,3.18-3.18c.42-.41.42-1.08,0-1.49S1218.57,413.4,1218.16,413.81Z\" fill=\"#3c505e\"></path></g><path d=\"M1210.34,412.36l-1.29,1.29c-2.1,2.1-2.1,5.51,0,7.61s5.51,2.1,7.61,0l1.29-1.29\" fill=\"none\" stroke=\"#3d4f5f\" stroke-miterlimit=\"10\" stroke-width=\"2\"></path><path d=\"M1209.05,421.26l-2.09,2.09c-.78.78-2.05.78-2.83,0l-.52-.52c-.77-.77-1.99-1.42-2.69-1.43l-1.29-.02\" fill=\"none\" stroke=\"#3d4f5f\" stroke-miterlimit=\"10\" stroke-width=\"2\"></path></g><g><g><path d=\"M1210.03,226.55c-7.3,0-13.25-5.95-13.25-13.25s5.95-13.25,13.25-13.25,13.25,5.94,13.25,13.25S1217.34,226.55,1210.03,226.55Z\" fill=\"#ee473b\"></path><path d=\"M1210.03,200.8c6.9,0,12.5,5.6,12.5,12.5s-5.6,12.5-12.5,12.5-12.5-5.61-12.5-12.5S1203.14,200.8,1210.03,200.8M1210.03,199.3c-7.73,0-14,6.26-14,14s6.27,14,14,14,14-6.27,14-14S1217.77,199.3,1210.03,199.3H1210.03Z\" fill=\"#fff\"></path></g><line x1=\"1210.03\" y1=\"207.17\" x2=\"1210.03\" y2=\"219.42\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\" stroke-width=\"2\"></line><g><polyline points=\"1200.75 207.85 1206.19 213.3 1200.75 218.74\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\" stroke-width=\"2\"></polyline><polyline points=\"1219.31 218.74 1213.87 213.3 1219.31 207.85\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\" stroke-width=\"2\"></polyline></g></g></g>", words: "<g data-name=\"Symbolforklaring\"><text x=\"1178.97\" y=\"58.55\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"18\" fill=\"#3c505e\">Symbolforklaring</text><text x=\"1253.64\" y=\"96.49\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Varme</text><text x=\"1253.64\" y=\"136.43\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Kjøl</text><text x=\"1253.64\" y=\"177.37\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Frys</text><text x=\"1253.64\" y=\"218.31\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Kommunikasjonsfeil</text><text x=\"1253.64\" y=\"255.99\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Alarm</text><text x=\"1253.64\" y=\"297\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Kjøl/Frys pågår</text><text x=\"1253.64\" y=\"339.02\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Avriming pågår</text><text x=\"1253.64\" y=\"383.54\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">IWT</text><text x=\"1253.64\" y=\"421.6\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Plugin</text></g>" };
+
+/** How wide a case's name is as a label object: Arial at 12 px, rounded up, 2 over (oversikt.py's text_w + 2). -> px */
+function iwdieOvNameWidth(text) {
+  var w = 0;
+  String(text == null ? '' : text).split('').forEach(function (ch) {
+    var o = ch.charCodeAt(0);
+    w += o >= 32 && o <= 126 ? IWDIE_OV_ARIAL[o - 32] : (IWDIE_OV_LATIN1[ch] || 556);
+  });
+  return Math.ceil(w * 12 / 1000) + 2;
+}
+
+/** Python's round half up as oversikt.py rounds a place (math.floor(v + 0.5)). */
+function iwdieOvRhu(v) { return Math.floor(v + 0.5); }
+
+/** How a case stands (oversikt.py's stance): lying (wider than tall), lying on a bottom wall, standing - mirrored on a
+ *  right-hand wall - or one column of an island (another standing box beside it, the same height, 4 px or less away). A
+ *  lying row with a box straight below it is an island's top row (row-T), one with a box straight above it its bottom
+ *  row (row-B); a standing end with the island straight to its right takes the mirrored spots. `box` [x, y, w, h];
+ *  `all` [[key, [x, y, w, h]]] every case of the drawing in order, this one among them as `key`; `wall` top, left,
+ *  right or bottom. -> lying | lying-bottom | row-T | row-B | upright | upright-right | column-L | column-R */
+function iwdieOvStance(key, box, all, wall) {
+  var x = box[0], y = box[1], w = box[2], h = box[3];
+  var across = function (a0, a1, b0, b1) { return Math.min(a1, b1) - Math.max(a0, b0) > 2; };
+  var others = (all || []).filter(function (e) { return e[0] !== key; }).map(function (e) { return e[1]; });
+  if (w >= h) {
+    if (wall === 'bottom') return 'lying-bottom';
+    var below = others.some(function (b) { var g = b[1] - (y + h); return across(x, x + w, b[0], b[0] + b[2]) && g >= 0 && g <= 4; });
+    var above = others.some(function (b) { var g = y - (b[1] + b[3]); return across(x, x + w, b[0], b[0] + b[2]) && g >= 0 && g <= 4; });
+    return below && !above ? 'row-T' : above && !below ? 'row-B' : 'lying';
+  }
+  for (var i = 0; i < others.length; i++) {
+    var b = others[i];
+    if (b[2] >= b[3] || Math.abs(b[1] - y) > 3 || Math.abs((b[1] + b[3]) - (y + h)) > 3) continue;
+    var r = b[0] - (x + w), l = x - (b[0] + b[2]);
+    if (r >= 0 && r <= 4) return 'column-L';
+    if (l >= 0 && l <= 4) return 'column-R';
+  }
+  if (others.some(function (b) { var g = b[0] - (x + w); return b[2] >= b[3] && across(y, y + h, b[1], b[1] + b[3]) && g >= 0 && g <= 4; })) return 'upright-right';
+  return wall === 'right' ? 'upright-right' : 'upright';
+}
+
+/** The spots of each role of a cluster for a case standing `st` (oversikt.py's offsets_for): {alarm, cooling, defrost:
+ *  [[dx, dy], ...]} from the value's top left. `anatomy` house (the default), compact, or {role: [dx, dy]} another
+ *  chain's, measured on its own Oversikt. Mirrored for a right-hand wall: dx' = 42 - dx - the object's width. */
+function iwdieOvOffsets(st, anatomy) {
+  if (anatomy === 'compact') return { alarm: [IWDIE_OV_COMPACT.alarm], cooling: [IWDIE_OV_COMPACT.cooling], defrost: [IWDIE_OV_COMPACT.defrost] };
+  if (anatomy && typeof anatomy === 'object') {
+    var own = {};
+    Object.keys(anatomy).forEach(function (r) { own[r] = [anatomy[r]]; });
+    return own;
+  }
+  var base = IWDIE_OV_HOUSE[st === 'upright-right' ? 'upright' : st] || IWDIE_OV_HOUSE.lying, alarm = base.alarm, state = base.state;
+  if (st === 'upright-right') {
+    var mirror = function (list, w) { return list.map(function (p) { return [42 - p[0] - w, p[1]]; }); };
+    alarm = mirror(alarm, 34); state = mirror(state, 28);
+  }
+  return { alarm: alarm, cooling: state, defrost: state };
+}
+
+/** Where a case's value goes (oversikt.py): an island's left column right in its box, its right column left, every other
+ *  case in its middle. -> [x, y], its top left */
+function iwdieOvValueAt(box, st) {
+  var x = box[0], y = box[1], w = box[2], h = box[3];
+  return [iwdieOvRhu(st === 'column-L' ? x + w - 42 : st === 'column-R' ? x : x + (w - 42) / 2), iwdieOvRhu(y + (h - 22) / 2)];
+}
+
+/** Where a case's name may go, first choice first (oversikt.py's candidates): by how it stands, `caption` (below, above,
+ *  left, right, inside, none, auto) first; a walk-in room's inside its top left; an arrangement's case first where the
+ *  template writes its name (`nameAt` {x, y, just}). `nw` the name's width. -> [[x, y], ...] */
+function iwdieOvNameSpots(box, st, nw, caption, nameAt) {
+  var x = box[0], y = box[1], w = box[2], h = box[3], mid = x + w / 2 - nw / 2, side = caption || 'auto';
+  var below = [[mid, y + h + 3], [x, y + h + 3], [x + w - nw, y + h + 3]], above = [[mid, y - 17], [x, y - 17], [x + w - nw, y - 17]];
+  var right = [[x + w + 4, y + 1], [x + w + 4, y - 2], [x + w + 4, y + h - 15]], left = [[x - 4 - nw, y + 1], [x - 4 - nw, y - 2], [x - 4 - nw, y + h - 15]];
+  if (side === 'none') return [];
+  if (side === 'inside' || st === 'room') return [[x + 6, y + 5]];
+  var auto = {
+    lying: below.concat(above, right, left), 'lying-bottom': below.concat(above, right, left),
+    'row-T': above.concat(right, left, below), 'row-B': below.concat(right, left, above),
+    upright: right.concat(left, below, above), 'upright-right': left.concat(right, below, above),
+    'column-L': left.concat([[x - 17 - nw, y + h - 15], [x - nw, y - 17]], below, above),
+    'column-R': right.concat([[x + w + 17, y + h - 15], [x + w, y - 17]], below, above)
+  }[st] || below.concat(above, right, left);
+  var first = { below: below, above: above, left: left, right: right }[side] || [];
+  if (nameAt && side === 'auto') first = [[nameAt.just === 'L' ? nameAt.x : nameAt.just === 'R' ? nameAt.x - nw : nameAt.x - nw / 2, nameAt.y - 7]];
+  return first.concat(auto);
+}
+
+/** What is taken on an Oversikt, as oversikt.py's Layout keeps it: boxes [x0, y0, x1, y1, tag], tag `case:key`,
+ *  `value:key`, `member:key`, `room`, `label`, `plug`, `obj` ... A box is free inside the drawing area - 2 px in, to 3 px
+ *  short of `right` (the legend's left edge) - and off every taken box but those `ignore` names (a tag, or its part
+ *  before the colon), 1.5 px apart. -> {taken, free(box, ignore), take(box, tag)} */
+function iwdieOvLayout(right, bottom) {
+  var taken = [];
+  var hit = function (a, b) { var p = 1.5; return a[0] < b[2] + p && b[0] < a[2] + p && a[1] < b[3] + p && b[1] < a[3] + p; };
+  return {
+    taken: taken, hit: hit,
+    free: function (b, ignore) {
+      if (b[0] < 2 || b[1] < 2 || b[2] > right - 3 || b[3] > bottom - 2) return false;
+      ignore = ignore || [];
+      return !taken.some(function (t) { return ignore.indexOf(t[4]) < 0 && ignore.indexOf(String(t[4]).split(':')[0]) < 0 && hit(b, t); });
+    },
+    take: function (b, tag) { taken.push([b[0], b[1], b[2], b[3], tag]); }
+  };
+}
+
+/** The clusters and names of an Oversikt's cases (oversikt.py's build, from its values on): `cases` in order, each
+ *  {key, box [x, y, w, h], wall?, room? (a walk-in room), roles? ({role: bind text | null}, absent: its value and its
+ *  alarm), label?, caption?, nameAt?}; `rooms` [{key, box, name}] (no cooling position: its name inside its top left);
+ *  `free` [{key, text, over?: [[x, y, w, h]], at?: [x, y]}] names of no single case, placed last (oversikt.py's labels);
+ *  `all` [[key, box]] every case of the drawing for how each stands; `lay` an iwdieOvLayout with what the drawing has
+ *  taken already. Every value first, then each arrangement's names where the template writes them, then the bells and
+ *  states - each at the first spot clear of every other case, else of every other object - then the names.
+ *  -> {objects: [{key, role, obj_id, box: {x, y, w, h}, bind}], names: [{key, text, box}], gaps: [why]} */
+function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
+  var objects = [], names = [], gaps = [], plan = [], reserved = {};
+  (cases || []).forEach(function (c) {
+    var st = c.room ? 'room' : iwdieOvStance(c.key, c.box, all, c.wall), v = iwdieOvValueAt(c.box, st);
+    lay.take([v[0], v[1], v[0] + 42, v[1] + 22], 'value:' + c.key);
+    plan.push({ c: c, st: st, vx: v[0], vy: v[1] });
+  });
+  // an arrangement's names where the template writes them, before the bells take their spots - unless one would lie on
+  // its own bell's first spot: that name goes beside the case afterwards
+  plan.forEach(function (p) {
+    var c = p.c;
+    if (!c.nameAt || (c.caption || 'auto') !== 'auto') return;
+    var text = c.label || c.key, nw = iwdieOvNameWidth(text), n = c.nameAt;
+    var bx = iwdieOvRhu(n.just === 'L' ? n.x : n.just === 'R' ? n.x - nw : n.x - nw / 2), by = iwdieOvRhu(n.y - 7), nb = [bx, by, bx + nw, by + 14];
+    var roles = c.roles || { value: null, alarm: null };
+    if (roles.alarm !== undefined && p.st !== 'room') {
+      var a = iwdieOvOffsets(p.st, anatomy).alarm[0];
+      if (lay.hit(nb, [p.vx + a[0], p.vy + a[1], p.vx + a[0] + 34, p.vy + a[1] + 34])) return;
+    }
+    if (lay.free(nb)) { lay.take(nb, 'label'); reserved[c.key] = [bx, by]; }
+  });
+  plan.forEach(function (p) {
+    var c = p.c, roles = c.roles || { value: null, alarm: null }, spots = iwdieOvOffsets(p.st === 'room' ? 'lying' : p.st, anatomy), stateAt = null;
+    var mine = ['case:' + c.key, 'room:' + c.key, 'value:' + c.key, 'member:' + c.key];
+    IWDIE_OV_ROLES.forEach(function (role) {
+      if (roles[role] === undefined) return;
+      var R = IWDIE_OV_ROLE[role], ow = R[1], oh = R[2], px, py;
+      if (role === 'value') { px = p.vx; py = p.vy; }
+      else {
+        if (!spots[role]) { gaps.push(c.key + ' ' + role + ': the anatomy has no spot for it'); return; }
+        if (role === 'defrost' && stateAt) { px = stateAt[0]; py = stateAt[1]; }
+        else {
+          var hitAt = null;
+          [mine.concat(['room']), mine.concat(['case', 'room'])].some(function (ignore) {
+            hitAt = null;
+            spots[role].some(function (d) {
+              var b = [p.vx + d[0], p.vy + d[1], p.vx + d[0] + ow, p.vy + d[1] + oh];
+              if (lay.free(b, ignore)) { hitAt = [b[0], b[1]]; return true; }
+              return false;
+            });
+            return !!hitAt;
+          });
+          if (!hitAt) {
+            hitAt = [p.vx + spots[role][0][0], p.vy + spots[role][0][1]];
+            gaps.push(c.key + ' ' + role + ': no free spot near its value; placed at its first spot');
+          }
+          px = hitAt[0]; py = hitAt[1];
+          if (role === 'cooling' || role === 'defrost') stateAt = [px, py];
+        }
+        lay.take([px, py, px + ow, py + oh], 'member:' + c.key);
+      }
+      objects.push({ key: c.key, role: role, obj_id: R[0], box: { x: px, y: py, w: ow, h: oh }, bind: roles[role] ? String(roles[role]) : '' });
+    });
+  });
+  // the names, as label objects: the rooms' inside their top left first, then each case's in the first free spot for how
+  // it stands, a walk-in room's inside it
+  var todo = [];
+  (rooms || []).forEach(function (r) { todo.push({ key: r.key, text: r.name, spots: [[r.box[0] + 6, r.box[1] + 5]], kind: 'inside' }); });
+  plan.forEach(function (p) {
+    var c = p.c, text = c.label || c.key;
+    if (reserved[c.key]) { todo.push({ key: c.key, text: text, spots: [reserved[c.key]], kind: 'taken' }); return; }
+    todo.push({ key: c.key, text: text, spots: iwdieOvNameSpots(c.box, p.st, iwdieOvNameWidth(text), c.caption, c.nameAt), kind: p.st === 'room' ? 'room' : 'case' });
+  });
+  // a name of no single case: above the cases it is over - centred, then a line higher, up to five, then over their left
+  // end - or at its point
+  (free || []).forEach(function (f) {
+    if (f.at) { todo.push({ key: f.key, text: f.text, spots: [f.at], kind: 'free' }); return; }
+    var over = f.over || [];
+    if (!over.length) return;
+    var x0 = Math.min.apply(null, over.map(function (b) { return b[0]; })), x1 = Math.max.apply(null, over.map(function (b) { return b[0] + b[2]; }));
+    var top = Math.min.apply(null, over.map(function (b) { return b[1]; })), nw = iwdieOvNameWidth(f.text), spots = [];
+    for (var k = 0; k < 5; k++) spots.push([(x0 + x1) / 2 - nw / 2, top - 17 - 16 * k]);
+    spots.push([x0, top - 36]);
+    todo.push({ key: f.key, text: f.text, spots: spots, kind: 'free' });
+  });
+  todo.forEach(function (t) {
+    if (!t.spots.length || !String(t.text || '').trim()) return;
+    var nw = iwdieOvNameWidth(t.text), ignore = t.kind === 'room' || t.kind === 'inside' ? ['room'] : [], at = null;
+    t.spots.some(function (s) {
+      var b = [iwdieOvRhu(s[0]), iwdieOvRhu(s[1]), iwdieOvRhu(s[0]) + nw, iwdieOvRhu(s[1]) + 14];
+      if (t.kind === 'taken' || lay.free(b, ignore)) { at = s; return true; }
+      return false;
+    });
+    if (!at) { at = t.spots[0]; gaps.push('the name ' + JSON.stringify(t.text) + ': no free spot; placed at its first'); }
+    var nb = { x: iwdieOvRhu(at[0]), y: iwdieOvRhu(at[1]), w: nw, h: 14 };
+    names.push({ key: t.key, text: String(t.text), box: nb });
+    if (t.kind !== 'taken') lay.take([nb.x, nb.y, nb.x + nw, nb.y + 14], 'label');
+  });
+  return { objects: objects, names: names, gaps: gaps };
+}
+
+/** A thing of the drawing an Oversikt's clusters stand on (v1.84.0): a case drawn in the light or dark blue of the
+ *  template (iwdieCbClassify's `case`), one of the template's case pieces (Kjøl…, Frys…), or the Designer's own case box
+ *  (number_v3_R_dummy_…, the boxes a picture read into a drawing makes). -> 'cold' | 'freezer' | '' */
+function iwdieOvCaseKind(it) {
+  if (!it) return '';
+  if (it.kind === 'case') return it.ov || 'cold';
+  if (it.kind === 'symbol' && !it.group) return /^kjøl|^kjol/i.test(it.symbol || '') ? 'cold' : /^frys/i.test(it.symbol || '') ? 'freezer' : '';
+  if (it.kind === 'object') return /^number_v3_R_dummy_(medium|cool)/i.test(it.obj_id || '') ? 'cold' : /^number_v3_R_dummy_(low|freez)/i.test(it.obj_id || '') ? 'freezer' : '';
+  return '';
+}
+
+/** A case's or a room's box from its op (v1.84.0): `rect` [x, y, w, h], else `at` with `w` and `h` (iwdieCbPlan's place).
+ *  -> {x, y, w, h} | null */
+function iwdieOvBoxOf(o, place, i) {
+  var r = function (v) { return Math.round(v * 10) / 10; };
+  if (Array.isArray(o.rect) && o.rect.length === 4 && o.rect.every(function (v) { return isFinite(v); }) && +o.rect[2] > 0 && +o.rect[3] > 0) {
+    return { x: r(+o.rect[0]), y: r(+o.rect[1]), w: r(+o.rect[2]), h: r(+o.rect[3]) };
+  }
+  if (!(+o.w > 0 && +o.h > 0)) return null;
+  return place(o.at, +o.w, +o.h, i);
+}
+
+/** A case's roles from its op (v1.84.0): {value, alarm, cooling, defrost} each a bind text, null (placed unbound) or
+ *  absent (not placed); none given, its value and its alarm, as oversikt.py's draft; `false` none at all. A role it
+ *  does not know fails the op. -> roles | null (the default) | false (the op failed) */
+function iwdieOvRolesOf(roles, key, fail, i) {
+  if (roles === undefined || roles === null) return null;
+  if (roles === false) return {};
+  if (typeof roles !== 'object' || Array.isArray(roles)) { fail(i, 'roles is {value, alarm, cooling, defrost}: each a bind text or null'); return false; }
+  var out = {}, bad = Object.keys(roles).filter(function (r) { return IWDIE_OV_ROLES.indexOf(r) < 0; });
+  if (bad.length) { fail(i, 'no role ' + bad.join(', ') + ' (value, alarm, cooling, defrost)'); return false; }
+  IWDIE_OV_ROLES.forEach(function (r) { if (roles[r] !== undefined && roles[r] !== false) out[r] = roles[r] === null || roles[r] === true ? null : String(roles[r]); });
+  return out;
+}
+
+/** The clusters and names of an edit's cases (v1.84.0), worked out as oversikt.py does once every case is known: what the
+ *  drawing has - its objects and names, its cases, its rooms, the legend's column - and what this edit placed before
+ *  taken first, then iwdieOvPlace, then a step for each object and name. */
+function iwdieOvFinish(ov, items, steps, boxes, size, notes) {
+  var legend = ov.legend || items.some(function (it) { return (it.kind === 'text' && /symbolforklaring/i.test(it.text || '')) || (it.layer === 'Bakgrunn' && it.box && Math.abs(it.box.x - IWDIE_OV_LEGEND.x) < 2 && it.box.w > 200); });
+  var right = legend ? IWDIE_OV_LEGEND.x : size.w, lay = iwdieOvLayout(right, size.h), all = [];
+  var tb = function (b) { return [b.x, b.y, b.x + b.w, b.y + b.h]; };
+  items.forEach(function (it) {
+    if (!it.box || it.kind === 'pipe' || it.kind === 'image' || it.box.x >= right - 1) return;
+    if (it.box.w >= 0.6 * size.w || it.box.h >= 0.8 * size.h) return;
+    var kind = iwdieOvCaseKind(it);
+    if (kind) { lay.take(tb(it.box), 'case:' + it.cid); all.push([it.cid, [it.box.x, it.box.y, it.box.w, it.box.h]]); return; }
+    if (it.kind === 'object') { lay.take(tb(it.box), /^number_v3_label_/.test(it.obj_id || '') ? 'label' : 'obj:' + it.cid); return; }
+    if (it.kind === 'text') { lay.take(tb(it.box), 'label'); return; }
+    if (/^bakgrunn$/i.test(it.layer || '')) { lay.take(tb(it.box), 'room'); return; }
+    lay.take(tb(it.box), 'case:s' + it.cid);
+  });
+  // what this edit placed before: objects, symbols and boxes, the cases and rooms themselves
+  steps.forEach(function (st) {
+    if (st['do'] !== 'add' || !st.box || st.kind === 'art') return;
+    if (st.kind === 'object') lay.take(tb(st.box), /^number_v3_label_/.test(st.obj_id || '') ? 'label' : 'obj');
+    else if (st.kind === 'pill') lay.take(tb(st.box), 'obj');
+    else if (st.kind === 'box' && st.layer === 'Bakgrunn') lay.take(tb(st.box), 'room');
+  });
+  ov.cases.forEach(function (c) {
+    if (!lay.taken.some(function (t) { return t[4] === 'case:' + c.key; })) lay.take([c.box[0], c.box[1], c.box[0] + c.box[2], c.box[1] + c.box[3]], (c.room ? 'room:' : 'case:') + c.key);
+  });
+  ov.plugs.forEach(function (p) { lay.take(p.slice(0, 4), p[4]); });
+  var placed = iwdieOvPlace(ov.cases, ov.rooms, all.concat(ov.all.filter(function (e) { return !all.some(function (a) { return a[0] === e[0]; }); })), lay, ov.anatomy, ov.free);
+  var byKey = {};
+  ov.cases.forEach(function (c) { byKey[c.key] = c; });
+  ov.rooms.forEach(function (r) { byKey[r.key] = r; });
+  ov.free.forEach(function (f) { byKey[f.key] = f; });
+  placed.objects.forEach(function (ob) {
+    var c = byKey[ob.key] || {};
+    steps.push({ 'do': 'add', kind: 'object', obj_id: ob.obj_id, box: ob.box, bind: ob.bind, text: '', op: c.op,
+      ref: c.ref !== undefined && c.ref !== null && c.ref !== '' ? c.ref + '.' + ob.role : undefined });
+    boxes.push(ob.box);
+  });
+  placed.names.forEach(function (nm) {
+    var c = byKey[nm.key] || {};
+    steps.push({ 'do': 'add', kind: 'object', obj_id: IWDIE_OV_LABEL, box: nm.box, bind: '', text: nm.text, op: c.op });
+    boxes.push(nm.box);
+  });
+  placed.gaps.forEach(function (g) { notes.push(g); });
+}
+
+/** Whether a fill is one of the template's case colours, within 10 a channel: cooling light blue (the Designer's
+ *  #b1e1ef among them), freezer dark blue. -> 'cold' | 'freezer' | '' */
+function iwdieOvFillKind(fill) {
+  var m = /^#([0-9a-f]{6})$/i.exec(String(fill || '').trim());
+  if (!m) return '';
+  var v = [0, 2, 4].map(function (i) { return parseInt(m[1].slice(i, i + 2), 16); });
+  var near = function (hex) { var q = [1, 3, 5].map(function (i) { return parseInt(hex.slice(i, i + 2), 16); }); return v.every(function (c, i) { return Math.abs(c - q[i]) <= 10; }); };
+  return near(IWDIE_OV_PALETTE.cold) ? 'cold' : near(IWDIE_OV_PALETTE.freezer) ? 'freezer' : '';
+}
+
 /** An edit's plan (v1.64.0): the ops Claude sends, resolved against the drawing into steps with every place worked out.
  *  `scene` {items (iwdieCbSceneItem's), size {w, h}}; `ctx` {sizes: iwdieCbSymbolSizes(...), objects: {obj_id: {w, h, role,
  *  hasTag, kind}}, facts?}. The ops, each {op, ...}:
@@ -11142,6 +11543,16 @@ function iwdieVcEditFile(doc, job) {
  *    text     {text, at, size?, colour?, anchor?, ref?}                fixed text
  *    move     {target, dx?, dy?, at?}      delete {target}      set_text {target, text}      bind {target, bind}
  *    align    {targets, how}               distribute {targets, axis, gap?}
+ *    case     {kind?: cold|freezer, rect: [x, y, w, h] | at + w + h, label?, caption?, wall?, room?, plug?, roles?, more?,
+ *             ref?}   (v1.84.0) a cooling position of an Oversikt: its box in the template's colour, its cluster - the
+ *             value, the bell, the cooling, the defrost, each `roles` names with its bind text (null: unbound; absent:
+ *             its value and its alarm) - and its name as a label object, as Copilot's oversikt.py places them
+ *    room     {rect | at + w + h, name, ref?}                          a room that is no cooling position: light grey
+ *    cluster  {target, roles?, label?, caption?, wall?, room?}          a cluster (and name) on a case already drawn
+ *    name     {text, over: [targets] | at: {x, y}}                      a name of no single case, as a label object
+ *    legend   {}                                                        the legend column, Symbolforklaring, as his v6
+ *  An arrangement's symbol op takes `cases` (v1.84.0): its cases in the order of its names, each a name or {label,
+ *  roles, caption}, null for none - each with its cluster - or `clusters: true` for clusters under the template's names.
  *  A place (`at`) is {x, y} (its top left), {cx, cy} (its centre), or {near: target, side: right|left|above|below, gap?,
  *  align?: start|center|end}; `free: true` moves it to the nearest free place. A target is {cid} or {ref} (one placed
  *  earlier in the same edit) - or, written where no cid is known (v1.69.0), {object: name} or {find: {...}}, made cids
@@ -11151,6 +11562,9 @@ function iwdieCbPlan(ops, scene, ctx) {
   ctx = ctx || {};
   var items = (scene && scene.items) || [], size = (scene && scene.size) || { w: 1400, h: 750 };
   var steps = [], refs = {}, notes = [], errors = [], boxes = [], byCid = {};
+  // an Oversikt's cases, rooms and legend this edit places (v1.84.0): their clusters and names are worked out last,
+  // when every case of the drawing is known, as oversikt.py does
+  var ov = { cases: [], rooms: [], all: [], legend: false, anatomy: null, plugs: [], free: [] };
   // portable targets - {object}, {find} - made cids before anything moves (v1.69.0); an op whose target is not there
   // is left out, and says why where it stands in the list
   var pre = iwdieCbTargets(ops, items), skip = {};
@@ -11224,6 +11638,29 @@ function iwdieCbPlan(ops, scene, ctx) {
     boxes.push(box);
     keep(ref, { box: box, symbol: real, k: k });
     addLabel(label, box, i);
+    // (v1.84.0) an arrangement's cases with their clusters: `cases` in the order of its names, each a name or {label,
+    // roles, caption} (null leaves one out), or `clusters: true` under the template's names - their names and clusters
+    // placed with every other case's, the names where the template writes them first
+    if (grp && (Array.isArray(o.cases) || o.clusters === true)) {
+      var gp = iwdieSymGroupPlace(grp, box, k), named = {};
+      gp.names.forEach(function (n, j) {
+        var e = Array.isArray(o.cases) ? o.cases[j] : grp.text, pc = gp.pieces[n.slot];
+        if (e === null || e === undefined || e === false || !pc) return;
+        var ce = typeof e === 'object' ? e : { label: String(e) }, ck = 'grp' + (i + 1) + '.' + (j + 1);
+        var cro = iwdieOvRolesOf(ce.roles, ck, fail, i);
+        if (cro === false) return;
+        // its box to the pixel, as oversikt.py takes a piece's
+        var pb = [iwdieOvRhu(pc.x), iwdieOvRhu(pc.y), Math.max(1, iwdieOvRhu(pc.w)), Math.max(1, iwdieOvRhu(pc.h))];
+        ov.cases.push({ key: ck, box: pb, roles: cro, label: ce.label || grp.text, caption: ce.caption, wall: ce.wall,
+          nameAt: { x: n.x, y: n.y, just: n.just }, op: i, ref: ce.ref });
+        ov.all.push([ck, pb]);
+        named[n.slot] = 1;
+        if (ce.ref !== undefined && ce.ref !== null && ce.ref !== '') keep(ce.ref, { box: { x: pb[0], y: pb[1], w: pb[2], h: pb[3] } });
+      });
+      // its other pieces (an angled run's corners, a checkout) lie in no cluster's way
+      gp.pieces.forEach(function (pc, slot) { if (!named[slot]) ov.plugs.push([pc.x, pc.y, pc.x + pc.w, pc.y + pc.h, 'piece:grp' + (i + 1)]); });
+      return box;
+    }
     // an arrangement's cases named (v1.75.0): a label object where the template writes each name - the names given in the
     // order of its pieces (null or '' skips one), none for labels: false, the template's own (K1, F1) without them
     if (grp && o.labels !== false) {
@@ -11398,10 +11835,115 @@ function iwdieCbPlan(ops, scene, ctx) {
         keep(o.ref, { box: bb });
         break;
       }
+      case 'case': {
+        // (v1.84.0) a cooling position of an Oversikt: its box in the template's colour, its cluster and name placed last
+        var ck2 = /^(freezer|frys|fryse|f)$/i.test(String(o.kind || '')) ? 'freezer' : 'cold';
+        var cbx = iwdieOvBoxOf(o, place, i);
+        if (!cbx) { fail(i, 'a case needs rect [x, y, w, h], or at with w and h'); break; }
+        var key2 = o.ref !== undefined && o.ref !== null && o.ref !== '' ? 'ref:' + o.ref : 'op' + (i + 1);
+        var cro2 = iwdieOvRolesOf(o.roles, key2, fail, i);
+        if (cro2 === false) break;
+        steps.push({ 'do': 'add', kind: 'box', box: cbx, layer: 'Former', rx: 4, fill: IWDIE_OV_PALETTE[ck2], stroke: '', width: 0,
+          name: o.label ? String(o.label) : '', ref: o.ref, op: i });
+        boxes.push(cbx);
+        (Array.isArray(o.more) ? o.more : []).forEach(function (m) {
+          if (!Array.isArray(m) || m.length !== 4 || !m.every(function (v) { return isFinite(v); })) { fail(i, 'more holds [x, y, w, h] boxes'); return; }
+          var mb = { x: r1(+m[0]), y: r1(+m[1]), w: +m[2], h: +m[3] };
+          steps.push({ 'do': 'add', kind: 'box', box: mb, layer: 'Former', rx: 4, fill: IWDIE_OV_PALETTE[ck2], stroke: '', width: 0, op: i });
+          ov.plugs.push([mb.x, mb.y, mb.x + mb.w, mb.y + mb.h, (o.room ? 'room:' : 'case:') + key2]);
+        });
+        if (o.plug) {
+          // the template's Plugg: a plug-in case with its own compressor - past a lying case's right end, on a standing
+          // case's wall side (oversikt.py)
+          var lyingP = cbx.w >= cbx.h, ppx = lyingP ? cbx.x + cbx.w + 10 : (o.wall !== 'left' ? cbx.x + cbx.w + 4 : cbx.x - 18);
+          var ppy = lyingP ? cbx.y + cbx.h / 2 - 7 : cbx.y + cbx.h / 2 - 10;
+          var pb = symbolStep({ name: 'Plugg', turn: lyingP ? 0 : 90 }, i, { x: iwdieOvRhu(ppx), y: iwdieOvRhu(ppy) });
+          if (pb) ov.plugs.push([pb.x, pb.y, pb.x + pb.w, pb.y + pb.h, 'plug']);
+        }
+        ov.cases.push({ key: key2, box: [cbx.x, cbx.y, cbx.w, cbx.h], roles: cro2, label: o.label, caption: o.caption, wall: o.wall,
+          room: !!o.room, op: i, ref: o.ref });
+        ov.all.push([key2, [cbx.x, cbx.y, cbx.w, cbx.h]]);
+        if (o.anatomy && !ov.anatomy) ov.anatomy = o.anatomy;
+        keep(o.ref, { box: cbx, ov: ck2 });
+        break;
+      }
+      case 'room': {
+        // (v1.84.0) a room that is no cooling position (a technical room, a store room): light grey in Bakgrunn, no outline,
+        // its name inside its top left
+        var rbx = iwdieOvBoxOf(o, place, i);
+        if (!rbx) { fail(i, 'a room needs rect [x, y, w, h], or at with w and h'); break; }
+        steps.push({ 'do': 'add', kind: 'box', box: rbx, layer: 'Bakgrunn', rx: 4, fill: IWDIE_OV_PALETTE.room, stroke: '', width: 0,
+          name: o.name ? String(o.name) : '', ref: o.ref, op: i });
+        ov.rooms.push({ key: 'room' + (i + 1), box: [rbx.x, rbx.y, rbx.w, rbx.h], name: o.name || o.label || '', op: i });
+        keep(o.ref, { box: rbx });
+        break;
+      }
+      case 'cluster': {
+        // (v1.84.0) a cluster (and its name) on a case already on the drawing: a drawn case, a template piece, the
+        // Designer's case box
+        var tc = thing(o.target);
+        if (!tc) { fail(i, 'cluster needs a target: the case it stands on ({cid}, {ref}, {object} or {find})'); break; }
+        var key3 = tc.cid !== undefined ? tc.cid : 'ref:' + (o.target && o.target.ref);
+        var cro3 = iwdieOvRolesOf(o.roles, key3, fail, i);
+        if (cro3 === false) break;
+        var tb2 = tc.box;
+        ov.cases.push({ key: key3, box: [tb2.x, tb2.y, tb2.w, tb2.h], roles: cro3, label: o.label, caption: o.label ? o.caption : (o.caption || 'none'),
+          wall: o.wall, room: !!o.room, op: i, ref: o.ref });
+        if (!ov.all.some(function (e) { return e[0] === key3; })) ov.all.push([key3, [tb2.x, tb2.y, tb2.w, tb2.h]]);
+        if (o.anatomy && !ov.anatomy) ov.anatomy = o.anatomy;
+        break;
+      }
+      case 'name': {
+        // (v1.84.0) a name of no single case ("Øl" over a group of cases), as a label object: above the cases `over`
+        // names, or at `at`; placed after every case's own name
+        if (!o.text || !String(o.text).trim()) { fail(i, 'a name needs text'); break; }
+        if (o.at && isFinite(o.at.x) && isFinite(o.at.y)) { ov.free.push({ key: 'name' + (i + 1), text: String(o.text), at: [+o.at.x, +o.at.y], op: i }); break; }
+        var ovr = (Array.isArray(o.over) ? o.over : []).map(thing);
+        if (!ovr.length || ovr.some(function (q) { return !q; })) { fail(i, 'a name needs over: [the cases it is over, as targets] or at {x, y}'); break; }
+        ov.free.push({ key: 'name' + (i + 1), text: String(o.text), over: ovr.map(function (q) { return [q.box.x, q.box.y, q.box.w, q.box.h]; }), op: i });
+        break;
+      }
+      case 'legend': {
+        // (v1.84.0) the legend column as his v6 Oversikt pictures draw it, once
+        var hasLegend = items.some(function (it) { return (it.kind === 'text' && /symbolforklaring/i.test(it.text || '')) || (it.layer === 'Bakgrunn' && it.box && Math.abs(it.box.x - IWDIE_OV_LEGEND.x) < 2 && it.box.w > 200); });
+        if (hasLegend || ov.legend) { notes.push('op ' + (i + 1) + ': the drawing has its legend already'); break; }
+        steps.push({ 'do': 'add', kind: 'art', art: 'legend', part: 'shapes', layer: 'Bakgrunn', box: { x: IWDIE_OV_LEGEND.x, y: 0, w: size.w - IWDIE_OV_LEGEND.x, h: size.h }, ref: o.ref, op: i });
+        steps.push({ 'do': 'add', kind: 'art', art: 'legend', part: 'words', layer: 'Tekst', box: { x: IWDIE_OV_LEGEND.x, y: 0, w: size.w - IWDIE_OV_LEGEND.x, h: size.h }, op: i });
+        ov.legend = true;
+        break;
+      }
       default: fail(i, 'no op "' + o.op + '"');
     }
   });
+  if (ov.cases.length || ov.rooms.length || ov.free.length) iwdieOvFinish(ov, items, steps, boxes, size, notes);
   return { steps: steps, refs: refs, notes: notes, errors: errors, targets: pre.found };
+}
+
+/** A drawing's class rules by class (v1.84.0), to read an element's fill, stroke and size where VectorCraft saved them as
+ *  classes (.cls-6{fill:#b0e0ef}) - and the scene reads a drawing changed by hand from that save. iwdieSvgClassRules'
+ *  rules, a later one over an earlier; {} for a sheet only a browser reads right. -> {class: {property: [value, order]}} */
+function iwdieSvgClassMap(cssText) {
+  var out = {};
+  (iwdieSvgClassRules(cssText) || []).forEach(function (r, i) {
+    r.classes.forEach(function (c) {
+      var p = out[c] = out[c] || {};
+      r.decls.forEach(function (d) { p[d[0]] = [d[1], i]; });
+    });
+  });
+  return out;
+}
+
+/** An element's presentation property as the browser takes it (v1.84.0): its style attribute's, else its classes' (the
+ *  rule latest in the sheet), else its attribute. `get(name)` reads an attribute of the element. -> value | null */
+function iwdieSvgProp(rules, get, name) {
+  var st = String(get('style') || ''), m = new RegExp('(?:^|;)\\s*' + name + '\\s*:\\s*([^;]+)', 'i').exec(st);
+  if (m) return m[1].trim();
+  var got = null;
+  String(get('class') || '').split(/\s+/).forEach(function (k) {
+    var r = k && rules && Object.prototype.hasOwnProperty.call(rules, k) ? rules[k][name] : null;
+    if (r && (!got || r[1] >= got[1])) got = r;
+  });
+  return got ? got[0] : get(name);
 }
 
 /** One thing on the drawing as the scene lists it (v1.64.0), from what the page read of its element: `d` {cid, layer,
@@ -11447,6 +11989,10 @@ function iwdieCbClassify(d) {
   }
   if (d.tag === 'image') { it.kind = 'image'; return it; }
   var b = d.box || { w: 0, h: 0 };
+  // (v1.84.0) a case of an Oversikt: a rect or path in Former filled with the template's light or dark blue - before the
+  // pill test, which a light blue path of a pill's size would pass
+  var ovk = /^former$/i.test(d.layer || '') && (d.tag === 'rect' || d.tag === 'path') && b.w >= 8 && b.h >= 8 ? iwdieOvFillKind(fill) : '';
+  if (ovk) { it.kind = 'case'; it.ov = ovk; return it; }
   if (/^former$/i.test(d.layer || '') && (d.tag === 'rect' || d.tag === 'path') && b.h >= 17 && b.h <= 23 && b.w >= 36 && b.w <= 64 &&
     (d.tag !== 'rect' || parseFloat(a.rx) >= 8)) {
     it.kind = 'pill';
@@ -11470,7 +12016,7 @@ function iwdieCbSceneRows(items, size, opts) {
   var layers = [], count = {};
   items.forEach(function (it) { if (!count[it.layer]) { count[it.layer] = 0; layers.push(it.layer); } count[it.layer]++; });
   var near = Array.isArray(opts.near) && opts.near.length === 4 ? { x: +opts.near[0], y: +opts.near[1], w: +opts.near[2], h: +opts.near[3] } : null;
-  var q = String(opts.query || '').toLowerCase(), rank = { symbol: 0, object: 1, pill: 2, pipe: 3, text: 4, group: 5, rect: 6, shape: 7, image: 8 };
+  var q = String(opts.query || '').toLowerCase(), rank = { symbol: 0, 'case': 0, object: 1, pill: 2, pipe: 3, text: 4, group: 5, rect: 6, shape: 7, image: 8 };
   var picked = items.filter(function (it) {
     if (opts.layer && String(it.layer).toLowerCase() !== String(opts.layer).toLowerCase()) return false;
     if (opts.kind && it.kind !== opts.kind) return false;
@@ -11485,6 +12031,7 @@ function iwdieCbSceneRows(items, size, opts) {
     if (it.kind === 'pipe') return (it.circuit ? it.circuit + ' ' : '') + it.colour + ' ' + it.width + (it.pts ? ' ' + it.pts.map(function (p) { return p.join(','); }).join(' ') : ' curved');
     if (it.kind === 'text') return it.text + (it.size ? ' (' + it.size + 'px)' : '');
     if (it.kind === 'pill') return it.dark ? 'dark' : 'light';
+    if (it.kind === 'case') return it.ov === 'freezer' ? 'freezer case' : 'cooling case';
     return '';
   };
   return {
@@ -11523,7 +12070,13 @@ function iwdieCbMarkup(s, cid, looks, used) {
   }
   if (s.kind === 'box') {
     return '<rect x="' + f(s.box.x) + '" y="' + f(s.box.y) + '" width="' + f(s.box.w) + '" height="' + f(s.box.h) + '" rx="' + f(s.rx) + '" fill="' + esc(s.fill) + '"' +
-      (s.stroke ? ' stroke="' + esc(s.stroke) + '" stroke-width="' + f(s.width) + '"' : '') + c + '/>';
+      (s.stroke ? ' stroke="' + esc(s.stroke) + '" stroke-width="' + f(s.width) + '"' : '') +
+      (s.name ? ' id="' + esc(iwdieVcSvgId(s.name, used || {})) + '" data-name="' + esc(s.name) + '"' : '') + c + '/>';
+  }
+  if (s.kind === 'art') {
+    // (v1.84.0) a piece of the house's own drawing, by its name only - never markup an op carries
+    var art = s.art === 'legend' ? IWDIE_OV_LEGEND[s.part === 'words' ? 'words' : 'shapes'] : '';
+    return art ? art.replace(/^<g\b/, '<g' + c) : '';
   }
   if (s.kind === 'pipe') {
     return '<path d="' + iwdieCbPathD(s.pts) + '" fill="none" stroke="' + esc(s.colour) + '" stroke-width="' + f(s.width) + '"' + c + '/>';
@@ -11537,7 +12090,7 @@ function iwdieCbMarkup(s, cid, looks, used) {
 
 /** Where each kind of step goes (v1.64.0): the layer by its name. */
 function iwdieCbLayerOf(s) {
-  return s.kind === 'object' ? 'IWMAC-objekter' : s.kind === 'pipe' ? 'Rør' : s.kind === 'text' ? 'Tekst' : s.kind === 'box' && s.layer ? s.layer : 'Former';
+  return s.kind === 'object' ? 'IWMAC-objekter' : s.kind === 'pipe' ? 'Rør' : s.kind === 'text' ? 'Tekst' : (s.kind === 'box' || s.kind === 'art') && s.layer ? s.layer : 'Former';
 }
 
 /** What the page tells the bridge about itself when it attaches (v1.64.0): the job, the panel's size, the symbols the
@@ -16827,6 +17380,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       });
       var attrs = ['data-iwdie-symbol', 'data-iwdie-missing', 'data-iwdie-k', 'fill', 'stroke', 'stroke-width', 'rx', 'd', 'font-size'];
+      // a saved drawing's fills, strokes and sizes are classes (v1.84.0)
+      var rules = iwdieSvgClassMap(Array.prototype.map.call(root.getElementsByTagName('style'), function (st) { return st.textContent; }).join('\n'));
+      var styled = { fill: 1, stroke: 1, 'stroke-width': 1, 'font-size': 1 };
       var out = [];
       cands.slice(0, 1500).forEach(function (c, i) {
         if (hidden(c.el)) return;
@@ -16838,8 +17394,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           xs.push(m.a * p[0] + m.c * p[1] + m.e);
           ys.push(m.b * p[0] + m.d * p[1] + m.f);
         });
-        var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys), at = {};
-        attrs.forEach(function (n) { var v = c.el.getAttribute(n); if (v !== null) at[n] = v; });
+        var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys), at = {}, get = function (a) { return c.el.getAttribute(a); };
+        attrs.forEach(function (n) { var v = styled[n] ? iwdieSvgProp(rules, get, n) : get(n); if (v !== null) at[n] = v; });
         var text = c.el.localName === 'text' ? c.el.textContent : '';
         var pts = null;
         if (c.el.localName === 'line') pts = [[+c.el.getAttribute('x1'), +c.el.getAttribute('y1')], [+c.el.getAttribute('x2'), +c.el.getAttribute('y2')]];
@@ -20036,12 +20592,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var boxes = cands.length ? vcMeasure(doc, cands.map(function (c) { return c.el; }), size) : [];
         var attrs = ['data-iwdie-symbol', 'data-iwdie-missing', 'data-iwdie-k', 'data-iwdie-obj', 'data-iwdie-ref', 'data-iwdie-bind', 'data-iwdie-label',
           'fill', 'stroke', 'stroke-width', 'rx', 'd', 'font-size'];
+        // what VectorCraft saved keeps its fills, strokes and sizes as classes (v1.84.0)
+        var rules = iwdieSvgClassMap(Array.prototype.map.call(doc.getElementsByTagName('style'), function (st) { return st.textContent; }).join('\n'));
+        var styled = { fill: 1, stroke: 1, 'stroke-width': 1, 'font-size': 1 };
         var items = [];
         cands.forEach(function (c, k) {
           var b = boxes[k];
           if (!b || b.hidden) return;
-          var at = {};
-          attrs.forEach(function (n) { var v = c.el.getAttribute(n); if (v !== null) at[n] = v; });
+          var at = {}, get = function (a) { return c.el.getAttribute(a); };
+          attrs.forEach(function (n) { var v = styled[n] ? iwdieSvgProp(rules, get, n) : get(n); if (v !== null) at[n] = v; });
           var text = '';
           if (c.el.localName === 'text') text = c.el.textContent;
           else if (c.el.localName === 'g') Array.prototype.forEach.call(c.el.getElementsByTagName('text'), function (t) { text += (text ? ' ' : '') + t.textContent; });
@@ -26047,11 +26606,21 @@ if (typeof module !== 'undefined' && module.exports) {
     cbSymbolBox: iwdieCbSymbolBox,
     cbTurn: iwdieCbTurn,
     cbPlan: iwdieCbPlan,
+    ovPlace: iwdieOvPlace,
+    ovStance: iwdieOvStance,
+    ovOffsets: iwdieOvOffsets,
+    ovNameWidth: iwdieOvNameWidth,
+    ovNameSpots: iwdieOvNameSpots,
+    ovLegend: IWDIE_OV_LEGEND,
+    OV_PALETTE: IWDIE_OV_PALETTE,
+    OV_ROLE: IWDIE_OV_ROLE,
     cbFind: iwdieCbFind,
     cbTargets: iwdieCbTargets,
     VC_EDITS_FORMAT: IWDIE_VC_EDITS_FORMAT,
     vcEditFile: iwdieVcEditFile,
     cbClassify: iwdieCbClassify,
+    svgClassMap: iwdieSvgClassMap,
+    svgProp: iwdieSvgProp,
     cbSceneRows: iwdieCbSceneRows,
     cbMarkup: iwdieCbMarkup,
     cbLayerOf: iwdieCbLayerOf,

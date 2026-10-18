@@ -498,6 +498,49 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Claude draws an Oversikt through the bridge (v1.84.0, server 1.6.0)
+
+Thomas: *kan du gå over MCP for se om du finner noen forbedringer slik at den kan enkelt hjelpe meg lage
+oversiktbilder for meg*. Before this, Claude could place an Oversikt's template pieces, but each case's value, bell,
+cooling and defrost were four `object` ops placed by hand, each bound by looking its row up, and each name a label
+placed by guess - the very things Copilot's `oversikt.py` does by rule. Now the bridge does them by the same rule.
+
+- **An Oversikt in one edit.** `iwmac_edit` takes:
+  - `case`: the case's box in the template's colour (cooling #b0e0ef, freezer #8eb2d1, rounded 4, no outline),
+    named after it; its cluster on it; its name as a label object (`number_v3_label_12px_norm`). `room: true` makes a
+    walk-in cold or freezer room of it, `wall` says which side its wall is on, `caption` where its name goes, `more`
+    adds boxes of the same case, `plug` the template's `Plugg`, `anatomy` another chain's cluster.
+  - `room`: a room that is no cooling position, light grey in Bakgrunn, its name inside.
+  - `cluster`: a cluster on a case already drawn (a template piece, the Designer's own case box).
+  - `name`: a name over a group of cases ("Øl"), as a label object.
+  - `legend`: the house's legend column (Symbolforklaring), once, right of x 1151.25.
+  - An arrangement's `symbol` takes `cases` (each a name or `{label, unit, roles}`) or `clusters: true`.
+- **The roles bound from the case controllers.** `iwmac_find {what: 'cases'}` (server 1.6.0) lists each case
+  controller with the bind text of its value (`u56 Display air`), alarm (`--- High t.alarm`, not a B section's),
+  cooling (`u58 Comp1/LLSV`) and defrost (`u60 Def. relay`) rows; a `case` given `unit` takes them, filled in by the
+  server. A role the unit has no row for is not placed; a unit whose rows did not come is said, and its cluster is
+  placed unbound. The rows come for the units linked on the panel and those ticked in the Parameter Selector.
+- **Placed as Copilot places them.** The cluster's spots by how its case stands (lying, on a bottom wall, standing,
+  on a right-hand wall, an island's column or row), measured on Thomas's panels; a name measured as the Designer's
+  12 px Arial draws it; every case known before anything is placed, values first, then bells and states, then names.
+  On the overview skill's three example plans the bridge and `oversikt.py` place every object alike (60, 84 and 60).
+- **The check and the facts know an Oversikt** (two cases or more): CB-C01 a case without a value on it, CB-C02 a
+  name drawn as text (every name is a label object), CB-C03 no legend; `facts.oversikt` counts the cases, cold and
+  freezer, the names, those drawn as text, and says whether the legend is there. CB-O02 no longer calls one
+  cluster's objects a fault: the house hangs the bell and the states on the value's end, and cooling and defrost
+  share a spot.
+- **A drawing VectorCraft saved is read with its colours.** VectorCraft saves every fill and stroke as a class
+  (`.cls-6{fill:#b0e0ef}`), and the scene reads a drawing changed by hand from that save: a case lost its colour
+  there and was no case. Both scene readers now take a property as the browser does (`iwdieSvgClassMap`,
+  `iwdieSvgProp`): the style attribute, else the latest class rule, else the attribute.
+- **A case keeps its name in VectorCraft.** A named box carries its name as its `id` too, as a placeholder does:
+  VectorCraft dropped a bare `data-name` when it saved.
+- Copilot's edit files take the same ops: `vc_edits.py` fills a case's `unit` from the export's rows.
+- Checked in the stub host with the local VectorCraft 0.11.0 build: a blank Oversikt, three case controllers and
+  the pack ticked. Claude drew the legend, 12 cases (two of them walk-in rooms), a technical room and a name over
+  the front loaders in one edit; the check was clean; Ctrl+S placed 62 objects, the 12 of the three controllers
+  linked to their rows. Not run in the live Designer.
+
 ### The symbol legend stays the picture's, and Save As by clicks for VectorCraft 0.13.1 (v1.83.2)
 
 Thomas: *see if you can recreate this images on … plant_id=2313 … with the tool copilot agent have*, and *look there

@@ -62,9 +62,9 @@ join, which object shows which parameter, and the binding grammar.
 | `iwmac_status` | Whether a tab is attached, and its plant, panel, library and units |
 | `iwmac_scene` | The drawing as rows (`cid, kind, name, x, y, w, h, note`), filtered by layer, kind, area or words; `facts: true` adds the drawing's own layout: rows of like symbols and their spacing, the information column, circuits, value offsets, text style |
 | `iwmac_preview` | A JPEG of the drawing, or of a box of it |
-| `iwmac_find` | Every component VectorCraft offers, with the template it comes from, sizes and ports: the house symbols, pipe pieces and colour samples (`all: true` adds what an IWMAC object shows). `set: "Oversikt"` keeps the Oversikt template's floor plan kit (server 1.4.0, userscript 1.72.0): its cases in light blue for cooling (`KjølDisk`, `KjølGavl`, `KjølSirkel`, `KjølRom` …) and dark blue for freezer (`FrysDisk` …), and `Inngang`, `Handlevogn`, `Kasse`, `SelvbetjentKasse`, `Kondensator2`–`4`, `Plugg`, `Nål`; and (server 1.5.0, userscript 1.75.0) its 28 arrangements, marked `[arrangement]`: whole islands, rows and checkouts (`KjølØy3Stående`, `FrysØyRund`, `KjølHjørnerad`, `Kassepar` …); `set: "Maskin"` the machine room's. The IWMAC menu's objects. The plant's parameters, with the exact binding text |
-| `iwmac_edit` | A batch of ops: `symbol` (an arrangement's name places it whole, one group, with a label object where each case is named: `labels` the names in reading order, `false` none, else the template's own *K1* / *F1*), `bank`, `object`, `value`, `pill`, `box` (a panel of the information column; never under an IWMAC object, which draws itself), `pipe`, `connect`, `text`, `move`, `delete`, `set_text`, `bind`, `align`, `distribute`; `dry_run` plans only |
-| `iwmac_check` | Objects off the panel or on each other, symbols missing or standing in for objects, values without pills, overlaps, diagonal pipes, flow arrows not on a pipe running their way, drawn numbers, bindings to nothing |
+| `iwmac_find` | Every component VectorCraft offers, with the template it comes from, sizes and ports: the house symbols, pipe pieces and colour samples (`all: true` adds what an IWMAC object shows). `set: "Oversikt"` keeps the Oversikt template's floor plan kit (server 1.4.0, userscript 1.72.0): its cases in light blue for cooling (`KjølDisk`, `KjølGavl`, `KjølSirkel`, `KjølRom` …) and dark blue for freezer (`FrysDisk` …), and `Inngang`, `Handlevogn`, `Kasse`, `SelvbetjentKasse`, `Kondensator2`–`4`, `Plugg`, `Nål`; and (server 1.5.0, userscript 1.75.0) its 28 arrangements, marked `[arrangement]`: whole islands, rows and checkouts (`KjølØy3Stående`, `FrysØyRund`, `KjølHjørnerad`, `Kassepar` …); `set: "Maskin"` the machine room's. The IWMAC menu's objects. The plant's parameters, with the exact binding text; `what: "cases"` the case controllers' value, alarm, cooling and defrost rows (server 1.6.0) |
+| `iwmac_edit` | A batch of ops: `symbol` (an arrangement's name places it whole, one group, with a label object where each case is named: `labels` the names in reading order, `false` none, else the template's own *K1* / *F1*), `bank`, `object`, `value`, `pill`, `box` (a panel of the information column; never under an IWMAC object, which draws itself), `pipe`, `connect`, `text`, `move`, `delete`, `set_text`, `bind`, `align`, `distribute`; an Oversikt's `case`, `room`, `cluster`, `name`, `legend` (below); `dry_run` plans only |
+| `iwmac_check` | Objects off the panel or on each other, symbols missing or standing in for objects, values without pills, overlaps, diagonal pipes, flow arrows not on a pipe running their way, drawn numbers, bindings to nothing; on an Oversikt a case without a value, a name drawn as text, no legend |
 | `iwmac_undo` | Opens the version before Claude's last edit again |
 | `iwmac_export` | Reads an Export JSON file on this computer, part by part, without its picture |
 
@@ -94,6 +94,36 @@ user:
 - the 107 objects of the IWMAC menu, among them the CO2 compressor and the animated fans.
 
 An object outside the menu is refused by the planner, and by the Copilot skill before it.
+
+### An Oversikt (server 1.6.0, userscript 1.84.0)
+
+Claude draws a store's floor plan the way Copilot's `oversikt.py` builds one: on the kit's three
+example plans every value, bell, cooling and defrost state and name lands on the same pixel
+(the kit's `test_oversikt_bridge.py`).
+
+- `iwmac_find {what: 'cases'}` lists the case controllers whose rows came with the edit, one row
+  each: `[unit, unit_id, value, alarm, cooling, defrost]`, every cell the bind text of that role's
+  row (an AK-CC's `u56 Display air`, `--- High t.alarm` but not its B section's, `u58 Comp1/LLSV`,
+  `u60 Def. relay`). `not_cases` names the other units. The rows come for the units linked on the
+  panel and those ticked in the Parameter Selector, so for a new Oversikt tick the case
+  controllers first.
+- `iwmac_edit` takes `case` (the case's box in the template's colour, cold or freezer, its cluster
+  and its name as a label object), `room` (a grey room with its name), `cluster` (a cluster on a
+  case already drawn), `name` (a name over a group of cases) and `legend` (the house's legend
+  column, once). A `case` or `cluster` given `unit` takes its roles from that unit's rows: the
+  server fills them in before the tab plans the edit, and says so when a unit's rows did not come.
+  An arrangement's `symbol` takes `cases` (or `clusters: true`) for the same.
+- Every case is known before anything is placed: the values first, then the bells and states at
+  the first free spot of the case's stance, then the names (rooms', cases', the free ones).
+- `iwmac_scene {facts: true}` adds `oversikt` (cases, cold, freezer, those without a value, names
+  as label objects, names drawn as text, the legend, where the area ends), and `iwmac_check`
+  CB-C01 (a case without a value), CB-C02 (a name drawn as text) and CB-C03 (no legend). The
+  objects of one cluster lie on each other by design and are no CB-O02.
+
+Checked end to end in the stub Designer with the local VectorCraft 0.11.0 build (2026-10-18): a
+blank Oversikt, three case controllers and the pack ticked; Claude drew the legend, 12 cases, a
+technical room and a name over the front loaders in one edit (0.35 s), the check was clean, and
+Ctrl+S placed 62 objects, the 12 of the three units linked to their rows.
 
 ## Safety
 
