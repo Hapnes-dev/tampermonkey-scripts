@@ -498,6 +498,40 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The symbol legend stays the picture's, and Save As by clicks for VectorCraft 0.13.1 (v1.83.2)
+
+Thomas: *see if you can recreate this images on … plant_id=2313 … with the tool copilot agent have*, and *look there
+is update can you update and keep my custom fork*. 2313's Oversikt read by Copilot's converter, and VectorCraft
+0.13.1 tried in the stub host, gave these.
+
+- **An object made from a picture shows that picture on the plant's page.** The plant's page draws an object with no
+  value by its state picture 0 (its Elm app: `iw_icons/` + the picture for "0"), and what a picture is read into is
+  unlinked. The Designer draws its alarm, cooling and defrost symbols (`V3_R_34px_noanim_circular_alarm_nrm`,
+  `V3_R_24px_circular_cooling_nrm`, `V3_R_24px_circular_defrost_nrm`) from `status_array`, whose state 0 is
+  `transp.gif`, so the symbol legend of every Oversikt lost its three symbols there: all seven Oversikt panels of the
+  test bed, 2313's among them.
+  - A kind whose rest picture is transparent is no longer looked for (`iwdieVzRestPicture`, `iwdieVzHiddenAtRest`, in
+    `vcObjectStates`).
+  - A kind only the Designer's whole list brings, beyond the catalogue and the panel's own, is looked for by its rest
+    picture alone. Without that, the legend's defrost symbol became an evaporator's state icon, which shows cooling at
+    rest.
+  - The legend's symbols are now objects that show the very same symbol at rest: an inverted alarm
+    (`V3_R_34px_noanim_circular_alarm_inv`), an evaporator's state icon (cooling) and an inverted defrost
+    (`V3_R_24px_circular_defrost_inv`). A symbol no kind shows at rest stays in the drawing.
+- **Save As by clicks first.** VectorCraft 0.12 keeps the format list open after a key takes a format, and in 0.13.1
+  Tab moves through it otherwise: the keys took *VectorCraft Template*. The clicks (*Format ▾*, *SVG*, *OK*, at the
+  same places round the window's centre) take SVG in 0.11.0 and 0.13.1 alike. `answerSaveAs` now tries them first,
+  and the keys only after. In the stub host the first save was ready after 10.7 s on 0.13.1, as on 0.11.0 with the
+  keys.
+- **The hosted copy stays VectorCraft 0.11.0 for now.** 0.13.1, built as the site builds it (SIMD, no ArtCraft name),
+  passed its checks and this script's syncs. But it opens the house Maskin template's heat exchanger, a stroked
+  zigzag, as a plain rectangle: in 2349's, 3530's and the template's own .ai alike, and the official 0.13.1 build does
+  the same. A sync of such a drawing would put the rectangle in the panel's picture. The colours it takes from an .ai
+  also move, by up to 8 in a channel.
+- **Checked against Copilot's converter again**, now on 24 panels of ten plants with 2313's Oversikt and VGV: on the
+  21 the script read into a drawing, the same objects and the same drawing, byte for byte; on the other three nothing
+  in both.
+
 ### The same picture read the same way every time, and Copilot reads it too (v1.83.1)
 
 - **Ties picked the same way every run.** The searches for IWMAC objects and house symbols run in up to four workers,
@@ -3685,14 +3719,17 @@ bridge without breaking anything else. It relies on these:
 - **A dropped file opens** on `#vectorcraft_canvas` (`vcDropFile`).
 - **A save is a blob download.** The script catches it by an `<a download>` click.
 - **Ctrl+S saves straight away** once the document has a format, and the first save opens Save As (`vcSaveSync`).
-- **Save As takes keys**: Tab, Space, five Tabs to SVG, Space, Enter, then Enter in SVG Options. If not, clicks at
-  fixed places round the window's centre (`answerSaveAs`: `byKeys`, `byClicks`).
+- **Save As takes clicks** (since 1.83.2): *Format ▾*, *SVG* and *OK* at fixed places round the window's centre, then
+  Enter in SVG Options. If not, the keys: Tab, Space, five Tabs to SVG, Space, Enter (`answerSaveAs`: `byClicks`,
+  `byKeys`).
 - **The title starts with `*`** while there are unsaved changes, which auto-sync watches.
 
 **VectorCraft 0.12.0 changed Save As.** Its format list stays open after a key takes SVG, so the keys can no longer
-reach OK, and Escape closes the dialog. The first save then falls back to clicks: it works, but it is ready after
-16.5 s instead of 10.8 s. Change `answerSaveAs` before moving to 0.12.0: use the clicks first, or click OK once the
-keys have taken SVG.
+reach OK, and Escape closes the dialog; in 0.13.1 they even take *VectorCraft Template*. Since 1.83.2 the script
+answers by the clicks first, which take SVG in 0.11.0 and 0.13.1 alike, ready after 10.7 s on either.
+
+**VectorCraft 0.13.1 is not hosted yet.** It opens the house Maskin template's heat exchanger as a rectangle (see
+1.83.2), so the hosted copy stays 0.11.0 until a release that opens it right.
 
 The ArtCraft name and marks belong to the ArtCraft team and are not open source. Their brand
 terms ask a published modified build to carry none of them, so the hosted build has them taken

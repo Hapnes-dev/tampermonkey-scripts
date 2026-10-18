@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.83.1
+// @version      1.83.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.83.1';
+var IWDIE_VERSION = '1.83.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -14490,6 +14490,26 @@ function iwdieVzObjectKind(id) {
   return !!s && !/^sub_page/.test(s) && IWDIE_VZ_OBJECT_ROLES.indexOf(iwdieRoleOf(s)) >= 0;
 }
 
+/** What a kind of the Designer's shows at rest (v1.83.2): its state picture 0, as the plant's page draws an object that
+ *  has no value - or, without states, its own picture. What a picture is read into is unlinked, so this is what the
+ *  plant's page shows of it. `def`: the kind's render definition (controls[id]). -> path | '' */
+function iwdieVzRestPicture(def) {
+  var sa = def && def.status_array;
+  if (sa && typeof sa === 'object') {
+    var first = Array.isArray(sa) ? sa[0] : sa['0'];
+    if (typeof first === 'string') return first;
+  }
+  return def && typeof def.file === 'string' ? def.file : '';
+}
+
+/** Whether a kind of the Designer's shows nothing at rest (v1.83.2): its rest picture is transp.gif - an alarm, a
+ *  cooling or a defrost symbol. Made from a picture, such an object stands invisible on the plant's page, so a picture
+ *  is never made into one: into a kind that shows it at rest instead, or it stays in the drawing. The symbol legend of
+ *  every Oversikt in the test bed lost its alarm, cooling and defrost symbols that way. -> boolean */
+function iwdieVzHiddenAtRest(def) {
+  return /(^|\/)transp\.gif$/i.test(iwdieVzRestPicture(def));
+}
+
 /** The kinds the found pictures of a picture stand for, one each (v1.77.0). One picture may be several kinds' -
  *  a grey LED is three LEDs' "off", "Running" four AK-PC kinds' - so each look carries its `kinds`; the one taken is the
  *  kind the panel uses already (the most of them), else the one whose own picture it is (`main`: the kind's default
@@ -18534,10 +18554,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           });
         } finally { passing = false; }
       };
-      // VectorCraft's Save As, answered without a click (v1.57.0): Tab takes the keyboard from the file name to the Format
-      // menu, Space opens it, five Tabs reach SVG (the fourth format: VectorCraft, VectorCraft Template, PDF, SVG - the
-      // first Tab enters the list) and Space takes it; Enter is OK, and Enter again in SVG Options. Where the keys did not
-      // get there, the clicks where those dialogs sit, as before 1.57.0. Without Preserve Editing Capabilities since
+      // VectorCraft's Save As, answered by clicks where its dialogs sit (v1.83.2, as before 1.57.0): Format ▾, SVG, OK,
+      // then Enter in SVG Options. Where they did not get there, the keys of 1.57.0: Tab takes the keyboard from the file
+      // name to the Format menu, Space opens it, five Tabs reach SVG (the fourth format: VectorCraft, VectorCraft
+      // Template, PDF, SVG - the first Tab enters the list) and Space takes it; Enter is OK. VectorCraft 0.12 keeps the
+      // list open after a key takes a format, and in 0.13.1 Tab moves through it otherwise: the keys took VectorCraft
+      // Template there, while the clicks still take SVG in 0.11.0 and 0.13.1 alike. Without Preserve Editing Capabilities since
       // v1.56.0. Meanwhile a card in VectorCraft's own look covers the dialogs, and the pointer is kept off them: it runs
       // as by itself. `k` slows it down: each step waits k × 120 ms and k × 8 frames. `saved()` tells when the save has
       // come. -> Promise<saved>
@@ -18587,14 +18609,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             .then(function () { return tap(-92, -40); }).then(slow)                       // SVG
             .then(function () { return typing() ? false : tap(154, 19).then(finish); });  // OK, then OK in SVG Options
         };
-        return byKeys().then(function (ok) {
+        return byClicks().then(function (ok) {
           if (ok || saved()) return true;
-          // the keys did not get there: the dialogs closed, Save As again, and the clicks
+          // the clicks did not get there: the dialogs closed, Save As again, and the keys
           return shut().then(function () {
             state.other = 0;
             key('S', 'KeyS', { ctrl: true, shift: true });
             return until(typing, 480 * k);
-          }).then(function (open) { return open ? byClicks() : false; });
+          }).then(function (open) { return open ? byKeys() : false; });
         }).then(function (ok) {
           return ok || saved() ? true : shut().then(function () { return false; });
         }).then(done, function () { return shut().then(function () { return done(false); }, function () { return done(false); }); });
@@ -21420,13 +21442,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       (objects || []).forEach(function (ob) { var k = String((ob && ob.obj_id) || ''); if (iwdieVzObjectKind(k) && ids.indexOf(k) < 0) ids.push(k); });
       // (v1.82.0, `all`) every kind the Designer has whose own pictures are its objects' (IWDIE_VZ_OBJECT_FOLDERS), 8 to 120 px:
       // known by name, so one found becomes an object
+      var own = ids.length;
       if (all) vcKnowDesignerKinds().forEach(function (o) { if (ids.indexOf(o.id) < 0) ids.push(o.id); });
       var known = iwdieVcObjectIndex(), kinds = {}, main = {}, want = [];
-      ids.forEach(function (id) {
+      ids.forEach(function (id, at) {
         var def = null;
         try { def = ctl[id]; } catch (e) { def = null; }
-        if (!def) return;
+        // (v1.83.2) not a kind that shows nothing at rest: unlinked, it would leave its picture's place empty
+        if (!def || iwdieVzHiddenAtRest(def)) return;
         var sa = def.status_array || {}, list = [def.file].concat(Array.isArray(sa) ? sa : Object.keys(sa).map(function (k) { return sa[k]; }));
+        // (v1.83.2) a kind only the Designer's whole list brings is looked for by what it shows at rest alone: made from a
+        // picture of another of its states, it would show the wrong one on the plant's page - a legend's defrost symbol
+        // as an evaporator's state, which shows cooling
+        if (at >= own) list = [iwdieVzRestPicture(def)];
         var pics = list.filter(function (p, i) { return typeof p === 'string' && /\.(png|gif|jpe?g)$/i.test(p) && !/(^|\/)transp\.gif$/i.test(p) && list.indexOf(p) === i; });
         var w = parseFloat(def.width), h = parseFloat(def.height), k = known[id];
         if (!(w >= 8) && k) w = k.w;
@@ -25924,6 +25952,8 @@ if (typeof module !== 'undefined' && module.exports) {
     VZ_OBJECT_MS: IWDIE_VZ_OBJECT_MS,
     VC_STATES_KEY: IWDIE_VC_STATES_KEY,
     vzObjectKind: iwdieVzObjectKind,
+    vzHiddenAtRest: iwdieVzHiddenAtRest,
+    vzRestPicture: iwdieVzRestPicture,
     vzTwinKind: iwdieVzTwinKind,
     vzObjectsSeen: iwdieVzObjectsSeen,
     vcFoundPlaceholderSvg: iwdieVcFoundPlaceholderSvg,
