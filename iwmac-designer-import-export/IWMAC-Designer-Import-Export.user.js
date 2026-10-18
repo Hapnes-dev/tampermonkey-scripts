@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.8
+// @version      1.83.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.82.8';
+var IWDIE_VERSION = '1.83.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -879,7 +879,12 @@ function iwdieExportContents(env, opts) {
   var objects = (sum.objects && sum.objects.total_object_entries) || 0, link = sum.linking || {};
   var units = (sum.units_referenced || []).length, svg = typeof panel.image_svg === 'string' ? panel.image_svg : '';
   var own = !!svg && iwdieSvgStampIntact(svg), syms = ov && ov.picture && ov.picture.symbols ? ov.picture.symbols.rows.length : 0;
-  var pic = svg ? (own ? 'its picture a ' + str((env.background && env.background.mime) || 'picture').replace(/^image\//, '').toUpperCase() +
+  // v1.83.0: a drawing an optimised export read from the picture, and what it made of it
+  var opt = !!svg && iwdieSvgOptimised(svg), made = opt && env.ai_guide && env.ai_guide.artwork ? env.ai_guide.artwork.optimised || null : null;
+  var pic = opt ? 'its picture read into a drawing in panel.image_svg (' + iwdieCountSvgShapes(svg) + ' shapes) by this export, as Edit in VectorCraft ' +
+      'reads one' + (made && made.what ? ' - ' + made.what.replace(/^Made by this export from the picture, as Edit in VectorCraft and a save there make them: /, '')
+        .replace(/\. The panel's own objects are as it has them\.$/, '') : '') + ' - and the picture it was read from in image_data'
+    : svg ? (own ? 'its picture a ' + str((env.background && env.background.mime) || 'picture').replace(/^image\//, '').toUpperCase() +
       ' with the drawing it was made from in panel.image_svg (' + iwdieCountSvgShapes(svg) + ' shapes)' : 'its picture drawn as SVG in panel.image_svg')
     : env.image_data ? 'its picture a ' + str((env.background && env.background.mime) || '').replace(/^image\//, '').toUpperCase() + ' of pixels alone (image_data)'
     : 'no picture';
@@ -899,14 +904,19 @@ function iwdieExportContents(env, opts) {
     add('overview.signals', 'search', 'The rows the plant has tagged with a standard meaning ("Compressor Running"), every unit\'s or the units in scope.');
     add('overview.parameters', 'search', 'The parameter rows of the units on this panel, by group: find a row by its group and alias_text, copy its driver_id whole.');
   }
-  add('panel.single_objects', 'copy from', 'The objects as Insert takes them, 17 fields each: the entries a returned file keeps byte for byte.');
+  add('panel.single_objects', 'copy from', 'The objects as Insert takes them, 17 fields each: the entries a returned file keeps byte for byte.' +
+    (made && made.names ? ' ' + made.names + ' are the objects this export made from the picture: its words as labels, the IWMAC objects and ' +
+      'the Designer\'s boxes it showed, unlinked - link or remove them as any other.' : ''));
   if ((panel.containers || []).length) add('panel.containers', 'copy from', 'Grouped objects (rows, cards), their items placed relative to the container.');
-  if (svg) add('panel.image_svg', 'read', own ? 'The picture as vectors: its layers are the top-level groups. Edit it to change the picture; unchanged, Insert keeps image_data.'
+  if (svg) add('panel.image_svg', 'read', opt ? 'The panel\'s picture from now on, read by this export: its layers are the top-level groups. Insert draws it ' +
+      'into the panel\'s picture, edited or not - keep it in a returned file.'
+    : own ? 'The picture as vectors: its layers are the top-level groups. Edit it to change the picture; unchanged, Insert keeps image_data.'
     : 'The picture as SVG, drawn by Insert into the panel\'s picture.');
   add('summary', 'read', 'Facts counted from the objects: roles, sections, value bands, links, extent.');
   add('background', 'read', 'What image_data is: its kind, size and bytes, without opening it.');
   add('ai_guide', 'look up', 'The format\'s rules, for an agent without the IWMAC kit: read the parts a task names (ai_guide.read_order_by_task), never all of it.');
-  add('image_data', 'skip', 'The picture as base64, one line: never read it.' + (opts.aiPicture ? ' The -for-ai.png shows it, marked.' : ''));
+  add('image_data', 'skip', 'The picture as base64, one line: never read it.' + (opt ? ' The picture panel.image_svg was read from, words and all: keep it as it is.' : '') +
+    (opts.aiPicture ? ' The -for-ai.png shows it, marked.' : ''));
   add('image_svg_trace', ov && ov.picture ? 'skip' : 'read', ov && ov.picture ? 'A coarse vector trace of the picture: overview.picture holds what it shows, as tables.'
     : 'A coarse vector trace of the picture: its outlines, pipe runs and frames, in panel coordinates.');
   var check = opts.check || null;
@@ -1057,7 +1067,7 @@ function iwdieCountSvgShapes(svg) {
  * the trace description: the two never both apply, and an agent told to read a
  * "coarse trace" would ignore the pristine drawing sitting in panel.image_svg.
  */
-function iwdieNoteArtworkInAiGuide(env, svg, given) {
+function iwdieNoteArtworkInAiGuide(env, svg, given, made) {
   if (!env || typeof env !== 'object') return env;
   var guide = env.ai_guide;
   if (!guide || typeof guide !== 'object') return env;
@@ -1081,7 +1091,39 @@ function iwdieNoteArtworkInAiGuide(env, svg, given) {
       'data-iwdie-original="image_data" - keep that mark: Insert puts the picture back from there' : ''].filter(Boolean).join('; ') +
       '. It draws as the picture does.';
   }
+  // v1.83.0: the picture read by this export, as Edit in VectorCraft reads one - the panel's picture from now on
+  if (made && typeof made === 'object') {
+    guide.artwork.what = 'The panel\'s picture read into vectors by this export, as Edit in VectorCraft reads one: its words are label ' +
+      'objects in single_objects now, and so are the IWMAC objects and the Designer\'s boxes it showed; its house symbols are groups ' +
+      'named by data-iwdie-symbol, its pipes are lines by circuit on Ror, the rest is traced. Its layers are its top-level groups.';
+    guide.artwork.use = 'It is the panel\'s picture from now on: Insert draws it into a PNG, makes that the panel\'s background and ' +
+      'uploads it to the plant\'s pictures, as a sync from VectorCraft does, whether it was edited or not. Keep it in a returned file. ' +
+      'Without it, Insert puts back the picture in image_data, its words and all, under the labels made from them.';
+    guide.artwork.also = 'image_data is the picture it was read from, as the panel had it. Keep it as it is: Insert puts it on the ' +
+      'drawing\'s hidden layer Bakgrunn (original), marked data-iwdie-original="image_data", so that Edit in VectorCraft can read it ' +
+      'again. Leave data-iwdie-optimised and data-iwdie-drawing on its root. Move an object only together with the part of the drawing it sits on.';
+    guide.artwork.optimised = iwdieOptimisedNote(made);
+  }
   return env;
+}
+
+/** What an optimised export made of the panel's picture (v1.83.0), for its readers: how many of each and their names on
+ *  the panel. `made`: vcExportOptimised's record. -> {version, labels, objects, boxes, names, font, ...} */
+function iwdieOptimisedNote(made) {
+  var m = made || {}, n = function (v) { return Math.max(0, parseInt(v, 10) || 0); };
+  var names = Array.isArray(m.names) ? m.names.filter(function (s) { return typeof s === 'string' && s; }) : [];
+  var out = { version: String(m.version || IWDIE_VERSION), labels: n(m.labels), objects: n(m.objects), boxes: n(m.boxes),
+    names: names.length ? (names.length > 1 ? names[0] + ' to ' + names[names.length - 1] : names[0]) : '' };
+  if (m.symbols) out.symbols = n(m.symbols);
+  if (m.pipes) out.pipes = n(m.pipes);
+  if (m.font) out.words_read_in = String(m.font) + (m.loose ? ' (not the picture\'s own font)' : '');
+  if (m.kept) out.kept = n(m.kept);
+  var parts = [out.labels ? iwdieN(out.labels, 'label', 'labels') + ' with its words' : '', out.objects ? iwdieN(out.objects, 'IWMAC object', 'IWMAC objects') : '',
+    out.boxes ? iwdieN(out.boxes, 'box the Designer draws', 'boxes the Designer draws') : ''].filter(Boolean);
+  out.what = (parts.length ? 'Made by this export from the picture, as Edit in VectorCraft and a save there make them: ' + parts.join(', ') +
+    (out.names ? ' - ' + out.names + ' in single_objects, after the panel\'s own, unlinked' : '') : 'No object made from the picture') +
+    '. The panel\'s own objects are as it has them.';
+  return out;
 }
 
 function iwdieNoteTraceInAiGuide(env) {
@@ -1360,6 +1402,9 @@ var IWDIE_CAPTION_CONVENTIONS = {
  * and any reader that wants "how many setpoints" instead of "how many
  * number_v3_60px_dark_no_conn_no_tag".
  */
+/** The Designer's labels (v1.83.0), as its palette lists them: 8 to 20 px, normal or bold, white or not. */
+var IWDIE_LABEL_KIND_RE = /^number_v3_label_(?:8|9|10|11|12|14|16|18|20)px_(?:norm|bold)(?:_white)?$/;
+
 var IWDIE_ROLE_INDEX = (function () {
   var index = {};
   var roles = IWDIE_OBJECT_CATALOGUE.by_role;
@@ -1551,11 +1596,17 @@ function iwdieCheckPanelGeometry(doc, notes, details) {
       'usual for a damper pair on one command, or a status in the drawing and the sidebar');
   }
 
-  // listed under any role, even "other", is known; only an id the catalogue has never seen is flagged
-  var unknown = {};
+  // listed under any role, even "other", is known; only an id the catalogue has never seen is flagged - (v1.83.0) and what
+  // this script places itself: the Designer's labels all, every size, normal or bold, white or not, as its palette has
+  // them (the words read from a picture become the one of their size and colour), its boxes either way round, and the
+  // objects of VectorCraft's IWMAC menu
+  var unknown = {}, placed = {};
+  IWDIE_VZ_BOXES.forEach(function (b) { placed[b[2]] = 1; placed[b[3]] = 1; });
+  iwdieVcObjectCatalog().forEach(function (c) { placed[c.id] = 1; });
   so.forEach(function (o) {
     var id = String(o.obj_id || '');
-    if (Object.prototype.hasOwnProperty.call(IWDIE_ROLE_INDEX, id) || /^sub_page/.test(id)) return;
+    if (Object.prototype.hasOwnProperty.call(IWDIE_ROLE_INDEX, id) || /^sub_page/.test(id) || IWDIE_LABEL_KIND_RE.test(id) ||
+      Object.prototype.hasOwnProperty.call(placed, id)) return;
     unknown[id] = (unknown[id] || 0) + 1;
   });
   var unk = Object.keys(unknown);
@@ -1635,8 +1686,10 @@ function iwdieCheckFile(text, opts) {
     }
   }
   // v1.65.0: what keeps the drawing from opening in VectorCraft as the layers it means - not asked of the picture's own,
-  // which VectorCraft itself saved
-  if (res.doc && typeof res.doc.image_svg === 'string' && res.doc.image_svg && !iwdieKeepsOwnPicture(res.doc)) {
+  // which VectorCraft itself saved, nor (v1.83.0) of one an optimised export read and nobody changed since: Edit in
+  // VectorCraft opens that very drawing
+  var svgOwn = res.doc && typeof res.doc.image_svg === 'string' && iwdieSvgOptimised(res.doc.image_svg) && iwdieSvgStampIntact(res.doc.image_svg);
+  if (res.doc && typeof res.doc.image_svg === 'string' && res.doc.image_svg && !iwdieKeepsOwnPicture(res.doc) && !svgOwn) {
     out.warnings = out.warnings.concat(iwdieSvgVectorFindings(res.doc.image_svg).warnings);
   }
   if (!out.errors.length) out.warnings = out.warnings.concat(iwdieCheckPanelGeometry(res.doc, out.notes, out.details));
@@ -1676,6 +1729,11 @@ function iwdieCheckFile(text, opts) {
   }
   if (iwdieKeepsOwnPicture(res.doc)) f.push('Background: the panel\'s own picture, with the drawing it was made from (panel.image_svg, ' +
     iwdieCountSvgShapes(res.doc.image_svg) + ' shapes) for Edit in VectorCraft.');
+  // v1.83.0: the drawing an optimised export read from the panel's picture
+  else if (res.doc && res.doc.image_svg && iwdieSvgOptimised(res.doc.image_svg)) {
+    f.push('Background: the panel\'s picture read into a drawing by an optimised export (panel.image_svg, ' + iwdieCountSvgShapes(res.doc.image_svg) +
+      ' shapes) - drawn by Insert into the panel\'s picture as a sync from VectorCraft makes it, the picture it was read from (image_data) on its hidden layer.');
+  }
   else if (res.doc && res.doc.image_svg) {
     f.push('Background: authored SVG artwork (panel.image_svg), ' + iwdieCountSvgShapes(res.doc.image_svg) + ' shapes - drawn by Insert into the panel\'s ' +
       'picture as a sync from VectorCraft makes it: a PNG that keeps the drawing, uploaded to the plant\'s pictures.');
@@ -1694,7 +1752,8 @@ function iwdieCheckFile(text, opts) {
     linked: summary.linking.linked_to_a_parameter, unlinked: summary.linking.unlinked,
     units: summary.units_referenced.map(function (u) { return u.unit_id + ' (' + u.objects + ')'; }),
     prefixes: prefixes,
-    background: iwdieKeepsOwnPicture(res.doc) ? 'picture with its drawing' : (res.doc && res.doc.image_svg) ? 'SVG artwork' : iwdieDocHasBackground(res.doc) ? 'embedded picture' : 'none',
+    background: iwdieKeepsOwnPicture(res.doc) ? 'picture with its drawing' : (res.doc && res.doc.image_svg && iwdieSvgOptimised(res.doc.image_svg)) ? 'drawing read from its picture'
+      : (res.doc && res.doc.image_svg) ? 'SVG artwork' : iwdieDocHasBackground(res.doc) ? 'embedded picture' : 'none',
     sections: (summary.layout && summary.layout.sections || []).map(function (h) { return h.title || '(untitled)'; }),
     roles: (summary.roles || []).map(function (r) { return r.objects + ' ' + r.role; }),
     ducts: (summary.layout && summary.layout.duct_lines) ? summary.layout.duct_lines.length : 0
@@ -3196,10 +3255,24 @@ function iwdieSvgStampIntact(svg) {
 }
 
 /** Whether Insert keeps a file's picture rather than drawing its image_svg (v1.64.4): the image_svg is the picture's own
- *  drawing, as Export stamped it and unchanged, and the picture it came from is there - a PNG or JPEG data URL. */
+ *  drawing, as Export stamped it and unchanged, and the picture it came from is there - a PNG or JPEG data URL. Not a
+ *  drawing an optimised export read from the picture (v1.83.0): that is the panel's picture from then on, and its
+ *  image_data the picture it was read from, words and all. */
 function iwdieKeepsOwnPicture(doc) {
-  return !!doc && typeof doc.image_svg === 'string' && iwdieSvgStampIntact(doc.image_svg) &&
+  return !!doc && typeof doc.image_svg === 'string' && iwdieSvgStampIntact(doc.image_svg) && !iwdieSvgOptimised(doc.image_svg) &&
     /^data:image\/(png|jpe?g)[;,]/i.test(String(doc.image_data || ''));
+}
+
+/** Whether a drawing is one an optimised export read from the panel's picture (v1.83.0): data-iwdie-optimised on its
+ *  root, the version that read it. */
+function iwdieSvgOptimised(svg) {
+  return /<svg\b[^>]*?\sdata-iwdie-optimised="[^"]*"/i.test(String(svg == null ? '' : svg));
+}
+
+/** A drawing marked as one an optimised export read (v1.83.0), or with that mark gone (`off`). -> svg */
+function iwdieSvgMarkOptimised(svg, off) {
+  var s = String(svg == null ? '' : svg).replace(/(<svg\b[^>]*?)\s+data-iwdie-optimised="[^"]*"/i, '$1');
+  return off ? s : s.replace(/<svg\b/i, '<svg data-iwdie-optimised="' + iwdieDrawEsc(IWDIE_VERSION) + '"');
 }
 
 /** The CSS properties a class rule of a drawing may set to be written on its elements as attributes (v1.76.0): SVG
@@ -3374,6 +3447,12 @@ function iwdiePrepareExportTrace(env, deps) {
   delete panel.image_svg_trace;
   delete panel.image_svg;         // re-export must not carry a stale one
   iwdieNoteTraceInAiGuide(env);   // the guide follows the file, not the intent
+  // v1.83.0: an optimised export's drawing needs the picture it was read from beside it, a picture of pixels
+  if (deps.optimised && (!/^data:image\//i.test(bg) || iwdieIsSvgBackground(bg))) {
+    var lost = new Error('the picture the drawing was read from is not in the export');
+    lost.optimised = true;
+    return Promise.reject(lost);
+  }
   if (!/^data:image\//i.test(bg)) return Promise.resolve({ env: env, traceNote: '' });
 
   if (iwdieIsSvgBackground(bg)) {
@@ -3408,6 +3487,23 @@ function iwdiePrepareExportTrace(env, deps) {
     var given = drawing ? iwdieExportDrawing(drawing) : null;
     if (given && iwdieNormalizeTraceSvg(given.svg)) drawing = given.svg;
     else given = null;
+    // v1.83.0: the drawing an optimised export read from the picture (`deps.optimised`: what it made), marked so, and the
+    // panel's picture from then on - Insert draws it, stamp or no stamp. Without it, its labels would stand on their own words
+    if (deps.optimised) {
+      if (!drawing || drawing.length > IWDIE_DRAWING_MAX) {
+        var why = new Error(!drawing ? 'the drawing read from the picture is not one panel.image_svg takes'
+          : 'the drawing read from the picture is ' + (Math.round(drawing.length / 104857.6) / 10) + ' MB, more than panel.image_svg takes');
+        why.optimised = true;
+        throw why;
+      }
+      drawing = iwdieSvgMarkOptimised(drawing);
+      panel.image_svg = iwdieSvgStamp(drawing);
+      iwdieNoteArtworkInAiGuide(env, drawing, given, deps.optimised);
+      var mo = deps.optimised, parts = [mo.labels ? iwdieN(mo.labels, 'label', 'labels') : '', mo.objects ? iwdieN(mo.objects, 'IWMAC object', 'IWMAC objects') : '',
+        mo.boxes ? iwdieN(mo.boxes, 'box', 'boxes') : ''].filter(Boolean);
+      return { env: env, traceNote: ' + its picture read into a drawing (' + iwdieCountSvgShapes(drawing) + ' shapes)' +
+        (parts.length ? ', ' + parts.join(', ') + ' made from it' : '') };
+    }
     if (drawing && drawing.length <= IWDIE_DRAWING_MAX) {
       panel.image_svg = iwdieSvgStamp(drawing);
       iwdieNoteArtworkInAiGuide(env, drawing, given);
@@ -8732,6 +8828,20 @@ function iwdieVcDesignerObjects(found, existing) {
       driver_id: L ? String(L.driver_id) : 'driver_id', unit_id: L ? String(L.unit_id) : '', unit_ref: '', alias_text: L ? String(L.alias_text) : '' });
   });
   return { objects: objects, already: already };
+}
+
+/** Objects made for a panel, named on after its own (v1.83.0): object_N from one past the highest N its objects
+ *  (`existing`) have, in their order - as the Designer numbers what it is given. Copies; the fields keep their order.
+ *  -> [object] */
+function iwdieNamedOn(objects, existing) {
+  var top = -1;
+  (existing || []).forEach(function (o) { var m = /^object_(\d+)$/.exec(String((o && o.name) || '')); if (m) top = Math.max(top, +m[1]); });
+  return (objects || []).filter(function (o) { return o && typeof o === 'object'; }).map(function (o, i) {
+    var c = {};
+    Object.keys(o).forEach(function (k) { c[k] = o[k]; });
+    c.name = 'object_' + (top + 1 + i);
+    return c;
+  });
 }
 
 /** The placeholders of a saved drawing taken out of it, to become objects: each group whose
@@ -16242,6 +16352,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-progress-line{font-size:13px;color:#334;min-height:18px}',
       '.iwdie-progress-sub{font-size:12px;color:#778;margin-top:2px}',
       '.iwdie-progress-note{font-size:11.5px;color:#996a00;background:#fdf6e3;border:1px solid #e8d9a0;border-radius:5px;padding:6px 10px;margin-top:10px}',
+      /* The optimised export's steps (v1.83.0): each with what it found and its time; the running one's ring turns in the
+         compositor, so it turns on while reading the picture holds the page. */
+      '.iwdie-step{display:flex;gap:8px;align-items:baseline;padding:1px 0;font-size:13px;color:#99a3ad}',
+      '.iwdie-step .i{width:14px;flex:none;text-align:center}',
+      '.iwdie-step .d{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#778}',
+      '.iwdie-step .t{flex:none;font-size:12px;color:#778;font-variant-numeric:tabular-nums}',
+      '.iwdie-step.now{color:#1d2a36}',
+      '.iwdie-step.done{color:#334}',
+      '.iwdie-step.done .i{color:#2e8b57}',
+      '@keyframes iwdie-turn{to{transform:rotate(360deg)}}',
+      '.iwdie-ring{display:inline-block;width:10px;height:10px;box-sizing:border-box;border:2px solid #2f6fb2;border-right-color:transparent;' +
+        'border-radius:50%;vertical-align:-1px;animation:iwdie-turn .8s linear infinite;will-change:transform}',
       ''].join('\n');
     try {
       if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
@@ -16889,10 +17011,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* ---------- export ---------- */
-    function buildEnvelopeAsync(allowEmpty) {
+    function buildEnvelopeAsync(allowEmpty, opt) {
       var doc = collectCurrentDoc(allowEmpty);
       if (!doc) return Promise.resolve(null);
       var url = grabBackgroundUrl();
+      // v1.83.0: what an optimised export made from the picture, after the panel's own objects and named on from them; its
+      // overview read from the drawing, as the panel will show it
+      if (opt) {
+        var named = iwdieNamedOn(opt.objects, doc.single_objects);
+        doc.single_objects = (Array.isArray(doc.single_objects) ? doc.single_objects : []).concat(named);
+        opt.made.names = named.map(function (o) { return o.name; });
+        url = 'data:image/svg+xml;base64,' + iwdieBytesToBase64(iwdieUtf8Encode(opt.svg));
+      }
       // the plant behind the panel, for an agent (v1.62.0), read while the background is embedded
       toast('Reading the plant’s units and parameters, and the picture’s layout, for the export…', false, 4000);
       return Promise.all([embedBackground(doc), ovBuild(doc, url)]).then(function (r) {
@@ -17092,22 +17222,62 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    function doExport() {
-      buildEnvelopeAsync(true).then(function (env) {
+    /** The export of the panel as it is (`opt` null), or of the panel as an optimised export made it (v1.83.0, `opt`:
+     *  vcExportOptimised's). `said`: why an optimised one was not made, told after the download; `stop()`: whether Cancel was
+     *  pressed meanwhile, and nothing is downloaded. -> Promise */
+    function exportPanel(opt, said, stop) {
+      return buildEnvelopeAsync(true, opt).then(function (env) {
         if (!env) return null;
         if (iwdieCountDocItems(env.panel) === 0) return exportBackgroundOnly(env);
         return iwdieCompleteExport(env, {
           decodeUtf8: function (bytes) { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); },
-          // the drawing a PNG VectorCraft saved holds (v1.64.4), without VectorCraft's own copy of the document
+          // the drawing a PNG VectorCraft saved holds (v1.64.4), without VectorCraft's own copy of the document - or the one
+          // the optimised export read from the picture (v1.83.0)
           drawingOf: function (bg) {
+            if (opt) return opt.svg;
             var parsed = iwdieParseDataUrl(bg);
             if (!parsed || !parsed.bytes) return null;
             return vcDocumentOf(parsed.bytes).then(function (svg) { return svg ? iwdieVcStripEditing(svg) : null; });
           },
+          optimised: opt ? opt.made : null,
           traceRaster: traceRasterBackground,
-          download: downloadEnvelope
+          download: function (e, note) {
+            if (stop && stop()) { toast('Export cancelled - no JSON was downloaded.', false, 5000); return null; }
+            var name = downloadEnvelope(e, note);
+            if (said) toast('Exported as the panel is, not read as Edit in VectorCraft reads it: ' + said + '.', false, 9000);
+            return name;
+          }
+        });
+      });
+    }
+
+    /** Export JSON (v1.83.0: always optimised). A panel whose picture is pixels is exported as Edit in VectorCraft and a save
+     *  there would leave it (vcExportOptimised): the picture read into a drawing, panel.image_svg, the panel's picture from
+     *  then on, and its words, the IWMAC objects and the Designer's boxes it shows the Designer's objects, after the panel's
+     *  own - the export an agent such as Copilot reads, and returns to Insert. Its steps show on the page, with Cancel. A
+     *  panel whose picture is a drawing already, or has none, or nothing to make objects of, is exported as before; so is
+     *  one whose picture could not be read so, and the toast says why. */
+    function doExport() {
+      var paper = null;
+      var steps = [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['text', 'Text in the picture'],
+        ['boxes', 'Cases, rooms and bars'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'], ['build', 'The drawing and the new objects'],
+        ['plant', 'The plant’s units and parameters, the file']];
+      var open = function () { paper = exportProgress('Export JSON - the panel as Edit in VectorCraft makes it', steps); return paper; };
+      var close = function () { if (paper) { paper.close(); paper = null; } };
+      vcExportOptimised(open).then(function (opt) { return { opt: opt }; }, function (e) {
+        return { opt: null, said: 'the picture could not be read so (' + String((e && e.message) || e).replace(/\.$/, '') + ')' };
+      }).then(function (r) {
+        if (paper && paper.skipped()) { close(); toast('Export cancelled - no JSON was downloaded.', false, 5000); return null; }
+        if (paper) paper.step('plant', r.opt ? 'the overview read from the drawing…' : 'the export as the panel is…', 0.97, 0.995);
+        var p = paper, stop = function () { return !!p && p.skipped(); };
+        return exportPanel(r.opt, r.said, stop).then(function (x) { close(); return x; }, function (error) {
+          close();
+          // the optimised file could not be made after all: the export as before, said so
+          if (r.opt && error && error.optimised && !stop()) return exportPanel(null, String(error.message || error));
+          throw error;
         });
       }).catch(function (error) {
+        close();
         toast('Export blocked: ' + (error && error.message ? error.message : error) + '\nNo JSON was downloaded.', true, 9000);
       });
     }
@@ -17219,6 +17389,70 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        to the main thread, the only feedback left was Chrome's "Page
        Unresponsive". A centred panel with a bar, the stage the worker reports,
        the elapsed time and a Cancel that terminates the worker. */
+    /** The optimised export's steps on this page (v1.83.0), as the editor's tab shows Edit in VectorCraft's (vcPaper): each
+     *  step of `steps` ([[key, title]...]) with what it found and how long it took, a bar, the time so far, and Cancel. It
+     *  answers vcVectorize as vcPaper does - skipped() is whether Cancel was pressed - and close() takes it away. */
+    function exportProgress(title, steps) {
+      var overlay = document.createElement('div'), box = document.createElement('div'), esc = iwdieEscHtml;
+      overlay.className = 'iwdie-overlay';
+      box.className = 'iwdie-panel iwdie-progress-panel';
+      box.style.width = '560px';
+      box.innerHTML = '<h3>' + esc(title) + '</h3>' + steps.map(function (s) {
+        return '<div class="iwdie-step" data-k="' + esc(s[0]) + '"><span class="i">○</span><span>' + esc(s[1]) + '</span><span class="d"></span><span class="t"></span></div>';
+      }).join('') + '<div class="iwdie-progress-track"><div class="iwdie-progress-fill" style="width:2%"></div></div>' +
+        '<div class="iwdie-progress-sub">0.0 s</div><button class="iwdie-btn iwdie-secondary" style="margin-top:12px">Cancel</button>';
+      overlay.appendChild(box);
+      overlayParent().appendChild(overlay);
+      var t0 = Date.now(), cur = null, began = 0, at = 0, cancelled = false, seen = {}, onSkip = null;
+      var fill = box.querySelector('.iwdie-progress-fill'), sub = box.querySelector('.iwdie-progress-sub'), btn = box.querySelector('button');
+      var secs = function (ms) { return ms < 10000 ? (Math.round(ms / 100) / 10).toFixed(1) + ' s' : Math.round(ms / 1000) + ' s'; };
+      var tick = setInterval(function () { sub.textContent = secs(Date.now() - t0); }, 250);
+      var bar = function (part) {
+        if (typeof part !== 'number' || !isFinite(part)) return;
+        at = Math.max(at, Math.min(1, part));
+        fill.style.width = Math.max(2, Math.round(at * 100)) + '%';
+      };
+      var show = function (key, state, detail, time) {
+        var r = box.querySelector('.iwdie-step[data-k="' + key + '"]');
+        if (!r) return;
+        seen[key] = state;
+        r.className = 'iwdie-step ' + state;
+        var ic = r.querySelector('.i');
+        if (state === 'now') { if (!ic.querySelector('.iwdie-ring')) ic.innerHTML = '<span class="iwdie-ring"></span>'; }
+        else ic.textContent = state === 'done' ? '✓' : '–';
+        if (detail !== undefined && detail !== null) r.querySelector('.d').textContent = detail;
+        if (time) r.querySelector('.t').textContent = time;
+      };
+      btn.addEventListener('click', function () {
+        cancelled = true;
+        btn.disabled = true;
+        btn.textContent = 'Cancelling…';
+        if (onSkip) onSkip();
+      });
+      var paper = {
+        step: function (key, detail, part) {
+          if (cur && cur !== key) paper.done(null);
+          if (cur !== key) { cur = key; began = Date.now(); }
+          show(key, 'now', detail || '');
+          bar(part);
+        },
+        say: function (detail, part) { if (cur) show(cur, 'now', detail); bar(part); },
+        done: function (detail, part) {
+          if (!cur) return;
+          show(cur, 'done', detail, secs(Date.now() - began));
+          cur = null;
+          bar(part);
+        },
+        none: function (key, detail) { if (!seen[key]) show(key, 'none', detail || ''); },
+        breath: function () { return vcBreath(window); },
+        noSkip: function () {},
+        onSkip: function (fn) { onSkip = fn; },
+        skipped: function () { return cancelled; },
+        close: function () { clearInterval(tick); overlay.remove(); }
+      };
+      return paper;
+    }
+
     function openTraceProgress(title) {
       var overlay = document.createElement('div');
       overlay.className = 'iwdie-overlay';
@@ -20423,6 +20657,101 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** The panel as Edit in VectorCraft and a save there, unchanged, would leave it - made here, for Export JSON (v1.83.0).
+     *  Thomas: *we need to update the export .json for copilot give as optimised self generated json*. A picture of pixels
+     *  is read as Vectorize image reads one (vcVectorize: what the panel's objects stand on, the IWMAC objects it shows, its
+     *  words, the boxes the Designer draws itself, the house symbols, the pipes by circuit, the rest traced) into the job's
+     *  SVG (iwdieVcSvg), whose placeholders are then taken out as a sync takes them (vcPlaceholders): those that stand for
+     *  none of the panel's objects become the Designer's objects (iwdieVcObjectChanges, iwdieVcDesignerObjects). The
+     *  panel's own objects stay as the panel has them, and nothing on the panel changes. `open()` gives the steps' paper
+     *  (exportProgress), opened once there is a picture to read.
+     *  null - the export goes on as before - for a panel without a picture, or with one that is a drawing already (an SVG,
+     *  or a PNG that keeps one: from VectorCraft, Insert or an export's Insert), or one with nothing to make objects of: no
+     *  word, IWMAC object or box, so its own pixels stay its picture.
+     *  -> Promise<{svg: the drawing, the picture it was read from on its hidden layer; objects: the new ones; made: what it
+     *  made} | null>; rejected, with `optimised` set, when the drawing is not one panel.image_svg takes */
+    function vcExportOptimised(open) {
+      var url = grabBackgroundUrl();
+      if (!url) return Promise.resolve(null);
+      var size = exportPanelSize(), fill = grabBackgroundFillColor() || '#e5e7ea', paper = null;
+      var info = { objects: exportPanelObjects(), size: size, plant: currentPlantId(), panel: currentPanelName() };
+      var read = function (base, shapes) {
+        // whether the Designer draws each object itself, and its kinds' looks, as Edit in VectorCraft asks them
+        var drawn = {}, kinds = [];
+        info.objects.forEach(function (ob) {
+          var k = ob && ob.obj_id ? String(ob.obj_id) : '';
+          if (!k) return;
+          if (drawn[k] === undefined) { drawn[k] = vcDrawsItself(k); if (/^[\w.-]+$/.test(k)) kinds.push(k); }
+          if (drawn[k]) ob.iwdieSelf = true;
+        });
+        paper.step('objects', 'reading the picture…', 0.01, 0.02);
+        var painted = vcPaintObjects(info.objects).then(null, function () {});
+        return vcObjectLooks(kinds).then(function (l) { info.looks = l; }, function () { info.looks = null; }).then(function () { return painted; }).then(function () {
+          return paper.breath();
+        }).then(function () {
+          // over the panel's own colour, and as it is - where it is transparent, the drawing leaves it so (as vcStartEdit)
+          return Promise.all([exportPaint(base.bytes, base.mime, size, fill), exportPaint(base.bytes, base.mime, size, null)]);
+        }).then(function (cs) {
+          var c = cs[0], raw = cs[1], clear = iwdieVcClearMask(raw.getContext('2d').getImageData(0, 0, raw.width, raw.height).data);
+          var hex = '#' + iwdieParseCssColor(fill).map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('');
+          var picture = (clear ? raw : c).toDataURL('image/png');
+          info.clear = clear ? { plate: iwdieParseCssColor(fill).slice(0, 3), mask: clear } : null;
+          return vcVectorize(c, paper, info).then(function (vz) {
+            if (paper.skipped()) return null;
+            paper.step('build', 'the drawing, and its placeholders as the Designer’s objects…', 0.92, 0.96);
+            return paper.breath().then(function () {
+              var svg = iwdieVcSvg({ width: size.w, height: size.h, plate: hex, picture: null, original: picture, vectors: vz.layers, shapes: shapes,
+                components: vz.symbols, objects: info.objects, looks: info.looks, unders: vz.unders, found: vz.found, labels: vz.labels,
+                title: (info.panel || 'Panel') + (info.plant ? ' - plant ' + info.plant : '') });
+              // taken apart as a sync takes a save of it: the panel's placeholders out, what they stood on kept, the rest new objects
+              var ph = vcPlaceholders(svg, size, null);
+              var ch = iwdieVcObjectChanges(ph.found, info.objects, iwdieVcPanelSent(info.objects), []);
+              var made = iwdieVcDesignerObjects(ch.fresh, info.objects);
+              // the drawing as panel.image_svg will take it (iwdiePrepareExportTrace), or the export as before
+              var drawing = iwdieNormalizeTraceSvg(iwdieSvgFromDocument(ph.svg));
+              var given = drawing ? iwdieExportDrawing(drawing) : null;
+              if (given && iwdieNormalizeTraceSvg(given.svg)) drawing = given.svg;
+              if (!drawing || drawing.length > IWDIE_DRAWING_MAX) {
+                var no = new Error(!drawing ? 'the drawing read from it is not one panel.image_svg takes'
+                  : 'the drawing read from it is ' + (Math.round(drawing.length / 104857.6) / 10) + ' MB, more than panel.image_svg takes (' +
+                    Math.round(IWDIE_DRAWING_MAX / 1e6) + ' MB)');
+                no.optimised = true;
+                throw no;
+              }
+              // nothing made of it - no word, object or box: the picture stays the panel's own, and the export is as before
+              if (!made.objects.length) { paper.done('nothing to make objects of: exported as the panel is', 0.96); return null; }
+              var idx = iwdieVcObjectIndex(), n = { labels: 0, boxes: 0, objects: 0 };
+              made.objects.forEach(function (o) {
+                if ((idx[o.obj_id] || {}).kind === 'label') n.labels++;
+                else if (iwdieVzBoxOf(o.obj_id)) n.boxes++;
+                else n.objects++;
+              });
+              paper.done(iwdieN(made.objects.length, 'object', 'objects') + ' made: ' + [iwdieN(n.labels, 'label', 'labels'), iwdieN(n.objects, 'IWMAC object', 'IWMAC objects'),
+                iwdieN(n.boxes, 'box', 'boxes')].join(', ') + ' · ' + (Math.round(drawing.length / 1024)) + ' kB of drawing', 0.96);
+              return { svg: ph.svg, objects: made.objects,
+                made: { version: IWDIE_VERSION, labels: n.labels, objects: n.objects, boxes: n.boxes, kept: made.already, symbols: (vz.symbols || []).length,
+                  pipes: vz.pipes || 0, font: vz.textFont || '', loose: !!vz.textLoose, ms: vz.ms, names: [] } };
+            });
+          });
+        });
+      };
+      return fetchBackgroundBytes(url).then(function (bg) {
+        var mime = bg && bg.bytes ? iwdieSniffMime(bg.bytes) : '';
+        if (!/^image\/(png|jpeg|gif|webp)$/.test(mime)) return null;
+        // a drawing from Draw (before v1.36.0) on it: drawn on the picture it was drawn on, as Edit in VectorCraft draws it
+        var found = mime === 'image/png' ? iwdieDrawExtract(bg.bytes) : null;
+        var base = found ? found.base : { mime: mime, bytes: bg.bytes };
+        if (!base || !base.bytes) return null;
+        return vcDocumentOf(bg.bytes).then(function (doc) {
+          return doc || (found && found.base ? vcDocumentOf(found.base.bytes) : null);
+        }).then(function (doc) {
+          if (doc) return null;
+          paper = open();
+          return read(base, found ? found.drawing.shapes : []);
+        });
+      });
+    }
+
     /* ---------- IWMAC objects (v1.40.0): placeholders saved back become objects ---------- */
     /** An element's box in its drawing's viewport: the union of its shapes' boxes, each through
      *  its own transform - its text left out, which may run past the box - or, with no shape in
@@ -23250,15 +23579,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** A file's drawing with its hidden original back (v1.76.0): Export leaves the picture on the layer Bakgrunn (original)
      *  out of panel.image_svg, marking the layer, and the picture the file carries (image_data) keeps it in its drawing -
-     *  read from there, so that Edit in VectorCraft can still start again from that picture. -> Promise<svg>: the drawing
-     *  as it is, when there is nothing to put back or it cannot be read */
+     *  read from there, so that Edit in VectorCraft can still start again from that picture. (v1.83.0) A picture that keeps
+     *  no drawing is that picture itself - an optimised export's image_data, the picture its drawing was read from - and
+     *  the mark the optimised export put on the drawing's root goes: the drawing is the panel's picture now.
+     *  -> Promise<svg>: the drawing as it is, when there is nothing to put back or it cannot be read */
     function vcOriginalBack(doc) {
-      var svg = String((doc && doc.image_svg) || '');
-      if (!/\sdata-iwdie-original="image_data"/.test(svg) || !/^data:image\/png[;,]/i.test(String(doc.image_data || ''))) return Promise.resolve(svg);
-      var parsed = iwdieParseDataUrl(doc.image_data);
+      var svg = iwdieSvgMarkOptimised(String((doc && doc.image_svg) || ''), true), pic = String((doc && doc.image_data) || '');
+      if (!/\sdata-iwdie-original="image_data"/.test(svg) || !/^data:image\/(png|jpeg)[;,]/i.test(pic)) return Promise.resolve(svg);
+      var parsed = iwdieParseDataUrl(pic);
       if (!parsed || !parsed.bytes) return Promise.resolve(svg);
       return vcDocumentOf(parsed.bytes).then(function (kept) {
-        var orig = kept ? iwdieVcOriginalPicture(kept) : null;
+        var orig = kept ? iwdieVcOriginalPicture(kept) : pic;
         return orig ? iwdieVcRestoreOriginal(svg, orig) : svg;
       }).then(null, function () { return svg; });
     }
@@ -25641,6 +25972,10 @@ if (typeof module !== 'undefined' && module.exports) {
     svgStamp: iwdieSvgStamp,
     svgStampIntact: iwdieSvgStampIntact,
     keepsOwnPicture: iwdieKeepsOwnPicture,
+    svgOptimised: iwdieSvgOptimised,
+    svgMarkOptimised: iwdieSvgMarkOptimised,
+    optimisedNote: iwdieOptimisedNote,
+    namedOn: iwdieNamedOn,
     svgTree: iwdieSvgTree,
     svgTransform: iwdieSvgTransform,
     svgPathSubs: iwdieSvgPathSubs,

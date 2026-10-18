@@ -13,7 +13,9 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 ## Workflow: copy a panel's style to a new panel / another plant
 
 1. Open the designer on the **source** plant, *Retrieve → Load* the panel you want to copy.
-2. Click **Export JSON** to download `iwmac-panel_<plant>_<name>_<stamp>.json`.
+2. Click **Export JSON** to download `iwmac-panel_<plant>_<name>_<stamp>.json`. Since v1.83.0 a picture of pixels is
+   read first, as Edit in VectorCraft reads it: the file holds the panel as an edit there would leave it, its words as
+   labels and the objects it shows as objects ([below](#export-json-gives-the-panel-as-edit-in-vectorcraft-makes-it-v1830)).
 3. Open the designer on the **target** plant, *New → Create Panel* (or load an existing panel to combine into).
 4. Click **Insert JSON…**, pick/drop/paste the export. It is checked and read back first; **⚡ Insert without checking** skips that for pasted text.
 5. If the file comes from another plant, the script offers to **rewrite the driver-id plant prefixes** (`10113_…` → `<target>_…`) so objects can link to the target plant's drivers.
@@ -347,7 +349,10 @@ by the right names, each turned copy told apart.
     //   itself, returned so the drawing stays editable across round trips — or
     //   (v1.65.0) the drawing a PNG from VectorCraft or Insert keeps, stamped
     //   data-iwdie-drawing, in place of image_svg_trace - since v1.76.0 sized, its
-    //   classes written on its elements, its hidden original left to image_data
+    //   classes written on its elements, its hidden original left to image_data -
+    //   or (v1.83.0) a picture of pixels read as Edit in VectorCraft reads it,
+    //   marked data-iwdie-optimised: the panel's picture from then on, with the
+    //   objects made from it after the panel's own in single_objects
   },
   "image_data": "data:image/png;base64,…",   // v1.17.0: last in the file
   "image_svg_trace": "<svg …>",              // v1.17.0: last in the file
@@ -492,6 +497,50 @@ VectorCraft too, so they keep up with each other.
 - Checked in the stub host on the hosted VectorCraft 0.11.0: an object moved, one deleted and one added in the Designer,
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
+
+### Export JSON gives the panel as Edit in VectorCraft makes it (v1.83.0)
+
+Thomas: *we need to update the export .json for copilot give as optimised self generated json*. He chose to have Export
+JSON always give that file.
+
+- **What Export JSON does now.** A panel whose picture is pixels is read as Edit in VectorCraft reads one: what the
+  panel's objects stand on, the IWMAC objects the picture shows, its words, the boxes the Designer draws itself, the
+  house symbols, the pipes by circuit, and the rest traced. The drawing that makes is then taken apart as a sync takes a
+  save from VectorCraft. The file holds the panel as Edit in VectorCraft and a save there, unchanged, would leave it:
+  - `panel.image_svg` is the drawing, in the form Export hands over any drawing, marked `data-iwdie-optimised` and
+    stamped.
+  - `single_objects` holds the panel's own objects as they are, then the objects made from the picture, unlinked and
+    named on from the panel's: its words as labels, the IWMAC objects it shows, the boxes the Designer draws.
+  - `image_data` is the panel's picture as it was, byte for byte.
+  - `overview` is read from the drawing. `contents` and `ai_guide.artwork.optimised` say what the export made and
+    where.
+- **Insert draws such a drawing, changed or not.** Insert keeps the picture in `image_data` while an exported drawing
+  comes back unchanged. Here that picture still has its words, and the labels made from them would stand on them. So
+  Insert draws a drawing marked `data-iwdie-optimised` into a PNG that keeps it, makes it the panel's background and
+  uploads it to the plant's pictures, as a sync does. The picture in `image_data` goes on the drawing's hidden layer
+  Bakgrunn (original), so that Edit in VectorCraft can start again from it. Insert's check does not judge such a
+  drawing's layers while its stamp is intact.
+- **Its steps show on the page,** each with what it found and its time, and Cancel stops the export. These panels are
+  exported as before:
+  - one whose picture is a drawing already (an SVG, or a PNG from VectorCraft or Insert);
+  - one without a picture;
+  - one whose picture has nothing to make objects of (no word, IWMAC object or box), so its own pixels stay its
+    picture.
+  When the picture cannot be read so, or its drawing is more than `panel.image_svg` takes (3 MB), the export goes on
+  as before and a toast says why.
+- **What the script places is known to Insert's check.** The check knew only the kinds seen on real panels, and
+  flagged what the words and box steps made: a white 12 px label, a horizontal room box. These now count as known:
+  - every label the Designer's palette has, 8 to 20 px, normal or bold, white or not;
+  - the Designer's boxes either way round;
+  - the objects of VectorCraft's IWMAC menu.
+- **Checked in the stub host on 11087's KA1:**
+  - The export took 18 s and holds 120 objects: the panel's 53, then 61 labels and 6 IWMAC objects (four compressors,
+    a pump and a three-way valve). These are the labels, at the same places, and the objects 1.82.8's Edit in
+    VectorCraft made, and the drawing's layers are the same.
+  - `image_data` is the panel's PNG byte for byte.
+  - Inserted on a fresh panel: 120 objects, the drawing the background as a 172 kB PNG that keeps it, uploaded once,
+    and the picture it was read from back on its hidden layer.
+- Not run in the live Designer.
 
 ### Labels where the picture had its words, pipes up to the valves, words read beside drawings (v1.82.8)
 

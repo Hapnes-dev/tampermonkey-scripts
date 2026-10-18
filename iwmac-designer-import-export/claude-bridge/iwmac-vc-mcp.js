@@ -261,6 +261,8 @@ function readExport(a) {
       plant: panel.plant_id, panel: panel.panel_name, size: [panel.panel_width, panel.panel_height],
       objects: objs.length, roles, linked: objs.filter(o => /^\d+_/.test(String(o.driver_id || ''))).length,
       background: env && env.background ? { mime: env.background.mime, w: env.background.width, h: env.background.height } : (panel.image_svg ? 'image_svg' : panel.image_data ? 'embedded' : 'none'),
+      // (userscript 1.83.0) a picture of pixels read at export as Edit in VectorCraft reads it: what that made, and where
+      optimised: env && env.ai_guide && env.ai_guide.artwork && env.ai_guide.artwork.optimised ? env.ai_guide.artwork.optimised : null,
       overview: ov ? {
         plant: ov.plant, units: ov.units ? ov.units.rows.length : 0,
         parameters: ov.parameters && ov.parameters.units ? ov.parameters.units.map(u => [u.unit_id, u.name || '', u.rows || 0]) : [],
