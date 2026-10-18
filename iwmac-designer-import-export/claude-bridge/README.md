@@ -107,10 +107,13 @@ example plans every value, bell, cooling and defrost state and name lands on the
   `u60 Def. relay`). `not_cases` names the other units. The rows come for the units linked on the
   panel and those ticked in the Parameter Selector, so for a new Oversikt tick the case
   controllers first.
-- `iwmac_edit` takes `case` (the case's box in the template's colour, cold or freezer, its cluster
-  and its name as a label object), `room` (a grey room with its name), `cluster` (a cluster on a
-  case already drawn), `name` (a name over a group of cases) and `legend` (the house's legend
-  column, once). A `case` or `cluster` given `unit` takes its roles from that unit's rows: the
+- `iwmac_edit` takes `case` (the case, its cluster and its name as a label object), `room` (a grey
+  room with its name), `cluster` (a cluster on a case already drawn), `name` (a name over a group
+  of cases) and `legend` (the house's legend column, once).
+- Since userscript 1.85.0 a case is native first, as Thomas asked: the Designer's own case box
+  (`number_v3_R_dummy_…`, cooling, freezer or heated, standing or lying), which the sync makes the
+  Designer's object under every other; a switch case the template's `KjølFrysDisk`; a box drawn in
+  Former only with `native: false`. A `case` or `cluster` given `unit` takes its roles from that unit's rows: the
   server fills them in before the tab plans the edit, and says so when a unit's rows did not come.
   An arrangement's `symbol` takes `cases` (or `clusters: true`) for the same.
 - Every case is known before anything is placed: the values first, then the bells and states at

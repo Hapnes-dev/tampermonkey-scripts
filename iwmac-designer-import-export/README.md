@@ -498,6 +498,35 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### An Oversikt's cases native first; a .ai without PDF content said, not opened (v1.85.0)
+
+Thomas: *update Copilot so that it prioritizes native IWMAC Designer objects when generating refrigerated and freezer
+display cases … native IWMAC Designer objects whenever a suitable match exists, existing .ai vector objects from the
+database when no suitable native object is available, generate new vector objects only when neither option is
+available. also make switch disks a permanent object in the database in vectorcraft* - and, of 10113's Oversikt .ai:
+*trying to import .ai file but all looks ready messy*.
+
+- **The cases native first, through Claude's bridge as in Copilot's `oversikt.py`.** A `case` op's case is the
+  Designer's own case box: `number_v3_R_dummy_medium_temp` (cooling), `_low_temp` (freezer) or `_heated_vert`
+  (`kind: 'heated'`), standing - or lying (`_horis`, `_hor`) where the box is at least as wide as high. These are the
+  objects Vectorize image already makes of a case read from a picture (v1.80.0). VectorCraft shows each as a
+  placeholder in its case's colour, and the sync makes it the Designer's object, z 5, under every other object.
+  - A `switch` case (cooling and freezer, split on its diagonal) is the template's `KjølFrysDisk`, turned 270 when it
+    stands.
+  - `native: false` draws the box in Former, as 1.84.0 did.
+  - A grey room that is no cooling position stays drawn: no box of the Designer's has its colour.
+  - `iwdieOvKindOf`, `iwdieOvNativeCase`.
+- **The switch disk was in the database already.** The Oversikt template's `KjølFrysDisk` (since 1.72.0, Libraries ›
+  Oversikt) is 10113's PI50 to PI52 to the hundredth. Its description now says *switch case (switch disk)*, so a search
+  for it finds it.
+- **A .ai saved without PDF content is said, not opened.** Illustrator then writes, for any PDF reader, a page that
+  only shows its notice. VectorCraft opened 10113's Oversikt as eight copies of it, and 2313's Oversikt .ai is the
+  same. `iwdieAiPdfNotice` reads the file's text arrays; Open plant .ai… says to save it again from Illustrator with
+  *Create PDF Compatible File* on, or to trace the panel's picture with Vectorize image.
+- Checked in the stub host on the local VectorCraft 0.11.0 build: Claude drew the e2e's Oversikt with 13 case boxes of
+  the Designer's own, a switch case and a heated case. The check was clean, also after an edit by hand. Ctrl+S placed 81
+  objects, the 13 boxes among them, and linked 12. Not run in the live Designer.
+
 ### A legend's symbols stay in the drawing, and names under a cluster stay read (v1.84.1)
 
 Thomas, after Vectorize image and a sync of 10113's Oversikt: *some objects was not syncet over*. Two things.

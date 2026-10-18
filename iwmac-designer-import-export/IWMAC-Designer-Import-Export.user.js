@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.84.1
+// @version      1.85.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.84.1';
+var IWDIE_VERSION = '1.85.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -5814,6 +5814,21 @@ function iwdiePdfStream(u8, text, idx, num) {
   return { dict: dict, data: u8.subarray(start, start + len), filter: fm ? fm[1] : null };
 }
 
+/** Whether a .ai was saved without PDF content (v1.85.0): Illustrator then writes, for any PDF reader, a page that
+ *  only shows its notice ("This is an Adobe Illustrator File that was saved without PDF Content ... Create PDF
+ *  Compatible File ..."), a form drawn over the page again and again - VectorCraft opened 10113's Oversikt as eight
+ *  copies of it, and 2313's Oversikt .ai is the same. Its text arrays (TJ) read in the first 4 MB, their strings joined.
+ *  -> boolean */
+function iwdieAiPdfNotice(u8) {
+  var text = iwdieLatin1(u8 && u8.length > 4194304 ? u8.subarray(0, 4194304) : u8 || new Uint8Array(0)), lines = [];
+  var re = /\[((?:\s*\((?:[^()\\]|\\.)*\)\s*-?[\d.]*)+)\s*\]\s*TJ/g, m;
+  while ((m = re.exec(text)) && lines.length < 400) {
+    lines.push((m[1].match(/\((?:[^()\\]|\\.)*\)/g) || []).map(function (p) { return p.slice(1, -1); }).join(''));
+  }
+  var all = lines.join(' ');
+  return /saved without PDF Content/.test(all) && /PDF\s*Compatible/.test(all);
+}
+
 /** The pieces of a .ai: its native-data blocks in order, the CMYK ICC profile
  *  of its PDF page if there is one, and whether it is a bare PostScript .ai.
  *  Blocks and profile may still be Flate-encoded (`filter`). */
@@ -11192,7 +11207,7 @@ function iwdieVcEditFile(doc, job) {
 
 /** The Oversikt template's colours as his v6 pictures use them (oversikt.py's PALETTE): cooling cases and cold rooms
  *  light blue, freezer cases and freezer rooms dark blue, the rooms that are no cooling position light grey. */
-var IWDIE_OV_PALETTE = { cold: '#b0e0ef', freezer: '#8eb2d1', room: '#e4e7ea' };
+var IWDIE_OV_PALETTE = { cold: '#b0e0ef', freezer: '#8eb2d1', heated: '#f3c96a', room: '#e4e7ea' };
 
 /** A case's cluster (oversikt.py's ROLE): each role's object kind, its width and its height. */
 var IWDIE_OV_ROLE = {
@@ -11434,6 +11449,26 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
   return { objects: objects, names: names, gaps: gaps };
 }
 
+/** An Oversikt case's kind from its op (v1.85.0): cold, freezer, heated or switch - a switch case cooling and freezer,
+ *  split on its diagonal (10113's PI50 to PI52). -> kind | '' (none of them) */
+function iwdieOvKindOf(kind) {
+  var k = String(kind === undefined || kind === null || kind === '' ? 'cold' : kind).trim().toLowerCase();
+  if (/^(freezer|frys|fryse|f|low)$/.test(k)) return 'freezer';
+  if (/^(heated|varme|heat|warm)$/.test(k)) return 'heated';
+  if (/^(switch|kjølfrys|kjolfrys|both|begge|switchdisk)$/.test(k)) return 'switch';
+  if (/^(cold|kjøl|kjol|cooling|medium|k)$/.test(k)) return 'cold';
+  return '';
+}
+
+/** The Designer's own case box for a case (v1.85.0, IWDIE_VZ_BOXES: number_v3_R_dummy_medium_temp, _low_temp,
+ *  _heated_vert): standing, or lying where the box is at least as wide as high. Thomas, 2026-10-18: native IWMAC Designer
+ *  objects first, the database's .ai components next, new vectors last. '' for a switch case, which no box of the
+ *  Designer's draws. -> obj_id | '' */
+function iwdieOvNativeCase(kind, w, h) {
+  var row = { cold: 0, freezer: 1, heated: 2 }[kind];
+  return row === undefined ? '' : IWDIE_VZ_BOXES[row][w >= h ? 3 : 2];
+}
+
 /** A thing of the drawing an Oversikt's clusters stand on (v1.84.0): a case drawn in the light or dark blue of the
  *  template (iwdieCbClassify's `case`), one of the template's case pieces (Kjøl…, Frys…), or the Designer's own case box
  *  (number_v3_R_dummy_…, the boxes a picture read into a drawing makes). -> 'cold' | 'freezer' | '' */
@@ -11441,7 +11476,8 @@ function iwdieOvCaseKind(it) {
   if (!it) return '';
   if (it.kind === 'case') return it.ov || 'cold';
   if (it.kind === 'symbol' && !it.group) return /^kjøl|^kjol/i.test(it.symbol || '') ? 'cold' : /^frys/i.test(it.symbol || '') ? 'freezer' : '';
-  if (it.kind === 'object') return /^number_v3_R_dummy_(medium|cool)/i.test(it.obj_id || '') ? 'cold' : /^number_v3_R_dummy_(low|freez)/i.test(it.obj_id || '') ? 'freezer' : '';
+  if (it.kind === 'object') return /^number_v3_R_dummy_(medium|cool)/i.test(it.obj_id || '') ? 'cold' : /^number_v3_R_dummy_(low|freez)/i.test(it.obj_id || '') ? 'freezer' :
+    /^number_v3_R_dummy_heat/i.test(it.obj_id || '') ? 'heated' : '';
   return '';
 }
 
@@ -11489,6 +11525,8 @@ function iwdieOvFinish(ov, items, steps, boxes, size, notes) {
   // what this edit placed before: objects, symbols and boxes, the cases and rooms themselves
   steps.forEach(function (st) {
     if (st['do'] !== 'add' || !st.box || st.kind === 'art') return;
+    // (v1.85.0) the Designer's own case box of a case of this edit: the case, taken as one below
+    if (st.kind === 'object' && st.ovCase) return;
     if (st.kind === 'object') lay.take(tb(st.box), /^number_v3_label_/.test(st.obj_id || '') ? 'label' : 'obj');
     else if (st.kind === 'pill') lay.take(tb(st.box), 'obj');
     else if (st.kind === 'box' && st.layer === 'Bakgrunn') lay.take(tb(st.box), 'room');
@@ -11836,20 +11874,33 @@ function iwdieCbPlan(ops, scene, ctx) {
         break;
       }
       case 'case': {
-        // (v1.84.0) a cooling position of an Oversikt: its box in the template's colour, its cluster and name placed last
-        var ck2 = /^(freezer|frys|fryse|f)$/i.test(String(o.kind || '')) ? 'freezer' : 'cold';
+        // (v1.84.0) a cooling position of an Oversikt: its box, its cluster and name placed last. (v1.85.0) Its box native
+        // first: the Designer's own case box (iwdieOvNativeCase); a switch case the template's KjølFrysDisk, turned 270
+        // when it stands; only with `native: false` drawn in Former, in the template's colour
+        var ck2 = iwdieOvKindOf(o.kind);
+        if (!ck2) { fail(i, 'kind is cold, freezer, heated or switch'); break; }
         var cbx = iwdieOvBoxOf(o, place, i);
         if (!cbx) { fail(i, 'a case needs rect [x, y, w, h], or at with w and h'); break; }
         var key2 = o.ref !== undefined && o.ref !== null && o.ref !== '' ? 'ref:' + o.ref : 'op' + (i + 1);
         var cro2 = iwdieOvRolesOf(o.roles, key2, fail, i);
         if (cro2 === false) break;
-        steps.push({ 'do': 'add', kind: 'box', box: cbx, layer: 'Former', rx: 4, fill: IWDIE_OV_PALETTE[ck2], stroke: '', width: 0,
-          name: o.label ? String(o.label) : '', ref: o.ref, op: i });
-        boxes.push(cbx);
+        var own2 = ck2 !== 'switch' && o.native !== false;
+        var caseBox = function (b, first) {
+          if (ck2 === 'switch') {
+            // symbolStep keeps its box in the free places' way itself
+            return !!symbolStep({ name: 'KjølFrysDisk', turn: b.w >= b.h ? 0 : 270, w: b.w, h: b.h }, i, { x: b.x, y: b.y });
+          }
+          if (own2) steps.push({ 'do': 'add', kind: 'object', obj_id: iwdieOvNativeCase(ck2, b.w, b.h), box: b, bind: '', text: ' ', ovCase: true, op: i });
+          else steps.push({ 'do': 'add', kind: 'box', box: b, layer: 'Former', rx: 4, fill: IWDIE_OV_PALETTE[ck2], stroke: '', width: 0,
+            name: first && o.label ? String(o.label) : '', op: i });
+          boxes.push(b);
+          return true;
+        };
+        if (!caseBox(cbx, true)) break;
         (Array.isArray(o.more) ? o.more : []).forEach(function (m) {
           if (!Array.isArray(m) || m.length !== 4 || !m.every(function (v) { return isFinite(v); })) { fail(i, 'more holds [x, y, w, h] boxes'); return; }
           var mb = { x: r1(+m[0]), y: r1(+m[1]), w: +m[2], h: +m[3] };
-          steps.push({ 'do': 'add', kind: 'box', box: mb, layer: 'Former', rx: 4, fill: IWDIE_OV_PALETTE[ck2], stroke: '', width: 0, op: i });
+          caseBox(mb, false);
           ov.plugs.push([mb.x, mb.y, mb.x + mb.w, mb.y + mb.h, (o.room ? 'room:' : 'case:') + key2]);
         });
         if (o.plug) {
@@ -12058,6 +12109,9 @@ function iwdieCbMarkup(s, cid, looks, used) {
     var base = iwdieVcObjects(looks || null).filter(function (o) { return o.id === s.obj_id; })[0], o = {};
     if (base) Object.keys(base).forEach(function (k) { o[k] = base[k]; });
     else { o.id = s.obj_id; o.role = ''; o.desc = s.obj_id; o.kind = 'picture'; o.hasTag = true; }
+    // (v1.85.0) a box the Designer draws itself (an Oversikt's case): its colour, its corners round, saying nothing
+    var bxk = iwdieVzBoxOf(s.obj_id);
+    if (bxk) { o.kind = 'bar'; o.bar = bxk.colour; o.round = bxk.round; o.bare = true; }
     o.w = s.box.w; o.h = s.box.h;
     if (s.text) o.tag = s.text;
     var name = IWDIE_VC_OBJ_PREFIX + s.obj_id + (s.bind ? ' ' + s.bind : ''), gid = iwdieVcSvgId(name, used || {});
@@ -12286,7 +12340,7 @@ var IWDIE_SYMBOLS = {
     ['FrysOvalDisk', 'a narrow case, 25 x 67 upright: the middle of an oval island; dark blue: freezer', 1, 0, 'Oversikt'],
     ['KjølHalvrund', 'a half-round end, 52 x 27, of an oval island: dome up; light blue: cooling', 1, 0, 'Oversikt'],
     ['FrysHalvrund', 'a half-round end, 52 x 27, of an oval island: dome up; dark blue: freezer', 1, 0, 'Oversikt'],
-    ['KjølFrysDisk', 'a case module, 69 x 29, half cooling and half freezer, split on its diagonal', 1, 0, 'Oversikt'],
+    ['KjølFrysDisk', 'a switch case (switch disk) module, 69 x 29, half cooling and half freezer, split on its diagonal; turned 270 it stands', 1, 0, 'Oversikt'],
     ['GulDisk', 'a yellow case, 63 x 29: the third kind beside light blue (cooling) and dark blue (freezer) in the template\'s key', 1, 0, 'Oversikt'],
     ['BoksGrå', 'a light grey box with a white edge, 327 x 175', 1, 0, 'Oversikt'],
     ['FlateGråMørkKant', 'a grey square area, 64 x 64, with a dark edge', 1, 0, 'Oversikt'],
@@ -20014,6 +20068,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var done = function (r) { saves.hold = ''; return r; };
         return f.arrayBuffer().then(function (ab) {
           var bytes = new Uint8Array(ab), objs = null;
+          // (v1.85.0) one saved without PDF content shows VectorCraft only Illustrator's notice, not the drawing
+          if (iwdieAiPdfNotice(bytes)) {
+            note(named + ' was saved without PDF content (Illustrator’s <b>Create PDF Compatible File</b> was off), so VectorCraft - as any PDF ' +
+              'reader - sees only Illustrator’s notice, not the drawing. Save it again from Illustrator with that option on (File › Save As › ' +
+              'Illustrator Options), then open it here; or trace the panel’s picture with <b>Vectorize image</b>.', true, true);
+            return done(null);
+          }
           try { objs = syncer && source ? iwdieVcLiftObjects(source, iwdieAiArtboard(bytes, name), { under: false }) : null; } catch (e) { objs = null; }
           // on the menu bar a file opens as a document; on a drawing it would be placed as art
           vcDropFile(bytes, name, f.type || 'application/pdf', title && title !== 'VectorCraft' ? 'menu' : 'center');
@@ -26326,6 +26387,7 @@ if (typeof module !== 'undefined' && module.exports) {
     aiText: iwdieAiText,
     aiName: iwdieAiName,
     aiContainer: iwdieAiContainer,
+    aiPdfNotice: iwdieAiPdfNotice,
     aiNative: iwdieAiNative,
     aiParse: iwdieAiParse,
     aiPathD: iwdieAiPathD,
@@ -26651,6 +26713,8 @@ if (typeof module !== 'undefined' && module.exports) {
     ovOffsets: iwdieOvOffsets,
     ovNameWidth: iwdieOvNameWidth,
     ovNameSpots: iwdieOvNameSpots,
+    ovKindOf: iwdieOvKindOf,
+    ovNativeCase: iwdieOvNativeCase,
     ovLegend: IWDIE_OV_LEGEND,
     OV_PALETTE: IWDIE_OV_PALETTE,
     OV_ROLE: IWDIE_OV_ROLE,
