@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.84.0
+// @version      1.84.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.84.0';
+var IWDIE_VERSION = '1.84.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -15004,11 +15004,25 @@ function iwdieVzObjectPills(pic, W, H, cols, objects) {
  *  picture shows the object a second time: those pixels, and one round each, are filled from round them
  *  (iwdieVcEraseMask). What the object does not cover - a pipe through its corners - and what differs from it stay;
  *  (v1.82.1) but under the look of one with no states (`all`: the Designer's dummies, a 360 unit, a frame, a room),
- *  drawn in every state, all of it: hidden by the object always. Changes `pic`. -> how many pixels were taken out */
+ *  drawn in every state, all of it: hidden by the object always. (v1.84.1) A look the picture matches on under 40 % of
+ *  its opaque pixels is not there a second time: words under a cooling or defrost object's dark circle, of the circle's
+ *  own colour, stay - 10113's Oversikt lost the eight names of its top row so. Changes `pic`. -> how many pixels were
+ *  taken out */
 function iwdieVzEraseLooks(pic, W, H, looks) {
   var M = new Uint8Array(W * H), n = 0;
   (looks || []).forEach(function (L) {
     if (!L || !L.rgba || !(L.w > 0) || !(L.h > 0)) return;
+    if (!L.all) {
+      var opaque = 0, hit = 0;
+      for (var y0 = 0; y0 < L.h; y0++) for (var x0 = 0; x0 < L.w; x0++) {
+        var X0 = L.x + x0, Y0 = L.y + y0, s0 = (y0 * L.w + x0) * 4;
+        if (X0 < 0 || Y0 < 0 || X0 >= W || Y0 >= H || L.rgba[s0 + 3] < 128) continue;
+        var j0 = (Y0 * W + X0) * 4;
+        opaque++;
+        if (Math.abs(pic[j0] - L.rgba[s0]) + Math.abs(pic[j0 + 1] - L.rgba[s0 + 1]) + Math.abs(pic[j0 + 2] - L.rgba[s0 + 2]) <= 60) hit++;
+      }
+      if (!opaque || hit * 5 < opaque * 2) return;
+    }
     for (var y = 0; y < L.h; y++) for (var x = 0; x < L.w; x++) {
       var X = L.x + x, Y = L.y + y, s = (y * L.w + x) * 4;
       if (X < 0 || Y < 0 || X >= W || Y >= H || L.rgba[s + 3] < 128) continue;
@@ -15061,6 +15075,26 @@ function iwdieVzRestPicture(def) {
  *  every Oversikt in the test bed lost its alarm, cooling and defrost symbols that way. -> boolean */
 function iwdieVzHiddenAtRest(def) {
   return /(^|\/)transp\.gif$/i.test(iwdieVzRestPicture(def));
+}
+
+/** What the Designer shows of an object while it is designed (v1.84.1, its graph designer's iw_make_ctrl): the picture
+ *  of state 1, and transp_d.gif - a pink square - where that is transparent; a kind without states its own picture.
+ *  The plant's page shows state 0 (iwdieVzRestPicture). -> path */
+function iwdieVzDesignerPicture(def) {
+  var sa = def && def.status_array;
+  if (sa && typeof sa === 'object') {
+    var one = Array.isArray(sa) ? sa[1] : sa['1'];
+    if (typeof one === 'string') return /(^|\/)transp\.gif$/i.test(one) ? 'transp_d.gif' : one;
+  }
+  return def && typeof def.file === 'string' ? def.file : '';
+}
+
+/** Whether the Designer and the plant's page show a kind alike (v1.84.1): its picture in design mode is its rest
+ *  picture. An inverted alarm or defrost (state 1 transparent) stands as a pink square in the Designer, an evaporator's
+ *  state icon as a defrost drop while the plant's page shows cooling. -> boolean */
+function iwdieVzShownAlike(def) {
+  var norm = function (p) { return String(p || '').replace(/^\/+/, ''); };
+  return norm(iwdieVzDesignerPicture(def)) === norm(iwdieVzRestPicture(def));
 }
 
 /** The kinds the found pictures of a picture stand for, one each (v1.77.0). One picture may be several kinds' -
@@ -22014,6 +22048,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // picture of another of its states, it would show the wrong one on the plant's page - a legend's defrost symbol
         // as an evaporator's state, which shows cooling
         if (at >= own) list = [iwdieVzRestPicture(def)];
+        // (v1.84.1) and only one the Designer shows alike: an inverted alarm or defrost stood in 10113's legend as a pink
+        // square there, an evaporator's state icon as a defrost drop. No kind shows a status symbol alike in both, so a
+        // legend keeps its symbols in the drawing
+        if (at >= own && !iwdieVzShownAlike(def)) return;
         var pics = list.filter(function (p, i) { return typeof p === 'string' && /\.(png|gif|jpe?g)$/i.test(p) && !/(^|\/)transp\.gif$/i.test(p) && list.indexOf(p) === i; });
         var w = parseFloat(def.width), h = parseFloat(def.height), k = known[id];
         if (!(w >= 8) && k) w = k.w;
@@ -26513,6 +26551,8 @@ if (typeof module !== 'undefined' && module.exports) {
     vzObjectKind: iwdieVzObjectKind,
     vzHiddenAtRest: iwdieVzHiddenAtRest,
     vzRestPicture: iwdieVzRestPicture,
+    vzDesignerPicture: iwdieVzDesignerPicture,
+    vzShownAlike: iwdieVzShownAlike,
     vzTwinKind: iwdieVzTwinKind,
     vzObjectsSeen: iwdieVzObjectsSeen,
     vcFoundPlaceholderSvg: iwdieVcFoundPlaceholderSvg,

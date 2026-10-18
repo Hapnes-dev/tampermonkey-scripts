@@ -498,6 +498,34 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### A legend's symbols stay in the drawing, and names under a cluster stay read (v1.84.1)
+
+Thomas, after Vectorize image and a sync of 10113's Oversikt: *some objects was not syncet over*. Two things.
+
+- **The legend's alarm, cooling and defrost symbols.** 1.83.2 made them kinds that show the symbol at rest on the
+  plant's page: an inverted alarm, an inverted defrost and an evaporator's state icon. But while a panel is designed,
+  the Designer draws an object by its state 1, and its `transp_d.gif` - a pink square - where that is transparent (its
+  graph designer's `iw_make_ctrl`). So the legend showed two pink squares and a defrost drop for *Kjøl/Frys pågår*.
+  A kind only the Designer's whole list brings is now made from a picture only when the Designer shows it as the plant's
+  page does (`iwdieVzDesignerPicture`, `iwdieVzShownAlike`). No kind shows a status symbol alike in both, so a legend
+  keeps those symbols in the drawing; its alarm bell is the house's `Alarm` component.
+- **The top row's eight names (K31 to K12).** Each lay under a cooling or defrost object of the panel, whose dark
+  circle is the words' own colour, and the step that takes an object's look out of the picture where the picture shows
+  it a second time (`iwdieVzEraseLooks`) took every letter for the circle. A look the picture matches on under 40 % of
+  its opaque pixels is no second look now, and what lies under it stays: the names are read as labels again.
+- Copilot's converter (`optimise.js`) takes both rules from the userscript.
+- Checked in the stub host on 10113's Oversikt and 15 more panels of the test bed, 1.84.0 against 1.84.1:
+  - 10113: the eight names of the top row come back as labels (23 to 31), and the legend's three symbols stay in the
+    drawing.
+  - The legend the same on five more Oversikt panels (10214, 11087, 2313, 3214, 4559).
+  - Words read better where they had lain under such a circle: 2313's "K28" reads "K38" as drawn, 2349's "F8l"
+    "F8", and 3214's "F7" is read (before, it became a small arrow symbol).
+  - 2313's VGV and 3530's Maskin draw their inverted three-way valves as the house's valve symbols (the Designer showed
+    those kinds as pink squares too); one of 2313's had become a solenoid object, though the picture shows a three-way
+    valve.
+  - 10214's, 2349's and 11087's Maskin and 10245's Ventilasjon came out the same.
+  - Not run in the live Designer.
+
 ### Claude draws an Oversikt through the bridge (v1.84.0, server 1.6.0)
 
 Thomas: *kan du gå over MCP for se om du finner noen forbedringer slik at den kan enkelt hjelpe meg lage
