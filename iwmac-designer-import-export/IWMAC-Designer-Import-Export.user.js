@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.83.0
+// @version      1.83.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.83.0';
+var IWDIE_VERSION = '1.83.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9660,10 +9660,14 @@ function iwdieVcSearch(ix, templates, progress, seen) {
 
 /** One component per place: the biggest first, then the closest (its half-covered pixels counting a
  *  little, so of twins the one whose stub is there wins); one that overlaps a kept one by more than
- *  a third of the smaller goes. -> the kept ones */
+ *  a third of the smaller goes. (v1.83.1) Of two alike to the last, the lower template, turn and place: the workers'
+ *  finds come in the order they finish, and two templates near twins - 11087's Beholder twice, a hundredth of a pixel
+ *  apart - were picked one way or the other run to run. -> the kept ones */
 function iwdieVcPick(found) {
   var cost = function (f) { return f.score + (f.edge || 0) * 0.25; };
-  var sorted = found.slice().sort(function (a, b) { return b.w * b.h - a.w * a.h || cost(a) - cost(b); }), keep = [];
+  var sorted = found.slice().sort(function (a, b) {
+    return b.w * b.h - a.w * a.h || cost(a) - cost(b) || (a.k || 0) - (b.k || 0) || (a.turn || 0) - (b.turn || 0) || a.y - b.y || a.x - b.x;
+  }), keep = [];
   sorted.forEach(function (f) {
     var clash = keep.some(function (o) {
       var ox = Math.max(0, Math.min(o.x + o.w, f.x + f.w) - Math.max(o.x, f.x)), oy = Math.max(0, Math.min(o.y + o.h, f.y + f.h) - Math.max(o.y, f.y));
@@ -13836,20 +13840,23 @@ function iwdieVzFit(pts, opts) {
     }
     return k;
   };
-  // the turn at each point, over a pixel either way
-  var turn = new Float64Array(n), reach = Math.min(1, per / 10);
+  // the turn at each point, over a pixel either way - as its cosine (v1.83.1): 1 straight on, -1 straight back. As an
+  // angle it took Math.acos, which Chrome computes otherwise than Node: their last digits part now and then, and a
+  // corner on a whole pixel went with them
+  var turn = new Float64Array(n).fill(1), reach = Math.min(1, per / 10);
   for (i = 0; i < n; i++) {
     var ib = along(i, -reach), ia = along(i, reach), pb = P[ib], pa = P[ia], pc = P[i];
     var v1x = pc[0] - pb[0], v1y = pc[1] - pb[1], v2x = pa[0] - pc[0], v2y = pa[1] - pc[1];
     var l1 = Math.sqrt(v1x * v1x + v1y * v1y), l2 = Math.sqrt(v2x * v2x + v2y * v2y);
     if (l1 < 1e-9 || l2 < 1e-9) continue;
-    turn[i] = Math.acos(Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)))) * 180 / Math.PI;
+    turn[i] = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)));
   }
   var corners = [];
   for (i = 0; i < n; i++) {
-    if (turn[i] < 40) continue;
+    // a turn under 40°: its cosine over cos 40°
+    if (turn[i] > 0.766044443118978) continue;
     var best = true, k1 = along(i, -reach), k3 = along(i, reach);
-    for (j = k1; j !== k3; j = (j + 1) % n) if (j !== i && (turn[j] > turn[i] || (turn[j] === turn[i] && j < i))) { best = false; break; }
+    for (j = k1; j !== k3; j = (j + 1) % n) if (j !== i && (turn[j] < turn[i] || (turn[j] === turn[i] && j < i))) { best = false; break; }
     if (best) corners.push(i);
   }
   var smooth = !corners.length;
@@ -13882,9 +13889,13 @@ function iwdieVzFit(pts, opts) {
     cx2 /= mid.length; cy2 /= mid.length;
     var sxx = 0, syy = 0, sxy = 0;
     mid.forEach(function (q) { var ux = q[0] - cx2, uy = q[1] - cy2; sxx += ux * ux; syy += uy * uy; sxy += ux * uy; });
-    var ang = 0.5 * Math.atan2(2 * sxy, sxx - syy), ux2 = Math.cos(ang), uy2 = Math.sin(ang), deg = Math.abs(ang * 180 / Math.PI);
-    // level or upright where it is within 2°
-    if (deg < 2 || deg > 178) { ux2 = 1; uy2 = 0; } else if (Math.abs(deg - 90) < 2) { ux2 = 0; uy2 = 1; }
+    // its direction from the sums by square roots alone (v1.83.1), not Math.atan2, Math.cos and Math.sin, as the turn
+    // above: ca and sa are the cosine and sine of twice its angle
+    var la = Math.sqrt((sxx - syy) * (sxx - syy) + 4 * sxy * sxy), ca = la ? (sxx - syy) / la : 1, sa = la ? 2 * sxy / la : 0, ux2, uy2;
+    // level or upright where it is within 2°: twice its angle within 4° of 0° or of 180° (cos 4°)
+    if (ca > 0.9975640502598242) { ux2 = 1; uy2 = 0; } else if (ca < -0.9975640502598242) { ux2 = 0; uy2 = 1; }
+    else if (ca >= 0) { ux2 = Math.sqrt((1 + ca) / 2); uy2 = sa / (2 * ux2); }
+    else { uy2 = (sa < 0 ? -1 : 1) * Math.sqrt((1 - ca) / 2); ux2 = sa / (2 * uy2); }
     for (t = 1; t < m2 - 1; t++) if (Math.abs((rn[t][0] - cx2) * uy2 - (rn[t][1] - cy2) * ux2) > lineTol + 0.25) return null;
     return { cx: cx2, cy: cy2, ux: ux2, uy: uy2 };
   });

@@ -498,6 +498,32 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The same picture read the same way every time, and Copilot reads it too (v1.83.1)
+
+- **Ties picked the same way every run.** The searches for IWMAC objects and house symbols run in up to four workers,
+  and their finds come back in the order the workers finish. Two templates nearly alike could match one place equally
+  well, and then the first to come back won, one run one way, the next another. 11087's Beholder is kept twice in the
+  house library, a hundredth of a pixel apart. `iwdieVcPick` now breaks such a tie by the lower template, then the turn,
+  then the place.
+- **Traced to the same digits in every engine.** The tracer found corners and straight runs with `Math.acos`,
+  `Math.atan2`, `Math.cos` and `Math.sin`. Chrome 155 computes those otherwise than Node 24, and on 400 000
+  inputs their last digits parted for 7.7 % (acos), 17.8 % (atan2) and 3.4 % (sin, cos). On 3694's
+  Oversikt_NY that put one corner of one letter 0.4 px elsewhere. `iwdieVzFit` now keeps each turn as its cosine and
+  finds a straight run's direction by square roots, which give the same digits in every engine, so a Chrome update
+  that changes its maths no longer changes a trace. On Oversikt_NY, 14 of 245 letter outlines moved, by at
+  most 0.27 px.
+- **Copilot reads a picture as this script does.** The Copilot kit's edit skill has a converter, `optimise.py`. It
+  runs this script's own functions in Node and makes Export JSON 1.83.0's optimised file from an export without one: a
+  file from 1.82.8 or older, a colleague's, or any panel file whose picture is pixels.
+  - What only a browser draws is made here ahead and kept in the skill: the glyphs of Roboto, Arial and Segoe UI, the
+    house templates, the Designer's state pictures and looks, and the labels' looks and widths.
+  - **Checked against this script**, in the stub host, on 22 panels of nine plants. The script read 19 of them into a
+    drawing, and on each the converter made the same objects, in the same order, and the same drawing, byte for
+    byte. On the other three both found nothing to make: two pictures were drawings already, and one had nothing to
+    read.
+  - Measured on the way: Chrome blends a picture's partly clear pixels with the panel's colour by rounding each part
+    on its own (Skia's), and the converter does the same.
+
 ### Export JSON gives the panel as Edit in VectorCraft makes it (v1.83.0)
 
 Thomas: *we need to update the export .json for copilot give as optimised self generated json*. He chose to have Export
