@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.85.2
+// @version      1.85.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.85.2';
+var IWDIE_VERSION = '1.85.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12367,22 +12367,22 @@ var IWDIE_SYMBOLS = {
     ['KjølHalvrund', 'a half-round end, 52 x 27, of an oval island: dome up; light blue: cooling', 1, 0, 'Oversikt'],
     ['FrysHalvrund', 'a half-round end, 52 x 27, of an oval island: dome up; dark blue: freezer', 1, 0, 'Oversikt'],
     ['KjølFrysDisk', 'a switch case (switch disk) module, 69 x 29, half cooling and half freezer, split on its diagonal; turned 270 it stands', 1, 0, 'Oversikt'],
-    ['GulDisk', 'a yellow case, 63 x 29: the third kind beside light blue (cooling) and dark blue (freezer) in the template\'s key', 1, 0, 'Oversikt'],
+    ['GulDisk', 'a yellow case, 62 x 28: the third kind beside light blue (cooling) and dark blue (freezer) in the template\'s key', 1, 0, 'Oversikt'],
     ['BoksGrå', 'a light grey box with a white edge, 327 x 175', 1, 0, 'Oversikt'],
     ['FlateGråMørkKant', 'a grey square area, 64 x 64, with a dark edge', 1, 0, 'Oversikt'],
     ['FlateGråKant', 'a grey square area, 64 x 64, with a mid grey edge', 1, 0, 'Oversikt'],
     ['FlateGråLysKant', 'a grey square area, 64 x 64, with a light grey edge', 1, 0, 'Oversikt'],
     ['BoksPrikk', 'a white box with a dark dot near its top edge, 48 x 29 or 38 x 29', 1, 0, 'Oversikt'],
     ['PilleHvitKant', 'a white pill with a grey edge, 50 x 20: the box a value object draws itself', 0, 0, 'Oversikt'],
-    ['Kondensator2', 'a condenser or gas cooler seen from above: 2 fans in a white box, 52 x 28', 1, 0, 'Oversikt'],
+    ['Kondensator2', 'a condenser or gas cooler seen from above: 2 fans in a white box, 51 x 27', 1, 0, 'Oversikt'],
     ['Kondensator3', 'a condenser or gas cooler seen from above: 3 fans in a white box, 75 x 28', 1, 0, 'Oversikt'],
     ['Kondensator4', 'a condenser or gas cooler seen from above: 4 fans in a white box, 97 x 28', 1, 0, 'Oversikt'],
     ['SelvbetjentKasse', 'a self-service checkout seen from above, grey, 64 x 38: three in a row are the template\'s Selvbetjent kasser (SelvbetjentKasserad)', 1, 0, 'Oversikt'],
     ['Kasse', 'a staffed checkout seen from above - belt, till and seat - grey, 95 x 34 lying: two mirrored about their middle are the template\'s Kasser (Kassepar)', 1, 0, 'Oversikt'],
     ['Oppvaskmaskin', 'a dishwasher: a spray over a glass and a plate, in a white square, 60 x 60', 1, 0, 'Oversikt'],
     ['Bilvask', 'a car wash: a spray over a car, in a white square, 60 x 60', 1, 0, 'Oversikt'],
-    ['Handlevogn', 'a trolley sign in a grey frame: 72 x 62, 72 x 42 or 72 x 30', 1, 0, 'Oversikt'],
-    ['HandlevognGrind', 'a trolley sign over a gate and its posts: 72 x 162, 72 x 143 or 72 x 111', 1, 0, 'Oversikt'],
+    ['Handlevogn', 'a trolley sign in a grey frame: 71 x 62, 71 x 42 or 71 x 30', 1, 0, 'Oversikt'],
+    ['HandlevognGrind', 'a trolley sign over a gate and its posts: 71 x 162, 71 x 143 or 71 x 111', 1, 0, 'Oversikt'],
     ['Inngang', 'a door: a gap in a grey wall line with an arrow through it pointing left, 32 x 136; turn or flip it to point the way in', 1, 0, 'Oversikt'],
     ['InngangUtgang', 'a door both ways: a wall line with an arrow in and an arrow out beside it, 31 x 83', 1, 0, 'Oversikt'],
     ['Plugg', 'a plug on its cable, 20 x 14: a plug-in case with its own compressor', 1, 0, 'Oversikt'],
@@ -12547,7 +12547,7 @@ var IWDIE_SYMBOLS = {
     '173|1so6kji|13.9|20.4|0.97|0.25|0.58|0.4|5;173|1so6kji|13.9|20.4|0.03|0.75|0.42|0.6|7;' +
     '173|1so6kji|13.9|20.4|0.97|0.75|0.58|0.6|1;174|1e526n3|12.1|20|0.42|1|0.6|0.32|0;' +
     '174|1e526n3|12.1|20|0.58|0|0.39|0.68|2;174|1e526n3|20|12.1|0|0.42|0.68|0.6|1;174|1e526n3|20|12.1|1|0.58|0.32|0.39|3;' +
-    '165|cm9xjw|63.7|38|0.87|0.51|0.54|0.48|0'
+    '165|cm9xjw|63.7|38|0.87|0.51|0.54|0.48|0;165|cm9xjw|63.7|38|0.87|0.49|0.54|0.52|6'
 };
 
 /** The Oversikt template's arrangements (v1.75.0): its islands, rows and checkouts as it lays them out
@@ -13040,6 +13040,13 @@ function iwdieSymStill(want, has) {
   return iwdieSymK([a[0] * bi[0] + a[2] * bi[1], a[1] * bi[0] + a[3] * bi[1], a[0] * bi[2] + a[2] * bi[3], a[1] * bi[2] + a[3] * bi[3]]);
 }
 
+/** Where a member turned `has` stands when turned `q` more (v1.85.3): q after has, as iwdieSymMatrix counts turns. A house
+ *  symbol found in a picture is its library copy turned as it was found, and the copy may itself be one the template
+ *  draws turned or mirrored (its sym.k). -> k */
+function iwdieSymThen(has, q) {
+  return iwdieSymStill(q, iwdieSymStill(0, has));
+}
+
 /** The member of a symbol family to place (v1.63.0): among `items` (a library named by iwdieSymName) those of `name`,
  *  best the one the template drew turned as asked (`k`) - the template's own upright "m" on a turned valve - then
  *  the one closest to the box asked for (`w` x `h`, either may be 0: its own size), else whichever is there.
@@ -13286,11 +13293,13 @@ function iwdieOvLinkOf(o) {
 
 /** A picture's house symbols found in its pixels (v1.76.0) as the overview takes a drawing's things: each symbol where it
  *  was found, turned as it was; the picture's pipes by colour and its large panels from the vectorizer's outline, for the
- *  layout. `found` [{name, x, y, w, h, turn}]. -> items for iwdieBuildOverview's picture.items */
+ *  layout. `found` [{name, x, y, w, h, turn, k}]: (v1.85.3) `k` as it stands - its library copy's own turn, then the
+ *  turn found - else `turn`. -> items for iwdieBuildOverview's picture.items */
 function iwdieOvRasterItems(found, outline) {
   var out = [];
   (found || []).forEach(function (m, i) {
-    if (m && m.name) out.push({ cid: 'f' + i, kind: 'symbol', symbol: String(m.name), k: (+m.turn || 0) & 3, box: { x: +m.x || 0, y: +m.y || 0, w: +m.w || 0, h: +m.h || 0 } });
+    var k = m && m.k != null ? +m.k || 0 : m ? +m.turn || 0 : 0;
+    if (m && m.name) out.push({ cid: 'f' + i, kind: 'symbol', symbol: String(m.name), k: k & 7, box: { x: +m.x || 0, y: +m.y || 0, w: +m.w || 0, h: +m.h || 0 } });
   });
   ((outline && outline.pipes) || []).forEach(function (p, i) {
     var pts = String(p[2] || '').split(' ').map(function (q) { return q.split(',').map(Number); }).filter(function (q) { return q.length === 2 && isFinite(q[0]) && isFinite(q[1]); });
@@ -16412,15 +16421,18 @@ function iwdieVcSymbolLooks(templates, items, names, bg) {
 /** A house symbol found in a picture, as the job's SVG has it (v1.74.0): a group named after it, with data-iwdie-symbol
  *  and its turn (data-iwdie-k) as iwdieSymExpand draws one placed by name - so VectorCraft's IWMAC menu, Claude and an
  *  edit file know it for what it is - where it was found, turned as it was. `c`: {name, sym, shapes, x, y, turn, w0,
- *  h0}: w0 x h0 the symbol's own size, (x, y) the top left of where it was found; `sym` false for a component the
- *  library names but no template does, a plain group then. */
+ *  h0, sk}: w0 x h0 the symbol's own size, (x, y) the top left of where it was found; `sym` false for a component the
+ *  library names but no template does, a plain group then. (v1.85.3) `sk`: the turn of the library's copy itself (its
+ *  sym.k) - data-iwdie-k is that and then the turn found (iwdieSymThen): 3214's standing Kasse, the template's copy
+ *  turned 3 found unturned, said k 0, and Claude's scene and Export JSON's overview read it lying. */
 function iwdieVcSymbolSvg(c, used) {
   var f = iwdieDrawFmt, esc = iwdieDrawEsc, name = String(c.name || '').trim() || 'Symbol', id = iwdieVcSvgId(name, used);
   var q = (c.turn || 0) & 3, m = iwdieSymMatrix(q), w = +c.w0 || 0, h = +c.h0 || 0, bw = q & 1 ? h : w, bh = q & 1 ? w : h;
+  var stands = iwdieSymThen((+c.sk || 0) & 7, q);
   var tf = 'translate(' + f(c.x + bw / 2) + ' ' + f(c.y + bh / 2) + ')' + (q ? ' matrix(' + m.join(' ') + ' 0 0)' : '') + ' translate(' + f(-w / 2) + ' ' + f(-h / 2) + ')';
   var defs = iwdieDrawDefsSvg(c.shapes);
   return '<g id="' + esc(id) + '" data-name="' + esc(name) + '"' + (c.sym !== false ? ' data-iwdie-symbol="' + esc(name) + '"' : '') + ' transform="' + tf + '"' +
-    (c.sym !== false ? ' data-iwdie-k="' + q + '"' : '') + '>' + (defs ? '<defs>' + defs + '</defs>' : '') +
+    (c.sym !== false ? ' data-iwdie-k="' + stands + '"' : '') + '>' + (defs ? '<defs>' + defs + '</defs>' : '') +
     c.shapes.map(function (sh) { return iwdieDrawShapeSvg(sh); }).join('') + '</g>';
 }
 
@@ -17674,7 +17686,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (!found) return null;
           return { found: found.map(function (m) {
             var it = items[m.k];
-            return it && it.sym ? { name: it.sym.name, x: m.x, y: m.y, w: m.w, h: m.h, turn: m.turn || 0 } : null;
+            return it && it.sym ? { name: it.sym.name, x: m.x, y: m.y, w: m.w, h: m.h, turn: m.turn || 0, k: iwdieSymThen((it.sym.k || 0) & 7, (m.turn || 0) & 3) } : null;
           }).filter(Boolean).sort(function (a, b) { return a.y - b.y || a.x - b.x; }), looked: looks.length, ms: Date.now() - t0 };
         });
       });
@@ -23355,7 +23367,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               var nm = String((it.sym && it.sym.name) || names[m.k]);
               holes.push({ x: m.x, y: m.y, w: m.w, h: m.h, rgba: iwdieVcTurn(t, m.turn).rgba });
               got.symbols.push({ kind: 'symbol', name: nm, sym: !!(it.sym && it.sym.name), shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, w0: it.w, h0: it.h, k: m.k,
-                eb: [m.x, m.y, m.w, m.h] });
+                sk: (it.sym && it.sym.k) || 0, eb: [m.x, m.y, m.w, m.h] });
               got.symbolCount[nm] = (got.symbolCount[nm] || 0) + 1;
             });
             got.tplK = byK;
@@ -23386,7 +23398,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                   holes2.push({ x: m.x, y: m.y, w: m.w, h: m.h, rgba: iwdieVcTurn(t, m.turn).rgba });
                   if (m.hole) holes2.push(m.hole);
                   got.symbols.push({ kind: 'symbol', name: nm, sym: !!(it.sym && it.sym.name), shapes: it.shapes, x: m.x, y: m.y, turn: m.turn, w0: it.w, h0: it.h, close: 1,
-                    k: m.k, eb: m.hole ? [m.hole.x + 4, m.hole.y + 4, m.hole.w - 8, m.hole.h - 8] : [m.x, m.y, m.w, m.h] });
+                    k: m.k, sk: (it.sym && it.sym.k) || 0, eb: m.hole ? [m.hole.x + 4, m.hole.y + 4, m.hole.w - 8, m.hole.h - 8] : [m.x, m.y, m.w, m.h] });
                   got.symbolCount[nm] = (got.symbolCount[nm] || 0) + 1;
                   got.closest++;
                 });
@@ -26609,6 +26621,7 @@ if (typeof module !== 'undefined' && module.exports) {
     symName: iwdieSymName,
     symMatrix: iwdieSymMatrix,
     symStill: iwdieSymStill,
+    symThen: iwdieSymThen,
     symPick: iwdieSymPick,
     symRefs: iwdieSymRefs,
     symLack: iwdieSymLack,

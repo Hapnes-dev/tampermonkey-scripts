@@ -498,6 +498,31 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### A found symbol says how it stands; the mirrored checkouts named (v1.85.3)
+
+- **The turn written.** Vectorize image writes each house symbol it finds as a group with `data-iwdie-k`, its turn. It
+  wrote the turn the search found the library's copy at, but that copy may itself be one the template draws turned or
+  mirrored. 3214's standing `Kasse`, the template's copy turned three quarters found unturned, said k 0: Claude's scene,
+  Copilot's edit files and Export JSON's overview read it lying, and placing it again by its name would have laid it
+  down. Now `data-iwdie-k` is the copy's own turn and then the turn it was found at (`iwdieSymThen`). The drawing
+  itself is unchanged.
+- **The mirrored checkouts.** The Oversikt template's second row of `SelvbetjentKasse` is the first row drawn mirrored
+  top to bottom. Its paths start within 0.06 of the first row's, so the table builder made one entry of both rows,
+  k 0. The builder now splits such a cluster by each copy's own turn, and compares copies leaf by leaf as the Maskin
+  builder does. `IWDIE_SYMBOLS` has an entry for the mirrored row (k 6), and the nearest entry tells the two apart.
+  10113's left checkouts are written k 7 now.
+- Export JSON's overview reads the symbols it finds in a picture the same way.
+- Copilot's converter passes each copy's own turn too.
+- Four Oversikt families' descriptions said a size a pixel larger than the table's: `GulDisk`, `Kondensator2` and the
+  two trolley signs say the table's sizes now.
+- **Checked.** Each library copy of `Kasse` and `SelvbetjentKasse` was taken at each of the four turns the search tries.
+  The group Vectorize writes and what placing it again by its name and k draws rendered as the same picture in all 56
+  cases; with 1.85.2, 40 of them came out turned or mirrored otherwise.
+- Each library copy the size of its family's own (323 of them) was drawn against that own turned each of the eight
+  ways: every one is turned as its k says now; with 1.85.2, the three mirrored checkouts were not.
+- Checked in the stub host, 1.85.2 against 1.85.3 on 16 panels: the drawings are the same but for `data-iwdie-k` (192
+  symbols on 15 panels say their turn otherwise now), the version stamp and the run's job id.
+
 ### Checkouts found as the house's checkouts (v1.85.2)
 
 Thomas, of 10113's checkouts after Vectorize image: *i have objects for these one its kasse object*.
