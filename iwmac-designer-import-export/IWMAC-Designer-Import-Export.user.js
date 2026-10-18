@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.85.0
+// @version      1.85.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.85.0';
+var IWDIE_VERSION = '1.85.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16251,7 +16251,11 @@ function iwdieTxLabelKind(px, white) {
  *  than the picture's). `w` the word's ink width, `per` the label's ink width in its own font a px of size, `cap` the
  *  picture's capitals' height, `ratio` the label font's capitals over its size. Each word takes the size best for it and
  *  the words read within half a pixel of its size (`white` alike), so a legend's words are alike and a code read a little
- *  off its size takes the codes' size. `items` [{size, w, per, cap, ratio, white}] -> [px] by item */
+ *  off its size takes the codes' size. (v1.85.1) A word that stands in a list - three words or more whose ink starts
+ *  within 2 px of one another (`x0`), within 1.5 px of their median size: a legend - is weighed with its list too: 10113's
+ *  legend took 14 px, but Frys, read a pixel smaller than its neighbours, was weighed with a case's code and took 12
+ *  (Thomas: "14 should be the right one"). With, not instead of, the words read alike: a list alone broke three alike
+ *  columns of 11087's Energi apart. `items` [{size, w, per, cap, ratio, white, x0?}] -> [px] by item */
 function iwdieTxLabelSizes(items) {
   var err = function (it, p) {
     var e = 0;
@@ -16259,10 +16263,20 @@ function iwdieTxLabelSizes(items) {
     if (it.ratio > 0 && it.cap > 0) e += Math.abs(p * it.ratio / it.cap - 1);
     return e;
   };
+  var listOf = function (it) {
+    if (!isFinite(it.x0)) return null;
+    var col = items.filter(function (o) { return isFinite(o.x0) && Math.abs(o.x0 - it.x0) <= 2 && !!o.white === !!it.white; });
+    if (col.length < 3) return null;
+    var s = col.map(function (o) { return o.size; }).sort(function (a, b) { return a - b; }), n = s.length;
+    var med = (s[(n - 1) >> 1] + s[n >> 1]) / 2, list = col.filter(function (o) { return Math.abs(o.size - med) <= 1.5; });
+    return list.length >= 3 && list.indexOf(it) >= 0 ? list : null;
+  };
   return items.map(function (it) {
     var within = function (d) { return items.filter(function (o) { return !!o.white === !!it.white && Math.abs(o.size - it.size) <= d; }); };
+    // (v1.85.1) a word of a list weighed with its list's words too
+    var near = within(0.5), list = listOf(it);
+    if (list) near = near.concat(list.filter(function (o) { return near.indexOf(o) < 0; }));
     // a word alone within half a pixel - read a pixel off, as one of 10214's codes - looks a pixel round
-    var near = within(0.5);
     if (near.length < 2) near = within(1);
     var px = 12, bestE = Infinity;
     IWDIE_TX_LABEL_PX.forEach(function (p) {
@@ -22485,7 +22499,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               g1.font = ref.font;
               var px = iwdieTxLabelSizes(kept.map(function (c) {
                 var m = g1.measureText(c.l.text), ink = (m.actualBoundingBoxLeft || 0) + (m.actualBoundingBoxRight || m.width);
-                return { size: c.l.size, w: c.l.x1 - c.l.x0, per: ink / ref.px, cap: bankCap * c.l.size, ratio: ref.cap, white: isWhite(c.x) };
+                return { size: c.l.size, w: c.l.x1 - c.l.x0, per: ink / ref.px, cap: bankCap * c.l.size, ratio: ref.cap, white: isWhite(c.x), x0: c.x.I.x + c.l.x0 };
               }));
               kept.forEach(function (c, i) {
                 var x = c.x, l = c.l, kind = iwdieTxLabelKind(px[i], isWhite(x)), look = vcTxLabelLook(kind);

@@ -498,6 +498,21 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### A list's words one size (v1.85.1)
+
+Thomas, of 10113's legend after Vectorize image: *look like you use 12px object on frys and 14 on Kjøl 14 should be the
+right one*.
+
+- The words step read the legend's words at 14.5 to 15 px, but *Frys* at 13.5. A case's code read at 13 lay within
+  half a pixel of it, so it was weighed with the codes, not with the legend: a 12 px label among 14 px ones.
+- A word that stands in a list is now weighed with its list as well: three words or more whose ink starts within 2 px of
+  one another, within 1.5 px of their median read size (`iwdieTxLabelSizes`, the words' `x0`). It still counts the words
+  read alike too: a list alone, tried first, broke three alike columns of 11087's Energi into 12 and 11 px and made
+  3214's codes 9 px.
+- Copilot's converter passes the words' places too.
+- Checked in the stub host, 1.85.0 against 1.85.1 on 16 panels: *Frys* became 14 px on 10113's and 2313's Oversikt, and
+  no other label changed size. Every legend of the six Oversikt panels is one size now.
+
 ### An Oversikt's cases native first; a .ai without PDF content said, not opened (v1.85.0)
 
 Thomas: *update Copilot so that it prioritizes native IWMAC Designer objects when generating refrigerated and freezer
