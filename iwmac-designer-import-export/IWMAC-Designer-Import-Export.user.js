@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.85.3
+// @version      1.86.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.85.3';
+var IWDIE_VERSION = '1.86.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6126,6 +6126,1147 @@ function iwdieAiLibrary(parsed, color, maxSize) {
     l.items.forEach(function (it) { take(conv(it, l.visible === false), l.name); });
   });
   return { items: lib, hidden: hidden, board: abs.length ? { w: art.x1, h: art.y1 } : null, boards: abs.length };
+}
+
+/* ===================== An Illustrator file's own data drawn (v1.86.0) =====================
+   Thomas, of a .ai saved without PDF content (Illustrator's Create PDF Compatible File off): best is it to auto
+   convert. Such a file carries a PDF page that only says so, and the drawing only in Illustrator's own data - the
+   AIPrivateData blocks the library already reads (iwdieAiContainer, iwdieAiNative). Read here in full: its layers,
+   groups, paths and compound paths with their fills, strokes, gradients and opacity, clipping, pictures, symbols, and
+   its text from the separate text document - each line where Illustrator laid it out, in its font, size and colour -
+   and written as one SVG of its first artboard, which VectorCraft opens as it opens a PDF-compatible copy. */
+
+/** ASCII85 (Adobe's, as Illustrator writes its text document): `s` up to '~>', whitespace aside. -> Uint8Array */
+function iwdieA85(s) {
+  s = String(s || '');
+  var end = s.indexOf('~>');
+  if (end >= 0) s = s.slice(0, end);
+  if (s.indexOf('<~') === 0) s = s.slice(2);
+  var out = new Uint8Array(Math.ceil(s.length * 4 / 5) + 8), n = 0, g = [0, 0, 0, 0, 0], gn = 0, i, c, k;
+  var put = function (count) {
+    var v = 0;
+    for (k = 0; k < 5; k++) v = v * 85 + (k < gn ? g[k] : 84);
+    var b = [(v / 16777216) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255];
+    for (k = 0; k < count; k++) out[n++] = b[k];
+  };
+  for (i = 0; i < s.length; i++) {
+    c = s.charCodeAt(i);
+    if (c <= 32) continue;
+    if (c === 122 && !gn) { out[n++] = 0; out[n++] = 0; out[n++] = 0; out[n++] = 0; continue; }   // 'z'
+    if (c < 33 || c > 117) continue;
+    g[gn++] = c - 33;
+    if (gn === 5) { put(4); gn = 0; }
+  }
+  if (gn > 1) put(gn - 1);
+  return out.subarray(0, n);
+}
+
+/** Illustrator's text document (its AI11TextDocument, decoded) parsed: dictionaries (<< /key value >>, its keys
+ *  numbers since CS) as objects, arrays, numbers, names ('/Name'), true and false, and strings as {t: text} - UTF-16
+ *  where they start with its mark, else Latin-1. -> the tree's root, an object */
+function iwdieAiTdParse(u8) {
+  var i = 0, n = u8.length;
+  var ws = function () { while (i < n && (u8[i] === 32 || u8[i] === 9 || u8[i] === 10 || u8[i] === 13 || u8[i] === 12 || u8[i] === 0)) i++; };
+  var str = function () {
+    i++;
+    var depth = 1, out = [];
+    while (i < n) {
+      var c = u8[i];
+      if (c === 92) {                                                   // backslash
+        var e = u8[i + 1];
+        if (e >= 48 && e <= 55) {
+          var j = i + 1, v = 0;
+          while (j < n && j < i + 4 && u8[j] >= 48 && u8[j] <= 55) { v = v * 8 + u8[j] - 48; j++; }
+          out.push(v & 255); i = j; continue;
+        }
+        var m = { 110: 10, 114: 13, 116: 9, 98: 8, 102: 12 }[e];
+        out.push(m !== undefined ? m : e); i += 2; continue;
+      }
+      if (c === 40) depth++;
+      else if (c === 41 && --depth === 0) { i++; break; }
+      out.push(c); i++;
+    }
+    var t = '', k;
+    if (out.length >= 2 && out[0] === 254 && out[1] === 255) {
+      for (k = 2; k + 1 < out.length; k += 2) t += String.fromCharCode(out[k] << 8 | out[k + 1]);
+    } else for (k = 0; k < out.length; k++) t += String.fromCharCode(out[k]);
+    return { t: t };
+  };
+  var token = function () {
+    var s = i;
+    while (i < n) {
+      var c = u8[i];
+      if (c <= 32 || c === 47 || c === 91 || c === 93 || c === 40 || c === 41 || c === 60 || c === 62) break;
+      i++;
+    }
+    var t = '';
+    for (var k = s; k < i; k++) t += String.fromCharCode(u8[k]);
+    return t;
+  };
+  var value = function () {
+    ws();
+    if (i >= n) return null;
+    var c = u8[i];
+    if (c === 60 && u8[i + 1] === 60) {                                 // <<
+      i += 2;
+      var d = {};
+      for (;;) {
+        ws();
+        if (i >= n) return d;
+        if (u8[i] === 62 && u8[i + 1] === 62) { i += 2; return d; }
+        var k = value(), v = value();
+        d[typeof k === 'string' && k.charAt(0) === '/' ? k.slice(1) : String(k)] = v;
+      }
+    }
+    if (c === 91) {                                                     // [
+      i++;
+      var a = [];
+      for (;;) {
+        ws();
+        if (i >= n) return a;
+        if (u8[i] === 93) { i++; return a; }
+        a.push(value());
+      }
+    }
+    if (c === 40) return str();
+    if (c === 47) { i++; return '/' + token(); }
+    var t = token();
+    if (!t) { i++; return null; }
+    if (t === 'true') return true;
+    if (t === 'false') return false;
+    var num = Number(t);
+    return isFinite(num) ? num : t;
+  };
+  var root = {};
+  while (i < n) {
+    ws();
+    if (i >= n) break;
+    var k = value();
+    if (k === null) break;
+    var v = value();
+    root[typeof k === 'string' && k.charAt(0) === '/' ? k.slice(1) : String(k)] = v;
+  }
+  return root;
+}
+
+/** The text of a .ai's native art, laid out as Illustrator laid it out (v1.86.0): from its text document each story's
+ *  characters and style runs (font, size, fill) and, for each of its frames, the glyph runs - where each starts on its
+ *  baseline and how far each glyph advances, in the document's own space (y down) - with the frame's matrix, and the
+ *  ruler origin that puts that space on the art's. `text`: the native art. -> {fonts: [PostScript names],
+ *  stories: [{text, runs: [{len, font, size, fill, stroke, stw}], frames: [{frame, runs: [{x, y, adv, from, count}]}]}],
+ *  frames: [[a, b, c, d, e, f]], ruler: [x, y]} or null */
+function iwdieAiTextDoc(text) {
+  var at = text.indexOf('/AI11TextDocument');
+  if (at < 0) return null;
+  var lineEnd = text.indexOf('\n', at), stop = text.indexOf('~>', lineEnd);
+  if (lineEnd < 0 || stop < 0) return null;
+  var a85 = text.slice(lineEnd + 1, stop).replace(/(^|\n)%/g, '$1');
+  var doc;
+  try { doc = iwdieAiTdParse(iwdieA85(a85)); } catch (e) { return null; }
+  var rm = /(-?[\d.]+)\s+(-?[\d.]+)\s+\/RulerOrigin/.exec(text.slice(stop, stop + 4000));
+  var get = function (o) { for (var k = 1; k < arguments.length; k++) { if (o == null) return undefined; o = o[arguments[k]]; } return o; };
+  var fonts = (get(doc, '0', '1', '0') || []).map(function (f) {
+    var nm = get(f, '0', '0', '0');
+    return nm && typeof nm === 'object' ? nm.t : '';
+  });
+  var frames = (get(doc, '0', '8', '0') || []).map(function (f) {
+    var m = get(f, '0', '2', '2');
+    return Array.isArray(m) && m.length === 6 ? m.map(Number) : [1, 0, 0, 1, 0, 0];
+  });
+  // a paint as the text document writes one: [alpha, r, g, b] (type 1), [alpha, c, m, y, k] (type 2), [alpha, gray]
+  var paint = function (p) {
+    var v = get(p, '0', '1'), ty = get(p, '0', '0');
+    if (!Array.isArray(v)) return null;
+    if (ty === 1 && v.length >= 4) return { rgb: [v[1], v[2], v[3]], op: v[0] };
+    if (ty === 2 && v.length >= 5) return { cmyk: [v[1], v[2], v[3], v[4]], op: v[0] };
+    if (v.length === 2) return { gray: v[1], op: v[0] };
+    return null;
+  };
+  // the style a run's sheet gives, the character style it names (its parent) filling in what it leaves out
+  var sheets = get(doc, '0', '5', '0') || [];
+  var styleOf = function (sheet, depth) {
+    var d = get(sheet, '6'), out = {};
+    if (d && typeof d === 'object') {
+      if (typeof d['0'] === 'number') out.font = d['0'];
+      if (typeof d['1'] === 'number') out.size = d['1'];
+      if (d['53'] && typeof d['53'] === 'object') out.fill = paint(d['53']);
+      if (d['54'] && typeof d['54'] === 'object') out.stroke = paint(d['54']);
+      if (typeof d['56'] === 'boolean') out.filled = d['56'];
+      if (typeof d['57'] === 'boolean') out.stroked = d['57'];
+      if (typeof d['63'] === 'number') out.stw = d['63'];
+      // faux bold and italic, horizontal and vertical scale, tracking (thousandths of an em), baseline shift, caps
+      if (typeof d['2'] === 'boolean') out.fb = d['2'];
+      if (typeof d['3'] === 'boolean') out.fi = d['3'];
+      if (typeof d['6'] === 'number') out.hs = d['6'];
+      if (typeof d['7'] === 'number') out.vs = d['7'];
+      if (typeof d['8'] === 'number') out.tr = d['8'];
+      if (typeof d['9'] === 'number') out.bs = d['9'];
+      if (typeof d['12'] === 'number') out.caps = d['12'];
+    }
+    var parent = get(sheet, '5');
+    if (typeof parent === 'number' && (depth || 0) < 6 && sheets[parent]) {
+      var p = styleOf(get(sheets[parent], '0'), (depth || 0) + 1);
+      Object.keys(p).forEach(function (k) { if (out[k] === undefined) out[k] = p[k]; });
+    }
+    return out;
+  };
+  var stories = (get(doc, '1', '1') || []).map(function (s) {
+    var model = get(s, '0') || {}, view = get(s, '1') || {};
+    var t = get(model, '0'), story = { text: t && typeof t === 'object' ? t.t : '', runs: [], frames: [] };
+    var runList = get(model, '6', '0') || [];
+    // a story in the normal style has no runs: [Normal Character Style] all of it
+    if (!runList.length && sheets[0]) runList = [{ '0': { '0': { '5': 0 } }, '1': (t && t.t ? t.t.length : 0) }];
+    runList.forEach(function (r) {
+      var sty = styleOf(get(r, '0', '0'), 0);
+      story.runs.push({ len: Number(get(r, '1')) || 0, font: sty.font, size: sty.size,
+        fill: sty.filled === false ? null : (sty.fill || { gray: 0, op: 1 }), stroke: sty.stroked ? sty.stroke || null : null, stw: sty.stw,
+        fb: !!sty.fb, fi: !!sty.fi, hs: sty.hs || 1, vs: sty.vs || 1, tr: sty.tr || 0, bs: sty.bs || 0, caps: sty.caps || 0 });
+    });
+    // each frame's glyph runs, in order: /PC > /F (a frame) > ... > /L (a line) > /S > /G (glyphs)
+    var from = 0;
+    (get(view, '2') || []).forEach(function (pc) {
+      (get(pc, '6') || []).forEach(function (fr) {
+        if (get(fr, '99') !== '/F') return;
+        var one = { frame: Number(get(fr, '10')), runs: [] };
+        // where a node's own offset (/0/0) puts what it holds, from `at`
+        var off = function (node, at) { var o = get(node, '0', '0'); return Array.isArray(o) && o.length >= 2 ? [at[0] + Number(o[0]), at[1] + Number(o[1])] : at; };
+        var walk = function (node, at) {
+          if (!node || typeof node !== 'object') return;
+          var kind = get(node, '99');
+          if (kind === '/S') {
+            // a segment of a line: its glyph runs one after the other, each as wide as its box says
+            var x = off(node, at);
+            (get(node, '6') || []).forEach(function (g) {
+              if (get(g, '99') !== '/G') return;
+              // its glyphs: /21 since Illustrator 2019 or so, with each one's advance; /5 before, without
+              var rel = get(g, '1'), gl = get(g, '21') || {}, ids = gl['0'] || get(g, '5') || [], adv = gl['1'] || [];
+              one.runs.push({ x: x[0], y: x[1], adv: adv.map(Number), from: from, count: ids.length });
+              from += ids.length;
+              if (Array.isArray(rel) && rel.length >= 4) x = [x[0] + Number(rel[2]) - Number(rel[0]), x[1]];
+            });
+            return;
+          }
+          var here = kind === '/L' || kind === '/F' ? off(node, at) : at;
+          (get(node, '6') || []).forEach(function (c) { walk(c, here); });
+        };
+        walk(fr, [0, 0]);
+        story.frames.push(one);
+      });
+    });
+    return story;
+  });
+  return { fonts: fonts, stories: stories, frames: frames, ruler: rm ? [+rm[1], +rm[2]] : [0, 0] };
+}
+
+/** The gradients a .ai's native art defines (v1.86.0): by name, linear or radial, and their stops - where each is
+ *  (0 to 1), its colour ({rgb} | {cmyk} | {gray}) and opacity, and the midpoint to the next. -> {name: {radial, stops}} */
+function iwdieAiGradients(text) {
+  var out = {}, re = /%AI5_BeginGradient: \(((?:\\.|[^\\)])*)\)([\s\S]*?)%AI5_EndGradient/g, m;
+  while ((m = re.exec(text))) {
+    // its header: "(name) type colours Bd", since Illustrator 2020 or so with two more numbers before Bd ("1 2 0 0 Bd")
+    var body = m[2], bd = /\)\s+(\d+)\s+(\d+)(?:\s+-?[\d.]+)*\s+Bd/.exec(body), stops = [];
+    // its stops: "... %_BS" keeps the ramp's precision, "%_... Bs" rounds it - the first if there are any
+    var sr = /(?:^|\n)([-\d.eE \t]+?)[ \t]+%_BS/g, s;
+    if (!sr.test(body)) sr = /%_([-\d.eE\s]+?)\s+Bs/g;
+    sr.lastIndex = 0;
+    while ((s = sr.exec(body))) {
+      var n = s[1].trim().split(/\s+/).map(Number);
+      if (n.length < 6) continue;
+      var ramp = n[n.length - 1], mid = n[n.length - 2], type = n[n.length - 5], op = n[n.length - 4], vals = n.slice(0, n.length - 5), col;
+      if (type === 0) col = { gray: vals[0] };
+      else if (type === 1) col = { cmyk: vals.slice(0, 4) };
+      else if (type === 2) col = vals.length >= 7 ? { rgb: vals.slice(4, 7) } : { rgb: vals.slice(0, 3) };
+      else col = vals.length >= 3 ? { rgb: vals.slice(vals.length - 3) } : { gray: vals[0] };
+      stops.push({ at: ramp / 100, col: col, op: isFinite(op) && op >= 0 && op <= 1 ? op : 1, mid: mid / 100 });
+    }
+    stops.sort(function (a, b) { return a.at - b.at; });
+    out[iwdieAiText(m[1])] = { radial: !!(bd && bd[1] === '1'), stops: stops };
+  }
+  return out;
+}
+
+/** A .ai's native art as a tree for drawing it whole (v1.86.0): {board: its first artboard {x0, y0, x1, y1} (y up),
+ *  layers: [{kind: 'layer', name, visible, locked, items}]}. Items: {kind: 'group', name, items, clip: [d], op},
+ *  {kind: 'path', d, rule, compound, fill, stroke, w, cap, join, miter, da, dp, op}, {kind: 'text', story, frame, op},
+ *  {kind: 'raster', m, w, h, bits, ch, alpha, at: where its bytes start in `text`}, each one hidden in Illustrator
+ *  with hidden: true. A fill or stroke is {rgb} | {cmyk} | {gray} | {grad: name, m: Xm matrix, gm: Bg's numbers}.
+ *  Read as iwdieAiParse reads the art, line by line as PostScript, keeping what that leaves out. */
+function iwdieAiArtTree(text) {
+  var cm = /%AI3_Cropmarks:\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)/.exec(text);
+  var board = cm ? { x0: Math.min(+cm[1], +cm[3]), y0: Math.min(+cm[2], +cm[4]), x1: Math.max(+cm[1], +cm[3]), y1: Math.max(+cm[2], +cm[4]) } : null;
+  // the symbols it defines (Illustrator 2018 and before draw an instance from these, later ones carry its art along)
+  var syms = {}, re = /%AI14_BeginSymbol\r?\n\(((?:\\.|[^\\)])*)\)/g, m;
+  while ((m = re.exec(text))) {
+    var end = text.indexOf('%AI10_EndSymbol', re.lastIndex);
+    if (end < 0) break;
+    syms[iwdieAiText(m[1])] = iwdieAiArtRange(text, re.lastIndex, end, true).items;
+    re.lastIndex = end;
+  }
+  var start = text.indexOf('%AI5_BeginLayer'), parsed = iwdieAiArtRange(text, start < 0 ? 0 : start, text.length);
+  return { board: board, layers: parsed.layers, symbols: syms };
+}
+
+/** The art of a .ai's native data between `from` and `to` (iwdieAiArtTree): its layers, and what lies outside any.
+ *  -> {layers, items} */
+function iwdieAiArtRange(text, from, to, inDef) {
+  var root = { kind: 'root', items: [] }, stack = [root], layers = [];
+  var st = { fill: null, stroke: null, w: 1, cap: 0, join: 0, miter: 4, da: null, dp: 0, rule: 0, op: 1, blend: 0 };
+  // the block of an object's own attributes Illustrator writes after it, up to "6 () XW": {obj, op, blend} as before it
+  var trail = null;
+  var done1 = function (obj) { trail = { obj: obj, op: st.op, blend: st.blend, xy: null }; };
+  var path = [], clip = false, hidden = false, grad = null, inSym = 0, inText = 0, textItem = null;
+  var inst = null, instArt = 0, instHead = false, last = null, raster = null;
+  var tokRe = /\[[^\]]*\]|\((?:\\.|[^\\)])*\)|\/[^\s\/\[\]()]+|[^\s\[\]()]+/g, num = /^-?\d*\.?\d+(?:[eE][-+]?\d+)?$/;
+  var top = function () { return stack[stack.length - 1]; };
+  var add = function (item) {
+    if (hidden) { item.hidden = true; hidden = false; }
+    var t = top();
+    if (t.kind === 'compound') return;
+    t.items.push(item);
+    last = item;
+  };
+  var paintOf = function (op) {
+    var f = /^[fFbB]$/.test(op), s = /^[sSbB]$/.test(op), gp = grad && grad.name ? { grad: grad.name, m: grad.m || grad.bm, gm: grad.gm, def: !!inDef } : null;
+    return { fill: f ? (gp && grad.fill ? gp : st.fill) : null, stroke: s ? (gp && grad.stroke ? gp : st.stroke) : null,
+      w: st.w, cap: st.cap, join: st.join, miter: st.miter, da: st.da, dp: st.dp, op: st.op, blend: st.blend };
+  };
+  var emit = function (op) {
+    if (/^[fsbn]$/.test(op) && path.length && path[path.length - 1] !== 'Z') path.push('Z');
+    var d = path.join(' '), t = top();
+    path = [];
+    if (!d) { clip = false; return; }
+    if (clip) {
+      // a clipping path: the clip group it is in clips what that holds
+      for (var k = stack.length - 1; k >= 0; k--) if (stack[k].isClip) { stack[k].clip.push(d); break; }
+      clip = false;
+      return;
+    }
+    if (t.kind === 'compound') {
+      t.parts.push(d);
+      if (/^[fFsSbB]$/.test(op) && !t.paint) t.paint = paintOf(op);
+      t.rule = st.rule;
+      return;
+    }
+    if (!/^[fFsSbB]$/.test(op)) return;
+    var p = paintOf(op);
+    p.kind = 'path'; p.d = d; p.rule = st.rule;
+    add(p);
+    done1(p);
+  };
+  var pos = from, len = to;
+  while (pos < len) {
+    var nl = text.indexOf('\n', pos), lineEnd = nl < 0 ? len : nl, next = nl < 0 ? len : nl + 1;
+    var line = text.slice(pos, lineEnd);
+    if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
+    pos = next;
+    if (!line) continue;
+    if (line.charCodeAt(0) === 37) {                                   // '%'
+      if (line.indexOf('%%BeginData:') === 0) {
+        // a raster's bytes: past the "XI" line, w x h x channels; then on to %%EndData
+        var xi = text.indexOf('XI', pos), bs = text.indexOf('\n', xi) + 1, endData = text.indexOf('%%EndData', bs);
+        if (raster && xi >= 0 && bs > 0) raster.at = bs;
+        if (endData < 0) break;
+        pos = endData;
+        continue;
+      }
+      if (line.indexOf('%AI5_BeginLayer') === 0) {
+        var ly = { kind: 'layer', name: '', visible: true, locked: false, items: [] };
+        if (top().kind === 'layer') top().items.push(ly); else { root.items.push(ly); layers.push(ly); }
+        stack.push(ly); hidden = false; continue;
+      }
+      if (line.indexOf('%AI5_EndLayer') === 0) {
+        while (stack.length > 1 && top().kind !== 'layer') stack.pop();
+        if (stack.length > 1) stack.pop();
+        continue;
+      }
+      if (line.indexOf('%AI14_BeginSymbol') === 0) { inSym++; continue; }
+      if (line.indexOf('%AI10_EndSymbol') === 0) { inSym--; continue; }
+      if (inSym) continue;
+      if (line.indexOf('%AI5_BeginRaster') === 0) { trail = null; raster = { kind: 'raster', op: st.op, blend: st.blend, def: !!inDef }; continue; }
+      if (line.indexOf('%AI5_EndRaster') === 0) {
+        if (raster && raster.w > 0 && raster.h > 0 && raster.at) { add(raster); done1(raster); }
+        raster = null; continue;
+      }
+      if (line.indexOf('%_/XMLUID : (') === 0) {
+        var nm = /\((.*?)\) ; \(AI10_ArtUID\)/.exec(line);
+        if (nm && !(inst && !instArt) && last && !last.name) last.name = iwdieAiName(iwdieAiText(nm[1]));
+        continue;
+      }
+      if (inst && line.indexOf('%_') === 0) {
+        var inner = line.slice(2).trim();
+        if (inner === 'X=') {
+          if (++instArt === 1) {
+            // its local art, already in place: drawn instead of its definition
+            if (inst.use && inst.list) { var ui = inst.list.indexOf(inst.use); if (ui >= 0) inst.list.splice(ui, 1); inst.use = null; }
+            var g = { kind: 'group', name: inst.name, items: [], sym: inst.name, op: st.op };
+            if (inst.hidden) g.hidden = true;
+            add(g); stack.push(g);
+          }
+          continue;
+        }
+        if (inner === 'X+') { if (--instArt === 0) { last = stack.pop() || last; inst = null; } continue; }
+        // a line of local art may carry the next one glued on: "%_1 w%_935.03 423.98 m"
+        if (instArt > 0) line = inner.replace(/%_/g, ' '); else continue;
+      } else continue;
+    }
+    if (inSym) continue;
+    var trimmed = line.trim();
+    if (inText) {
+      var fi = /^(-?\d+)\s+\/FrameIndex/.exec(trimmed), si = /^(-?\d+)\s+\/StoryIndex/.exec(trimmed);
+      if (fi && textItem) textItem.frame = +fi[1];
+      if (si && textItem) textItem.story = +si[1];
+      if (/:\s*$/.test(trimmed)) inText++;
+      else if (/^;/.test(trimmed) && --inText === 0) { if (textItem) { add(textItem); done1(textItem); } textItem = null; }
+      continue;
+    }
+    if (trimmed.indexOf('/AI11Text') === 0) { trail = null; inText = 1; textItem = { kind: 'text', story: -1, frame: 0, op: st.op }; continue; }
+    if (trimmed.indexOf('/SymbolInstance') === 0) {
+      var nl2 = text.indexOf('\n', pos), nextLine = text.slice(pos, nl2 < 0 ? len : nl2).trim();
+      var sn = /^\(((?:\\.|[^\\)])*)\)/.exec(nextLine);
+      inst = { name: sn ? iwdieAiText(sn[1]) : 'symbol', hidden: hidden }; instHead = true; hidden = false;
+      continue;
+    }
+    if (instHead) {
+      var rt = /((?:-?[\d.eE+-]+\s+){5}-?[\d.eE+-]+)\s*\/RTransformMatrix/.exec(trimmed);
+      if (rt) inst.m = rt[1].trim().split(/\s+/).map(Number);
+      if (trimmed === ';') {
+        instHead = false;
+        // drawn from its definition unless local art follows
+        inst.use = { kind: 'use', sym: inst.name, m: inst.m || [1, 0, 0, 1, 0, 0], op: st.op };
+        if (inst.hidden) inst.use.hidden = true;
+        inst.list = top().kind === 'compound' ? null : top().items;
+        if (inst.list) { inst.list.push(inst.use); last = inst.use; }
+      }
+      continue;
+    }
+    var toks = trimmed.match(tokRe) || [], ops = [];
+    for (var ti = 0; ti < toks.length; ti++) {
+      var t = toks[ti], c0 = t.charAt(0);
+      // an operator with the next number glued on ("4 w3034 -1246 m", "[]0 d0 XR"): the two apart
+      var glued = c0 !== '(' && c0 !== '[' && c0 !== '/' && !num.test(t) ? /^([A-Za-z*=+]+)(-?(?:\d|\.\d).*)$/.exec(t) : null;
+      if (glued) { toks.splice(ti + 1, 0, glued[2]); t = glued[1]; c0 = t.charAt(0); }
+      if (num.test(t)) { ops.push(parseFloat(t)); continue; }
+      if (c0 === '[') { ops.push(t.slice(1, -1).trim().split(/\s+/).filter(function (v) { return num.test(v); }).map(parseFloat)); continue; }
+      if (c0 === '(') { ops.push({ s: t.slice(1, -1) }); continue; }
+      if (c0 === '/') { ops.push(t); continue; }
+      var n = [];
+      for (var oi = 0; oi < ops.length; oi++) if (typeof ops[oi] === 'number') n.push(ops[oi]);
+      var L = n.length;
+      switch (t) {
+        case 'k': if (L >= 4) st.fill = { cmyk: n.slice(L - 4) }; break;
+        case 'K': if (L >= 4) st.stroke = { cmyk: n.slice(L - 4) }; break;
+        case 'Xa': if (L >= 3) st.fill = { rgb: n.slice(L - 3) }; break;
+        case 'XA': if (L >= 3) st.stroke = { rgb: n.slice(L - 3) }; break;
+        case 'g': if (L >= 1) st.fill = { gray: n[L - 1] }; break;
+        case 'G': if (L >= 1) st.stroke = { gray: n[L - 1] }; break;
+        case 'x': case 'X': {
+          // a custom colour: c m y k (name) tint x - tint 0 the whole colour
+          if (L >= 5) {
+            var tint = n[L - 1], cm4 = n.slice(L - 5, L - 1).map(function (v) { return v * (1 - tint); });
+            if (t === 'x') st.fill = { cmyk: cm4 }; else st.stroke = { cmyk: cm4 };
+          }
+          break;
+        }
+        case 'Xx': case 'XX': {
+          // a custom colour of a kind: c m y k (name) tint 0 Xx, or r g b (name) tint 1 Xx
+          if (L >= 5) {
+            var kind = n[L - 1], tn = n[L - 2], col = null;
+            if (kind === 1) col = { rgb: n.slice(L - 5, L - 2).map(function (v) { return 1 - (1 - v) * (1 - tn); }) };
+            else if (L >= 6) col = { cmyk: n.slice(L - 6, L - 2).map(function (v) { return v * (1 - tn); }) };
+            if (col) { if (t === 'Xx') st.fill = col; else st.stroke = col; }
+          }
+          break;
+        }
+        case 'w': if (L >= 1) st.w = n[L - 1]; break;
+        case 'J': if (L >= 1) st.cap = n[L - 1]; break;
+        case 'j': if (L >= 1) st.join = n[L - 1]; break;
+        case 'M': if (L >= 1) st.miter = n[L - 1]; break;
+        case 'XR': if (L >= 1) st.rule = n[L - 1]; break;
+        case 'Xy': {
+          // mode opacity isolated knockout alphaIsShape
+          if (L >= 5) {
+            st.op = Math.max(0, Math.min(1, n[L - 4])); st.blend = n[L - 5] | 0;
+            if (trail) trail.xy = { op: st.op, blend: st.blend };
+          }
+          break;
+        }
+        case 'XW': {
+          // the parts of an object with an appearance: 9 its art ends, 6 its source art begins
+          // 6: the end of the block of the object before's own attributes - an opacity there is that object's
+          if (L >= 1 && n[0] === 6 && trail) {
+            if (trail.xy && trail.obj) { trail.obj.op = trail.xy.op; trail.obj.blend = trail.xy.blend; st.op = trail.op; st.blend = trail.blend; }
+            trail = null;
+          }
+          break;
+        }
+        case 'Xw': if (L >= 1) hidden = n[L - 1] === 1; break;
+        case 'Lb': {
+          var lyr = top();
+          if (lyr.kind === 'layer' && L >= 14) { lyr.visible = n[L - 14] !== 0; lyr.locked = n[L - 12] === 0; lyr.printing = n[L - 11] !== 0; }
+          break;
+        }
+        case 'Ln': {
+          for (var s2 = ops.length - 1; s2 >= 0; s2--) {
+            var o2 = ops[s2];
+            if (o2 && typeof o2 === 'object' && !Array.isArray(o2)) { if (top().kind === 'layer') top().name = iwdieAiText(o2.s); break; }
+          }
+          break;
+        }
+        case 'd': {
+          var arr = null;
+          for (var ai = 0; ai < ops.length; ai++) if (Array.isArray(ops[ai])) arr = ops[ai];
+          st.da = arr && arr.length ? arr : null;
+          st.dp = L ? n[L - 1] : 0;
+          break;
+        }
+        case 'm': if (L >= 2) { if (!path.length) trail = null; path.push('M' + n[L - 2] + ' ' + n[L - 1]); } break;
+        case 'l': case 'L': if (L >= 2) path.push('L' + n[L - 2] + ' ' + n[L - 1]); break;
+        case 'c': case 'C': if (L >= 6) path.push('C' + n.slice(L - 6).join(' ')); break;
+        case 'v': case 'V': if (L >= 4) path.push('V' + n.slice(L - 4).join(' ')); break;
+        case 'y': case 'Y': if (L >= 4) path.push('Y' + n.slice(L - 4).join(' ')); break;
+        case 'h': if (path.length && path[path.length - 1] !== 'Z') path.push('Z'); break;
+        case 'W': clip = true; break;
+        case 'f': case 'F': case 's': case 'S': case 'b': case 'B': case 'n': case 'N': emit(t); break;
+        case 'u': case 'X=': {
+          trail = null;
+          var grp = { kind: 'group', name: '', items: [] };
+          add(grp); stack.push(grp); break;
+        }
+        case 'q': {
+          trail = null;
+          var cg = { kind: 'group', name: '', items: [], isClip: true, clip: [] };
+          add(cg); stack.push(cg); break;
+        }
+        case '*u': {
+          var cp = { kind: 'compound', parts: [], paint: null, rule: st.rule, hidden: hidden, items: [] };
+          hidden = false;
+          stack.push(cp); break;
+        }
+        case '*U': {
+          var done = stack.pop();
+          if (done && done.kind === 'compound' && done.parts.length && done.paint) {
+            var whole = done.paint;
+            whole.kind = 'path'; whole.d = done.parts.join(' '); whole.rule = done.rule; whole.compound = true;
+            if (done.hidden) whole.hidden = true;
+            add(whole);
+            done1(whole);
+          }
+          break;
+        }
+        case 'U': case 'Q': case 'X+': {
+          if (stack.length > 1 && top().kind !== 'layer') { var closed = stack.pop(); if (closed) { last = closed; done1(closed.kind === 'compound' ? last : closed); } }
+          break;
+        }
+        case 'Bb': grad = { name: null, m: null, bm: null, gm: null, fill: true, stroke: false }; break;
+        case 'Bg': {
+          var gname = null;
+          for (var gi = 0; gi < ops.length; gi++) { var o3 = ops[gi]; if (o3 && typeof o3 === 'object' && !Array.isArray(o3)) gname = iwdieAiText(o3.s); }
+          if (grad) { grad.name = gname; grad.gm = n.length >= 11 ? n.slice(1, 11) : null; }
+          break;
+        }
+        case 'Xm': if (grad && L >= 6) grad.m = n.slice(L - 6); break;
+        // without Xm (a radial one: 2313's 2022 Energi) its one Bm is its matrix; beside Xm, Bm and Bc are bands
+        case 'Bm': if (grad && L >= 6 && !grad.bm) grad.bm = n.slice(L - 6); break;
+        case 'BB': {
+          // its flag: 0 the path was filled, 2 filled and stroked - the gradient its fill, the stroke its colour; 1 a gradient stroke
+          if (grad && L >= 1) { grad.fill = n[L - 1] !== 1; grad.stroke = n[L - 1] === 1; }
+          grad = null; break;
+        }
+        case 'Xh': {
+          if (raster) {
+            for (var mi = 0; mi < ops.length; mi++) if (Array.isArray(ops[mi]) && ops[mi].length === 6) raster.m = ops[mi];
+            if (L >= 3) { raster.w = n[L - 3]; raster.h = n[L - 2]; }
+          }
+          break;
+        }
+        default: break;
+      }
+      ops = [];
+    }
+    // a raster's own header ends without an operator: "[m] 0 0 w h w h bits type alpha reserved binary mask ..."
+    if (raster && ops.length >= 11 && Array.isArray(ops[0]) && ops[0].length === 6) {
+      var hn = ops.slice(1).filter(function (v) { return typeof v === 'number'; });
+      if (hn.length >= 10) { raster.m = ops[0]; raster.w = hn[4]; raster.h = hn[5]; raster.bits = hn[6]; raster.ch = hn[7]; raster.alpha = hn[8]; raster.bin = hn[10]; }
+    }
+  }
+  return { layers: layers, items: root.items };
+}
+
+/** Where a matrix in a symbol's definition puts things (v1.86.0): Illustrator wrote some pictures' and gradients' places
+ *  there off by the ruler origin (2313's 2013 tank: -7923, 8663 for a shadow beside a tank at -19, -43). Of the matrix
+ *  as written and as put back on the art's, the one that puts point `p` (in its own space) nearer the middle of `box`
+ *  (the art it belongs to, y up) - as written without a box. `td` the text document (its ruler). -> [a, b, c, d, tx, ty] */
+function iwdieAiDefPlace(m, td, box, p) {
+  if (!td || !box) return m;
+  var moved = [m[0], m[1], m[2], m[3], m[4] + td.ruler[0], m[5] - td.ruler[1]], cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
+  var far = function (k) { var x = k[0] * p[0] + k[2] * p[1] + k[4], y = k[1] * p[0] + k[3] * p[1] + k[5]; return Math.hypot(x - cx, y - cy); };
+  return far(moved) < far(m) ? moved : m;
+}
+
+/** A raster of a .ai's native art as RGBA (v1.86.0): its bytes in `text` (latin-1) from `r.at`, 8 bits a channel - 1
+ *  (gray), 3 (RGB) or 4 (CMYK) of them pixel by pixel, then its alpha, when it has one, as a plane of its own. `cmyk(c, m, y, k)` -> '#rrggbb'
+ *  for CMYK. -> Uint8ClampedArray (w x h x 4) or null */
+function iwdieAiRasterRGBA(text, r, cmyk) {
+  if (!r || !r.at || r.bits !== 8) return null;
+  var w = r.w | 0, h = r.h | 0, ch = r.ch === 1 ? 1 : r.ch === 4 ? 4 : 3, out = new Uint8ClampedArray(w * h * 4);
+  // its colours pixel by pixel, then (2313's 2018 Oversikt: its shadows) its alpha as a plane of its own after them
+  var room = text.indexOf('%%EndData', r.at) - r.at, plane = r.alpha > 0 && room >= w * h * (ch + 1) ? r.at + w * h * ch : 0;
+  if (room < w * h * ch) return null;
+  var cache = {};
+  for (var p = 0, i = r.at; p < w * h; p++, i += ch) {
+    var o = p * 4;
+    if (ch === 1) { var gv = text.charCodeAt(i); out[o] = out[o + 1] = out[o + 2] = gv; }
+    else if (ch === 3) { out[o] = text.charCodeAt(i); out[o + 1] = text.charCodeAt(i + 1); out[o + 2] = text.charCodeAt(i + 2); }
+    else {
+      var key = text.substr(i, 4), hx = cache[key];
+      if (!hx) hx = cache[key] = cmyk(text.charCodeAt(i) / 255, text.charCodeAt(i + 1) / 255, text.charCodeAt(i + 2) / 255, text.charCodeAt(i + 3) / 255);
+      out[o] = parseInt(hx.slice(1, 3), 16); out[o + 1] = parseInt(hx.slice(3, 5), 16); out[o + 2] = parseInt(hx.slice(5, 7), 16);
+    }
+    out[o + 3] = plane ? text.charCodeAt(plane + p) : 255;
+  }
+  return out;
+}
+
+/** A font's PostScript name as CSS (v1.86.0): its family with what VectorCraft falls back to, its weight and style. ->
+ *  {family, weight, style} */
+function iwdieAiCssFont(ps) {
+  var s = String(ps || '').replace(/MT$/, ''), parts = s.split('-'), fam = parts[0], face = (parts[1] || '').toLowerCase();
+  fam = fam.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/PS$/, '').trim();
+  var weight = /black|heavy/.test(face) ? 900 : /extrabold|ultrabold/.test(face) ? 800 : /bold/.test(face) ? 700 : /semibold|demi/.test(face) ? 600 :
+    /medium/.test(face) ? 500 : /light/.test(face) ? 300 : /thin/.test(face) ? 100 : 400;
+  if (/bold/i.test(parts[0]) && weight === 400) { weight = 700; fam = fam.replace(/\s*Bold$/i, ''); }
+  var back = /^roboto/i.test(fam) ? 'Roboto, Arial, sans-serif' : /myriad/i.test(fam) ? "'" + fam + "'" + (/^myriad pro$/i.test(fam) ? '' : ", 'Myriad Pro'") + ', Arial, sans-serif' :
+    /arial|helvetica/i.test(fam) ? 'Arial, Helvetica, sans-serif' : "'" + fam + "', Arial, sans-serif";
+  // italic: so named, or Adobe's "It" at the end of the face (MyriadPro-It, -BoldIt, -CondIt)
+  return { family: back, weight: weight, style: /italic|oblique|it$/.test(face) ? 'italic' : 'normal' };
+}
+
+/** A .ai's native art as an SVG of its first artboard (v1.86.0), as Illustrator's own PDF page would show it: each of
+ *  its visible layers a group (its name its id and data-name), its groups, paths, compound paths, clipping, gradients,
+ *  opacity, symbols and pictures, and its text from the text document, each glyph run where Illustrator set it. What
+ *  is hidden in Illustrator is left out. `opts.cmyk(c, m, y, k)` -> '#rrggbb' (else the naive formula); `opts.png(rgba,
+ *  w, h)` -> a data URL (without one no picture is drawn). -> {svg, w, h, counts: {paths, texts, pictures, gradients,
+ *  clips, layers}, left: [what could not be drawn]} */
+function iwdieAiArtSvg(text, opts) {
+  opts = opts || {};
+  var art = iwdieAiArtTree(text), td = iwdieAiTextDoc(text), grads = iwdieAiGradients(text);
+  var b = art.board || { x0: 0, y0: 0, x1: 1400, y1: 750 }, W = b.x1 - b.x0, H = b.y1 - b.y0;
+  var useDepth = 0, useBox = null, f = iwdieDrawFmt, esc = iwdieDrawEsc, used = {}, defs = [], counts = { paths: 0, texts: 0, pictures: 0, gradients: 0, clips: 0, layers: 0 }, left = {};
+  var cmyk = opts.cmyk || iwdieCmykSwop;
+  var hex = function (c) {
+    if (!c) return null;
+    var h2 = function (v) { var s = Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16); return s.length < 2 ? '0' + s : s; };
+    if (c.rgb) return '#' + h2(c.rgb[0]) + h2(c.rgb[1]) + h2(c.rgb[2]);
+    if (c.gray !== undefined) return '#' + h2(c.gray) + h2(c.gray) + h2(c.gray);
+    if (c.cmyk) return cmyk(c.cmyk[0], c.cmyk[1], c.cmyk[2], c.cmyk[3]);
+    return null;
+  };
+  var X = function (x) { return x - b.x0; }, Y = function (y) { return b.y1 - y; };
+  var pathD = function (d) {
+    return iwdieAiPathD(d).map(function (s) {
+      if (s[0] === 'Z') return 'Z';
+      var o = s[0];
+      for (var i = 1; i < s.length; i += 2) o += (i > 1 ? ' ' : '') + f(X(s[i])) + ' ' + f(Y(s[i + 1]));
+      return o;
+    }).join('');
+  };
+  // a gradient's or clip's id: none a layer or group named so already has, and kept from the names after it
+  var nextId = function (p) { var k = used['#' + p] || 0, id; do { id = p + (++k); } while (used[id]); used['#' + p] = k; used[id] = 1; return id; };
+  // a gradient's paint: its stops, and where its vector or circle lies in the page's space
+  var gradPaint = function (g, it) {
+    var def = grads[g.grad];
+    if (!def || !def.stops.length) { left['gradient ' + g.grad] = 1; return null; }
+    var m = g.m, id = nextId('g');
+    // in a symbol's definition (Illustrator 2013) a gradient's place is off by the ruler origin: put on the art's
+    if (m && g.def) m = iwdieAiDefPlace(m, td, it ? boxOf(it, 0) : null, def && def.radial ? [0, 0] : [0.5, 0]);
+    var pt = function (u, v) { return [X(m[0] * u + m[2] * v + m[4]), Y(m[1] * u + m[3] * v + m[5])]; };
+    if (!m && g.gm) {
+      // Bg without Xm: its origin, angle and length, then its matrix - the unit vector (0, 0) to (1, 0) mapped on that
+      var gm = g.gm, ang = gm[2] * Math.PI / 180, ln = gm[3], M = gm.slice(4, 10);
+      var T = [ln * Math.cos(ang), ln * Math.sin(ang), -ln * Math.sin(ang), ln * Math.cos(ang), gm[0], gm[1]];
+      m = [M[0] * T[0] + M[2] * T[1], M[1] * T[0] + M[3] * T[1], M[0] * T[2] + M[2] * T[3], M[1] * T[2] + M[3] * T[3],
+        M[0] * T[4] + M[2] * T[5] + M[4], M[1] * T[4] + M[3] * T[5] + M[5]];
+    }
+    if (!m) { left['gradient without a place'] = 1; return null; }
+    var stops = [];
+    def.stops.forEach(function (s, i) {
+      stops.push('<stop offset="' + f(s.at) + '" stop-color="' + hex(s.col) + '"' + (s.op < 1 ? ' stop-opacity="' + f(s.op) + '"' : '') + '/>');
+      var nx = def.stops[i + 1];
+      if (nx && Math.abs(s.mid - 0.5) > 0.01 && nx.at > s.at) {
+        // a midpoint off the middle: the colour half way between the two stops, there
+        var mixed = function (a, c) { return a !== undefined ? a : c; };
+        var ca = hex(s.col), cb = hex(nx.col), mixc = '#' + [1, 3, 5].map(function (k) {
+          var v = Math.round((parseInt(ca.slice(k, k + 2), 16) + parseInt(cb.slice(k, k + 2), 16)) / 2).toString(16); return v.length < 2 ? '0' + v : v;
+        }).join('');
+        var mop = (mixed(s.op, 1) + mixed(nx.op, 1)) / 2;
+        stops.push('<stop offset="' + f(s.at + (nx.at - s.at) * s.mid) + '" stop-color="' + mixc + '"' + (mop < 1 ? ' stop-opacity="' + f(mop) + '"' : '') + '/>');
+      }
+    });
+    counts.gradients++;
+    if (def.radial) {
+      defs.push('<radialGradient id="' + id + '" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(' +
+        [m[0], -m[1], m[2], -m[3], X(m[4]), Y(m[5])].map(f).join(' ') + ')">' + stops.join('') + '</radialGradient>');
+    } else {
+      var p0 = pt(0, 0), p1 = pt(1, 0);
+      defs.push('<linearGradient id="' + id + '" gradientUnits="userSpaceOnUse" x1="' + f(p0[0]) + '" y1="' + f(p0[1]) + '" x2="' + f(p1[0]) + '" y2="' + f(p1[1]) + '">' +
+        stops.join('') + '</linearGradient>');
+    }
+    return 'url(#' + id + ')';
+  };
+  var paintAttr = function (p, which, it) {
+    if (!p) return 'none';
+    if (p.grad) return gradPaint(p, it) || 'none';
+    return hex(p) || 'none';
+  };
+  // an item's opacity and blend mode, as attributes (blend modes in Illustrator's order, as PDF's)
+  var BLEND = ['normal', 'multiply', 'screen', 'overlay', 'soft-light', 'hard-light', 'color-dodge', 'color-burn', 'darken', 'lighten', 'difference',
+    'exclusion', 'hue', 'saturation', 'color', 'luminosity'];
+  var look = function (it) {
+    return (it.op !== undefined && it.op < 1 ? ' opacity="' + f(it.op) + '"' : '') + (it.blend > 0 && BLEND[it.blend] ? ' style="mix-blend-mode:' + BLEND[it.blend] + '"' : '');
+  };
+  var named = function (name) { return name ? ' id="' + esc(iwdieVcSvgId(name, used)) + '" data-name="' + esc(name) + '"' : ''; };
+  var textSvg = function (it) {
+    if (!td || it.story < 0) { left.text = 1; return ''; }
+    var story = td.stories[it.story];
+    if (!story) { left.text = 1; return ''; }
+    var fr = story.frames[it.frame || 0];
+    if (!fr || !fr.runs.length) return '';
+    var m = td.frames[fr.frame] || [1, 0, 0, 1, 0, 0], rx = td.ruler[0], ry = td.ruler[1];
+    var linear = Math.abs(m[0] - 1) > 1e-6 || Math.abs(m[1]) > 1e-6 || Math.abs(m[2]) > 1e-6 || Math.abs(m[3] - 1) > 1e-6;
+    // the document's space (y down) on the page: the frame's matrix, then the ruler origin and the artboard
+    var ex = m[4] - rx - b.x0, ey = m[5] - ry + b.y1;
+    var styleAt = function (k) {
+      var acc = 0;
+      for (var r = 0; r < story.runs.length; r++) { acc += story.runs[r].len; if (k < acc) return story.runs[r]; }
+      return story.runs[story.runs.length - 1] || { size: 12, fill: { gray: 0 } };
+    };
+    var out = [];
+    fr.runs.forEach(function (g) {
+      var k = 0;
+      while (k < g.count) {
+        // one piece of the run in one style
+        var sty = styleAt(g.from + k), e = k + 1;
+        while (e < g.count && styleAt(g.from + e) === sty) e++;
+        var chars = story.text.substr(g.from + k, e - k).replace(/[\r\n\u0003\u0005]+$/, '').replace(/[\r\n\u0003\u0005]/g, ' ');
+        if (chars.replace(/\s/g, '')) {
+          var font = iwdieAiCssFont(td.fonts[sty.font] || ''), x = g.x + (g.adv[k] || 0), y = g.y - (sty.bs || 0);
+          var fill = sty.fill ? hex(sty.fill) : 'none', op = (sty.fill && sty.fill.op < 1 ? sty.fill.op : 1) * (it.op < 1 ? it.op : 1);
+          // the type as scaled: its size the vertical scale's, its width stretched by the horizontal over that
+          var size = (sty.size || 12) * (sty.vs || 1), stretch = (sty.hs || 1) / (sty.vs || 1), at;
+          if (Math.abs(stretch - 1) > 0.001) {
+            var tm = linear ? [m[0] * stretch, m[1] * stretch, m[2], m[3], m[0] * x + m[2] * y + ex, m[1] * x + m[3] * y + ey] : [stretch, 0, 0, 1, x + ex, y + ey];
+            at = ' x="0" y="0" transform="matrix(' + tm.map(f).join(' ') + ')"';
+          } else {
+            at = linear ? ' x="' + f(x) + '" y="' + f(y) + '" transform="matrix(' + [m[0], m[1], m[2], m[3], ex, ey].map(f).join(' ') + ')"'
+              : ' x="' + f(x + ex) + '" y="' + f(y + ey) + '"';
+          }
+          if (sty.caps === 2) chars = chars.toUpperCase();
+          var weight = sty.fb && font.weight < 700 ? 700 : font.weight, style = sty.fi ? 'italic' : font.style;
+          out.push('<text' + at + ' font-family="' + esc(font.family) + '" font-size="' + f(size) + '"' +
+            (weight !== 400 ? ' font-weight="' + weight + '"' : '') + (style !== 'normal' ? ' font-style="' + style + '"' : '') +
+            (sty.tr ? ' letter-spacing="' + f(sty.tr / 1000 * size) + '"' : '') + (sty.caps === 1 ? ' font-variant="small-caps"' : '') +
+            ' fill="' + (fill || 'none') + '"' + (sty.stroke ? ' stroke="' + hex(sty.stroke) + '" stroke-width="' + f(sty.stw || 1) + '"' : '') +
+            (op < 1 ? ' opacity="' + f(op) + '"' : '') + ' xml:space="preserve">' + esc(chars) + '</text>');
+          counts.texts++;
+        }
+        k = e;
+      }
+    });
+    return out.join('');
+  };
+  var rasterSvg = function (r) {
+    if (!opts.png) { left.picture = 1; return ''; }
+    var rgba = iwdieAiRasterRGBA(text, r, cmyk);
+    if (!rgba) { left.picture = 1; return ''; }
+    var url = opts.png(rgba, r.w, r.h);
+    if (!url) { left.picture = 1; return ''; }
+    var m = r.m || [1, 0, 0, 1, 0, 0];
+    if (r.def) m = iwdieAiDefPlace(m, td, useBox, [r.w / 2, -r.h / 2]);
+    counts.pictures++;
+    return '<image width="' + r.w + '" height="' + r.h + '" preserveAspectRatio="none" transform="matrix(' + [m[0], -m[1], -m[2], m[3], X(m[4]), Y(m[5])].map(f).join(' ') +
+      ')"' + look(r) + ' href="' + url + '"/>';
+  };
+  var itemSvg = function (it) {
+    if (!it || it.hidden) return '';
+    if (it.kind === 'path') {
+      var fill = paintAttr(it.fill, 'fill', it), stroke = paintAttr(it.stroke, 'stroke', it);
+      if (fill === 'none' && stroke === 'none') return '';
+      counts.paths++;
+      var a = '<path' + named(it.name) + ' d="' + pathD(it.d) + '" fill="' + fill + '"' + (it.rule || it.compound ? ' fill-rule="evenodd"' : '');
+      if (stroke !== 'none') {
+        a += ' stroke="' + stroke + '" stroke-width="' + f(it.w) + '"' + (it.cap ? ' stroke-linecap="' + (['butt', 'round', 'square'][it.cap] || 'butt') + '"' : '') +
+          (it.join ? ' stroke-linejoin="' + (['miter', 'round', 'bevel'][it.join] || 'miter') + '"' : '') + (it.miter && it.miter !== 4 ? ' stroke-miterlimit="' + f(it.miter) + '"' : '') +
+          (it.da ? ' stroke-dasharray="' + it.da.map(f).join(' ') + '"' + (it.dp ? ' stroke-dashoffset="' + f(it.dp) + '"' : '') : '');
+      }
+      return a + look(it) + '/>';
+    }
+    if (it.kind === 'text') return textSvg(it);
+    if (it.kind === 'raster') return rasterSvg(it);
+    if (it.kind === 'use') {
+      // a symbol drawn from its definition: its art in its own space, put in place by the instance's matrix - on the
+      // page, the page's own flip undone, the matrix, the flip again
+      var def = art.symbols && art.symbols[it.sym];
+      if (!def || useDepth > 8) { left['symbol ' + it.sym] = 1; return ''; }
+      var mm = it.m, T = [mm[0], -mm[1], -mm[2], mm[3], mm[0] * b.x0 + mm[2] * b.y1 + mm[4] - b.x0, b.y1 - mm[1] * b.x0 - mm[3] * b.y1 - mm[5]];
+      useDepth++;
+      // the art the definition draws, for placing its pictures (iwdieAiDefPlace)
+      var outer = useBox, sb = null;
+      def.forEach(function (c) { if (c.kind !== 'raster') sb = union(sb, boxOf(c, 1)); });
+      useBox = sb;
+      var inside = def.map(itemSvg).join('');
+      useBox = outer;
+      useDepth--;
+      return inside ? '<g' + named(it.sym) + ' transform="matrix(' + T.map(f).join(' ') + ')"' + (it.op < 1 ? ' opacity="' + f(it.op) + '"' : '') + '>' + inside + '</g>' : '';
+    }
+    if (it.kind === 'group') {
+      // what of it lies wholly off the artboard left out, as on a layer - not in a symbol's own space
+      var inner = it.items.map(function (c) {
+        if (!useDepth && outside(c)) { counts.outside = (counts.outside || 0) + 1; return ''; }
+        return itemSvg(c);
+      }).join('');
+      if (!inner) return '';
+      var clipAttr = '';
+      if (it.isClip && it.clip.length) {
+        var cid = nextId('c');
+        defs.push('<clipPath id="' + cid + '"><path d="' + it.clip.map(pathD).join('') + '"/></clipPath>');
+        clipAttr = ' clip-path="url(#' + cid + ')"';
+        counts.clips++;
+      }
+      return '<g' + named(it.name) + clipAttr + look(it) + '>' + inner + '</g>';
+    }
+    return '';
+  };
+  // an item's box in the art's own space (y up), to leave out what lies wholly outside the artboard: {x0, y0, x1, y1} | null
+  var symBox = {};
+  var union = function (a, c) { return !a ? c : !c ? a : { x0: Math.min(a.x0, c.x0), y0: Math.min(a.y0, c.y0), x1: Math.max(a.x1, c.x1), y1: Math.max(a.y1, c.y1) }; };
+  var corners = function (m, x0, y0, x1, y1) {
+    var bx = null;
+    [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].forEach(function (p) {
+      var x = m[0] * p[0] + m[2] * p[1] + m[4], y = m[1] * p[0] + m[3] * p[1] + m[5];
+      bx = union(bx, { x0: x, y0: y, x1: x, y1: y });
+    });
+    return bx;
+  };
+  var boxOf = function (it, depth) {
+    if (!it || it.hidden || (depth || 0) > 8) return null;
+    if (it.kind === 'path') {
+      var v = String(it.d).match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [], bx = null;
+      for (var i = 0; i + 1 < v.length; i += 2) bx = union(bx, { x0: +v[i], y0: +v[i + 1], x1: +v[i], y1: +v[i + 1] });
+      return bx;
+    }
+    if (it.kind === 'group' || it.kind === 'layer') {
+      var g = null;
+      (it.items || []).forEach(function (c) { g = union(g, boxOf(c, depth)); });
+      return g;
+    }
+    if (it.kind === 'raster') return it.m ? corners([it.m[0], it.m[1], -it.m[2], -it.m[3], it.m[4], it.m[5]], 0, 0, it.w, it.h) : null;
+    if (it.kind === 'use') {
+      if (!(it.sym in symBox)) { var sb = null; (art.symbols[it.sym] || []).forEach(function (c) { sb = union(sb, boxOf(c, (depth || 0) + 1)); }); symBox[it.sym] = sb; }
+      return symBox[it.sym] ? corners(it.m, symBox[it.sym].x0, symBox[it.sym].y0, symBox[it.sym].x1, symBox[it.sym].y1) : null;
+    }
+    if (it.kind === 'text' && td) {
+      var story = td.stories[it.story], fr = story && story.frames[it.frame || 0];
+      if (!fr) return null;
+      var mt = td.frames[fr.frame] || [1, 0, 0, 1, 0, 0], tb = null, size = (story.runs[0] && story.runs[0].size) || 12;
+      fr.runs.forEach(function (r) {
+        var wdt = r.adv.length ? r.adv[r.adv.length - 1] : r.count * size * 0.6;
+        // the document's space (y down) to the art's (y up): the frame's matrix, then the ruler origin
+        var c = corners(mt, r.x, r.y - size, r.x + wdt, r.y + size * 0.3);
+        tb = union(tb, { x0: c.x0 - td.ruler[0], y0: td.ruler[1] - c.y1, x1: c.x1 - td.ruler[0], y1: td.ruler[1] - c.y0 });
+      });
+      return tb;
+    }
+    return null;
+  };
+  var outside = function (it) {
+    var bx = boxOf(it, 0);
+    return !!bx && (bx.x1 < b.x0 || bx.x0 > b.x1 || bx.y1 < b.y0 || bx.y0 > b.y1);
+  };
+  var body = [];
+  art.layers.forEach(function (ly) {
+    if (!ly.visible) return;
+    var layerSvg = function (l) {
+      if (!l.visible) return '';
+      return '<g' + named(l.name || 'Lag') + '>' + l.items.map(function (it) {
+        if (it.kind === 'layer') return layerSvg(it);
+        if (outside(it)) { counts.outside = (counts.outside || 0) + 1; return ''; }
+        return itemSvg(it);
+      }).join('') + '</g>';
+    };
+    counts.layers++;
+    body.push(layerSvg(ly));
+  });
+  var svg = '<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="' + f(W) + '" height="' + f(H) +
+    '" viewBox="0 0 ' + f(W) + ' ' + f(H) + '">' + (defs.length ? '<defs>' + defs.join('') + '</defs>' : '') + body.join('\n') + '</svg>';
+  return { svg: svg, w: W, h: H, counts: counts, left: Object.keys(left) };
+}
+
+/** Adobe's default CMYK (US Web Coated SWOP) in sRGB at 9 x 9 x 9 x 9 points (v1.86.0), base64: iwdieCmykSwop. */
+var IWDIE_CMYK_SWOP = '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' +
+  'NjU5MC0xKSUpIRwgFhMXCwYKAQAAAAAAAAAA';
+
+/** CMYK as Adobe's default CMYK (US Web Coated SWOP) shows it in sRGB (v1.86.0): a 9 x 9 x 9 x 9 table, c slowest and k
+ *  fastest, sampled from pdfium's DeviceCMYK, between its points weighed four ways - for a CMYK file without a profile
+ *  of its own, as VectorCraft and Illustrator show one (2313's 2013 Maskin: its compressors' green is #00a550, not
+ *  #00ff00). -> '#rrggbb' */
+var iwdieCmykTable = null, iwdieCmykCache = {};
+function iwdieCmykSwop(c, m, y, k) {
+  var key = [c, m, y, k].map(function (v) { return Math.round(Math.max(0, Math.min(1, v)) * 1000); }).join(',');
+  if (iwdieCmykCache[key]) return iwdieCmykCache[key];
+  if (!iwdieCmykTable) {
+    var bin = atob(IWDIE_CMYK_SWOP), t = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) t[i] = bin.charCodeAt(i);
+    iwdieCmykTable = t;
+  }
+  var N = 9, g = [c, m, y, k].map(function (v) { return Math.max(0, Math.min(1, v)) * (N - 1); }), base = [], frac = [], d;
+  for (d = 0; d < 4; d++) { var b0 = Math.min(N - 2, Math.floor(g[d])); base.push(b0); frac.push(g[d] - b0); }
+  var res = [0, 0, 0];
+  for (var corner = 0; corner < 16; corner++) {
+    var w = 1, idx = 0;
+    for (d = 0; d < 4; d++) {
+      var bit = (corner >> (3 - d)) & 1;
+      w *= bit ? frac[d] : 1 - frac[d];
+      idx = idx * N + base[d] + bit;
+    }
+    if (!w) continue;
+    for (var ch = 0; ch < 3; ch++) res[ch] += w * iwdieCmykTable[idx * 3 + ch];
+  }
+  var hex = '#' + res.map(function (v) { var s = Math.round(Math.max(0, Math.min(255, v))).toString(16); return s.length < 2 ? '0' + s : s; }).join('');
+  iwdieCmykCache[key] = hex;
+  return hex;
 }
 
 /* ===================== Illustrator export (v1.34.0): a real .ai =====================
@@ -18480,12 +19621,97 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }).then(function (r) {
         step('Finding the objects around the artboard…');
         return libNextFrame().then(function () {
-          var color = (r[1] && iwdieIccCmykConverter(r[1])) || iwdieCmykNaive;
+          // (v1.86.0) without a profile of its own as VectorCraft and Illustrator show such a file (US Web Coated), not naively
+          var color = (r[1] && iwdieIccCmykConverter(r[1])) || iwdieCmykSwop;
           var parsed = iwdieAiParse(iwdieLatin1(r[0])), res = iwdieAiLibrary(parsed, color);
           return { file: name, imported: new Date().toISOString(), hidden: res.hidden, noArtboard: !parsed.artboards.length, board: res.board,
             boards: res.boards, items: iwdieDrawLibItems(res.items) };
         });
       });
+    }
+
+    /** A .ai's own data (v1.86.0): its native art as text, and what converts its CMYK - its profile's, else Adobe's default.
+     *  -> Promise<{text, color}> */
+    function libNative(u8) {
+      var box = iwdieAiContainer(u8);
+      return Promise.all(box.blocks.map(libDecode)).then(function (parts) {
+        var total = 0, o = 0;
+        parts.forEach(function (p) { total += p.length; });
+        var joined = new Uint8Array(total);
+        parts.forEach(function (p) { joined.set(p, o); o += p.length; });
+        var nat = iwdieAiNative(joined);
+        return Promise.all([nat.bytes || libInflate(nat.inflate), box.icc ? libDecode(box.icc).then(null, function () { return null; }) : null]);
+      }).then(function (r) {
+        return { text: iwdieLatin1(r[0]), color: (r[1] && iwdieIccCmykConverter(r[1])) || iwdieCmykSwop };
+      });
+    }
+
+    /** A picture's pixels (RGBA, w x h) as a PNG data URL, drawn on a canvas here (v1.86.0). */
+    function vcPngUrl(rgba, w, h) {
+      try {
+        var c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        var g = c.getContext('2d'), img = g.createImageData(w, h);
+        img.data.set(rgba);
+        g.putImageData(img, 0, 0);
+        return c.toDataURL('image/png');
+      } catch (e) { return null; }
+    }
+
+    /** A .ai drawn from Illustrator's own data in it (v1.86.0) - one saved without PDF content shows any PDF reader only
+     *  Illustrator's notice. -> Promise<{svg, w, h, counts, left}> (iwdieAiArtSvg) */
+    function vcAiDrawn(u8) {
+      return libNative(u8).then(function (r) { return iwdieAiArtSvg(r.text, { cmyk: r.color, png: vcPngUrl }); });
+    }
+
+    /** What the note says of a .ai drawn from its own data (v1.86.0): what it holds, what could not be drawn, and how to
+     *  have Illustrator write its PDF content. */
+    function vcAiDrawnSay(res) {
+      var c = res.counts || {}, parts = [];
+      if (c.paths) parts.push(iwdieN(c.paths, 'shape', 'shapes'));
+      if (c.texts) parts.push(iwdieN(c.texts, 'text', 'texts'));
+      if (c.pictures) parts.push(iwdieN(c.pictures, 'picture', 'pictures'));
+      return (parts.length ? parts.join(', ') : 'nothing') + (res.left && res.left.length ? '; not drawn: ' + iwdieEscHtml(res.left.join(', ')) : '');
+    }
+
+    /** How to have Illustrator write a .ai's PDF content (v1.86.0), for the notes. */
+    var IWDIE_AI_PDF_HOWTO = 'In Illustrator: File › Save As…, Adobe Illustrator (*.AI), Save; in Illustrator Options tick <b>Create PDF Compatible File</b>, OK.';
+
+    /** A .ai dropped on VectorCraft opened outside an edit (v1.86.0): one without PDF content drawn from its own data and
+     *  opened as a document of its own; any other dropped as it was, for VectorCraft. */
+    function vcLooseAiDrops() {
+      var say = function (html, bad) {
+        var el = document.getElementById('iwdie-ai-say');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'iwdie-ai-say';
+          el.style.cssText = 'position:fixed;left:56px;top:76px;z-index:2147483647;max-width:420px;padding:10px 14px;background:#424242;border:1px solid #383838;' +
+            'border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#d1d1d1';
+          document.body.appendChild(el);
+        }
+        el.style.color = bad ? '#ff9f9f' : '#d1d1d1';
+        el.innerHTML = html;
+        clearTimeout(el.iwdieT);
+        el.iwdieT = setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 12000);
+      };
+      window.addEventListener('drop', function (e) {
+        var files = e.isTrusted && e.dataTransfer && e.dataTransfer.files, f = files && files.length === 1 ? files[0] : null;
+        if (!f || !/\.ai$/i.test(f.name || '')) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        var at = { x: e.clientX, y: e.clientY };
+        f.arrayBuffer().then(function (ab) {
+          var bytes = new Uint8Array(ab);
+          if (!iwdieAiPdfNotice(bytes)) { vcDropFile(bytes, f.name, f.type || 'application/pdf', at); return null; }
+          say('<b>' + iwdieEscHtml(f.name) + '</b> has no PDF content: drawing it from Illustrator’s own data in it…');
+          return vcAiDrawn(bytes).then(function (res) {
+            vcDropFile(res.svg, f.name.replace(/\.ai$/i, '') + '.svg', 'image/svg+xml', 'menu');
+            say('✓ <b>' + iwdieEscHtml(f.name) + '</b> is open, drawn from Illustrator’s own data: ' + vcAiDrawnSay(res) + '.');
+          });
+        }).then(null, function (err) {
+          say('<b>' + iwdieEscHtml(f.name) + '</b> could not be drawn here: ' + iwdieEscHtml(String((err && err.message) || err)) + '. ' + IWDIE_AI_PDF_HOWTO, true);
+        });
+      }, true);
     }
 
     /* ---------- Edit in VectorCraft (v1.35.0): the editor's side ----------
@@ -19805,7 +21031,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') return;
       var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null;
       try { job = GM_getValue('iwdie.vc.job', null); } catch (e) { job = null; }
-      if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') return;
+      if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') { try { vcLooseAiDrops(); } catch (e) {} return; }
       var esc2 = iwdieEscHtml, lib = libForVc(), busy = false;
       // the panel's .ai, chosen in the Designer's tab instead of a trace of its picture (v1.51.0): out of
       // Tampermonkey's storage at once, and opened once the editor is ready, as Open plant .ai… opens one
@@ -20119,19 +21345,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         saves.hold = 'Wait a moment: ' + name + ' is being opened.';
         var done = function (r) { saves.hold = ''; return r; };
         return f.arrayBuffer().then(function (ab) {
-          var bytes = new Uint8Array(ab), objs = null;
-          // (v1.85.0) one saved without PDF content shows VectorCraft only Illustrator's notice, not the drawing
-          if (iwdieAiPdfNotice(bytes)) {
-            note(named + ' was saved without PDF content (Illustrator’s <b>Create PDF Compatible File</b> was off), so VectorCraft - as any PDF ' +
-              'reader - sees only Illustrator’s notice, not the drawing. Save it again from Illustrator with that option on (File › Save As › ' +
-              'Illustrator Options), then open it here; or trace the panel’s picture with <b>Vectorize image</b>.', true, true);
-            return done(null);
-          }
-          try { objs = syncer && source ? iwdieVcLiftObjects(source, iwdieAiArtboard(bytes, name), { under: false }) : null; } catch (e) { objs = null; }
-          // on the menu bar a file opens as a document; on a drawing it would be placed as art
-          vcDropFile(bytes, name, f.type || 'application/pdf', title && title !== 'VectorCraft' ? 'menu' : 'center');
-          return titled(name, 120000).then(function (ok) {
+          var bytes = new Uint8Array(ab), objs = null, drawn = null;
+          // (v1.86.0) one saved without PDF content (v1.85.0: VectorCraft, as any PDF reader, sees only Illustrator's notice)
+          // drawn here from Illustrator's own data in it, and that drawing opened
+          var open = iwdieAiPdfNotice(bytes) ? (note(named + ' has no PDF content (Illustrator’s <b>Create PDF Compatible File</b> was off): ' +
+            'drawing it from Illustrator’s own data in it…', false, true), vcAiDrawn(bytes).then(function (res) { drawn = res; return res; })) : Promise.resolve(null);
+          return open.then(function (res) {
+            var board = res ? { w: res.w, h: res.h } : iwdieAiArtboard(bytes, name), doc = res ? name.replace(/\.ai$/i, '') + '.svg' : name;
+            try { objs = syncer && source ? iwdieVcLiftObjects(source, board, { under: false }) : null; } catch (e) { objs = null; }
+            // on the menu bar a file opens as a document; on a drawing it would be placed as art
+            if (res) vcDropFile(res.svg, doc, 'image/svg+xml', title && title !== 'VectorCraft' ? 'menu' : 'center');
+            else vcDropFile(bytes, name, f.type || 'application/pdf', title && title !== 'VectorCraft' ? 'menu' : 'center');
+            return titled(doc, 120000);
+          }, function (err) {
+            note(named + ' has no PDF content, and its own data could not be drawn here (' + esc2(String((err && err.message) || err)) + '). ' +
+              IWDIE_AI_PDF_HOWTO + ' Or trace the panel’s picture with <b>Vectorize image</b>.', true, true);
+            return 'failed';
+          }).then(function (ok) {
+            if (ok === 'failed') return null;
             if (!ok) { note(named + ' did not open here.', true, true); return null; }
+            // how it opened, in the notes that follow: as File › Open opens it, or drawn from its own data and what of (v1.86.0)
+            var how = drawn ? ', drawn from Illustrator’s own data in it: ' + vcAiDrawnSay(drawn) + '.' : ', as File › Open opens it.';
             lastAi = f;
             // its components read meanwhile, to go around its artboard once the IWMAC objects are seen to (v1.59.0)
             if (syncer) readComp(f, function (html) { around(html); });
@@ -20148,10 +21382,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             };
             if (!n) {
               drawLine('as');
-              note('✓ ' + named + ' is open, as File › Open opens it.', false, true);
-              return finish({ ai: true, count: 0, added: false }, named + ' is open, as File › Open opens it.');
+              note('✓ ' + named + ' is open' + how, false, true);
+              return finish({ ai: true, count: 0, added: false }, named + ' is open' + how);
             }
-            return syncer.ask('Add the IWMAC objects?', named + ' is open, as File › Open opens it.', [
+            return syncer.ask('Add the IWMAC objects?', named + ' is open' + how, [
               { act: 'add', title: 'Add the panel’s ' + iwdieN(n, 'object', 'objects'), text: 'As placeholders where they are on the panel, on a layer of their own on top. ' +
                 'The drawing is locked under them, so only they move; Ctrl+S then syncs them and the drawing to the Designer.' },
               { act: 'none', title: 'Just the drawing', text: 'Nothing added, nothing locked. Ctrl+S still syncs it, as the panel’s background; ' +
@@ -20190,6 +21424,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         input.value = '';
         useAi(f, '');
       });
+      // (v1.86.0) a .ai dropped on the editor opens as Open plant .ai… opens one: as a document of its own, drawn from its
+      // own data when it has no PDF content, the panel's IWMAC objects offered - VectorCraft itself would place it in the
+      // drawing as one clip group (Thomas: "when i drag and drop the .ai i can't change anything"). Only a drop of the
+      // user's own: this script's drops are not trusted events.
+      window.addEventListener('drop', function (e) {
+        var files = e.isTrusted && e.dataTransfer && e.dataTransfer.files, f = files && files.length === 1 ? files[0] : null;
+        if (!f || !/\.ai$/i.test(f.name || '')) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        // while the editor is still busy - setting up, or opening another - it waits its turn (two minutes at most)
+        if (!busy) { useAi(f, 'dropped here'); return; }
+        note('<b>' + esc2(f.name) + '</b> opens as soon as this is done…', false, true);
+        var t0 = Date.now();
+        (function wait() { if (!busy) useAi(f, 'dropped here'); else if (Date.now() - t0 < 120000) setTimeout(wait, 400); else note('<b>' + esc2(f.name) + '</b> did not open: the editor stayed busy. Drop it again.', true, true); })();
+      }, true);
       var plantFolder = vcPlantFolder(job, ui, useAi, function () { input.click(); });
       ui.on('ai', function () { if (!busy) plantFolder.pick(); });
       // Open IWMAC JSON… (v1.65.0): a panel file handed to the Designer's tab this edit began in, inserted there as Insert
@@ -26440,6 +27689,16 @@ if (typeof module !== 'undefined' && module.exports) {
     aiName: iwdieAiName,
     aiContainer: iwdieAiContainer,
     aiPdfNotice: iwdieAiPdfNotice,
+    a85: iwdieA85,
+    aiTdParse: iwdieAiTdParse,
+    aiTextDoc: iwdieAiTextDoc,
+    aiGradients: iwdieAiGradients,
+    aiArtTree: iwdieAiArtTree,
+    aiRasterRGBA: iwdieAiRasterRGBA,
+    aiCssFont: iwdieAiCssFont,
+    aiDefPlace: iwdieAiDefPlace,
+    aiArtSvg: iwdieAiArtSvg,
+    cmykSwop: iwdieCmykSwop,
     aiNative: iwdieAiNative,
     aiParse: iwdieAiParse,
     aiPathD: iwdieAiPathD,

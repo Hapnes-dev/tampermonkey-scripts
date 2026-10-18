@@ -498,6 +498,42 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### A .ai without PDF content drawn from Illustrator's own data (v1.86.0)
+
+Thomas, of 2313's Oversikt .ai, with VectorCraft showing Illustrator's notice and Illustrator's Options with *Create PDF
+Compatible File*: *when adding .ai i don't get question if i iwmac to add objects … when i drag and drop the .ai i can't
+change anything in VectorCraft in background its no vector … best way is it to auto convert with a .ai create pdf
+Compatible file*.
+
+- **Drawn, not refused.** Saved without *Create PDF Compatible File*, a .ai shows any PDF reader only Illustrator's
+  notice, and 1.85.0 said so and stopped. The drawing is still in the file, as Illustrator's own data: the
+  AIPrivateData blocks (zstd since Illustrator 2020, zlib before), a PostScript-like program of the art, with its text
+  in a separate text document. VectorCraft's tab now draws that as an SVG of the first artboard (`iwdieAiArtSvg`) and
+  opens it as a document, `<name>.svg`. It draws the layers as groups with their names, and the groups, compound paths,
+  clip groups, linear and radial gradients, opacity and blend modes, symbols and pictures. A symbol is drawn from its
+  definition in files from Illustrator 2018 and before. Each line of text is placed where Illustrator set it, in its
+  font, size and colour. CMYK goes through the file's own profile, else Adobe's default (US Web Coated SWOP,
+  `iwdieCmykSwop`), as Illustrator and VectorCraft show CMYK without a profile. What Illustrator hides is left out, and
+  so is what lies wholly off the artboard, as File › Open of a PDF-compatible copy leaves it out.
+- **Then the question.** Open plant .ai…, and a .ai chosen on the card, ask *Add the IWMAC objects?* for the drawn one
+  as for any other, and put the panel's objects on it with the drawing locked under them. The question says the drawing
+  was made from Illustrator's own data, and of how many shapes, texts and pictures.
+- **A .ai dropped on VectorCraft.** During an edit, a .ai dropped on the editor opens as one chosen with Open plant .ai…
+  does, so the question comes. Dropped while the edit is busy, it opens once that is done. Outside an edit, one without
+  PDF content is drawn and opened as a document of its own; one with PDF content is VectorCraft's own drop, as before.
+- **When it cannot be drawn**, the note says how to save it with PDF content: in Illustrator, File › Save As…, Adobe
+  Illustrator, and in Illustrator Options tick *Create PDF Compatible File*.
+- **What differs from Illustrator's own page.** A font that is not installed shows in another (here Myriad Pro and Arial
+  Black's condensed faces), and VectorCraft says which. On twelve files without PDF content, eleven of 2313's and one of
+  10113's (2013 to 2026), the drawing came within 0.01 to 3.65 % of the pixels of the PDF page Illustrator writes into a
+  copy saved with PDF content; text in a substituted font is most of the difference.
+- A .ai's components imported to Libraries read CMYK without a profile as Adobe's default too, not by the naive formula.
+- Checked in the stub host on the hosted VectorCraft: 2313's Oversikt v8 without PDF content, chosen on the card, was
+  drawn (220 shapes, 109 texts), asked about and given the panel's 230 objects, with its 224 components around the
+  artboard. Its PDF-compatible copy, dropped on the editor while that was busy, opened after it and was asked about too.
+  Outside an edit, the copy without PDF content dropped on VectorCraft opened as `2313_oversikt-v8_250926.svg`. No
+  errors in the console. Not run in the live Designer.
+
 ### A found symbol says how it stands; the mirrored checkouts named (v1.85.3)
 
 - **The turn written.** Vectorize image writes each house symbol it finds as a group with `data-iwdie-k`, its turn. It
