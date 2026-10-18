@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.85.1
+// @version      1.85.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.85.1';
+var IWDIE_VERSION = '1.85.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9677,17 +9677,43 @@ function iwdieVcSearch(ix, templates, progress, seen) {
  *  little, so of twins the one whose stub is there wins); one that overlaps a kept one by more than
  *  a third of the smaller goes. (v1.83.1) Of two alike to the last, the lower template, turn and place: the workers'
  *  finds come in the order they finish, and two templates near twins - 11087's Beholder twice, a hundredth of a pixel
- *  apart - were picked one way or the other run to run. -> the kept ones */
+ *  apart - were picked one way or the other run to run. (v1.85.2) Before that, a find goes that another fits clearly
+ *  better - its cost under half of this one's and 8 or more lower - where the other is at least half as big and they
+ *  overlap by more than a tenth of the smaller: 10113's checkouts, which the house's SelvbetjentKasse fitted at 0.4 and
+ *  1.2, lost one to a Kasse fitted at 21.9 - most of its pixels the ground's light grey - kept first as the bigger, and
+ *  two SelvbetjentKasse lying across the standing ones at 20.7, overlapping them by just under a third, stayed.
+ *  -> the kept ones */
 function iwdieVcPick(found) {
   var cost = function (f) { return f.score + (f.edge || 0) * 0.25; };
-  var sorted = found.slice().sort(function (a, b) {
+  var area = function (f) { return f.w * f.h; };
+  var overlap = function (o, f) {
+    return Math.max(0, Math.min(o.x + o.w, f.x + f.w) - Math.max(o.x, f.x)) * Math.max(0, Math.min(o.y + o.h, f.y + f.h) - Math.max(o.y, f.y));
+  };
+  // the finds by the cells of 32 px their boxes cover, to weigh each only against those near it
+  var G = 32, cells = {}, mark = new Int32Array(found.length), costs = found.map(cost);
+  var each = function (f, fn) {
+    for (var gy = Math.floor(f.y / G); gy <= Math.floor((f.y + f.h) / G); gy++) for (var gx = Math.floor(f.x / G); gx <= Math.floor((f.x + f.w) / G); gx++) fn(gx + ',' + gy);
+  };
+  found.forEach(function (f, i) { each(f, function (c) { (cells[c] = cells[c] || []).push(i); }); });
+  var beaten = found.map(function (f, i) {
+    var out = false, cf = costs[i];
+    each(f, function (c) {
+      if (out) return;
+      (cells[c] || []).some(function (j) {
+        if (j === i || mark[j] === i + 1) return false;
+        mark[j] = i + 1;
+        var o = found[j];
+        if (!(cf > 2 * costs[j] && cf - costs[j] >= 8) || area(o) < 0.5 * area(f)) return false;
+        return (out = overlap(o, f) > Math.min(area(o), area(f)) / 10);
+      });
+    });
+    return out;
+  });
+  var sorted = found.filter(function (f, i) { return !beaten[i]; }).sort(function (a, b) {
     return b.w * b.h - a.w * a.h || cost(a) - cost(b) || (a.k || 0) - (b.k || 0) || (a.turn || 0) - (b.turn || 0) || a.y - b.y || a.x - b.x;
   }), keep = [];
   sorted.forEach(function (f) {
-    var clash = keep.some(function (o) {
-      var ox = Math.max(0, Math.min(o.x + o.w, f.x + f.w) - Math.max(o.x, f.x)), oy = Math.max(0, Math.min(o.y + o.h, f.y + f.h) - Math.max(o.y, f.y));
-      return ox * oy > Math.min(o.w * o.h, f.w * f.h) / 3;
-    });
+    var clash = keep.some(function (o) { return overlap(o, f) > Math.min(area(o), area(f)) / 3; });
     if (!clash) keep.push(f);
   });
   return keep;

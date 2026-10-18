@@ -498,6 +498,23 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Checkouts found as the house's checkouts (v1.85.2)
+
+Thomas, of 10113's checkouts after Vectorize image: *i have objects for these one its kasse object*.
+
+- The house's `SelvbetjentKasse` fitted each of 10113's four checkouts almost exactly (a mean difference of 0.4 and
+  1.2), standing, the left column drawn mirrored as the template's second row draws it. But a `Kasse` fitted one of
+  them at 21.9, just under the limit of 22: most of its pixels are the light grey of the ground. Being bigger, it was
+  kept first, and the checkout under it lost its own. Two `SelvbetjentKasse` lying across the standing ones, at 20.7,
+  overlapped them by just under a third of their box and stayed too: crosses of checkouts.
+- The pick of the components found (`iwdieVcPick`) now first drops a find that another fits clearly better: a cost
+  under half of its own and 8 or more lower, the other at least half as big, the two overlapping by more than a tenth
+  of the smaller. Then, as before, the biggest first and one overlap of a third at most.
+- Copilot's converter takes the same pick from the userscript.
+- Checked in the stub host, 1.85.1 against 1.85.2 on 16 panels: the checkouts of 10113's, 2313's and 2349's Oversikt are
+  each one checkout on its own place now, and a stray `SelvbetjentKasse` over 3214's two `Kasse` went. The other 12
+  panels came out the same, but for the version stamp and the run's job id.
+
 ### A list's words one size (v1.85.1)
 
 Thomas, of 10113's legend after Vectorize image: *look like you use 12px object on frys and 14 on Kjøl 14 should be the
