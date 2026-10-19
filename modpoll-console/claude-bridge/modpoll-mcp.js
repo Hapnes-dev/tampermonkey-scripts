@@ -36,6 +36,9 @@ const HDR_BRIDGE = 'x-modpoll-bridge';
 const HDR_SESSION = 'x-modpoll-session';
 const TAKEN = 'another tab attached';
 
+const ATTACH_GRACE_MS = 30000;   // a page re-attaches on a backoff; 10-20 s measured after a server restart
+let listening = false;           // false until the port is actually ours, so a failure cannot read as "no tab"
+let listenError = null;
 let page = null;                 // { session, waiting, waitTimer, plant }
 const queue = [];                // commands Claude has asked for, not yet handed to the page
 const sent = new Map();          // handed over, awaiting a result
@@ -79,14 +82,34 @@ function detach(why) {
   sent.clear();
 }
 
+/**
+ * Wait for a tab, up to ms. A page that is already open re-attaches on its own backoff, which was measured at 10 to
+ * 20 seconds after a server restart - so rejecting the moment nothing is attached made every first call after a
+ * restart fail for no reason. Waiting costs nothing when a tab is already there.
+ */
+function waitForPage(ms) {
+  if (page) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const until = Date.now() + ms;
+    const tick = setInterval(() => {
+      if (page || Date.now() > until) { clearInterval(tick); resolve(!!page); }
+    }, 300);
+  });
+}
+
 /** Ask the attached page to run one thing, and wait for its answer. */
 function ask(name, args, ms) {
-  return new Promise((resolve, reject) => {
-    if (!page) {
+  return new Promise(async (resolve, reject) => {
+    if (!listening) {
+      reject(new Error(listenError || 'the bridge is not listening, so no tab can reach it'));
+      return;
+    }
+    if (!await waitForPage(ATTACH_GRACE_MS)) {
       reject(new Error(
-        'No sys_tools tab is attached. Open the plant\'s sys_tools page in Chrome - ' +
-        'http://<plant>.plants.iwmac.local:8080/secure/sys_tools/ - with Modpoll Console 1.65.0 or newer installed. ' +
-        'It attaches by itself. If the page shows a login prompt, log in once in a normal tab first.'));
+        `No sys_tools tab attached after ${Math.round(ATTACH_GRACE_MS / 1000)} s. Open the plant's sys_tools page ` +
+        'in Chrome - http://<plant>.plants.iwmac.local:8080/secure/sys_tools/ - with Modpoll Console 1.65.0 or ' +
+        'newer installed. It attaches by itself, on a backoff, so a tab opened just now can take a few seconds. ' +
+        'If the page shows a login prompt, log in once in a normal tab first.'));
       return;
     }
     const cmd = {
@@ -172,8 +195,17 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.on('error', (e) => {
-  process.stderr.write(`modpoll bridge could not listen on ${PORT}: ${e.message}\n`);
+  // Not listening means no tab can ever reach this instance. Carrying on quietly made it answer every call with
+  // "no tab attached", which sends the reader hunting for a browser problem that is not there. Say what happened,
+  // and keep saying it: every tool call now fails with this reason rather than a misleading one.
+  listening = false;
+  listenError = e.code === 'EADDRINUSE'
+    ? `Port ${PORT} is already in use, so this instance has no bridge. Another modpoll-bridge is probably already ` +
+      'running - use that one, or stop it and restart this. (MODPOLL_BRIDGE_PORT moves this one.)'
+    : `The bridge could not listen on ${PORT}: ${e.message}`;
+  process.stderr.write(listenError + '\n');
 });
+server.on('listening', () => { listening = true; listenError = null; });
 server.listen(PORT, '127.0.0.1');
 
 // ---------------------------------------------------------------- the tools
@@ -247,6 +279,11 @@ const TOOLS = [
         unit: { type: 'string' },
         project: { type: 'object', description: 'A modbusgen project document (the whole file, parsed).' },
         repeats: { type: 'integer', default: 2, description: 'Passes before a point is called absent.' },
+        control: { type: 'integer', description: 'A printed reference known to answer, read once per pass as a control.' },
+        control_table: {
+          type: 'string', enum: ['coil', 'discrete', 'input', 'hold'],
+          description: 'Which table the control lives in. A verify spans all four, so this cannot be guessed.',
+        },
         timeout_ms: { type: 'integer', default: 900000 },
       },
     },
@@ -329,7 +366,8 @@ async function callTool(name, args) {
   if (name === 'modpoll_read') {
     const a = Object.assign({ count: 1, repeats: 1, timeout_ms: 240000 }, args);
     return ask('read', {
-      unit: a.unit, table: a.table, start: a.start, count: a.count, repeats: a.repeats, control: a.control,
+      unit: a.unit, table: a.table, start: a.start, count: a.count, repeats: a.repeats,
+      control: a.control, control_table: a.control_table || a.table,
     }, a.timeout_ms);
   }
 
@@ -339,13 +377,19 @@ async function callTool(name, args) {
     if (!pts.length) throw new Error('that project document has no points[]');
     // The project's own offset decides what its addr means, and getting it wrong moves every point one register.
     const subtractOne = !!(a.project.options && a.project.options.subtract_one);
-    return ask('verify', { unit: a.unit, points: pts, repeats: a.repeats, subtract_one: subtractOne }, a.timeout_ms);
+    return ask('verify', {
+      unit: a.unit, points: pts, repeats: a.repeats, subtract_one: subtractOne,
+      control: a.control, control_table: a.control_table,
+    }, a.timeout_ms);
   }
 
   if (name === 'modpoll_scan') {
     const a = Object.assign({ repeats: 2, timeout_ms: 900000 }, args);
     if (a.end < a.start) throw new Error('end is before start');
-    return ask('scan', { unit: a.unit, table: a.table, start: a.start, end: a.end, repeats: a.repeats }, a.timeout_ms);
+    return ask('scan', {
+      unit: a.unit, table: a.table, start: a.start, end: a.end, repeats: a.repeats,
+      control: a.control, control_table: a.control_table || a.table,
+    }, a.timeout_ms);
   }
 
   throw new Error('no such tool: ' + name);

@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.65.0
+// @version      1.65.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9857,6 +9857,16 @@
     const BRIDGE = { port: 47921, protocol: 1, session: null, stop: false, backoff: 1000 };
     const BRIDGE_TABLE = { coil: '0', discrete: '1', input: '3', hold: '4' };   // modpoll -t, by Modicon prefix
 
+    /*
+     * The plant number, from the host name. An earlier draft read pageWin.plant_id, which does not exist on this
+     * page, so every answer said the plant was unknown. The host is 5689.plants.iwmac.local, and that is the one
+     * place the number is always right.
+     */
+    function bridgePlantId() {
+        const m = /^(\d+)\./.exec(String(location.hostname || ''));
+        return m ? m[1] : null;
+    }
+
     function bridgeHttp(method, path, body, timeoutMs) {
         return new Promise((resolve, reject) => {
             if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('GM_xmlhttpRequest not granted')); return; }
@@ -9895,20 +9905,24 @@
      * never answered / sometimes answered / always answered, plus whether the bus itself was alive: a pass where the
      * control register also refused proves nothing about anything else read in it.
      */
-    async function bridgeSweep(unit, targets, repeats, control) {
+    async function bridgeSweep(unit, targets, repeats, control, controlTable) {
         await api.useUnit(unit);
         const seen = new Map(targets.map(t => [t.table + '|' + t.ref, { table: t.table, ref: t.ref, label: t.label || null, values: [] }]));
+        // A verify sweeps four tables at once, so the control needs its own: reading it in whichever table happened
+        // to come first would check a register the caller never named.
+        const ctlTable = controlTable || (targets.length ? targets[0].table : 'input');
         const passes = [];
         for (let pass = 0; pass < Math.max(1, repeats || 1); pass++) {
             let controlOk = null;
             if (control !== undefined && control !== null) {
-                controlOk = (await bridgeReadOne(targets.length ? targets[0].table : 'input', control)) !== null;
+                controlOk = (await bridgeReadOne(ctlTable, control)) !== null;
             }
             for (const t of targets) {
                 const v = await bridgeReadOne(t.table, t.ref);
                 seen.get(t.table + '|' + t.ref).values.push(v);
             }
-            passes.push({ pass: pass + 1, controlOk });
+            // Not "pass": SECRET_KEY matches a bare pass as a password, so every number here came back [redacted].
+            passes.push({ round: pass + 1, controlOk });
         }
         const rows = [...seen.values()].map(r => {
             const got = r.values.filter(v => v !== null);
@@ -9952,7 +9966,7 @@
         if (name === 'status') {
             const devices = await api.devices();
             return {
-                attached: true, console_version: VERSION, plant: (pageWin.plant_id || null),
+                attached: true, console_version: VERSION, plant: (bridgePlantId()),
                 units: (devices || []).map(d => ({
                     unit_id: d.unit_id, unit_name: d.unit_name, slave: d.slave,
                     connection: d.connection, host: d.host, driver_type: d.driver_type,
@@ -9962,17 +9976,17 @@
         if (name === 'read') {
             const targets = [];
             for (let i = 0; i < Math.max(1, args.count || 1); i++) targets.push({ table: args.table, ref: args.start + i });
-            return bridgeSweep(args.unit, targets, args.repeats, args.control);
+            return bridgeSweep(args.unit, targets, args.repeats, args.control, args.control_table);
         }
         if (name === 'verify') {
             const targets = bridgeTargetsFromPoints(args.points || [], !!args.subtract_one);
             if (!targets.length) throw new Error('no point in that project maps to a Modbus table');
-            return bridgeSweep(args.unit, targets, args.repeats, args.control);
+            return bridgeSweep(args.unit, targets, args.repeats, args.control, args.control_table);
         }
         if (name === 'scan') {
             const targets = [];
             for (let ref = args.start; ref <= args.end; ref++) targets.push({ table: args.table, ref });
-            return bridgeSweep(args.unit, targets, args.repeats, args.control);
+            return bridgeSweep(args.unit, targets, args.repeats, args.control, args.control_table);
         }
         throw new Error('unknown bridge command: ' + name);
     }
@@ -9983,7 +9997,7 @@
                 if (!BRIDGE.session) {
                     const hello = await bridgeHttp('GET', '/bridge/hello', undefined, 4000);
                     if (!hello || hello.protocol !== BRIDGE.protocol) throw new Error('protocol mismatch');
-                    const at = await bridgeHttp('POST', '/bridge/attach', { plant: pageWin.plant_id || null }, 8000);
+                    const at = await bridgeHttp('POST', '/bridge/attach', { plant: bridgePlantId() }, 8000);
                     BRIDGE.session = at.session;
                     BRIDGE.backoff = 1000;
                     console.info('[Modpoll Console] attached to the Claude bridge on 127.0.0.1:' + BRIDGE.port);
