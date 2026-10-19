@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.87.0
+// @version      1.88.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -23821,24 +23821,39 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       })).then(function () {
         // given: the card's fonts, and Myriad Pro installed - Illustrator's own, Thomas's pictures' font
         if (vcHasFont('Myriad Pro')) out.push({ family: 'Myriad Pro', label: 'Myriad Pro', trusted: true });
-        if (vcHasFont('Roboto')) { out.push({ family: 'Roboto', label: 'Roboto' }); return null; }
-        var cache = {};
-        try { cache = GM_getValue(IWDIE_VC_FONTS_KEY, {}) || {}; } catch (e) { cache = {}; }
-        var rec = cache.Roboto, fresh = rec && rec.faces && Date.now() - (+rec.at || 0) < IWDIE_VC_FONTS_TTL;
-        return (fresh ? Promise.resolve(rec.faces) : vcFetchFaces('Roboto').then(function (faces) {
-          cache.Roboto = { at: Date.now(), faces: faces };
-          try { GM_setValue(IWDIE_VC_FONTS_KEY, cache); } catch (e) {}
-          return faces;
-        }, function () { return []; })).then(function (faces) {
-          // its regular face - Google Fonts gives Roboto as one variable face of weight "400 700" (v1.78.1)
-          var mine = (faces || []).filter(function (fc) {
-            var ws = String(fc.weight || '400').split(/\s+/).map(Number);
-            return ws.length > 1 ? ws[0] <= 400 && 400 <= ws[1] : ws[0] === 400;
+        /* (v1.88.0) A free stand-in for the pictures' own font, so a machine without Myriad Pro is not left reading
+           them in Roboto alone. Myriad is a humanist; Roboto is a neo-grotesque, and its letters explain a humanist's
+           ink badly enough that whole runs stay drawing - on 2349's Oversikt that was K-10a, K-11c, K-31b and the
+           "Kjø" of K-55, each left as traced shapes. Source Sans 3 is Adobe's own open humanist, far closer in shape
+           and OFL rather than licensed, so it can simply be fetched.
+
+           Both are offered, and the fit scoring below picks whichever actually explains this picture's ink. That is
+           what makes this safe: a font that reads no better is never chosen, so nothing can get worse.
+
+           Roboto no longer short-circuits the rest. Having it installed used to end the search, which is exactly the
+           machine that most needed another candidate. */
+        var ensure = function (family) {
+          if (vcHasFont(family)) { out.push({ family: family, label: family }); return Promise.resolve(null); }
+          var cache = {};
+          try { cache = GM_getValue(IWDIE_VC_FONTS_KEY, {}) || {}; } catch (e) { cache = {}; }
+          var rec = cache[family], fresh = rec && rec.faces && Date.now() - (+rec.at || 0) < IWDIE_VC_FONTS_TTL;
+          return (fresh ? Promise.resolve(rec.faces) : vcFetchFaces(family).then(function (faces) {
+            cache[family] = { at: Date.now(), faces: faces };
+            try { GM_setValue(IWDIE_VC_FONTS_KEY, cache); } catch (e) {}
+            return faces;
+          }, function () { return []; })).then(function (faces) {
+            // its regular face - Google Fonts gives these as one variable face of weight "400 700" (v1.78.1)
+            var mine = (faces || []).filter(function (fc) {
+              var ws = String(fc.weight || '400').split(/\s+/).map(Number);
+              return ws.length > 1 ? ws[0] <= 400 && 400 <= ws[1] : ws[0] === 400;
+            });
+            return Promise.all(mine.map(function (fc) {
+              return load('IWDIE ' + family, iwdieBase64ToBytes(fc.b64),
+                          fc.range ? { weight: String(fc.weight), unicodeRange: fc.range } : { weight: String(fc.weight) });
+            })).then(function (oks) { if (oks.some(Boolean)) out.push({ family: 'IWDIE ' + family, label: family }); });
           });
-          return Promise.all(mine.map(function (fc) {
-            return load('IWDIE Roboto', iwdieBase64ToBytes(fc.b64), fc.range ? { weight: String(fc.weight), unicodeRange: fc.range } : { weight: String(fc.weight) });
-          })).then(function (oks) { if (oks.some(Boolean)) out.push({ family: 'IWDIE Roboto', label: 'Roboto' }); });
-        });
+        };
+        return ensure('Source Sans 3').then(function () { return ensure('Roboto'); });
       }).then(function () {
         ['Arial', 'Segoe UI'].forEach(function (f) { if (vcHasFont(f)) out.push({ family: f, label: f }); });
         return out;
