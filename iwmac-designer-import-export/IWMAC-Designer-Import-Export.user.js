@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.89.0
+// @version      1.90.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.89.0';
+var IWDIE_VERSION = '1.90.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16811,6 +16811,37 @@ function iwdieTxInk(pic, W, H, b, pad) {
     for (k2 = 0; k2 < h && through; k2++) if (ink[k2 * w + x] < 0.2) through = false;
     if (through) for (k2 = 0; k2 < h; k2++) ink[k2 * w + x] = 0;
   }
+  // (v1.90.0) a line along the word in its margin is no letter either: a margin row (above or below the box's own rows)
+  // inked across nine tenths of the box's width and on through the margin to beyond it, or a margin column (beside them)
+  // down nine tenths of its height and so on beyond the margin above or below - a case's or a pill's edge, the border of
+  // the bar under a word, a room's wall beside it - is taken out, and with it the rows or columns so inked next to it
+  // inside the box, so a line on the box's edge goes whole. A letter ends in the margin: the l of level, beside the box of
+  // its x-high letters, stays. 2313's K17 over its case's edge read as ",K17", and K17 forced on that ink explained the
+  // edge not at all (0.42): the word was left as drawing; 3214's Oppvask- beside a wall read as "Dppvask-I"
+  var by0 = Math.floor(b.y) - y0, by1 = Math.ceil(b.y + b.h) - y0, bx0 = Math.floor(b.x) - x0, bx1 = Math.ceil(b.x + b.w) - x0;
+  var inked = function (xx, yy) { return ink[yy * w + xx] >= 0.05; };
+  var lineRow = function (yy) {
+    var on = 0, a = 0, c = 0, xx;
+    for (xx = Math.max(0, bx0); xx < Math.min(w, bx1); xx++) if (inked(xx, yy)) on++;
+    for (xx = 0; xx < bx0; xx++) if (inked(xx, yy)) a++;
+    for (xx = Math.max(0, bx1); xx < w; xx++) if (inked(xx, yy)) c++;
+    return bx1 > bx0 && on >= 0.9 * (bx1 - bx0) &&
+      ((a >= bx0 && inkAt(x0 - 1, y0 + yy) >= 0.05) || (c >= w - bx1 && inkAt(x1, y0 + yy) >= 0.05));
+  };
+  var lineCol = function (xx) {
+    var on = 0, a = 0, c = 0, yy;
+    for (yy = Math.max(0, by0); yy < Math.min(h, by1); yy++) if (inked(xx, yy)) on++;
+    for (yy = 0; yy < by0; yy++) if (inked(xx, yy)) a++;
+    for (yy = Math.max(0, by1); yy < h; yy++) if (inked(xx, yy)) c++;
+    return by1 > by0 && on >= 0.9 * (by1 - by0) &&
+      ((a >= by0 && inkAt(x0 + xx, y0 - 1) >= 0.05) || (c >= h - by1 && inkAt(x0 + xx, y1) >= 0.05));
+  };
+  var clearRow = function (yy) { for (var xx = 0; xx < w; xx++) ink[yy * w + xx] = 0; };
+  var clearCol = function (xx) { for (var yy = 0; yy < h; yy++) ink[yy * w + xx] = 0; };
+  for (y = 0; y < by0; y++) if (lineRow(y)) { clearRow(y); if (y === by0 - 1) for (k2 = by0; k2 < by1 && lineRow(k2); k2++) clearRow(k2); }
+  for (y = h - 1; y >= by1; y--) if (lineRow(y)) { clearRow(y); if (y === by1) for (k2 = by1 - 1; k2 >= by0 && lineRow(k2); k2--) clearRow(k2); }
+  for (x = 0; x < bx0; x++) if (lineCol(x)) { clearCol(x); if (x === bx0 - 1) for (k2 = bx0; k2 < bx1 && lineCol(k2); k2++) clearCol(k2); }
+  for (x = w - 1; x >= bx1; x--) if (lineCol(x)) { clearCol(x); if (x === bx1) for (k2 = bx1 - 1; k2 >= bx0 && lineCol(k2); k2--) clearCol(k2); }
   for (i = 0; i < n; i++) total += ink[i] * ink[i];
   return { ink: ink, w: w, h: h, x: x0, y: y0, ground: ground, text: text, total: total, contrast: Math.sqrt(span) };
 }
@@ -17463,8 +17494,10 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
     if (iwdieTxTaken(got, opts)) res = [{ text: got.text, cost: got.cost, known: got.known, size: got.bank.size, base: got.base, x0: got.x0, x1: got.x1 }];
     else if (I.w > 3 * R.h && I.w <= 300) {
       var parts = [], gap = Math.max(3, Math.round(0.3 * R.h));
-      var piece = function (pc, again) {
-        var C = iwdieTxCrop(I, Math.max(0, pc.x0 - 2), Math.min(I.w, pc.x1 + 2)), top = -1, bot = -1, y, x, s;
+      // each piece read with two columns of its margin - (v1.90.0) or `pad`: none for a piece a column from an icon
+      var piece = function (pc, again, pad) {
+        pad = pad == null ? 2 : pad;
+        var C = iwdieTxCrop(I, Math.max(0, pc.x0 - pad), Math.min(I.w, pc.x1 + pad)), top = -1, bot = -1, y, x, s;
         for (y = 0; y < C.h && top < 0; y++) { s = 0; for (x = 0; x < C.w; x++) s += C.ink[y * C.w + x]; if (s > 0.15) top = y; }
         for (y = C.h - 1; y >= 0 && bot < 0; y--) { s = 0; for (x = 0; x < C.w; x++) s += C.ink[y * C.w + x]; if (s > 0.15) bot = y; }
         if (top < 0 || bot + 1 - top < 5) return;
@@ -17489,15 +17522,32 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
           });
         }
         if (unit) parts.push({ text: unit.text, cost: unit.cost, known: prev.known, size: prev.size, base: prev.base, x0: off + sp[0], x1: off + sp[1] + 1, space: prev.space, unit: true });
-        // a wide piece that does not read - an icon with the words beside it, the run as high as the icon - in smaller pieces
-        else if (again && gap > 3 && C.w > 3 * (bot + 1 - top)) {
+        // a wide piece that does not read - an icon with the words beside it, the run as high as the icon - in smaller pieces;
+        // (v1.90.0) twice as wide as high is wide enough: a valve's tag beside the valve, 10210's V3gc and 2313's V3tw, is
+        // not three times the valve's height
+        else if (again && gap > 3 && C.w > 2 * (bot + 1 - top)) {
           var qs = iwdieTxPieces(C, 3);
           if (qs.length < 2 && opts && opts.loose) {
             // (v1.79.0) read in a font not the picture's, an icon two columns from its words (the motor valve beside V3hr):
             // the piece without what stands two columns off at its start, or at its end - the better of them
-            var q2 = iwdieTxPieces(C, 2), before = parts.length, alt = null;
-            if (q2.length >= 2) [{ x0: q2[1].x0, x1: q2[q2.length - 1].x1 }, { x0: q2[0].x0, x1: q2[q2.length - 2].x1 }].forEach(function (q) {
-              piece({ x0: off + q.x0, x1: off + q.x1 }, false);
+            var q2 = iwdieTxPieces(C, 2), before = parts.length, alt = null, tries2 = [];
+            if (q2.length >= 2) tries2 = [{ x0: q2[1].x0, x1: q2[q2.length - 1].x1 }, { x0: q2[0].x0, x1: q2[q2.length - 2].x1 }];
+            else {
+              // (v1.90.0) or one column off, where what stands there reaches two rows past the rest - an icon is no letter on
+              // the words' line: 2313's motor valve, a column from its V3tw and reaching below it
+              var q1 = iwdieTxPieces(C, 1), rowsOf = function (a, b2) {
+                var t = -1, u = -1, yy, xx, s1;
+                for (yy = 0; yy < C.h; yy++) { for (s1 = 0, xx = a; xx < b2; xx++) s1 += C.ink[yy * C.w + xx]; if (s1 > 0.15) { if (t < 0) t = yy; u = yy; } }
+                return t < 0 ? null : [t, u];
+              }, past = function (p, r) { return !!p && !!r && (p[1] >= r[1] + 2 || p[0] <= r[0] - 2); };
+              if (q1.length >= 2) {
+                var n1 = q1.length;
+                if (past(rowsOf(q1[0].x0, q1[0].x1), rowsOf(q1[1].x0, q1[n1 - 1].x1))) tries2.push({ x0: q1[1].x0, x1: q1[n1 - 1].x1, pad: 0 });
+                if (past(rowsOf(q1[n1 - 1].x0, q1[n1 - 1].x1), rowsOf(q1[0].x0, q1[n1 - 2].x1))) tries2.push({ x0: q1[0].x0, x1: q1[n1 - 2].x1, pad: 0 });
+              }
+            }
+            tries2.forEach(function (q) {
+              piece({ x0: off + q.x0, x1: off + q.x1 }, false, q.pad);
               while (parts.length > before) { var p = parts.pop(); if (!p.unit && (!alt || p.cost < alt.cost)) alt = p; }
             });
             if (alt) parts.push(alt);

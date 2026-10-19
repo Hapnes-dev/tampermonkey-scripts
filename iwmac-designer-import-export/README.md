@@ -498,6 +498,37 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Words beside lines and valves read (v1.90.0)
+
+To measure the text reader, Thomas's pictures were read again in Node from the page's own dumps. For 20 of them every
+word in the picture was written down by hand: 1 149 words. 1.89.0 read 971 of them right, 60 wrong and left 118 as
+drawing. Two things cost the most labels on these pictures:
+
+- **A line along the word in its margin.** The edge of a case or a pill just under a word, a room's wall beside it, or
+  the border of a bar sits in the 3-pixel margin the word is read with. The reader took it for letters: 2313's K17 over
+  its case's edge read as ",K17", and K17 forced on that ink was so poor (0.42) that it was left as drawing. 3214's
+  Oppvask- beside a wall read as "Dppvask-I".
+  - Now a margin row inked across the word's box and on past the margin, or a margin column inked down the box and on
+    past the margin, is taken out (`iwdieTxInk`). So is the row or column next to it inside the box when it is inked the
+    same way, so a line on the box's edge goes whole.
+  - A letter that only reaches into the margin stays. The l of "level", beside the box of its small letters, is one.
+- **A valve's tag in one run with its valve.** V3gc, V3hr and V3tw beside their valves were read only whole, so they
+  failed. A run is split into pieces only when it is three times as wide as high, and the valve makes it high.
+  - Now twice as wide is enough.
+  - Read in a font that is not the picture's, a piece one column from an icon is also tried without that icon. This
+    happens when the icon reaches two rows past the words' rows, as 2313's motor valve does beside V3tw. That piece is
+    read with no margin (`pad` 0), so the icon's edge stays out.
+
+With both, the 20 panels read 983 right, 61 wrong and 105 left, against 971, 60 and 118 before. 54 dumped panels from
+27 plants were also read with the font each was read in. 35 read the same, and on the other 19 every change adds a label
+or completes one:
+- V3gc on seven Maskin pictures;
+- 3214's Oversikt reads K03, K14, Oppvask-, Kjølt tilberedning, Kjøl emb., and kjøtt K09 where it read K09.
+
+Two new labels are wrong:
+- *Aktivrtet Kjøl/Frys*, where the picture says Aktivitet;
+- *Karmvårmestyming*, a Swedish word whose ä the reader has no letter for.
+
 ### Every name on an Oversikt read, its codes as codes (v1.89.0)
 
 Thomas, on 2349's Oversikt after *Edit in VectorCraft…*: some names were missing and some garbled. K-10a, K-30a and
