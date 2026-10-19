@@ -24,6 +24,14 @@ of one, is a single tool call and a single answer rather than a round trip per r
 an evaluate timeout. That is the point: on a shared RS-485 bus a single refusal means the
 bus was busy, not that the register is absent, and only repetition separates the two.
 
+Consecutive registers go in one modpoll run, which takes `-c` up to 99. Scanning V01 on
+plant 2349 is `modpoll … -r 1 -c 40`, one run returning forty registers, where reading them
+one at a time was forty runs at roughly 630 ms each. A block is all or nothing — the device
+refuses the whole range if any single register in it is illegal, which is why one at a time
+was right for discovery in the first place — so a refused block falls back to one at a time
+across that chunk alone. One bad register costs its own run, not the ninety-eight around it.
+`test/bridge-sweep.js` holds that case against a simulated device.
+
 ## Setup
 
 Already registered in `Documents/Claude/.mcp.json` as `modpoll-bridge`. It needs a Claude
