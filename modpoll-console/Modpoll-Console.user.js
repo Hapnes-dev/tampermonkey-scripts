@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.66.0
+// @version      1.66.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9940,8 +9940,10 @@
              * passes into two minutes spent proving nothing. When the control has refused and not one register has
              * answered yet, more reading cannot change the answer - stop and say why.
              */
+            // No "pass:" in these messages. TEXT_SECRETS redacts whatever follows a bare "pass" and a colon wherever
+            // it appears, free text included, so "on the first pass: the control ..." came back with "the" withheld.
             if (controlOk === false && !anyAnswered && pass > 0) {
-                aborted = `stopped after ${pass} pass(es): the control register refused and nothing else answered either`;
+                aborted = `stopped after ${pass} complete round(s) - the control register refused and nothing else answered either`;
                 break;
             }
             let refusedRunning = 0;
@@ -9952,7 +9954,7 @@
                 if (got) { anyAnswered = true; refusedRunning = 0; if (!row.label && got.name) row.label = got.name; }
                 else refusedRunning++;
                 if (controlOk === false && !anyAnswered && refusedRunning >= 5) {
-                    aborted = 'stopped on the first pass: the control register refused and so did the first five read after it';
+                    aborted = 'stopped during the first round - the control register refused and so did the first five read after it';
                     break;
                 }
             }
@@ -9972,9 +9974,10 @@
         const busAlive = passes.some(p => p.controlOk !== false);
         const always = rows.filter(r => r.verdict === 'always');
         /*
-         * never and sometimes carry the full row; always is the uninteresting case, so it goes out as a count and a
-         * list of references. A whole `rows` copy alongside them repeated every row a second time, which roughly
-         * doubled the answer for a 55-point verify without adding anything to it.
+         * never and sometimes carry the full row. The ones that always answered go out three fields wide instead:
+         * a whole `rows` copy alongside them repeated every row a second time, which roughly doubled a 55-point
+         * answer without adding to it, but bare references went too far the other way - a scan exists to discover
+         * what a controller holds, and the name and value of a register that answers is the discovery.
          */
         return {
             unit, passes,
@@ -9984,7 +9987,11 @@
             never: rows.filter(r => r.verdict === 'never'),
             sometimes: rows.filter(r => r.verdict === 'sometimes'),
             always: always.length,
-            always_refs: always.map(r => r.ref),
+            always_rows: always.map(r => ({
+                ref: r.ref,
+                value: r.values.filter(v => v !== null).slice(-1)[0],
+                label: r.label,
+            })),
         };
     }
 
