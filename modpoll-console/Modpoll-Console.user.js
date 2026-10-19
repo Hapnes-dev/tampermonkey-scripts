@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.64.1
+// @version      1.65.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -13,6 +13,7 @@
 // @grant        unsafeWindow
 // @connect      toolbox.iwmac.local
 // @connect      toolbox.iwmac.local:8505
+// @connect      127.0.0.1
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -9834,6 +9835,177 @@
         }
     });
 
+    // -------------------------------------------------------------- Claude bridge
+    /*
+     * A third route, for Claude Code's modpoll-bridge MCP server (claude-bridge/modpoll-mcp.js).
+     *
+     * The server listens on 127.0.0.1 and this page attaches to it, rather than the other way round: modpoll lives
+     * behind Plant Term on a page under /secure/, so whatever drives it has to be inside an authenticated session.
+     * This tab already is one. Nothing stores a password, and nothing outside the loopback can reach the server.
+     *
+     * The loops run on the SERVER side of this link. A sweep, or five repeats of one register, is one command here
+     * and one answer back, instead of a round trip per read against an evaluate timeout. That is the whole reason it
+     * exists: on a shared RS-485 bus a single refusal means the bus was busy, not that the register is absent, and
+     * only repetition separates the two.
+     *
+     * COUPLING SURFACE - deliberately five methods, and no more. Everything below is built from
+     * api.devices, api.useUnit, api.setForm, api.run and api.state. Each new method this leans on is another thing
+     * that breaks the bridge when the console changes, so add one only when a command cannot be written without it.
+     *
+     * Read-only, like the rest of the console: setForm is handed a table, a start and a count, and nothing else.
+     */
+    const BRIDGE = { port: 47921, protocol: 1, session: null, stop: false, backoff: 1000 };
+    const BRIDGE_TABLE = { coil: '0', discrete: '1', input: '3', hold: '4' };   // modpoll -t, by Modicon prefix
+
+    function bridgeHttp(method, path, body, timeoutMs) {
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('GM_xmlhttpRequest not granted')); return; }
+            const headers = { 'Content-Type': 'application/json' };
+            headers['X-MODPOLL-BRIDGE'] = String(BRIDGE.protocol);
+            if (BRIDGE.session) headers['X-MODPOLL-SESSION'] = BRIDGE.session;
+            GM_xmlhttpRequest({
+                method, url: 'http://127.0.0.1:' + BRIDGE.port + path, headers,
+                data: body === undefined ? undefined : JSON.stringify(body),
+                timeout: timeoutMs || 30000,
+                onload: r => {
+                    let parsed = null;
+                    try { parsed = JSON.parse(r.responseText || '{}'); } catch (e) { /* non-JSON is a failure below */ }
+                    if (r.status >= 200 && r.status < 300) resolve(parsed || {});
+                    else reject(Object.assign(new Error((parsed && parsed.error) || ('HTTP ' + r.status)), { status: r.status }));
+                },
+                onerror: () => reject(new Error('bridge unreachable')),
+                ontimeout: () => reject(new Error('bridge timed out')),
+            });
+        });
+    }
+
+    /** One register, one pass. Returns its value, or null when the device refused it. */
+    async function bridgeReadOne(table, ref) {
+        api.setForm({ table: BRIDGE_TABLE[table], start: ref, count: 1 });
+        const st = await api.run();
+        const row = ((st && st.grid && st.grid.rows) || [])[0];
+        const last = String((((st && st.log) || []).slice(-1)[0]) || '');
+        if (/refuses/i.test(last) || !row) return null;
+        const v = (row.value !== undefined && row.value !== null) ? row.value : row.raw;
+        return (v === undefined) ? null : v;
+    }
+
+    /**
+     * Read a set of (table, ref) over several passes and say what each one did. The distinction the caller needs is
+     * never answered / sometimes answered / always answered, plus whether the bus itself was alive: a pass where the
+     * control register also refused proves nothing about anything else read in it.
+     */
+    async function bridgeSweep(unit, targets, repeats, control) {
+        await api.useUnit(unit);
+        const seen = new Map(targets.map(t => [t.table + '|' + t.ref, { table: t.table, ref: t.ref, label: t.label || null, values: [] }]));
+        const passes = [];
+        for (let pass = 0; pass < Math.max(1, repeats || 1); pass++) {
+            let controlOk = null;
+            if (control !== undefined && control !== null) {
+                controlOk = (await bridgeReadOne(targets.length ? targets[0].table : 'input', control)) !== null;
+            }
+            for (const t of targets) {
+                const v = await bridgeReadOne(t.table, t.ref);
+                seen.get(t.table + '|' + t.ref).values.push(v);
+            }
+            passes.push({ pass: pass + 1, controlOk });
+        }
+        const rows = [...seen.values()].map(r => {
+            const got = r.values.filter(v => v !== null);
+            return {
+                table: r.table, ref: r.ref, addr: r.ref - 1, label: r.label,
+                answered: got.length, of: r.values.length,
+                verdict: got.length === 0 ? 'never' : (got.length === r.values.length ? 'always' : 'sometimes'),
+                values: r.values,
+            };
+        });
+        const busAlive = passes.some(p => p.controlOk !== false);
+        return {
+            unit, passes,
+            bus: control === undefined || control === null ? 'no control register given'
+                : (busAlive ? 'control answered at least once' : 'CONTROL NEVER ANSWERED - treat every "never" below as unproven'),
+            never: rows.filter(r => r.verdict === 'never'),
+            sometimes: rows.filter(r => r.verdict === 'sometimes'),
+            always: rows.filter(r => r.verdict === 'always').length,
+            rows,
+        };
+    }
+
+    /** A modbusgen datatype names its Modbus table; addr plus the project's own offset names the printed reference. */
+    function bridgeTargetsFromPoints(points, subtractOne) {
+        const out = [];
+        for (const p of points) {
+            const dt = String(p.datatype || '').toLowerCase();
+            let table = null;
+            if (dt.indexOf('coil') === 0) table = 'coil';
+            else if (dt.indexOf('digital') === 0) table = 'discrete';
+            else if (dt.indexOf('_input_') !== -1) table = 'input';
+            else if (dt.indexOf('_hold_') !== -1 || dt.indexOf('bit_hold') === 0) table = 'hold';
+            if (!table || typeof p.addr !== 'number') continue;
+            const protocol = subtractOne ? p.addr - 1 : p.addr;
+            out.push({ table, ref: protocol + 1, label: p.text || null });
+        }
+        return out;
+    }
+
+    async function bridgeRun(name, args) {
+        if (name === 'status') {
+            const devices = await api.devices();
+            return {
+                attached: true, console_version: VERSION, plant: (pageWin.plant_id || null),
+                units: (devices || []).map(d => ({
+                    unit_id: d.unit_id, unit_name: d.unit_name, slave: d.slave,
+                    connection: d.connection, host: d.host, driver_type: d.driver_type,
+                })),
+            };
+        }
+        if (name === 'read') {
+            const targets = [];
+            for (let i = 0; i < Math.max(1, args.count || 1); i++) targets.push({ table: args.table, ref: args.start + i });
+            return bridgeSweep(args.unit, targets, args.repeats, args.control);
+        }
+        if (name === 'verify') {
+            const targets = bridgeTargetsFromPoints(args.points || [], !!args.subtract_one);
+            if (!targets.length) throw new Error('no point in that project maps to a Modbus table');
+            return bridgeSweep(args.unit, targets, args.repeats, args.control);
+        }
+        if (name === 'scan') {
+            const targets = [];
+            for (let ref = args.start; ref <= args.end; ref++) targets.push({ table: args.table, ref });
+            return bridgeSweep(args.unit, targets, args.repeats, args.control);
+        }
+        throw new Error('unknown bridge command: ' + name);
+    }
+
+    async function bridgeLoop() {
+        while (!BRIDGE.stop) {
+            try {
+                if (!BRIDGE.session) {
+                    const hello = await bridgeHttp('GET', '/bridge/hello', undefined, 4000);
+                    if (!hello || hello.protocol !== BRIDGE.protocol) throw new Error('protocol mismatch');
+                    const at = await bridgeHttp('POST', '/bridge/attach', { plant: pageWin.plant_id || null }, 8000);
+                    BRIDGE.session = at.session;
+                    BRIDGE.backoff = 1000;
+                    console.info('[Modpoll Console] attached to the Claude bridge on 127.0.0.1:' + BRIDGE.port);
+                }
+                const next = await bridgeHttp('GET', '/bridge/next', undefined, 40000);
+                if (!next || !next.cmd) continue;                       // idle poll came back empty; ask again
+                let payload;
+                try {
+                    payload = { id: next.cmd.id, result: sanitizeDeep(await bridgeRun(next.cmd.name, next.cmd.args || {})) };
+                } catch (e) {
+                    payload = { id: next.cmd.id, error: e.message };
+                }
+                await bridgeHttp('POST', '/bridge/result', payload, 20000);
+            } catch (e) {
+                // The server not being there is the normal case, not a fault: it only runs when Claude is working.
+                BRIDGE.session = null;
+                await sleep(BRIDGE.backoff);
+                BRIDGE.backoff = Math.min(30000, BRIDGE.backoff * 2);
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ init
 
     function init() {
@@ -9842,6 +10014,9 @@
         addSidebarItem();
         hookRouter();
         try { pageWin.__modpoll = publicApi; } catch (e) { window.__modpoll = publicApi; }
+        // Offer this tab to Claude's modpoll bridge. The server is usually not running, and that is the normal
+        // case rather than a fault: the loop backs off and keeps offering, so starting it later just works.
+        bridgeLoop();
         console.info('[Modpoll Console ' + VERSION + '] Tools → Modpoll in the sidebar; window.__modpoll.help() for the API.');
     }
 
