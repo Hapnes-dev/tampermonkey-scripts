@@ -263,8 +263,22 @@ const TOOLS = [
     name: 'modpoll_status',
     description:
       'Whether a sys_tools tab is attached, which plant it is on, and which units that plant has. Call this first; ' +
-      'every other tool needs an attached tab.',
-    inputSchema: { type: 'object', properties: {} },
+      'every other tool needs an attached tab. Units come back as a count and a breakdown by connection, because ' +
+      'the usual question is only whether a tab is there. Ask for "list" to pick a unit id out, with match to ' +
+      'narrow it, and "full" only when a unit\'s own fields matter.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        units: {
+          type: 'string', enum: ['count', 'list', 'full'],
+          description: 'How much to say about the units. Defaults to count, or to list when match is given.',
+        },
+        match: {
+          type: 'string',
+          description: 'Keep only units whose id, name, driver or connection contains this, case-insensitively.',
+        },
+      },
+    },
   },
   {
     name: 'modpoll_read',
@@ -425,7 +439,42 @@ async function callTool(name, args) {
     return toolboxSql('/toolbox-sql/', { sql_command: args.sql }, 'toolbox');
   }
 
-  if (name === 'modpoll_status') return ask('status', {}, 20000);
+  /*
+   * Status is asked mostly to find out whether there is a tab at all, and a plant of any size answered that with its
+   * whole unit table - 58 units, about 5000 tokens, to say "attached". The units are still here when they are wanted:
+   * one line each under "list", the raw objects under "full", and match narrows either.
+   */
+  if (name === 'modpoll_status') {
+    const a = args || {};
+    const shape = a.units || (a.match ? 'list' : 'count');
+    const st = await ask('status', {}, 20000);
+    const all = Array.isArray(st && st.units) ? st.units : [];
+    const needle = a.match ? String(a.match).toLowerCase() : null;
+    const units = needle
+      ? all.filter((u) => [u.unit_id, u.unit_name, u.driver_type, u.connection]
+          .some((f) => String(f || '').toLowerCase().includes(needle)))
+      : all;
+
+    const out = { attached: st && st.attached, console_version: st && st.console_version, plant: st && st.plant };
+    out.unit_count = all.length;
+    if (needle) out.matched = units.length;
+    if (shape === 'full') {
+      out.units = units;
+    } else if (shape === 'list') {
+      out.units = units.map((u) => [
+        u.unit_id, u.unit_name, u.driver_type, u.connection,
+        u.host ? u.host + (u.slave === undefined || u.slave === null ? '' : ' slave ' + u.slave) : null,
+      ].filter(Boolean).join(' · '));
+    } else {
+      const tally = {};
+      for (const u of units) {
+        const k = String(u.connection || 'unknown');
+        tally[k] = (tally[k] || 0) + 1;
+      }
+      out.by_connection = tally;
+    }
+    return out;
+  }
 
   if (name === 'modpoll_read') {
     const a = Object.assign({ count: 1, repeats: 1, timeout_ms: 240000 }, args);
