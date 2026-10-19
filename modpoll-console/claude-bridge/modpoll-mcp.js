@@ -39,6 +39,7 @@ const TAKEN = 'another tab attached';
 const ATTACH_GRACE_MS = 30000;   // a page re-attaches on a backoff; 10-20 s measured after a server restart
 let listening = false;           // false until the port is actually ours, so a failure cannot read as "no tab"
 let listenError = null;
+let proxying = false;            // the port belongs to another session's bridge; work through it rather than fail
 let page = null;                 // { session, waiting, waitTimer, plant }
 const queue = [];                // commands Claude has asked for, not yet handed to the page
 const sent = new Map();          // handed over, awaiting a result
@@ -108,8 +109,40 @@ function waitForPage(ms) {
   });
 }
 
+/**
+ * Hand the command to the instance that owns the port. The tab is attached to that one, so it is the only instance
+ * that can reach Plant Term; this one is a Claude session that happened to start second.
+ */
+async function askViaOwner(name, args, ms) {
+  let res;
+  try {
+    res = await fetch(`http://127.0.0.1:${PORT}/bridge/call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', [HDR_BRIDGE]: String(PROTOCOL) },
+      body: JSON.stringify({ name, args, timeout_ms: ms }),
+      // The owner's own ask() waits out the attach grace before its timeout even starts, so the real ceiling over
+      // there is grace + ms. Allowing only ms made this side give up first and report a dead bridge that was fine.
+      signal: AbortSignal.timeout(ms + ATTACH_GRACE_MS + 10000),
+    });
+  } catch (e) {
+    // The owner may have just exited with its session. Try for the port before reporting a dead bridge.
+    tryBind();
+    throw new Error(`the modpoll-bridge holding port ${PORT} did not answer (${e.message}). If its Claude session ` +
+                    'has closed, this one takes the port within a few seconds - try again.');
+  }
+  if (res.status === 404) {
+    throw new Error(`the modpoll-bridge holding port ${PORT} is an older build without /bridge/call, so this ` +
+                    'session cannot work through it. Close that Claude Code session, or restart it, and the ' +
+                    'two will share the tab.');
+  }
+  const out = await res.json().catch(() => ({ error: 'the bridge on the port answered something that is not JSON' }));
+  if (out.error) throw new Error(out.error);
+  return out.result;
+}
+
 /** Ask the attached page to run one thing, and wait for its answer. */
 function ask(name, args, ms) {
+  if (proxying) return askViaOwner(name, args, ms);
   return new Promise(async (resolve, reject) => {
     if (!listening) {
       reject(new Error(listenError || 'the bridge is not listening, so no tab can reach it'));
@@ -152,6 +185,22 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/bridge/hello') {
     reply(res, 200, { ok: true, protocol: PROTOCOL, attached: !!page, plant: page && page.plant });
+    return;
+  }
+
+  /*
+   * Another Claude session's bridge, asking this one to run a command because this one owns the port and therefore
+   * the tab. A failed command comes back as 200 with an error field: the HTTP status is about reaching the bridge,
+   * the body is about what the bus said, and collapsing the two would make a refused register look like a dead link.
+   */
+  if (req.method === 'POST' && url.pathname === '/bridge/call') {
+    const body = await readBody(req);
+    try {
+      const result = await ask(String(body.name || ''), body.args || {}, Number(body.timeout_ms) || 240000);
+      reply(res, 200, { result });
+    } catch (e) {
+      reply(res, 200, { error: String((e && e.message) || e) });
+    }
     return;
   }
 
@@ -212,22 +261,34 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.on('error', (e) => {
-  // Not listening means no tab can ever reach this instance. Carrying on quietly made it answer every call with
-  // "no tab attached", which sends the reader hunting for a browser problem that is not there. Say what happened,
-  // and keep saying it: every tool call now fails with this reason rather than a misleading one.
+  /*
+   * The port is a singleton and a Claude Code session is not: every session starts its own copy of this server, so
+   * two sessions open at once meant one of them owned the bridge and the other could do nothing, while the browser
+   * looked perfectly attached from both. Measured here with both parent processes alive - not an orphan, just two
+   * live sessions - so taking the port away from the incumbent would break a session that is using it.
+   *
+   * An instance that cannot bind therefore becomes a client of the one that can: see askViaOwner. The tab stays
+   * attached to the owner, every session reaches it, and whichever instance is left standing takes the port.
+   */
   listening = false;
-  listenError = e.code === 'EADDRINUSE'
-    ? `Port ${PORT} is already in use, so this instance has no bridge. Usually that is a modpoll-bridge orphaned by ` +
-      'an earlier Claude Code session: it still holds the port and the sys_tools tab still talks to it, so this ' +
-      'session has no bridge at all while the browser looks perfectly attached. List them with\n' +
-      "  powershell \"Get-CimInstance Win32_Process -Filter \\\"Name='node.exe'\\\" | ? { $_.CommandLine -like " +
-      "'*modpoll-mcp*' } | select ProcessId,CreationDate\"\n" +
-      'and stop the older one, then restart Claude Code. (MODPOLL_BRIDGE_PORT moves this instance instead.)'
-    : `The bridge could not listen on ${PORT}: ${e.message}`;
+  if (e.code === 'EADDRINUSE') {
+    proxying = true;
+    listenError = null;
+    process.stderr.write(`Port ${PORT} belongs to another modpoll-bridge; this instance will work through it.\n`);
+    return;
+  }
+  proxying = false;
+  listenError = `The bridge could not listen on ${PORT}: ${e.message}`;
   process.stderr.write(listenError + '\n');
 });
-server.on('listening', () => { listening = true; listenError = null; });
-server.listen(PORT, '127.0.0.1');
+server.on('listening', () => { listening = true; proxying = false; listenError = null; });
+
+/** Take the port if it is free. Called at startup, and again whenever the owner stops answering. */
+function tryBind() {
+  if (listening) return;
+  try { server.listen(PORT, '127.0.0.1'); } catch (e) { /* the error handler above decides what this means */ }
+}
+tryBind();
 
 // ---------------------------------------------------------------- the tools
 
@@ -456,6 +517,8 @@ async function callTool(name, args) {
       : all;
 
     const out = { attached: st && st.attached, console_version: st && st.console_version, plant: st && st.plant };
+    // Say so rather than let a shared tab look like a private one: another session can be driving the same console.
+    if (proxying) out.via = `the modpoll-bridge of another Claude session, which owns port ${PORT}`;
     out.unit_count = all.length;
     if (needle) out.matched = units.length;
     if (shape === 'full') {
