@@ -498,6 +498,29 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The converter ends a line where Illustrator does (v1.86.1)
+
+A follow-up to 1.86.0 suspected the library import's reader (`iwdieAiParse`: Libraries, a .ai's components) of losing
+points wherever Illustrator glues an operator to the next number (`4 w3034 -1246 m`), which 1.86.0's converter had been
+made to read.
+
+- **No file glues them.** Illustrator ends some lines of its art with a CR alone. In the twelve files without PDF
+  content (eleven of 2313's, one of 10113's) that happens 5 006 times before a number, and 498 times before a line of a
+  symbol's own art (`%_`). A reader that ends lines at LF alone takes the two lines for one, and a terminal does not
+  show the CR: `4 w3034 -1246 m` is `4 w`, a CR, then `3034 -1246 m`.
+- **The library reader was right.** It always ended a line at a CR alone. With a fix for glued operators it read each
+  of the 92 .ai files at hand exactly as without one, so it is unchanged.
+- **The converter now does the same.** `iwdieAiArtRange` ends a line at LF, at CR LF or at a CR alone. Its two
+  workarounds from 1.86.0 are gone: splitting a number off an operator, and taking `%_` out inside a line of a symbol's
+  own art. It draws the twelve files byte for byte as 1.86.0 did.
+- The 1.86.0 section below first said 220 shapes and 109 texts for 2313's Oversikt v8. That run was on a build that
+  still kept what lies wholly off the artboard inside groups; 1.86.0 as released draws 210 shapes and 78 texts, and the
+  section says so now.
+- Checked in the stub host on the hosted VectorCraft: 2313's Oversikt v8 without PDF content, chosen on the card, was
+  drawn (210 shapes, 78 texts), asked about and given the panel's 230 objects. Its PDF-compatible copy, dropped on the
+  editor, was asked about too. Outside an edit, the file dropped on VectorCraft opened as a document of its own. No
+  errors in the console.
+
 ### A .ai without PDF content drawn from Illustrator's own data (v1.86.0)
 
 Thomas, of 2313's Oversikt .ai, with VectorCraft showing Illustrator's notice and Illustrator's Options with *Create PDF
@@ -529,7 +552,7 @@ Compatible file*.
   copy saved with PDF content; text in a substituted font is most of the difference.
 - A .ai's components imported to Libraries read CMYK without a profile as Adobe's default too, not by the naive formula.
 - Checked in the stub host on the hosted VectorCraft: 2313's Oversikt v8 without PDF content, chosen on the card, was
-  drawn (220 shapes, 109 texts), asked about and given the panel's 230 objects, with its 224 components around the
+  drawn (210 shapes, 78 texts), asked about and given the panel's 230 objects, with its 224 components around the
   artboard. Its PDF-compatible copy, dropped on the editor while that was busy, opened after it and was asked about too.
   Outside an edit, the copy without PDF content dropped on VectorCraft opened as `2313_oversikt-v8_250926.svg`. No
   errors in the console. Not run in the live Designer.

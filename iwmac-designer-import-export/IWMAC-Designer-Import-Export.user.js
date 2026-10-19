@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.86.0
+// @version      1.86.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.86.0';
+var IWDIE_VERSION = '1.86.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6453,12 +6453,16 @@ function iwdieAiArtRange(text, from, to, inDef) {
     add(p);
     done1(p);
   };
-  var pos = from, len = to;
+  var pos = from, len = to, nlAt = -2, crAt = -2;
   while (pos < len) {
-    var nl = text.indexOf('\n', pos), lineEnd = nl < 0 ? len : nl, next = nl < 0 ? len : nl + 1;
+    // a line ends at LF, CR LF or a CR alone (v1.86.1): Illustrator ends some lines with a CR alone, in the middle of
+    // what a reader splitting at LF takes for one - "4 w\r3034 -1246 m", in a symbol's own art "%_1 w\r%_935.03 348.56 m"
+    if (nlAt !== -1 && nlAt < pos) nlAt = text.indexOf('\n', pos);
+    if (crAt !== -1 && crAt < pos) crAt = text.indexOf('\r', pos);
+    var lineEnd = nlAt < 0 ? len : nlAt;
+    if (crAt >= 0 && crAt < lineEnd) lineEnd = crAt;
     var line = text.slice(pos, lineEnd);
-    if (line.charCodeAt(line.length - 1) === 13) line = line.slice(0, -1);
-    pos = next;
+    pos = lineEnd + (text.charCodeAt(lineEnd) === 13 && text.charCodeAt(lineEnd + 1) === 10 ? 2 : 1);
     if (!line) continue;
     if (line.charCodeAt(0) === 37) {                                   // '%'
       if (line.indexOf('%%BeginData:') === 0) {
@@ -6505,8 +6509,7 @@ function iwdieAiArtRange(text, from, to, inDef) {
           continue;
         }
         if (inner === 'X+') { if (--instArt === 0) { last = stack.pop() || last; inst = null; } continue; }
-        // a line of local art may carry the next one glued on: "%_1 w%_935.03 423.98 m"
-        if (instArt > 0) line = inner.replace(/%_/g, ' '); else continue;
+        if (instArt > 0) line = inner; else continue;
       } else continue;
     }
     if (inSym) continue;
@@ -6542,9 +6545,6 @@ function iwdieAiArtRange(text, from, to, inDef) {
     var toks = trimmed.match(tokRe) || [], ops = [];
     for (var ti = 0; ti < toks.length; ti++) {
       var t = toks[ti], c0 = t.charAt(0);
-      // an operator with the next number glued on ("4 w3034 -1246 m", "[]0 d0 XR"): the two apart
-      var glued = c0 !== '(' && c0 !== '[' && c0 !== '/' && !num.test(t) ? /^([A-Za-z*=+]+)(-?(?:\d|\.\d).*)$/.exec(t) : null;
-      if (glued) { toks.splice(ti + 1, 0, glued[2]); t = glued[1]; c0 = t.charAt(0); }
       if (num.test(t)) { ops.push(parseFloat(t)); continue; }
       if (c0 === '[') { ops.push(t.slice(1, -1).trim().split(/\s+/).filter(function (v) { return num.test(v); }).map(parseFloat)); continue; }
       if (c0 === '(') { ops.push({ s: t.slice(1, -1) }); continue; }
