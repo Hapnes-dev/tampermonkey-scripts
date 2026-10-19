@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.65.1
+// @version      1.66.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9602,7 +9602,8 @@
             const id = String(unitId);
             const listed = () => [...ui.units.options].some(o => o.value === id);
             if (!listed()) await loadUnits();
-            if (!listed()) throw new Error('No unit ' + id + ' in the plant database — __modpoll.devices() lists them');
+            if (!listed()) throw new Error('No unit ' + id + ' in the plant database — __modpoll.devices() lists them, ' +
+                                           'and so does modpoll_status over the Claude bridge');
             ui.units.value = id;
             applyUnit(id);
             return { form: readForm(), command: ui.cmd.value };
@@ -9854,7 +9855,17 @@
      *
      * Read-only, like the rest of the console: setForm is handed a table, a start and a count, and nothing else.
      */
-    const BRIDGE = { port: 47921, protocol: 1, session: null, stop: false, backoff: 1000 };
+    const BRIDGE = {
+        port: 47921, protocol: 1, session: null, stop: false, backoff: 1000,
+        /*
+         * One id for as long as this tab lives. The server uses it to tell a reconnect from a different tab taking
+         * over: a reconnect keeps whatever Claude has already asked for, where a takeover fails it. Without this,
+         * every re-attach threw away work in flight and reported it as "another tab attached" with one tab open.
+         */
+        client: (self.crypto && self.crypto.randomUUID)
+            ? self.crypto.randomUUID()
+            : String(Date.now()) + Math.random().toString(36).slice(2),
+    };
     const BRIDGE_TABLE = { coil: '0', discrete: '1', input: '3', hold: '4' };   // modpoll -t, by Modicon prefix
 
     /*
@@ -9889,7 +9900,12 @@
         });
     }
 
-    /** One register, one pass. Returns its value, or null when the device refused it. */
+    /**
+     * One register, one pass. Returns { value, name }, or null when the device refused it.
+     *
+     * The name comes off the same grid row the value does, so reporting it costs no extra read and no sixth console
+     * method: the plant's own name for a register is what makes a scan readable.
+     */
     async function bridgeReadOne(table, ref) {
         api.setForm({ table: BRIDGE_TABLE[table], start: ref, count: 1 });
         const st = await api.run();
@@ -9897,7 +9913,7 @@
         const last = String((((st && st.log) || []).slice(-1)[0]) || '');
         if (/refuses/i.test(last) || !row) return null;
         const v = (row.value !== undefined && row.value !== null) ? row.value : row.raw;
-        return (v === undefined) ? null : v;
+        return (v === undefined) ? null : { value: v, name: row.name || null };
     }
 
     /**
@@ -9912,17 +9928,37 @@
         // to come first would check a register the caller never named.
         const ctlTable = controlTable || (targets.length ? targets[0].table : 'input');
         const passes = [];
+        let anyAnswered = false;
+        let aborted = null;
         for (let pass = 0; pass < Math.max(1, repeats || 1); pass++) {
             let controlOk = null;
             if (control !== undefined && control !== null) {
                 controlOk = (await bridgeReadOne(ctlTable, control)) !== null;
             }
+            /*
+             * A refusal costs about 630 ms, so a device that is simply not reachable turns a 55-point list over three
+             * passes into two minutes spent proving nothing. When the control has refused and not one register has
+             * answered yet, more reading cannot change the answer - stop and say why.
+             */
+            if (controlOk === false && !anyAnswered && pass > 0) {
+                aborted = `stopped after ${pass} pass(es): the control register refused and nothing else answered either`;
+                break;
+            }
+            let refusedRunning = 0;
             for (const t of targets) {
-                const v = await bridgeReadOne(t.table, t.ref);
-                seen.get(t.table + '|' + t.ref).values.push(v);
+                const got = await bridgeReadOne(t.table, t.ref);
+                const row = seen.get(t.table + '|' + t.ref);
+                row.values.push(got ? got.value : null);
+                if (got) { anyAnswered = true; refusedRunning = 0; if (!row.label && got.name) row.label = got.name; }
+                else refusedRunning++;
+                if (controlOk === false && !anyAnswered && refusedRunning >= 5) {
+                    aborted = 'stopped on the first pass: the control register refused and so did the first five read after it';
+                    break;
+                }
             }
             // Not "pass": SECRET_KEY matches a bare pass as a password, so every number here came back [redacted].
             passes.push({ round: pass + 1, controlOk });
+            if (aborted) break;
         }
         const rows = [...seen.values()].map(r => {
             const got = r.values.filter(v => v !== null);
@@ -9934,14 +9970,21 @@
             };
         });
         const busAlive = passes.some(p => p.controlOk !== false);
+        const always = rows.filter(r => r.verdict === 'always');
+        /*
+         * never and sometimes carry the full row; always is the uninteresting case, so it goes out as a count and a
+         * list of references. A whole `rows` copy alongside them repeated every row a second time, which roughly
+         * doubled the answer for a 55-point verify without adding anything to it.
+         */
         return {
             unit, passes,
             bus: control === undefined || control === null ? 'no control register given'
                 : (busAlive ? 'control answered at least once' : 'CONTROL NEVER ANSWERED - treat every "never" below as unproven'),
+            aborted,
             never: rows.filter(r => r.verdict === 'never'),
             sometimes: rows.filter(r => r.verdict === 'sometimes'),
-            always: rows.filter(r => r.verdict === 'always').length,
-            rows,
+            always: always.length,
+            always_refs: always.map(r => r.ref),
         };
     }
 
@@ -9997,12 +10040,14 @@
                 if (!BRIDGE.session) {
                     const hello = await bridgeHttp('GET', '/bridge/hello', undefined, 4000);
                     if (!hello || hello.protocol !== BRIDGE.protocol) throw new Error('protocol mismatch');
-                    const at = await bridgeHttp('POST', '/bridge/attach', { plant: bridgePlantId() }, 8000);
+                    const at = await bridgeHttp('POST', '/bridge/attach',
+                                                { plant: bridgePlantId(), client: BRIDGE.client }, 8000);
                     BRIDGE.session = at.session;
                     BRIDGE.backoff = 1000;
                     console.info('[Modpoll Console] attached to the Claude bridge on 127.0.0.1:' + BRIDGE.port);
                 }
                 const next = await bridgeHttp('GET', '/bridge/next', undefined, 40000);
+                BRIDGE.backoff = 1000;                                  // the link works; forget any earlier trouble
                 if (!next || !next.cmd) continue;                       // idle poll came back empty; ask again
                 let payload;
                 try {
@@ -10012,9 +10057,19 @@
                 }
                 await bridgeHttp('POST', '/bridge/result', payload, 20000);
             } catch (e) {
-                // The server not being there is the normal case, not a fault: it only runs when Claude is working.
-                BRIDGE.session = null;
-                await sleep(BRIDGE.backoff);
+                /*
+                 * The server not being there is the normal case, not a fault: it only runs when Claude is working.
+                 *
+                 * Only give up the session when the server says it is gone. Re-attaching on any error at all is what
+                 * turned one stale poll into a cascade: the re-attach displaced this tab's own session, which made
+                 * the next poll 409, which re-attached again - four times in one second, with a single tab open, and
+                 * every command in flight failed meanwhile with "another tab attached". A poll that was merely
+                 * replaced or timed out is retried on the same session instead.
+                 */
+                if (/no such session|another tab attached|protocol mismatch/i.test(String(e.message || ''))) {
+                    BRIDGE.session = null;
+                }
+                await sleep(BRIDGE.backoff + Math.floor(Math.random() * 400));   // jitter: two tabs must not lock-step
                 BRIDGE.backoff = Math.min(30000, BRIDGE.backoff * 2);
             }
         }

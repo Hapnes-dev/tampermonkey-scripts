@@ -70,10 +70,21 @@ function pump() {
   reply(res, 200, { cmd: { id: cmd.id, name: cmd.name, args: cmd.args } });
 }
 
-function detach(why) {
+/**
+ * Let go of the attached page. `keepWork` is the difference between the same tab reconnecting and a different tab
+ * taking over: a reconnect loses nothing, because a command that was handed over never produced a result and can
+ * simply go out again. Killing the queue on every attach is what made a single 409 cascade into a run of failures
+ * reported as "another tab attached" when only one tab was ever open.
+ */
+function detach(why, { keepWork = false } = {}) {
   if (!page) return;
   if (page.waiting) { reply(page.waiting, 409, { error: why }); page.waiting = null; clearTimeout(page.waitTimer); }
   page = null;
+  if (keepWork) {
+    for (const cmd of [...sent.values()].reverse()) queue.unshift(cmd);
+    sent.clear();
+    return;
+  }
   for (const cmd of [...queue, ...sent.values()]) {
     clearTimeout(cmd.timer);
     cmd.reject(new Error('the sys_tools tab went away: ' + why));
@@ -146,8 +157,14 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/bridge/attach') {
     const body = await readBody(req);
-    if (page) { takenOver.push(page.session); detach(TAKEN); }
-    page = { session: crypto.randomUUID(), waiting: null, waitTimer: null, plant: body.plant || null };
+    // A tab keeps one client id for its lifetime, so the same tab coming back is a reconnect rather than a takeover.
+    const client = body.client ? String(body.client) : null;
+    const reconnect = !!(page && client && page.client === client);
+    if (page) {
+      if (!reconnect) takenOver.push(page.session);
+      detach(reconnect ? 'the same tab reconnected' : TAKEN, { keepWork: reconnect });
+    }
+    page = { session: crypto.randomUUID(), client, waiting: null, waitTimer: null, plant: body.plant || null };
     reply(res, 200, { session: page.session, protocol: PROTOCOL });
     return;
   }
@@ -200,8 +217,12 @@ server.on('error', (e) => {
   // and keep saying it: every tool call now fails with this reason rather than a misleading one.
   listening = false;
   listenError = e.code === 'EADDRINUSE'
-    ? `Port ${PORT} is already in use, so this instance has no bridge. Another modpoll-bridge is probably already ` +
-      'running - use that one, or stop it and restart this. (MODPOLL_BRIDGE_PORT moves this one.)'
+    ? `Port ${PORT} is already in use, so this instance has no bridge. Usually that is a modpoll-bridge orphaned by ` +
+      'an earlier Claude Code session: it still holds the port and the sys_tools tab still talks to it, so this ' +
+      'session has no bridge at all while the browser looks perfectly attached. List them with\n' +
+      "  powershell \"Get-CimInstance Win32_Process -Filter \\\"Name='node.exe'\\\" | ? { $_.CommandLine -like " +
+      "'*modpoll-mcp*' } | select ProcessId,CreationDate\"\n" +
+      'and stop the older one, then restart Claude Code. (MODPOLL_BRIDGE_PORT moves this instance instead.)'
     : `The bridge could not listen on ${PORT}: ${e.message}`;
   process.stderr.write(listenError + '\n');
 });
@@ -262,6 +283,10 @@ const TOOLS = [
         count: { type: 'integer', default: 1, description: 'How many, read one at a time.' },
         repeats: { type: 'integer', default: 1, description: 'Passes over the range. 3 to 5 settles a flaky bus.' },
         control: { type: 'integer', description: 'A printed reference known to answer, read once per pass as a control.' },
+        control_table: {
+          type: 'string', enum: ['coil', 'discrete', 'input', 'hold'],
+          description: 'Which table the control lives in. Defaults to the table being read.',
+        },
         timeout_ms: { type: 'integer', default: 240000 },
       },
     },
@@ -303,6 +328,11 @@ const TOOLS = [
         start: { type: 'integer', description: 'First printed reference.' },
         end: { type: 'integer', description: 'Last printed reference, inclusive.' },
         repeats: { type: 'integer', default: 2 },
+        control: { type: 'integer', description: 'A printed reference known to answer, read once per pass as a control.' },
+        control_table: {
+          type: 'string', enum: ['coil', 'discrete', 'input', 'hold'],
+          description: 'Which table the control lives in. Defaults to the table being scanned.',
+        },
         timeout_ms: { type: 'integer', default: 900000 },
       },
     },
@@ -351,7 +381,41 @@ async function toolboxSql(path, body, key) {
   return { rows: first.data || [], row_count: first.row_count, success: out.success, request_id: out.request_id };
 }
 
+/**
+ * Check the call against the tool's own inputSchema before any of it reaches the bus.
+ *
+ * Nothing enforced this before, and the failure it allows is the worst kind here: a call naming an argument the tool
+ * does not have - `refs` instead of `start` and `count` - ran anyway, read a register reference of NaN, and came
+ * back with a confident "never answered" verdict for registers nobody had asked about. A wrong answer about which
+ * registers a controller holds is worse than no answer, so a malformed call has to fail loudly instead.
+ */
+function checkArgs(tool, args) {
+  const props = (tool.inputSchema && tool.inputSchema.properties) || {};
+  const required = (tool.inputSchema && tool.inputSchema.required) || [];
+  const known = Object.keys(props);
+  for (const k of Object.keys(args || {})) {
+    if (!known.includes(k)) throw new Error(`${tool.name} has no argument "${k}". It takes: ${known.join(', ')}.`);
+  }
+  for (const k of required) {
+    if (args[k] === undefined || args[k] === null) {
+      throw new Error(`${tool.name} needs "${k}": ${(props[k] || {}).description || 'see the tool schema'}`);
+    }
+  }
+  for (const [k, v] of Object.entries(args || {})) {
+    const p = props[k] || {};
+    if (v === undefined || v === null) continue;
+    if (p.type === 'integer' && !Number.isInteger(v)) throw new Error(`"${k}" must be a whole number, not ${JSON.stringify(v)}.`);
+    if (p.type === 'string' && typeof v !== 'string') throw new Error(`"${k}" must be a string, not ${JSON.stringify(v)}.`);
+    if (p.type === 'object' && typeof v !== 'object') throw new Error(`"${k}" must be an object, not ${JSON.stringify(v)}.`);
+    if (p.enum && !p.enum.includes(v)) throw new Error(`"${k}" must be one of ${p.enum.join(', ')}, not ${JSON.stringify(v)}.`);
+  }
+}
+
 async function callTool(name, args) {
+  const tool = TOOLS.find((t) => t.name === name);
+  if (!tool) throw new Error('no such tool: ' + name);
+  checkArgs(tool, args || {});
+
   if (name === 'toolbox_plant_sql') {
     if (!args.plant_id) throw new Error('plant_id is required; build it from the plant being worked on, never a constant');
     return toolboxSql('/plant-sql/', { plant_id: String(args.plant_id), sql_command: args.sql },
