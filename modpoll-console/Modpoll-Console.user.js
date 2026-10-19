@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.66.1
+// @version      1.67.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9916,6 +9916,46 @@
         return (v === undefined) ? null : { value: v, name: row.name || null };
     }
 
+    /** modpoll takes -c up to 99, so a block never asks for more than that in one go. */
+    const BRIDGE_BLOCK_MAX = 99;
+
+    /**
+     * One modpoll run over a consecutive range. Returns one entry per register, or null when the device refused the
+     * block as a whole - which it does if any single register in the range is illegal, and which is exactly why the
+     * caller has to fall back to reading them one at a time rather than condemn the whole range.
+     */
+    async function bridgeReadBlock(table, start, count) {
+        api.setForm({ table: BRIDGE_TABLE[table], start, count });
+        const st = await api.run();
+        const last = String((((st && st.log) || []).slice(-1)[0]) || '');
+        if (/refuses/i.test(last)) return null;
+        const rows = ((st && st.grid && st.grid.rows) || []);
+        if (rows.length !== count) return null;          // a short answer is not an answer about the whole range
+        return rows.map(row => {
+            const v = (row.value !== undefined && row.value !== null) ? row.value : row.raw;
+            return (v === undefined) ? null : { value: v, name: row.name || null };
+        });
+    }
+
+    /** The targets as consecutive runs within a table, which is what can be asked for in one read. */
+    function bridgeRuns(targets) {
+        const byTable = new Map();
+        for (const t of targets) {
+            if (!byTable.has(t.table)) byTable.set(t.table, []);
+            byTable.get(t.table).push(t.ref);
+        }
+        const runs = [];
+        for (const [table, raw] of byTable) {
+            let run = [];
+            for (const ref of [...new Set(raw)].sort((a, b) => a - b)) {
+                if (run.length && ref !== run[run.length - 1] + 1) { runs.push({ table, refs: run }); run = []; }
+                run.push(ref);
+            }
+            if (run.length) runs.push({ table, refs: run });
+        }
+        return runs;
+    }
+
     /**
      * Read a set of (table, ref) over several passes and say what each one did. The distinction the caller needs is
      * never answered / sometimes answered / always answered, plus whether the bus itself was alive: a pass where the
@@ -9927,6 +9967,7 @@
         // A verify sweeps four tables at once, so the control needs its own: reading it in whichever table happened
         // to come first would check a register the caller never named.
         const ctlTable = controlTable || (targets.length ? targets[0].table : 'input');
+        const runs = bridgeRuns(targets);
         const passes = [];
         let anyAnswered = false;
         let aborted = null;
@@ -9947,16 +9988,38 @@
                 break;
             }
             let refusedRunning = 0;
-            for (const t of targets) {
-                const got = await bridgeReadOne(t.table, t.ref);
-                const row = seen.get(t.table + '|' + t.ref);
+            const record = (table, ref, got) => {
+                const row = seen.get(table + '|' + ref);
+                if (!row) return;                        // a block can span a gap the caller never named
                 row.values.push(got ? got.value : null);
-                if (got) { anyAnswered = true; refusedRunning = 0; if (!row.label && got.name) row.label = got.name; }
-                else refusedRunning++;
-                if (controlOk === false && !anyAnswered && refusedRunning >= 5) {
-                    aborted = 'stopped during the first round - the control register refused and so did the first five read after it';
-                    break;
+                if (got) { anyAnswered = true; if (!row.label && got.name) row.label = got.name; }
+            };
+            /*
+             * One read per register made a 40-register scan forty modpoll runs, and a 55-point list over three passes
+             * a hundred and sixty-five. A consecutive run goes in one read instead; a device that refuses the block -
+             * which it does if any single register in it is illegal - falls back to one at a time, so a single bad
+             * register still costs only that run rather than condemning the ninety-eight around it.
+             */
+            for (const run of runs) {
+                for (let i = 0; i < run.refs.length && !aborted; i += BRIDGE_BLOCK_MAX) {
+                    const slice = run.refs.slice(i, i + BRIDGE_BLOCK_MAX);
+                    const block = slice.length > 1 ? await bridgeReadBlock(run.table, slice[0], slice.length) : null;
+                    if (block) {
+                        slice.forEach((ref, n) => record(run.table, ref, block[n]));
+                        refusedRunning = 0;
+                        continue;
+                    }
+                    for (const ref of slice) {
+                        const got = await bridgeReadOne(run.table, ref);
+                        record(run.table, ref, got);
+                        if (got) refusedRunning = 0; else refusedRunning++;
+                        if (controlOk === false && !anyAnswered && refusedRunning >= 5) {
+                            aborted = 'stopped during the first round - the control register refused and so did the first five read after it';
+                            break;
+                        }
+                    }
                 }
+                if (aborted) break;
             }
             // Not "pass": SECRET_KEY matches a bare pass as a password, so every number here came back [redacted].
             passes.push({ round: pass + 1, controlOk });
