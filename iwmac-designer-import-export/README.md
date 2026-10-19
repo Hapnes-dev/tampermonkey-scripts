@@ -498,6 +498,45 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### VectorCraft by itself (v1.87.0, server 1.7.0)
+
+Opened straight at `https://hapnes-dev.github.io/iwmac-vector/app/`, with no Designer behind it, the editor used to do nothing
+but take a dropped `.ai`: every part of the script hung on a job the Designer's *Edit in VectorCraft…* makes. Now a start
+card offers a drawing of its own:
+
+- **New Maskin panel** and **New Oversikt panel**: an empty 1400 × 750 panel in the Designer's panel colour.
+- **Open IWMAC JSON…**: a panel file - an Export JSON, or one Copilot wrote - opened as Insert takes it:
+  - its drawing (the one its PNG keeps, or its `image_svg` with the house symbols it names drawn), else its picture;
+  - its objects as placeholders over it;
+  - the plant's rows its `overview` block brings, so new objects link as in the Designer.
+
+Each drawing is a job as an edit's is. It is kept in a slot of its own (`iwdie.vc.solo.<id>`, the last six for a day) that
+no Designer tab reads, and opened under `#solo=<id>`. Then:
+
+- The IWMAC menu, the components in Libraries, the plant folder and Claude work on it as on any edit.
+- Claude's `iwmac_status` says `mode: by itself`.
+- **Ctrl+S saves it as a panel file** in Downloads instead of syncing it. *Insert JSON… → Replace* in the Designer then
+  puts it on the panel, its drawing made the panel's picture as a sync makes it.
+  - The file's objects keep their names and fields. Each one moves where its placeholder went, and takes a new text or a
+    new link where the placeholder did.
+  - One whose placeholder was deleted is taken out, under the same hold rule as a sync.
+  - Every other placeholder becomes a new object, named on after the file's.
+- Auto-sync, the Designer's Ctrl+S, the tab note and the hand-over of *Open IWMAC JSON…* stay off.
+- The only keys written are its own slots.
+
+Checked:
+
+- **In a local copy of the hosted app, the userscript run behind a Tampermonkey shim:**
+  - the card;
+  - a new Maskin, then Ctrl+S: a clean file;
+  - plant 3157's 360.001 Export JSON, then Ctrl+S: all 91 objects back unchanged, name, place, tag and binding.
+- **In the stub host**, both files went in with *Insert JSON… → Replace*. The 3157 one inserted 91 objects, with the
+  background drawn from the file's drawing.
+- **The Designer's own edit** was run again with *Vectorize image* and Ctrl+S: synced, 77 placed.
+- **Kit tests:** `test-vectorcraft-solo.js`.
+
+Not run in the live Designer.
+
 ### The converter ends a line where Illustrator does (v1.86.1)
 
 A follow-up to 1.86.0 suspected the library import's reader (`iwdieAiParse`: Libraries, a .ai's components) of losing

@@ -59,7 +59,7 @@ join, which object shows which parameter, and the binding grammar.
 
 | Tool | Does |
 |---|---|
-| `iwmac_status` | Whether a tab is attached, and its plant, panel, library and units |
+| `iwmac_status` | Whether a tab is attached, and its plant, panel, library and units. `mode: by itself` (server 1.7.0, userscript 1.87.0): VectorCraft was opened by itself, with no Designer behind it - the user's Ctrl+S saves a panel file for *Insert JSON… → Replace*, and its rows come only from an Export JSON opened on the start card |
 | `iwmac_scene` | The drawing as rows (`cid, kind, name, x, y, w, h, note`), filtered by layer, kind, area or words; `facts: true` adds the drawing's own layout: rows of like symbols and their spacing, the information column, circuits, value offsets, text style |
 | `iwmac_preview` | A JPEG of the drawing, or of a box of it |
 | `iwmac_find` | Every component VectorCraft offers, with the template it comes from, sizes and ports: the house symbols, pipe pieces and colour samples (`all: true` adds what an IWMAC object shows). `set: "Oversikt"` keeps the Oversikt template's floor plan kit (server 1.4.0, userscript 1.72.0): its cases in light blue for cooling (`KjølDisk`, `KjølGavl`, `KjølSirkel`, `KjølRom` …) and dark blue for freezer (`FrysDisk` …), and `Inngang`, `Handlevogn`, `Kasse`, `SelvbetjentKasse`, `Kondensator2`–`4`, `Plugg`, `Nål`; and (server 1.5.0, userscript 1.75.0) its 28 arrangements, marked `[arrangement]`: whole islands, rows and checkouts (`KjølØy3Stående`, `FrysØyRund`, `KjølHjørnerad`, `Kassepar` …); `set: "Maskin"` the machine room's. The IWMAC menu's objects. The plant's parameters, with the exact binding text; `what: "cases"` the case controllers' value, alarm, cooling and defrost rows (server 1.6.0) |

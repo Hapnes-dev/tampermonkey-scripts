@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.86.1
+// @version      1.87.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.86.1';
+var IWDIE_VERSION = '1.87.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8481,6 +8481,10 @@ var IWDIE_VC_URL = 'https://hapnes-dev.github.io/iwmac-vector/app/';
 var IWDIE_VC_RECOVERY = 'vectorcraft-recovery/';
 /** Where the editor's Open IWMAC JSON… hands a panel file to the Designer's tab of its edit (v1.65.0). */
 var IWDIE_VC_INSERT_KEY = 'iwdie.vc.insert';
+/** Where VectorCraft opened by itself keeps the drawings it opens (v1.87.0): each in a slot of its own, under this name
+ *  '.' its id, and the list of them under the name alone - keys no Designer tab reads, so nothing reaches a panel but the
+ *  panel file its Ctrl+S saves. */
+var IWDIE_VC_SOLO_KEY = 'iwdie.vc.solo';
 /** Private PNG chunk with the VectorCraft SVG: ancillary, private, safe to copy. */
 var IWDIE_VC_CHUNK = 'iwVc';
 /** Where the component library is kept (v1.36.0): Tampermonkey's storage, which the Designer and
@@ -9998,6 +10002,66 @@ function iwdieNamedOn(objects, existing) {
     c.name = 'object_' + (top + 1 + i);
     return c;
   });
+}
+
+
+/** A panel file's plant (v1.87.0): an Export JSON's overview block as an edit's params - {units: [[unit_id, name, rows]],
+ *  rows: {unit_id: [[alias, driver_id, group, type, rw, eng]]}, failed} - so a drawing opened by itself in VectorCraft binds
+ *  to the plant's rows as an edit begun in the Designer does. null when it brings no rows. */
+function iwdieVcSoloParams(ov) {
+  var par = ov && typeof ov === 'object' ? ov.parameters : null, units = par && Array.isArray(par.units) ? par.units : [];
+  var cols = par && Array.isArray(par.cols) ? par.cols : ['alias_text', 'rw', 'type', 'eng_unit', 'driver_id'];
+  var out = { units: [], rows: {}, failed: [] };
+  units.forEach(function (u) {
+    if (!u || u.unit_id == null || u.unit_id === '') return;
+    var id = String(u.unit_id), rows = [];
+    Object.keys(u.groups || {}).forEach(function (g) {
+      (Array.isArray(u.groups[g]) ? u.groups[g] : []).forEach(function (r) {
+        if (!Array.isArray(r)) return;
+        var get = function (k) { var i = cols.indexOf(k); return i >= 0 && r[i] != null ? String(r[i]) : ''; };
+        if (get('driver_id')) rows.push([get('alias_text'), get('driver_id'), g, get('type'), get('rw'), get('eng_unit')]);
+      });
+    });
+    out.units.push([id, String(u.name || '') || id, rows.length]);
+    out.rows[id] = rows;
+  });
+  return out.units.length ? out : null;
+}
+
+/** A drawing saved in VectorCraft by itself (v1.87.0), as the objects of the panel file Ctrl+S writes: `found`, its
+ *  placeholders (vcPlaceholders, each bound one's link resolved), laid over `objects`, the file's own - none for a new
+ *  panel - of which `sent` (their names) went into the drawing as placeholders. One of the file's moves, takes its new
+ *  text or its new link where its placeholder did; one whose placeholder is gone is taken out, unless the layer of them
+ *  was not in the save (`layer` false) or more than half of them went at once, as a sync holds them; one that was never
+ *  a placeholder stays as it is. Every other placeholder becomes a new object, named on after the file's.
+ *  -> {objects, moved, added, removed, held, holdWhy, linked} */
+function iwdieVcSoloObjects(found, objects, layer, sent) {
+  var have = (objects || []).filter(function (o) { return o && typeof o === 'object'; });
+  var names = Array.isArray(sent) ? sent : have.map(function (o) { return o.name; });
+  var copy = function (o) { var c = {}; Object.keys(o).forEach(function (k) { c[k] = o[k]; }); return c; };
+  var out = have.map(copy), byName = {};
+  out.forEach(function (o) { if (o.name) byName[o.name] = o; });
+  var ch = iwdieVcObjectChanges(found, have, names, []), linked = 0;
+  ch.moves.forEach(function (m) {
+    var o = byName[m.name];
+    if (!o) return;
+    o.posLeft = m.x; o.posTop = m.y; o.posWidth = m.w; o.posHeight = m.h;
+    if (m.text !== m.was.text) o.tag_text = m.text;
+    if (m.link) {
+      o.linked = 'true'; o.link_name = 'link_name'; o.driver_id = String(m.link.driver_id); o.unit_id = String(m.link.unit_id);
+      o.alias_text = String(m.link.alias_text); o.sub_group = String(m.link.sub_group || ''); o.link_tag = String(m.link.link_tag || '');
+      linked++;
+    }
+  });
+  var gone = ch.missing.concat(ch.dropped), holdWhy = '';
+  if (gone.length && !layer) holdWhy = 'the layer IWMAC-objekter was not in the save - hidden?';
+  else if (gone.length > 10 && gone.length > names.length / 2) holdWhy = 'more than half of them at once';
+  if (gone.length && !holdWhy) out = out.filter(function (o) { return gone.indexOf(o.name) < 0; });
+  var made = iwdieVcDesignerObjects(ch.fresh, out).objects;
+  linked += made.filter(function (o) { return o.linked === 'true'; }).length;
+  var added = iwdieNamedOn(made, have);
+  return { objects: out.concat(added), moved: ch.moves.length, added: added.length, removed: holdWhy ? 0 : gone.length,
+    held: holdWhy ? gone.length : 0, holdWhy: holdWhy, linked: linked };
 }
 
 /** The placeholders of a saved drawing taken out of it, to become objects: each group whose
@@ -13321,7 +13385,7 @@ function iwdieCbContext(job, size, sizes, libFile, looks) {
   var cat = iwdieVcObjects(looks || null).map(function (o) { return [o.id, o.role, o.w, o.h, o.desc]; });
   return {
     protocol: IWDIE_CB_PROTOCOL, version: IWDIE_VERSION,
-    job: { id: job.id, plant: job.plant || '', panel: job.panel || '', name: job.name || '' }, size: [size.w, size.h],
+    job: { id: job.id, plant: job.plant || '', panel: job.panel || '', name: job.name || '', solo: !!job.solo }, size: [size.w, size.h],
     library: { file: libFile || '', symbols: sizes }, objects: { cols: ['obj_id', 'role', 'w', 'h', 'what'], rows: cat },
     params: job.params || null, ports: IWDIE_CB_PORTS, circuits: IWDIE_CB_CIRCUITS.map(function (c) { return [c[0], c[1]]; })
   };
@@ -21031,6 +21095,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') return;
       var m = /[#&]job=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null;
       try { job = GM_getValue('iwdie.vc.job', null); } catch (e) { job = null; }
+      // VectorCraft opened by itself (v1.87.0), with no Designer behind it: the drawing the start card opened, kept under
+      // #solo=<id> - else the card, to open one
+      var soloJob = vcSoloJob(), solo = !!soloJob;
+      if (solo) { job = soloJob; m = [location.hash, soloJob.id]; }
+      else if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') { try { vcSoloCard(); } catch (e) {} }
       if (!m || !job || job.id !== m[1] || typeof job.svg !== 'string') { try { vcLooseAiDrops(); } catch (e) {} return; }
       var esc2 = iwdieEscHtml, lib = libForVc(), busy = false;
       // the panel's .ai, chosen in the Designer's tab instead of a trace of its picture (v1.51.0): out of
@@ -21075,6 +21144,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         { act: 'aiout', label: 'Save .ai for Illustrator', title: 'The drawing as it stands here, as an Illustrator file of its own layers - Bakgrunn locked, every text Arial type in its place, the IWMAC objects on top as the Designer shows them, locked - as Background → Illustrator writes it. VectorCraft’s own Save As › .ai keeps none of the layers and breaks the letters of a font it lacks. Nothing is synced.' },
         { act: 'trace', label: 'Image Trace copy', title: 'A copy whose picture is enlarged and set to its own flat colours, so Image Trace makes clean shapes of it' }]);
       var note = ui.note;
+      // by itself (v1.87.0): Ctrl+S saves a panel file, there being no Designer to sync to
+      if (solo) { vcSoloBanner(ui, job); note = vcSoloSay(note); }
       // each row's how and why, on its label and its text alike
       var tip = function (cls, text) { var v = ui.el.querySelector('.' + cls); v.title = text; v.previousElementSibling.title = text; };
       tip('iwdie-vcb-c', 'The house components are always in Libraries and the IWMAC menu, built into the script: the Maskin template’s own and the ' +
@@ -21465,6 +21536,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
           ok = !!j && typeof j === 'object' && (!!j.panel || Array.isArray(j.single_objects));
           if (!ok) { note('<b>' + esc2(f.name) + '</b> is no IWMAC panel file.', true); return; }
+          // by itself (v1.87.0): no Designer tab to hand it to - it opens here as a drawing of its own
+          if (solo) { vcSoloOpen(f.name, j, note); return; }
           try { GM_setValue(IWDIE_VC_INSERT_KEY, { job: job.id, name: f.name, text: text, at: Date.now() }); }
           catch (e) { note('It could not be handed to the Designer: ' + esc2(String((e && e.message) || e)), true); return; }
           note('Handing <b>' + esc2(f.name) + '</b> to the Designer…', false, true);
@@ -21522,6 +21595,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // no tab of the edit is open, instead of sending to none
       var tabKey = 'iwdie.vc.tab.' + job.id, tabSelf = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       var tabNote = function (open) {
+        if (solo) return;
         try {
           var m = GM_getValue(tabKey, null);
           m = m && typeof m === 'object' ? m : {};
@@ -21674,6 +21748,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // kept for the next edits; paused when no Designer tab answers, until the next Ctrl+S.
       var auto = false, lastInput = 0, autoNext = 0;
       try { auto = !!GM_getValue(IWDIE_VC_AUTO_KEY, false); } catch (e) { auto = false; }
+      // by itself (v1.87.0): saved on Ctrl+S only - by itself, each change would be a file in Downloads
+      if (solo) auto = false;
       tip('iwdie-vcb-y', 'By itself: a moment after each change - nothing pressed, dragged or typed for ' + (IWDIE_VC_AUTO_IDLE / 1000) + ' s - the drawing is ' +
         'synced as Ctrl+S syncs it, its PNG uploaded each time. On or off is kept for the next edits. Either way the panel is kept by the Designer’s own Save.');
       var syncLine = function () {
@@ -21682,6 +21758,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           : 'on <b>Ctrl+S</b> · <button class="iwdie-vcb-l" data-act="auto">By itself</button>';
       };
       syncLine();
+      if (solo) ui.el.querySelector('.iwdie-vcb-y').innerHTML = 'on <b>Ctrl+S</b>, as a panel file in Downloads';
       ui.on('auto', function () {
         auto = !auto;
         autoPaused = false;
@@ -21730,6 +21807,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (/vectorcraft:document/.test(text)) saves.editing = true;
             if (want) want(text, saveName);
           }, function () { if (want) want(null, saveName); });
+          return undefined;
+        }
+        if (b && solo && /\.svg$/i.test(a.download)) {
+          // by itself (v1.87.0): the drawing saved as a panel file, to Downloads - nothing goes to a Designer tab
+          saves.caught++;
+          b.text().then(function (text) {
+            if (!/<svg\b/i.test(text)) throw new Error('the saved file is not an SVG');
+            if (/vectorcraft:document/.test(text)) { saves.editing = true; text = iwdieVcStripEditing(text); }
+            note('Writing the panel file…');
+            var file = vcSoloSave(job, text);
+            download(new Blob([file.text], { type: 'application/json' }), file.name);
+            note(file.said, file.bad, true);
+          }).then(null, function (e) { note('Not saved: ' + esc2(String((e && e.message) || e)), true, true); });
           return undefined;
         }
         if (b && /\.svg$/i.test(a.download)) {
@@ -21854,6 +21944,220 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           bringIn();
         });
       }, note);
+    }
+
+    /* ---------- VectorCraft by itself (v1.87.0) ----------
+       Opened straight at its address, with no Designer behind it, the editor offers a drawing of its own: a new Maskin or
+       Oversikt panel, or a panel file - an Export JSON, or one Copilot wrote. Each is a job as an edit begun in the
+       Designer is - its drawing, the panel's objects on it as placeholders, the plant's rows when the file brings them -
+       kept in a slot of its own that no Designer tab reads, and opened under #solo=<id>. The IWMAC menu, the components
+       and Claude work on it as on any edit. Ctrl+S saves it as a panel file instead of syncing it; Insert JSON… → Replace
+       in the Designer then puts it on the panel. */
+    /** This tab's drawing by itself, by its #solo=<id>: the job kept for it, or null. */
+    function vcSoloJob() {
+      var m = /[#&]solo=([A-Za-z0-9_-]+)/.exec(location.hash || ''), job = null;
+      if (!m) return null;
+      try { job = GM_getValue(IWDIE_VC_SOLO_KEY + '.' + m[1], null); } catch (e) { job = null; }
+      return job && job.id === m[1] && job.solo && typeof job.svg === 'string' ? job : null;
+    }
+
+    /** A job by itself from its drawing (`o`: panel, plant, params, doc - the file's panel without its pictures -, sent,
+     *  authored, file): its placeholders marked as its own, as an edit's are. */
+    function vcSoloJobOf(svg, o) {
+      var id = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      var safe = String(o.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
+      return { id: id, svg: iwdieVcTagJob(svg, id), name: 'iwmac-' + (o.plant || 'plant') + '-' + safe + '-' + id + '.svg', panel: o.panel || '',
+        plant: o.plant || '', at: Date.now(), version: IWDIE_VERSION, vector: false, authored: !!o.authored, params: o.params || null,
+        solo: true, doc: o.doc || null, sent: o.sent || [], file: o.file || '' };
+    }
+
+    /** A drawing by itself kept, then opened in this tab as it opens an edit: the slots of the last six kept, a day at most. */
+    function vcSoloStart(job) {
+      var list = [], now = Date.now(), keep = [];
+      try { list = GM_getValue(IWDIE_VC_SOLO_KEY, []) || []; } catch (e) { list = []; }
+      (Array.isArray(list) ? list : []).forEach(function (it) {
+        if (!it || !it.id || it.id === job.id) return;
+        if (now - (+it.at || 0) < 864e5 && keep.length < 5) keep.push(it);
+        else { try { GM_deleteValue(IWDIE_VC_SOLO_KEY + '.' + it.id); } catch (e) {} }
+      });
+      GM_setValue(IWDIE_VC_SOLO_KEY + '.' + job.id, job);
+      keep.unshift({ id: job.id, at: now, panel: job.panel, plant: job.plant, file: job.file });
+      GM_setValue(IWDIE_VC_SOLO_KEY, keep);
+      location.replace('#solo=' + job.id);
+      location.reload();
+    }
+
+    /** The start card on VectorCraft opened by itself: a new panel, or a panel file, to draw as an edit is drawn. */
+    function vcSoloCard() {
+      if (typeof GM_setValue !== 'function' || document.querySelector('.iwdie-vcb')) return;
+      var ui = vcBanner('IWMAC · VectorCraft by itself',
+        '<div class="iwdie-vcb-h">A drawing of its own, with no Designer behind it: the IWMAC menu, the house components and Claude ' +
+        'work on it as on an edit. <b>Ctrl+S</b> then saves it as a panel file in Downloads - <b>Insert JSON… → Replace</b> in the ' +
+        'Designer puts it on the panel. From the Designer, <b>Edit in VectorCraft…</b> opens a panel that syncs itself.</div>',
+        [{ act: 'solomaskin', label: 'New Maskin panel', title: 'An empty 1400 × 750 panel, Maskin’s house symbols to draw with' },
+          { act: 'solooversikt', label: 'New Oversikt panel', title: 'An empty 1400 × 750 panel, the Oversikt template’s cases and rooms to draw with' },
+          { act: 'solojson', label: 'Open IWMAC JSON…', title: 'A panel file - an Export JSON, or one Copilot wrote - opened here: its drawing as ' +
+            'layers, its objects as placeholders, and the plant’s rows an Export JSON brings, so new objects link as in the Designer' }]);
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json,application/json';
+      input.style.display = 'none';
+      ui.el.appendChild(input);
+      var start = function (kind) {
+        try { vcSoloNew(kind); } catch (e) { ui.note('It could not be opened: ' + iwdieEscHtml(String((e && e.message) || e)), true, true); }
+      };
+      ui.on('solomaskin', function () { start('maskin'); });
+      ui.on('solooversikt', function () { start('oversikt'); });
+      ui.on('solojson', function () { input.click(); });
+      input.addEventListener('change', function () {
+        var f = input.files && input.files[0];
+        input.value = '';
+        if (!f) return;
+        var fr = new FileReader();
+        fr.onerror = function () { ui.note('<b>' + iwdieEscHtml(f.name) + '</b> could not be read.', true, true); };
+        fr.onload = function () {
+          var j = null;
+          try { j = JSON.parse(String(fr.result || '')); } catch (e) { j = null; }
+          vcSoloOpen(f.name, j, ui.note);
+        };
+        fr.readAsText(f);
+      });
+    }
+
+    /** A new panel by itself: 1400 × 750 in the Designer's panel colour, its layers empty. */
+    function vcSoloNew(kind) {
+      var panel = kind === 'oversikt' ? 'Oversikt' : 'Maskin', looks = null;
+      try { looks = (GM_getValue(IWDIE_VC_LOOKS_KEY, null) || {}).items || null; } catch (e) { looks = null; }
+      var svg = iwdieVcSvg({ width: 1400, height: 750, plate: '#e5e7ea', picture: null, objects: [], looks: looks, title: panel + ' - VectorCraft by itself' });
+      vcSoloStart(vcSoloJobOf(svg, { panel: panel }));
+    }
+
+    /** A panel file opened by itself: its drawing - the one its PNG keeps, its image_svg with the house symbols it names
+     *  drawn, or its picture - with its objects as placeholders over it, and the plant's rows its overview block brings. */
+    function vcSoloOpen(fileName, j, say) {
+      var esc2 = iwdieEscHtml, p = null;
+      if (j && j.format === IWDIE_VC_EDITS_FORMAT) {
+        say('<b>' + esc2(fileName) + '</b> is an edit file: open the panel it is for first, then the edit file with <b>Open IWMAC JSON…</b> on it.', true, true);
+        return;
+      }
+      try { p = j && typeof j === 'object' ? iwdieParsePayload(j) : null; } catch (e) { p = null; }
+      var doc = p && p.doc;
+      if (!doc || typeof doc !== 'object' || !Array.isArray(doc.single_objects)) {
+        say('<b>' + esc2(fileName) + '</b> is no IWMAC panel file.', true, true);
+        return;
+      }
+      var px = function (v, d) { var n = parseFloat(v); return isFinite(n) && n > 0 ? Math.round(n) : d; };
+      var size = { w: px(doc.panel_width, 1400), h: px(doc.panel_height, 750) };
+      var objects = doc.single_objects.filter(function (o) { return o && typeof o === 'object'; });
+      var looks = null;
+      try { looks = (GM_getValue(IWDIE_VC_LOOKS_KEY, null) || {}).items || null; } catch (e) { looks = null; }
+      var params = iwdieVcSoloParams(j.overview);
+      if (params) params.kinds = vcParamKinds(objects);
+      var bg = typeof doc.image_data === 'string' && /^data:image\/(png|jpeg)[;,]/i.test(doc.image_data) ? doc.image_data : '';
+      var drawn = typeof doc.image_svg === 'string' && doc.image_svg && !iwdieKeepsOwnPicture(doc);
+      var title = (doc.panel_name || 'Panel') + (doc.plant_id ? ' - plant ' + doc.plant_id : '');
+      say('Opening <b>' + esc2(fileName) + '</b>…', false, true);
+      // as Insert takes it: the file's drawing with its hidden original back and the symbols it names drawn; else the
+      // drawing its picture keeps, else that picture
+      var parsed = bg ? iwdieParseDataUrl(bg) : null;
+      (drawn ? vcOriginalBack(doc).then(function (svg) {
+        var kept = libForVc();
+        if (iwdieSymRefs(svg).length) svg = iwdieSymExpand(svg, kept ? kept.items : []).svg;
+        return iwdieVcAuthored(svg, size);
+      }) : parsed && parsed.bytes ? vcDocumentOf(parsed.bytes) : Promise.resolve(null)).then(function (svg) {
+        if (svg) return { svg: iwdieVcAddPanelObjects(svg, objects, looks), authored: !!drawn };
+        return { svg: iwdieVcSvg({ width: size.w, height: size.h, plate: '#e5e7ea', picture: bg || null, objects: objects, looks: looks, title: title }), authored: false };
+      }).then(function (got) {
+        var sent = [], re = /\sdata-iwdie-ref="([^"]*)"/g, m;
+        while ((m = re.exec(got.svg))) sent.push(m[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+        var keep = {};
+        Object.keys(doc).forEach(function (k) { if (IWDIE_BLOB_KEYS.indexOf(k) < 0 && k !== 'image_svg') keep[k] = doc[k]; });
+        vcSoloStart(vcSoloJobOf(got.svg, { panel: String(doc.panel_name || 'Panel'), plant: doc.plant_id != null ? String(doc.plant_id) : '',
+          params: params, doc: keep, sent: sent, authored: got.authored, file: fileName }));
+      }).then(null, function (e) {
+        say('<b>' + esc2(fileName) + '</b> could not be opened: ' + esc2(String((e && e.message) || e)), true, true);
+      });
+    }
+
+    /** What the editor says, worded for a drawing by itself: saved as a panel file, not synced. */
+    function vcSoloSay(say) {
+      return function (html, bad, keep) {
+        var s = String(html == null ? '' : html).replace('✓ Ready to sync', '✓ Ready: <b>Ctrl+S</b> saves a panel file')
+          .replace(/^Syncing( by itself)?…$/, 'Saving…').replace(/^Not synced: /, 'Not saved: ')
+          .replace('The first sync answers', 'The first Ctrl+S answers');
+        return say(s, bad, keep);
+      };
+    }
+
+    /** The banner of a drawing by itself: what Ctrl+S does, and the Sync row as a Save row. */
+    function vcSoloBanner(ui, job) {
+      var h = ui.el.querySelector('.iwdie-vcb-h'), t = ui.el.querySelector('.iwdie-vcb-t');
+      if (t) t.innerHTML = 'IWMAC · ' + iwdieEscHtml(job.panel || 'panel') + (job.plant ? ' · plant ' + iwdieEscHtml(job.plant) : '') + ' · by itself';
+      if (h) {
+        h.innerHTML = '<b>Ctrl+S</b> saves the drawing as a panel file in Downloads.';
+        h.title = 'VectorCraft opened by itself, with no Designer behind it: Ctrl+S writes the drawing and its IWMAC objects as one panel file - ' +
+          'Insert JSON… → Replace in the Designer then puts it on the panel. ' + (job.file ? 'It began as ' + job.file + '. ' : '') +
+          'Ctrl+Shift+S is VectorCraft’s own Save As, its file to Downloads.';
+      }
+      var y = ui.el.querySelector('.iwdie-vcb-y');
+      if (y && y.previousElementSibling) y.previousElementSibling.textContent = 'Save';
+    }
+
+    /** The plant's rows of a job, as a binding is read against them (iwdieVcResolveBind). null without rows. */
+    function vcSoloPlant(P) {
+      if (!P || !P.rows) return null;
+      var plant = { units: (P.units || []).map(function (u) { return { unit_id: u[0], name: u[1] }; }), rows: {}, tagged: [] };
+      Object.keys(P.rows).forEach(function (u) { plant.rows[u] = P.rows[u].map(function (r) { return { alias_text: r[0], driver_id: r[1] }; }); });
+      return plant;
+    }
+
+    /** A drawing by itself, saved: the panel file Insert JSON… takes - its drawing as panel.image_svg, without the
+     *  placeholders, the components left around the artboard or the canvas colour; its objects where their placeholders
+     *  are (iwdieVcSoloObjects), new ones linked as their placeholders name the plant's rows. `text`: the SVG VectorCraft
+     *  saved. -> {text, name, said, bad} */
+    function vcSoloSave(job, text) {
+      var esc2 = iwdieEscHtml, sized = /<svg\b[^>]*\sviewBox\s*=\s*"\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(job.svg);
+      var size = sized ? { w: Math.round(+sized[1]), h: Math.round(+sized[2]) } : { w: 1400, h: 750 };
+      var svg = text;
+      try { svg = vcOffBoard(svg, size).svg; } catch (e) {}
+      var ph = vcPlaceholders(svg, size, job.id), plant = vcSoloPlant(job.params), failed = [];
+      ph.found.forEach(function (f) {
+        if (!f || !f.bind || (f.label !== undefined && f.bind === f.label)) return;
+        var r = plant ? iwdieVcResolveBind(iwdieVcParseBind(f.bind), plant) : { error: 'rows', units: [] };
+        if (r.link) f.link = r.link; else failed.push(iwdieVcBindWhy(r, f.bind));
+      });
+      var base = job.doc || { panel_name: job.panel, plant_id: job.plant, containers: [], graphics: [] };
+      var res = iwdieVcSoloObjects(ph.found, base.single_objects || [], ph.layer, job.sent);
+      var panel = {};
+      Object.keys(base).forEach(function (k) { if (k !== 'single_objects' && k !== 'converted') panel[k] = base[k]; });
+      var drawing = iwdieVcAuthored(iwdieVcDropPlate(ph.svg).svg, size);
+      if (!drawing) throw new Error('VectorCraft saved no drawing to keep');
+      panel.panel_name = job.panel || base.panel_name || 'Panel';
+      panel.plant_id = job.plant || (base.plant_id != null ? String(base.plant_id) : '');
+      panel.panel_width = size.w + 'px';
+      panel.panel_height = size.h + 'px';
+      panel.image_svg = drawing;
+      panel.single_objects = res.objects;
+      if (!Array.isArray(panel.containers)) panel.containers = [];
+      if (!Array.isArray(panel.graphics)) panel.graphics = [];
+      var env = iwdieBuildEnvelope(panel, {});
+      env.generator = 'IWDIE v' + IWDIE_VERSION + ', VectorCraft by itself';
+      var out = iwdieStringifyEnvelope(env, 1), chk = null;
+      try { chk = iwdieCheckFile(out, {}); } catch (e) { chk = null; }
+      var name = iwdieBuildExportFilename(panel.plant_id, panel.panel_name, new Date());
+      var did = [res.moved ? res.moved + ' changed' : '', res.added ? res.added + ' added' : '', res.removed ? res.removed + ' taken out' : '',
+        res.linked ? res.linked + ' linked' : ''].filter(Boolean);
+      var wrong = [
+        failed.length ? 'Not linked: ' + esc2(failed.slice(0, 4).join('; ')) + (failed.length > 4 ? '; …' : '') +
+          (plant ? '' : ' - this drawing has no plant rows: open an Export JSON of the plant for them') : '',
+        res.held ? iwdieN(res.held, 'object', 'objects') + ' without a placeholder kept: ' + esc2(res.holdWhy) : '',
+        ph.skipped ? iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' without a size (hidden?) became no object' : '',
+        chk && chk.errors.length ? 'Insert would refuse it: ' + esc2(chk.errors.slice(0, 2).join(' ')) : ''
+      ].filter(Boolean);
+      var said = '✓ <b>' + esc2(name) + '</b> is in Downloads: ' + iwdieN(res.objects.length, 'IWMAC object', 'IWMAC objects') +
+        (did.length ? ' (' + did.join(', ') + ')' : '') + '. In the Designer: <b>Insert JSON… → Replace</b> on the panel puts it there.' +
+        (wrong.length ? '<div class="iwdie-vcb-e">' + wrong.join('<br>') + '</div>' : '');
+      return { text: out, name: name, said: said, bad: !!(chk && chk.errors.length) };
     }
 
     /* ---------- Claude in VectorCraft (v1.64.0): the editor's side ----------
@@ -27990,6 +28294,8 @@ if (typeof module !== 'undefined' && module.exports) {
     svgMarkOptimised: iwdieSvgMarkOptimised,
     optimisedNote: iwdieOptimisedNote,
     namedOn: iwdieNamedOn,
+    vcSoloParams: iwdieVcSoloParams,
+    vcSoloObjects: iwdieVcSoloObjects,
     svgTree: iwdieSvgTree,
     svgTransform: iwdieSvgTransform,
     svgPathSubs: iwdieSvgPathSubs,

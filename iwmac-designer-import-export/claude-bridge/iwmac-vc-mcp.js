@@ -21,7 +21,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.6.0', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.7.0', PROTOCOL = 1;
 const PORT = parseInt(process.env.IWDIE_BRIDGE_PORT || '47913', 10);
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY = 64 * 1024 * 1024;
@@ -180,9 +180,13 @@ function status() {
   const c = page.context, P = c.params;
   return {
     attached: true, plant: c.job.plant, panel: c.job.panel, document: c.job.name, size: c.size, userscript: c.version,
+    // VectorCraft opened by itself (userscript 1.87.0): no Designer behind it
+    mode: c.job.solo ? 'by itself: no Designer behind this drawing - the user’s Ctrl+S saves it as a panel file, which Insert JSON… → '
+      + 'Replace puts on the panel' : undefined,
     library: { file: c.library && c.library.file, symbols: c.library ? Object.keys(c.library.symbols || {}).length : 0 },
     objects: c.objects ? c.objects.rows.length : 0,
     units: P && P.units ? P.units.slice(0, 40) : [], unitsNote: P ? (P.failed && P.failed.length ? 'rows not read for ' + P.failed.join(', ') : undefined)
+      : c.job.solo ? 'no parameter rows: this drawing by itself has none - open an Export JSON of the plant on the start card for them'
       : 'no parameter rows came with this edit: link an object on the panel to a unit, or tick units in the Parameter Selector, then Edit in VectorCraft again',
     sceneRead: readJob === c.job.id, lastSeen: Math.round((Date.now() - page.seen) / 1000) + ' s ago'
   };
