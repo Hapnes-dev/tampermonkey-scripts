@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.90.0
+// @version      1.91.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.90.0';
+var IWDIE_VERSION = '1.91.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9673,6 +9673,9 @@ var IWDIE_VZ_OBJECT_MS = 15000;
 var IWDIE_TX_FONTS_KEY = 'iwdie.tx.fonts';
 /** How long a picture's words are read (v1.78.0), at most: what is read by then is kept. */
 var IWDIE_TX_READ_MS = 30000;
+/** The largest picture whose words are read at its own size where the canvas has it at another (v1.91.0), in pixels: a
+ *  larger one is read as the canvas has it. */
+var IWDIE_TX_OWN_PX = 6000000;
 /** The sizes the Designer draws its labels at (v1.78.1), `number_v3_label_<n>px_…`: its 8 and 10 px labels are drawn at
  *  11 px (V3_iw_xo_components.css), so a label is one of these. */
 var IWDIE_TX_LABEL_PX = [9, 11, 12, 14, 16, 18, 20];
@@ -15199,14 +15202,17 @@ function iwdieVzPalette(pic, W, H, opts) {
   var list = [];
   count.forEach(function (n, key) { list.push([key, n]); });
   list.sort(function (a, b) { return b[1] - a[1] || a[0] - b[0]; });
-  var cl = [], n2 = near * near;
+  var cl = [], n2 = near * near, large = 0.01 * W * H;
   list.forEach(function (e) {
     var r = (e[0] >> 16) & 255, g = (e[0] >> 8) & 255, b = e[0] & 255;
     for (var j = 0; j < cl.length; j++) {
       var c = cl[j], dr = c[0] - r, dg = c[1] - g, db = c[2] - b, d2 = dr * dr + dg * dg + db * db;
       // a near twin merges when nearly equal, or when it is rare beside the other (v1.74.0): two large flat areas of
-      // close colours - a panel's grey column on the Designer's grey ground - stay two
-      if (d2 < n2 && (d2 < 36 || e[1] * 6 < c[3])) { c[3] += e[1]; return; }
+      // close colours - a panel's grey column on the Designer's grey ground - stay two. (v1.91.0) One covering a
+      // hundredth of the picture is large whatever the other: 3694's Oversikt NY read at its own size has its legend's
+      // 150 000 pixels of 205,210,215 beside 1.1 million of the panel's 204 grey, and merged into the grey, the column was
+      // read as blends of white and the text's colour, which stood every word on it six rows too tall for a font to read
+      if (d2 < n2 && (d2 < 36 || (e[1] * 6 < c[3] && e[1] < large))) { c[3] += e[1]; return; }
     }
     cl.push([r, g, b, e[1]]);
   });
@@ -17119,7 +17125,8 @@ function iwdieTxCrop(I, x0, x1) {
 function iwdieTxShape(s) {
   return String(s || '').split(' ').reduce(function (n, t) {
     if (!t) return n;
-    if (/^[A-ZÆØÅ]{1,3}[a-zæøå]{0,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t) || /^[A-ZÆØÅ]{1,3}-\d{1,3}[a-zæøå]?$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅ]{1,3}[a-zæøå]{0,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t) || /^[A-ZÆØÅ]{1,3}-\d{1,3}[a-zæøå]?$/.test(t) ||
+      /^[A-ZÆØÅ]{1,3}\d{1,3}[A-F]$/.test(t)) return n + 2;
     if (/^[A-ZÆØÅ]?[a-zæøå]+[.:]?$/.test(t) || /^[A-ZÆØÅ]{2,}[.:]?$/.test(t)) return n + 2;
     if (/^[A-ZÆØÅa-zæøå]+(?:[-\/][A-ZÆØÅa-zæøå]+)+[.:-]?$/.test(t)) return n + 2;
     if (/^[A-ZÆØÅa-zæøå]+-$/.test(t)) return n + 2;
@@ -17304,6 +17311,9 @@ function iwdieTxBest(I, tries, vocab, opts) {
       for (var at = s0.indexOf(pr[0]); at >= 0; at = s0.indexOf(pr[0], at + 1)) add(s0.slice(0, at) + pr[1] + s0.slice(at + pr[0].length));
       if (s0.indexOf(pr[0]) >= 0) add(s0.split(pr[0]).join(pr[1]));
     });
+    // (v1.91.0) the house's M read in strokes - its slanted legs an f and a V or Y, its last an I, l or t: 3694's KM15A read in
+    // Segoe UI as KfVI15A (0.131; KM15A 0.132), its KM16B in Roboto as Kfvl168
+    s0.replace(/f[VvYy][lIt1]?|[Il][Vv][Il]/g, function (m, at) { add(s0.slice(0, at) + 'M' + s0.slice(at + m.length)); return m; });
     // a space between two lower-case letters (a word read in two): read off
     s0.replace(/[a-zæøå] [a-zæøå]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
     // (v1.82.8) a full stop after the last letter (a speck read as one: 11087's Room temp as Room temp.): read off
@@ -17320,6 +17330,14 @@ function iwdieTxBest(I, tries, vocab, opts) {
       add(code[1] + (code[2] === '-' ? '-' : '') +
         code[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Il]/g, '1').replace(/B/g, '8').replace(/[Zz]/g, '2') + code[4]);
     }
+    // (v1.91.0) a code whose suffix is a capital A-F, as 3694's are written (KM15A, FR41B): its number in digits, its prefix
+    // as many capitals as there are or as few - and such a B read as an 8 after the code's two digits (FR418)
+    [/^([A-ZÆØÅ]{1,3})([0-9OoSIlZz]{1,2})([A-F])$/, /^([A-ZÆØÅ]{1,3}?)([0-9OoSIlZz]{1,2})([A-F])$/].forEach(function (re) {
+      var cd = re.exec(flat);
+      if (cd && (flat !== s0 || /[^0-9]/.test(cd[2]))) add(cd[1] + cd[2].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Il]/g, '1').replace(/[Zz]/g, '2') + cd[3]);
+    });
+    var b8 = /^([A-ZÆØÅ]{1,3})(\d{2})8$/.exec(flat);
+    if (b8) add(b8[1] + b8[2] + 'B');
     var toks = s0.split(' ');
     toks.forEach(function (tk, i) {
       if (words[tk]) return;
@@ -17391,22 +17409,36 @@ function iwdieTxBest(I, tries, vocab, opts) {
 /** A case's code a reading would be (v1.89.0): its spaces out, its prefix of capitals (as many as there are, or as few),
  *  a mark after it read off but a hyphen, the letters read for digits as the digits (O and o 0, S 5, I, l and t 1, B 8,
  *  Z and z 2), and a suffix of a letter a-e - or, where up to two other letters stand there, none or each of them. Only
- *  where a digit, a z or a hyphen says it is a code: Sol and To are words. -> [codes] (none when it is no code) */
+ *  where a digit, a z or a hyphen says it is a code: Sol and To are words. (v1.91.0) Or a capital A-F its suffix after a
+ *  number of one or two, as 3694's are written: KM1SA is KM15A. -> [codes] (none when it is no code) */
 function iwdieTxCodes(s) {
-  var flat = String(s || '').replace(/ /g, ''), out = [];
-  [/^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøå]{0,2})$/, /^([A-ZÆØÅ]{1,3}?)([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøå]{0,2})$/].forEach(function (re) {
-    var m = re.exec(flat);
-    if (!m || !(/[\dZz]/.test(m[3]) || m[2] === '-')) return;
-    var head = m[1] + (m[2] === '-' ? '-' : '') + m[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Ilt]/g, '1').replace(/B/g, '8').replace(/[Zz]/g, '2');
-    (/^[a-e]?$/.test(m[4]) ? [m[4]] : ['', 'a', 'b', 'c', 'd', 'e']).forEach(function (x) { if (out.indexOf(head + x) < 0) out.push(head + x); });
+  var flat0 = String(s || '').replace(/ /g, ''), out = [];
+  // (v1.91.0) an M read in strokes after its first capital (KfVl15D, Kfvl4A, KfvItC) read as the M - each reading's codes
+  var mm = /^([A-ZÆØÅ])(?:f[VvYy][lIt1]?|[Il][Vv][Il])(.*)$/.exec(flat0);
+  (mm ? [flat0, mm[1] + 'M' + mm[2]] : [flat0]).forEach(function (flat) {
+    // (v1.91.0) a capital suffix after a number of one or two
+    [/^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/, /^([A-ZÆØÅ]{1,3}?)([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/].forEach(function (re) {
+      var m = re.exec(flat);
+      if (!m || !(/[\dZz]/.test(m[3]) || m[2] === '-')) return;
+      var head = m[1] + (m[2] === '-' ? '-' : '') + m[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Ilt]/g, '1').replace(/[Zz]/g, '2');
+      if (out.indexOf(head + m[4]) < 0) out.push(head + m[4]);
+    });
+    [/^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøå]{0,2})$/, /^([A-ZÆØÅ]{1,3}?)([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøå]{0,2})$/].forEach(function (re) {
+      var m = re.exec(flat);
+      if (!m || !(/[\dZz]/.test(m[3]) || m[2] === '-')) return;
+      var head = m[1] + (m[2] === '-' ? '-' : '') + m[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Ilt]/g, '1').replace(/B/g, '8').replace(/[Zz]/g, '2');
+      (/^[a-e]?$/.test(m[4]) ? [m[4]] : ['', 'a', 'b', 'c', 'd', 'e']).forEach(function (x) { if (out.indexOf(head + x) < 0) out.push(head + x); });
+    });
   });
   return out;
 }
 
 /** Whether a reading is a case's code with a letter for a digit in it (v1.89.0), its spaces out: Fzz, Fz4, K-S4b, K-t 1c -
- *  though not CO2, whose capitals are its prefix. */
+ *  though not CO2, whose capitals are its prefix. (v1.91.0) A capital A-F after a number of one or two is its suffix, not a
+ *  digit read as a letter: 3694's KR39B is a code as it is. */
 function iwdieTxCodeOdd(s) {
-  var m = /^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-e]?)$/.exec(String(s || '').replace(/ /g, ''));
+  var flat = String(s || '').replace(/ /g, '');
+  var m = /^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/.exec(flat) || /^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-e]?)$/.exec(flat);
   return !!m && /[^0-9]/.test(m[3]) && /\d|z/.test(m[3]);
 }
 
@@ -17427,7 +17459,8 @@ function iwdieTxTaken(r, opts) {
   // panel, plant or house knows (`r.kt`, iwdieTxBest's) beside a code (2349's K-55 Kjølerom)
   return r.cost <= 0.28 && r.text.split(' ').every(function (t) {
     return /^[A-ZÆØÅ]{1,3}[a-zæøå]{0,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t) || /^[A-ZÆØÅ]{1,3}-\d{1,3}[a-zæøå]?$/.test(t) ||
-      (!!r.kt && r.kt.indexOf(t) >= 0) ||
+      // (v1.91.0) a code whose suffix is a capital A-F (3694's KM15A)
+      /^[A-ZÆØÅ]{1,3}\d{1,3}[A-F]$/.test(t) || (!!r.kt && r.kt.indexOf(t) >= 0) ||
       /^[A-ZÆØÅ]{2,}[.:]?$/.test(t) || /^[A-ZÆØÅ][a-zæøå]{1,4}[.:-]?$/.test(t) ||
       /^\d+(?:[.,]\d+)?$/.test(t) || /^(%|°C|K|h|bar|=|\(kW\)|\(kWh\)|[A-ZÆØÅ]-[A-ZÆØÅ])$/.test(t) || /^[A-ZÆØÅa-zæøå]+\.°C$/.test(t);
   });
@@ -17695,6 +17728,41 @@ function iwdieTxErase(pic, W, H, b, ground, text) {
     if (er * er + eg * eg + eb * eb > 1600 || u > 1.25) continue;
     pic[j] = g[0]; pic[j + 1] = g[1]; pic[j + 2] = g[2];
     n++;
+  }
+  return n;
+}
+
+/** Whether a picture's words are read at its own size (v1.91.0), the canvas having it at another: `p` is where exportPaint
+ *  drew it (paintPlaced: {x, y, w, h, iw, ih - its own size -, rx, ry}). The stub host's sheet fits a picture taller than
+ *  its 1400 x 750 panel in (background-size: contain): 3694's Oversikt NY, 1400 x 1109, stood at 0.676, its names 5 px
+ *  high, and no font read them. One copy, not repeated, no larger than IWDIE_TX_OWN_PX. -> {x, y, kx, ky}, the canvas
+ *  point of its own (u, v) being (x + u kx, y + v ky); null - read as the canvas has it - for a picture at its own size,
+ *  as the Designer draws one (its #main_image sets no background-size) */
+function iwdieVzOwnScale(p) {
+  if (!p || p.rx || p.ry || ![p.x, p.y, p.w, p.h, p.iw, p.ih].every(isFinite)) return null;
+  if (!(p.w >= 1 && p.h >= 1 && p.iw >= 1 && p.ih >= 1) || p.iw * p.ih > IWDIE_TX_OWN_PX) return null;
+  if (Math.abs(p.w - p.iw) < 0.5 && Math.abs(p.h - p.ih) < 0.5) return null;
+  return { x: p.x, y: p.y, kx: p.w / p.iw, ky: p.h / p.ih };
+}
+
+/** What the steps before the words took out of the canvas, out of the picture at its own size too (v1.91.0): each pixel
+ *  of `own` (iw x ih, RGBA) whose middle falls, at scale `s` (iwdieVzOwnScale), on a pixel of the canvas `now` (W x H)
+ *  that differs from `was` - the canvas as painted - becomes that pixel: a value's bubble, an object's look, an IWMAC
+ *  object found, each out as the canvas has it out. -> how many */
+function iwdieVzOwnTaken(own, iw, ih, now, was, W, H, s) {
+  var n = 0, u, v, cy, i, j, col = new Int32Array(iw);
+  for (u = 0; u < iw; u++) col[u] = Math.floor(s.x + (u + 0.5) * s.kx);
+  for (v = 0; v < ih; v++) {
+    cy = Math.floor(s.y + (v + 0.5) * s.ky);
+    if (cy < 0 || cy >= H) continue;
+    for (u = 0; u < iw; u++) {
+      if (col[u] < 0 || col[u] >= W) continue;
+      j = (cy * W + col[u]) * 4;
+      if (now[j] === was[j] && now[j + 1] === was[j + 1] && now[j + 2] === was[j + 2] && now[j + 3] === was[j + 3]) continue;
+      i = (v * iw + u) * 4;
+      own[i] = now[j]; own[i + 1] = now[j + 1]; own[i + 2] = now[j + 2]; own[i + 3] = now[j + 3];
+      n++;
+    }
   }
   return n;
 }
@@ -24107,6 +24175,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         iwdieTxTaken, iwdieTxPieces, iwdieTxTries, iwdieTxCodes, iwdieTxCodeOdd];
     }
 
+    /** The picture at its own size, its words to be read on (v1.91.0), where the canvas `c` has it at another
+     *  (iwdieVzOwnScale of exportPaint's `iwdiePlaced`): painted as the canvas was - over the panel's colour - with what the
+     *  steps before took out of the canvas (`data`, against `was`, the canvas as painted) out of it too (iwdieVzOwnTaken).
+     *  -> {data, w, h, x, y, kx, ky} | null, the canvas to be read as it is */
+    function vcTxOwnSize(c, data, was, w, h) {
+      var p = c && c.iwdiePlaced, s = iwdieVzOwnScale(p);
+      if (!s || !p.img) return null;
+      try {
+        var o = document.createElement('canvas');
+        o.width = p.iw; o.height = p.ih;
+        var g = o.getContext('2d');
+        if (p.fill) { g.fillStyle = p.fill; g.fillRect(0, 0, p.iw, p.ih); }
+        g.drawImage(p.img, 0, 0, p.iw, p.ih);
+        var own = g.getImageData(0, 0, p.iw, p.ih).data;
+        iwdieVzOwnTaken(own, p.iw, p.ih, data, was, w, h, s);
+        return { data: own, w: p.iw, h: p.ih, x: s.x, y: s.y, kx: s.kx, ky: s.ky };
+      } catch (e) {
+        return null;
+      }
+    }
+
     /** The picture's words read in its own font, each to be a label object (v1.78.0). The tracer finds them (iwdieVzTrace
      *  `words`, off this page: their boxes, and the picture without its pills' rings and pipes, to read them on); they are
      *  read in the picture's font of those this page has (vcTxFonts, iwdieTxFontChoice) - (v1.79.0) or, without it, in the
@@ -24115,11 +24204,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  (iwdieTxReadAll) against the panel's, plant's and house's words (vcTxVocab). Each word taken is a label of the
      *  Designer's whose capitals stand as high (iwdieTxLabelKind) where it draws them as the picture did (vcTxLabelLook),
      *  and its letters come out of `data` (iwdieTxErase), so the trace leaves them. `step(phase, a, b)` hears how far it is:
-     *  ('runs', n), ('font', label), ('read', done, of).
-     *  -> Promise<{labels: [{kind, text, x, y, w, h, cost}], runs, font, fonts: [label], left: runs left as drawing} | {none: why, fonts}> */
-    function vcReadText(data, w, h, info, step) {
+     *  ('runs', n), ('font', label), ('read', done, of). (v1.91.0) `own` (vcTxOwnSize): the picture at its own size, where
+     *  the canvas `data` has it at another - read on it, each label placed and sized as the canvas has its word, and its
+     *  letters out of the canvas; a word off the canvas is no label.
+     *  -> Promise<{labels: [{kind, text, x, y, w, h, cost}], runs, font, fonts: [label], left: runs left as drawing, own: {w, h} read at} | {none: why, fonts}> */
+    function vcReadText(data, w, h, info, step, own) {
       var objects = (info && info.objects) || [];
       step = step || function () {};
+      // (v1.91.0) the canvas the drawing is made on, the labels to go there, when the picture is read at its own size
+      var put = own ? { data: data, w: w, h: h, x: own.x, y: own.y, kx: own.kx, ky: own.ky } : null;
+      if (own) { data = own.data; w = own.w; h = own.h; }
       return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, { words: true }], function () {}).then(function (tr) {
         var work = (tr && tr.work && tr.work.length === data.length) ? tr.work : data;
         // (v1.80.0) the edges of the boxes the Designer draws itself out of the way: a word beside a case read its edge as a letter
@@ -24212,25 +24306,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               var kept = iwdieTxDistinct(read).map(function (i) { return read[i]; });
               var lum = function (c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; };
               var isWhite = function (x) { return lum(x.I.text) > 170 && lum(x.I.text) > lum(x.I.ground) + 40; };
+              // (v1.91.0) read at the picture's own size: each word where the canvas has it, and as big
+              var X = function (u) { return put ? put.x + u * put.kx : u; }, Y = function (v) { return put ? put.y + v * put.ky : v; };
+              var kx = put ? put.kx : 1, ky = put ? put.ky : 1;
               // (v1.78.1) each label's size weighed between its word's width and height, words of one size alike - measured in the
               // label's own font as the Designer draws it
               var ref = vcTxLabelLook('number_v3_label_12px_norm'), g1 = document.createElement('canvas').getContext('2d');
               g1.font = ref.font;
               var px = iwdieTxLabelSizes(kept.map(function (c) {
                 var m = g1.measureText(c.l.text), ink = (m.actualBoundingBoxLeft || 0) + (m.actualBoundingBoxRight || m.width);
-                return { size: c.l.size, w: c.l.x1 - c.l.x0, per: ink / ref.px, cap: bankCap * c.l.size, ratio: ref.cap, white: isWhite(c.x), x0: c.x.I.x + c.l.x0 };
+                return { size: c.l.size * ky, w: (c.l.x1 - c.l.x0) * kx, per: ink / ref.px, cap: bankCap * c.l.size * ky, ratio: ref.cap, white: isWhite(c.x), x0: X(c.x.I.x + c.l.x0) };
               }));
               kept.forEach(function (c, i) {
                 var x = c.x, l = c.l, kind = iwdieTxLabelKind(px[i], isWhite(x)), look = vcTxLabelLook(kind);
                 var g2 = document.createElement('canvas').getContext('2d');
                 g2.font = look.font;
-                var inkLeft = x.I.x + l.x0, baseY = x.I.y + l.base;
-                out.push({ kind: kind, text: l.text, cost: Math.round(l.cost * 1000) / 1000, x: Math.round(inkLeft - look.left), y: Math.round(baseY - look.base),
-                  w: Math.max(6, Math.ceil(g2.measureText(l.text).width) + 2), h: Math.round(look.px * 1.2) + 2 });
-                // its letters out of the picture, so the trace leaves them
-                iwdieTxErase(data, w, h, { x: inkLeft - 1, y: c.y0, w: l.x1 - l.x0 + 2, h: c.y1 - c.y0 }, x.I.ground, x.I.text);
+                var inkLeft = X(x.I.x + l.x0), baseY = Y(x.I.y + l.base);
+                var lab = { kind: kind, text: l.text, cost: Math.round(l.cost * 1000) / 1000, x: Math.round(inkLeft - look.left), y: Math.round(baseY - look.base),
+                  w: Math.max(6, Math.ceil(g2.measureText(l.text).width) + 2), h: Math.round(look.px * 1.2) + 2 };
+                // a word the canvas does not show - of a picture larger than it - is no label
+                if (put && (lab.x >= put.w || lab.y >= put.h || lab.x + lab.w <= 0 || lab.y + lab.h <= 0)) return;
+                out.push(lab);
+                // its letters out of the picture, so the trace leaves them - out of the canvas, a pixel round for the resampling
+                if (put) iwdieTxErase(put.data, put.w, put.h, { x: X(x.I.x + l.x0 - 1) - 1, y: Y(c.y0) - 1, w: (l.x1 - l.x0 + 2) * kx + 2, h: (c.y1 - c.y0) * ky + 2 }, x.I.ground, x.I.text);
+                else iwdieTxErase(data, w, h, { x: inkLeft - 1, y: c.y0, w: l.x1 - l.x0 + 2, h: c.y1 - c.y0 }, x.I.ground, x.I.text);
               });
-              return { labels: out, runs: R.length + long, font: best.f.label, fonts: labels, left: left + long, loose: loose };
+              return { labels: out, runs: R.length + long, font: best.f.label, fonts: labels, left: left + long, loose: loose, own: put ? { w: w, h: h } : null };
             });
           });
         });
@@ -24936,11 +25037,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (info && info.readText === false) { paper.none('text', 'not read: switched off on the card'); return null; }
         paper.step('text', 'where its words are…', 0.09, 0.1);
         return paper.breath().then(function () {
+          // (v1.91.0) a picture the canvas has at another size than its own read at its own, its words as many pixels high as
+          // they were drawn: the stub's sheet fitted 3694's 1400 × 1109 Oversikt NY into 1400 × 750, its names 5 px high
+          var own = vcTxOwnSize(c, data, pristine, w, h);
           return vcReadText(data, w, h, info, function (what, a, b) {
             if (what === 'runs') paper.say(iwdieN(a, 'run', 'runs') + ' of text; which font reads them…', 0.1);
             else if (what === 'font') { got.textFont = a; paper.say('reading them in ' + a + '…', 0.11); }
             else if (what === 'read') paper.say(a + ' of ' + b + ' read in ' + got.textFont, 0.11 + 0.08 * a / Math.max(1, b));
-          });
+          }, own);
         }).then(function (rt) {
           if (!rt || rt.none) {
             paper.done('not read: ' + ((rt && rt.none) || 'it could not be') + (rt && rt.fonts ? ' (fonts here: ' + (rt.fonts.join(', ') || 'none') + ') - drop the ' +
@@ -24951,11 +25055,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           }
           got.labels = rt.labels; got.textRuns = rt.runs; got.textLeft = rt.left; got.textFont = rt.font; got.textLoose = !!rt.loose;
           var said3 = rt.labels.slice(0, 4).map(function (l) { return l.text; }).join(', ');
+          // (v1.91.0) read at the picture's own size: said
+          var at = rt.own ? ' · read at the picture’s own size, ' + rt.own.w + ' × ' + rt.own.h : '';
           // (v1.79.0) read in a font not the picture's: said, the picture's own reads surer
           paper.done(rt.labels.length ? iwdieN(rt.labels.length, 'word', 'words') + ' as labels (' + said3 + (rt.labels.length > 4 ? ', …' : '') + ')' +
             (rt.left ? '; ' + iwdieN(rt.left, 'run', 'runs') + ' left as drawing' : '') + ' · ' + rt.font +
-            (rt.loose ? ', not the picture’s own font - drop it on the card to read surer (Myriad Pro is in Illustrator’s Support Files › Required › Fonts)' : '')
-            : 'none read · ' + rt.font, 0.2);
+            (rt.loose ? ', not the picture’s own font - drop it on the card to read surer (Myriad Pro is in Illustrator’s Support Files › Required › Fonts)' : '') + at
+            : 'none read · ' + rt.font + at, 0.2);
         }, function () { paper.done('not read', 0.2); });
       }).then(function () {
         // v1.80.0: the boxes the Designer draws itself - cases, rooms and bars in its own colours - as its objects, their
@@ -26376,7 +26482,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** Paint the base the way the canvas shows it - its CSS size, position and
-     *  repeat - so a picture that is not exactly panel-sized lands where the canvas shows it. */
+     *  repeat - so a picture that is not exactly panel-sized lands where the canvas shows it.
+     *  -> (v1.91.0) where it was drawn: {x, y, w, h, iw, ih (its own size), rx, ry (repeated)}, or null for nothing drawn */
     function paintPlaced(ctx, img, d) {
       var W0 = d.w, H0 = d.h;
       var iw = img.naturalWidth || img.width || W0, ih = img.naturalHeight || img.height || H0;
@@ -26397,7 +26504,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var rep = String(d.place.repeat || 'repeat');
       var rx = rep === 'repeat' || rep === 'repeat-x' || /^repeat\s/.test(rep);
       var ry = rep === 'repeat' || rep === 'repeat-y' || /\srepeat$/.test(rep);
-      if (!(w >= 1 && h >= 1)) return;
+      if (!(w >= 1 && h >= 1)) return null;
       var x0 = rx ? x - Math.ceil(x / w) * w : x, y0 = ry ? y - Math.ceil(y / h) * h : y;
       for (var yy = y0; yy < H0; yy += h) {
         for (var xx = x0; xx < W0; xx += w) {
@@ -26406,10 +26513,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         if (!ry) break;
       }
+      return { x: x, y: y, w: w, h: h, iw: iw, ih: ih, rx: rx, ry: ry };
     }
 
     /** A picture drawn onto a panel-sized canvas the way the canvas shows it: its CSS size,
-     *  position and repeat, over `fill` when one is given. -> Promise<canvas> */
+     *  position and repeat, over `fill` when one is given. (v1.91.0) The canvas keeps how: `iwdiePlaced`, paintPlaced's
+     *  answer with the picture and `fill`, so its words can be read at the picture's own size (vcTxOwnSize). -> Promise<canvas> */
     function exportPaint(bytes, mime, size, fill) {
       var mi = document.getElementById('main_image'), cs = mi ? getComputedStyle(mi) : null;
       var place = { size: cs ? cs.backgroundSize : 'auto', pos: cs ? cs.backgroundPosition : '0% 0%', repeat: cs ? cs.backgroundRepeat : 'no-repeat' };
@@ -26419,7 +26528,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (fill) { ctx.fillStyle = fill; ctx.fillRect(0, 0, size.w, size.h); }
       if (!bytes) return Promise.resolve(c);
       return loadPicture('data:' + (mime || 'image/png') + ';base64,' + iwdieBytesToBase64(bytes)).then(function (img) {
-        paintPlaced(ctx, img, { w: size.w, h: size.h, place: place });
+        var placed = paintPlaced(ctx, img, { w: size.w, h: size.h, place: place });
+        if (placed) { placed.img = img; placed.fill = fill || null; c.iwdiePlaced = placed; }
         return c;
       });
     }
@@ -28408,6 +28518,9 @@ if (typeof module !== 'undefined' && module.exports) {
     txFontChoice: iwdieTxFontChoice,
     TX_LABEL_PX: IWDIE_TX_LABEL_PX,
     txErase: iwdieTxErase,
+    vzOwnScale: iwdieVzOwnScale,
+    vzOwnTaken: iwdieVzOwnTaken,
+    TX_OWN_PX: IWDIE_TX_OWN_PX,
     vcReadLabelSvg: iwdieVcReadLabelSvg,
     svgClassRules: iwdieSvgClassRules,
     SVG_STYLE_ATTRS: IWDIE_SVG_STYLE_ATTRS,
