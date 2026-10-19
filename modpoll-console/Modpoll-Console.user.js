@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.68.0
+// @version      1.68.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -10131,6 +10131,14 @@
                 if (!BRIDGE.session) {
                     const hello = await bridgeHttp('GET', '/bridge/hello', undefined, 4000);
                     if (!hello || hello.protocol !== BRIDGE.protocol) throw new Error('protocol mismatch');
+                    /*
+                     * A tab that was taken over waits for the other one to let go instead of taking the bridge
+                     * straight back. Two sys_tools tabs open at once each re-attached the moment they were
+                     * displaced, so they changed places every second or two and every command in flight died with
+                     * each change. The tab that has it keeps it; this one offers again when the bridge is free.
+                     */
+                    if (BRIDGE.displaced && hello.attached) { await sleep(5000); continue; }
+                    BRIDGE.displaced = false;
                     const at = await bridgeHttp('POST', '/bridge/attach',
                                                 { plant: bridgePlantId(), client: BRIDGE.client }, 8000);
                     BRIDGE.session = at.session;
@@ -10157,8 +10165,11 @@
                  * every command in flight failed meanwhile with "another tab attached". A poll that was merely
                  * replaced or timed out is retried on the same session instead.
                  */
-                if (/no such session|another tab attached|protocol mismatch/i.test(String(e.message || ''))) {
+                const msg = String(e.message || '');
+                if (/no such session|another tab attached|protocol mismatch/i.test(msg)) {
                     BRIDGE.session = null;
+                    // Remember it was a takeover, so the loop above waits for the bridge to be free again.
+                    if (/another tab attached/i.test(msg)) BRIDGE.displaced = true;
                 }
                 await sleep(BRIDGE.backoff + Math.floor(Math.random() * 400));   // jitter: two tabs must not lock-step
                 BRIDGE.backoff = Math.min(30000, BRIDGE.backoff * 2);
