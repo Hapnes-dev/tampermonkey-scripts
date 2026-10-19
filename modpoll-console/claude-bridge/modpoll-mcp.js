@@ -125,10 +125,16 @@ async function askViaOwner(name, args, ms) {
       signal: AbortSignal.timeout(ms + ATTACH_GRACE_MS + 10000),
     });
   } catch (e) {
-    // The owner may have just exited with its session. Try for the port before reporting a dead bridge.
+    /*
+     * The owner may have just exited with its session. Take the port and serve the command here rather than hand
+     * back a failure the caller would only have to repeat: the tab re-attaches on its own backoff, and ask() waits
+     * out the attach grace anyway.
+     */
     tryBind();
-    throw new Error(`the modpoll-bridge holding port ${PORT} did not answer (${e.message}). If its Claude session ` +
-                    'has closed, this one takes the port within a few seconds - try again.');
+    await new Promise((r) => setTimeout(r, 300));
+    if (listening) return ask(name, args, ms);
+    throw new Error(`the modpoll-bridge holding port ${PORT} did not answer (${e.message}), and this instance ` +
+                    'could not take the port either.');
   }
   if (res.status === 404) {
     throw new Error(`the modpoll-bridge holding port ${PORT} is an older build without /bridge/call, so this ` +
