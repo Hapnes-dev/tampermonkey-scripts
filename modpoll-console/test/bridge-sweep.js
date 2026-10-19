@@ -41,9 +41,17 @@ function makeApi(rule, log) {
   };
 }
 
-function load(api) {
-  const f = new Function('api', 'BRIDGE_TABLE', code + '\n;return { bridgeSweep, bridgeRuns };');
-  return f(api, BRIDGE_TABLE);
+/**
+ * `cancelAfter` makes /bridge/cancelled start answering true once that many reads have happened, which is how a
+ * modpoll_cancel reaches a sweep already running. Left null, the bridge is never asked to stop.
+ */
+function load(api, log, cancelAfter) {
+  const bridgeHttp = async (method, path) => {
+    if (path !== '/bridge/cancelled') throw new Error('the harness only answers /bridge/cancelled');
+    return { cancelled: cancelAfter !== null && cancelAfter !== undefined && log.length >= cancelAfter };
+  };
+  const f = new Function('api', 'BRIDGE_TABLE', 'bridgeHttp', code + '\n;return { bridgeSweep, bridgeRuns };');
+  return f(api, BRIDGE_TABLE, bridgeHttp);
 }
 
 const targets = [];
@@ -68,7 +76,7 @@ function report(name, log, res, expectRuns) {
   {
     const log = [];
     const api = makeApi((t, s, c) => Array.from({ length: c }, (_, i) => 100 + s + i), log);
-    const { bridgeSweep } = load(api);
+    const { bridgeSweep } = load(api, log);
     const res = await bridgeSweep('V01', targets, 1, 1, 'input');
     allOk &= report('alt svarer - én blokk', log, res, 2);
   }
@@ -77,7 +85,7 @@ function report(name, log, res, expectRuns) {
   {
     const log = [];
     const api = makeApi((t, s, c) => (c > 1 ? null : [100 + s]), log);
-    const { bridgeSweep } = load(api);
+    const { bridgeSweep } = load(api, log);
     const res = await bridgeSweep('V01', targets, 1, 1, 'input');
     allOk &= report('blokk nektes, enkle svarer - tilbakefall', log, res, 42);
   }
@@ -91,7 +99,7 @@ function report(name, log, res, expectRuns) {
       if (refs.includes(bad)) return null;
       return refs.map(r => 100 + r);
     }, log);
-    const { bridgeSweep } = load(api);
+    const { bridgeSweep } = load(api, log);
     const res = await bridgeSweep('V01', targets, 1, 1, 'input');
     const onlyBad = res.never.length === 1 && res.never[0].ref === bad;
     console.log(`${onlyBad ? 'OK  ' : 'FEIL'}  ett ulovlig register i blokka - bare det blir "never"`);
@@ -104,7 +112,7 @@ function report(name, log, res, expectRuns) {
   {
     const log = [];
     const api = makeApi(() => null, log);
-    const { bridgeSweep } = load(api);
+    const { bridgeSweep } = load(api, log);
     const res = await bridgeSweep('V01', targets, 3, 1, 'input');
     const stopped = !!res.aborted && log.length <= 8;
     console.log(`${stopped ? 'OK  ' : 'FEIL'}  død enhet - tidlig avbrudd`);
@@ -116,11 +124,23 @@ function report(name, log, res, expectRuns) {
   {
     const log = [];
     const api = makeApi((t, s, c) => Array.from({ length: c }, (_, i) => 100 + s + i), log);
-    const { bridgeSweep } = load(api);
+    const { bridgeSweep } = load(api, log);
     const res = await bridgeSweep('V01', targets, 1, 1, 'input');
     const labelled = res.always_rows.filter(r => r.label).length;
     console.log(`${labelled === 40 ? 'OK  ' : 'FEIL'}  navn følger med gjennom blokka: ${labelled}/40`);
     allOk &= labelled === 40;
+  }
+
+  // 6. A cancel reaches a sweep that is already running, on the slow one-at-a-time path.
+  {
+    const log = [];
+    const api = makeApi((t, s, c) => (c > 1 ? null : [100 + s]), log);   // refuses blocks, so it falls back
+    const { bridgeSweep } = load(api, log, 12);                          // /bridge/cancelled turns true at 12 reads
+    const res = await bridgeSweep('V01', targets, 1, 1, 'input');
+    const stopped = res.aborted === 'cancelled from Claude' && log.length < 42;
+    console.log(`${stopped ? 'OK  ' : 'FEIL'}  avbrutt midt i tilbakefallet`);
+    console.log(`        modpoll-kjøringer: ${log.length} (av 42), avbrutt: ${res.aborted}`);
+    allOk &= stopped;
   }
 
   console.log(allOk ? '\nAlle bestått.' : '\nNoe feilet.');

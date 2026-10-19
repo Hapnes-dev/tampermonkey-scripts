@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.67.0
+// @version      1.68.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9916,6 +9916,20 @@
         return (v === undefined) ? null : { value: v, name: row.name || null };
     }
 
+    /**
+     * Has Claude asked for this sweep to stop? A sweep is inside its own loop and not polling, so there is nothing
+     * to interrupt it with; asking costs one loopback request per chunk, which is nothing next to a modpoll run.
+     * A hiccup answering must not abandon a sweep that is otherwise working, so it reads as "carry on".
+     */
+    async function bridgeCancelled() {
+        try {
+            const r = await bridgeHttp('GET', '/bridge/cancelled', undefined, 3000);
+            return !!(r && r.cancelled);
+        } catch (e) {
+            return false;
+        }
+    }
+
     /** modpoll takes -c up to 99, so a block never asks for more than that in one go. */
     const BRIDGE_BLOCK_MAX = 99;
 
@@ -10000,6 +10014,7 @@
              * which it does if any single register in it is illegal - falls back to one at a time, so a single bad
              * register still costs only that run rather than condemning the ninety-eight around it.
              */
+            let sinceCheck = 0;
             for (const run of runs) {
                 for (let i = 0; i < run.refs.length && !aborted; i += BRIDGE_BLOCK_MAX) {
                     const slice = run.refs.slice(i, i + BRIDGE_BLOCK_MAX);
@@ -10007,17 +10022,23 @@
                     if (block) {
                         slice.forEach((ref, n) => record(run.table, ref, block[n]));
                         refusedRunning = 0;
-                        continue;
-                    }
-                    for (const ref of slice) {
-                        const got = await bridgeReadOne(run.table, ref);
-                        record(run.table, ref, got);
-                        if (got) refusedRunning = 0; else refusedRunning++;
-                        if (controlOk === false && !anyAnswered && refusedRunning >= 5) {
-                            aborted = 'stopped during the first round - the control register refused and so did the first five read after it';
-                            break;
+                    } else {
+                        for (const ref of slice) {
+                            const got = await bridgeReadOne(run.table, ref);
+                            record(run.table, ref, got);
+                            if (got) refusedRunning = 0; else refusedRunning++;
+                            if (controlOk === false && !anyAnswered && refusedRunning >= 5) {
+                                aborted = 'stopped during the first round - the control register refused and so did the first five read after it';
+                                break;
+                            }
+                            // One at a time is the slow path, so listen for a cancel inside it, not only after it.
+                            if (++sinceCheck >= 10) {
+                                sinceCheck = 0;
+                                if (await bridgeCancelled()) { aborted = 'cancelled from Claude'; break; }
+                            }
                         }
                     }
+                    if (!aborted && await bridgeCancelled()) aborted = 'cancelled from Claude';
                 }
                 if (aborted) break;
             }

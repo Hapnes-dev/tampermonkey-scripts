@@ -44,6 +44,7 @@ let page = null;                 // { session, waiting, waitTimer, plant }
 const queue = [];                // commands Claude has asked for, not yet handed to the page
 const sent = new Map();          // handed over, awaiting a result
 const takenOver = [];            // sessions displaced by a newer tab, so they get a clear answer
+let cancelRequested = false;     // the page reads this between chunks and stops; cleared when a command goes out
 
 // ---------------------------------------------------------------- the bridge
 
@@ -61,8 +62,28 @@ function readBody(req) {
   });
 }
 
+/**
+ * Give up on everything queued and in flight, and leave a flag the page picks up at its next chunk boundary.
+ *
+ * The page cannot be interrupted - it is inside its own loop and not polling - so this is two halves: the caller
+ * gets its answer back at once, and the page stops reading shortly after rather than finishing a sweep nobody is
+ * waiting for. Reads are harmless either way, which is why stopping late is acceptable and stopping hard is not.
+ */
+function cancelAll() {
+  const n = queue.length + sent.size;
+  cancelRequested = true;
+  for (const cmd of [...queue, ...sent.values()]) {
+    clearTimeout(cmd.timer);
+    cmd.reject(new Error('cancelled from Claude by modpoll_cancel'));
+  }
+  queue.length = 0;
+  sent.clear();
+  return n;
+}
+
 function pump() {
   if (!page || !page.waiting || !queue.length) return;
+  cancelRequested = false;       // a fresh command is not covered by a cancel asked for before it existed
   const cmd = queue.shift();
   const res = page.waiting;
   page.waiting = null;
@@ -216,7 +237,8 @@ const server = http.createServer(async (req, res) => {
     const client = body.client ? String(body.client) : null;
     const reconnect = !!(page && client && page.client === client);
     if (page) {
-      if (!reconnect) takenOver.push(page.session);
+      // Keep only enough to answer a displaced tab's next poll; it is a courtesy list, not a record.
+      if (!reconnect) { takenOver.push(page.session); if (takenOver.length > 32) takenOver.shift(); }
       detach(reconnect ? 'the same tab reconnected' : TAKEN, { keepWork: reconnect });
     }
     page = { session: crypto.randomUUID(), client, waiting: null, waitTimer: null, plant: body.plant || null };
@@ -235,6 +257,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (page.waiting) { reply(page.waiting, 409, { error: 'replaced by a newer poll' }); clearTimeout(page.waitTimer); }
     page.waiting = res;
+    /*
+     * A closed tab takes its long poll down with it. Without noticing, the bridge went on believing a tab was there
+     * and the next call sat until its own timeout - up to fifteen minutes on a verify - instead of saying the tab
+     * had gone. Both the idle reply and pump() clear page.waiting before answering, so this only fires on a socket
+     * that died while still holding the poll.
+     */
+    res.on('close', () => {
+      if (page && page.waiting === res) detach('the tab closed');
+    });
     // Answer an idle poll before the browser gives up on it, so the page can simply ask again.
     page.waitTimer = setTimeout(() => {
       if (page && page.waiting === res) { page.waiting = null; reply(res, 200, { cmd: null }); }
@@ -254,6 +285,18 @@ const server = http.createServer(async (req, res) => {
       else cmd.resolve(body.result);
     }
     reply(res, 200, { ok: true });
+    return;
+  }
+
+  // Asked by modpoll_cancel, here or in another Claude session working through this bridge.
+  if (req.method === 'POST' && url.pathname === '/bridge/cancel') {
+    reply(res, 200, { cancelled: cancelAll() });
+    return;
+  }
+
+  // The page asks this between chunks. Cheap on the loopback, and the only way a running sweep can hear anything.
+  if (req.method === 'GET' && url.pathname === '/bridge/cancelled') {
+    reply(res, 200, { cancelled: cancelRequested });
     return;
   }
 
@@ -314,6 +357,7 @@ const TOOLS = [
       properties: {
         plant_id: { type: 'string', description: 'The plant being worked on, e.g. 5689.' },
         sql: { type: 'string', description: 'One SELECT. Aggregate in SQL rather than returning thousands of rows.' },
+        max_rows: { type: 'integer', description: 'Rows to return, 200 by default. row_count is always the full count.' },
       },
     },
   },
@@ -323,8 +367,19 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       required: ['sql'],
-      properties: { sql: { type: 'string' } },
+      properties: {
+        sql: { type: 'string' },
+        max_rows: { type: 'integer', description: 'Rows to return, 200 by default. row_count is always the full count.' },
+      },
     },
+  },
+  {
+    name: 'modpoll_cancel',
+    description:
+      'Stop whatever sweep is running and give up on anything queued. The calls waiting on it fail at once; the page ' +
+      'stops reading at its next chunk boundary rather than mid-read, because it is inside its own loop and cannot ' +
+      'be interrupted. Reads are harmless, so stopping a little late costs nothing.',
+    inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'modpoll_status',
@@ -441,7 +496,7 @@ function runIdFor(key) {
   return runIds.get(key);
 }
 
-async function toolboxSql(path, body, key) {
+async function toolboxSql(path, body, key, maxRows) {
   if (!/^\s*(SELECT|SHOW|DESCRIBE|EXPLAIN)\b/i.test(body.sql_command || '')) {
     throw new Error('this tool is SELECT only. Writing to a plant is done by a script the user runs and reads first.');
   }
@@ -459,7 +514,18 @@ async function toolboxSql(path, body, key) {
   let out;
   try { out = JSON.parse(text); } catch (e) { throw new Error('Toolbox answered something that is not JSON: ' + text.slice(0, 200)); }
   const first = (out.results || [{}])[0];
-  return { rows: first.data || [], row_count: first.row_count, success: out.success, request_id: out.request_id };
+  /*
+   * The Toolbox will hand back up to ten thousand rows, and a SELECT written without a LIMIT is easy to write. All
+   * of them would land in the answer. Keep the count, which is the part that is usually the point, and cut the rows.
+   */
+  const rows = first.data || [];
+  const cap = Number.isInteger(maxRows) && maxRows > 0 ? maxRows : 200;
+  const answer = { rows: rows.slice(0, cap), row_count: first.row_count, success: out.success, request_id: out.request_id };
+  if (rows.length > cap) {
+    answer.truncated = `${rows.length} rows came back and ${cap} are shown. Narrow the SELECT, count instead of ` +
+                       'listing, or raise max_rows.';
+  }
+  return answer;
 }
 
 /**
@@ -500,10 +566,24 @@ async function callTool(name, args) {
   if (name === 'toolbox_plant_sql') {
     if (!args.plant_id) throw new Error('plant_id is required; build it from the plant being worked on, never a constant');
     return toolboxSql('/plant-sql/', { plant_id: String(args.plant_id), sql_command: args.sql },
-                      'plant:' + args.plant_id);
+                      'plant:' + args.plant_id, args.max_rows);
   }
   if (name === 'toolbox_sql') {
-    return toolboxSql('/toolbox-sql/', { sql_command: args.sql }, 'toolbox');
+    return toolboxSql('/toolbox-sql/', { sql_command: args.sql }, 'toolbox', args.max_rows);
+  }
+
+  if (name === 'modpoll_cancel') {
+    if (proxying) {
+      const r = await fetch(`http://127.0.0.1:${PORT}/bridge/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', [HDR_BRIDGE]: String(PROTOCOL) },
+        body: '{}',
+        signal: AbortSignal.timeout(10000),
+      }).then((x) => x.json()).catch((e) => { throw new Error('could not reach the bridge that owns the port: ' + e.message); });
+      return { cancelled: r.cancelled, via: 'the bridge that owns the port' };
+    }
+    const n = cancelAll();
+    return { cancelled: n, note: n ? 'the page stops at its next chunk boundary' : 'nothing was running' };
   }
 
   /*
