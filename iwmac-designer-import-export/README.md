@@ -498,6 +498,46 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Every name on an Oversikt read, its codes as codes (v1.89.0)
+
+Thomas, on 2349's Oversikt after *Edit in VectorCraft…*: some names were missing and some garbled. K-10a, K-30a and
+K-31b stayed drawing, K-11c came out as *K-t 1c*, and F34 as the plant's *F64*. The picture's words are read in a font
+that is not the picture's, because Myriad Pro is not on the machine. Four rules of the reading failed its codes:
+
+- **A code with a hyphen was not a shape a panel uses.** K-30a read as *K-30a* (cost 0.169). A reading less sure than
+  0.14 is kept only when it looks like what panels say, and only codes without a hyphen (K13) counted. Now K-30a, K-01
+  and F-85 count too.
+- **A known word beside a code.** *K-55 Kjølerom* read whole, but *Kjølerom* is longer than the short capitalised words
+  that rule allows. Now a word the panel, the plant or the house knows can stand beside codes.
+- **A known code one digit off won.** F34 read as *F34* (0.150), and the plant's F64 (0.215) won on the bonus a known word
+  gets. Now, where one reading has a different digit in the same place as another, the ink alone decides.
+- **Myriad's 1 and 2.** Segoe UI and Roboto read them as *I*, *t* or *z*: *F I0*, *Fzz*, *K- I Ia*, *F 2S*. Some readings
+  are not kept, or are a code with a letter where a digit belongs. For these, the reading now also tries the code they
+  would be (`iwdieTxCodes`). That code turns the letters back into digits, drops the spaces and allows a suffix a-e. It
+  is used when the ink reads it nearly as well, at a cost of 0.05 more at most.
+
+The page's dump of the Oversikt was read again in Node. Of its 60 words, 30 were right before (8 wrong, 22 left as
+drawing), and now all 60 are right, in Segoe UI and in Roboto alike. In the stub host, its house symbols went from 23 to
+12. The 9 Tilbakeslagsventil found on letters left as drawing are gone, and what stays is the plan's own: the coolers,
+the checkouts and the legend's alarm, sensor and plug.
+
+The other 19 pictures were read again in the font each was read in. 16 read the same, 2 read better and 1 differs:
+
+- 3214's Oversikt reads K21, K42, K07 and K17 where it read Kz1, K4z, K02 and K12, and K62 where it left drawing.
+- 4559's Oversikt reads *Kjølerom 8* whole.
+- 3694's Oversikt NY changes one wrong reading for another.
+
+**Source Sans 3 is no longer offered** (1.88.0 fetched it alongside Roboto as a closer stand-in for Myriad). The same 20
+pictures were read again in every font. The fit chose it on 8 of them, each time by 0.01 or less, and it never read
+better than the font it replaced:
+
+- **Worse on 4.** It read Sgc, Pgc and V3gc as *Sqc*, *Pqc* and *V3qc*, M-T as *M-I*, and an Oversikt's names as *KMI
+  IA*.
+- **Even on the other 4.** It got as many words newly wrong as newly right.
+
+On 2349's Oversikt it reads 55 of the 60 words right. The fonts offered without the picture's own are Roboto, Arial and
+Segoe UI again, as before 1.88.0.
+
 ### VectorCraft by itself (v1.87.0, server 1.7.0)
 
 Opened straight at `https://hapnes-dev.github.io/iwmac-vector/app/`, with no Designer behind it, the editor used to do nothing

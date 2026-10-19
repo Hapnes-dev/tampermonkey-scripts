@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.88.0
+// @version      1.89.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.87.0';
+var IWDIE_VERSION = '1.89.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -17083,12 +17083,12 @@ function iwdieTxCrop(I, x0, x1) {
   return { ink: ink, w: w, h: I.h, x: I.x + x0, y: I.y, ground: I.ground, text: I.text, total: total };
 }
 
-/** How much a reading looks like what panels say (v1.78.0), word by word, 2 each: a code (K13, AC1, V3hr, V3gc%, v1.79.0 Shr4), a word
+/** How much a reading looks like what panels say (v1.78.0), word by word, 2 each: a code (K13, AC1, V3hr, V3gc%, v1.79.0 Shr4, v1.89.0 K-54b), a word
  *  (Runtime, bar, SH), words joined by a hyphen or a slash (M-T, Kjøl/Frys), a number, a unit or sign (%, °C, (kW)). */
 function iwdieTxShape(s) {
   return String(s || '').split(' ').reduce(function (n, t) {
     if (!t) return n;
-    if (/^[A-ZÆØÅ]{1,3}[a-zæøå]{0,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅ]{1,3}[a-zæøå]{0,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t) || /^[A-ZÆØÅ]{1,3}-\d{1,3}[a-zæøå]?$/.test(t)) return n + 2;
     if (/^[A-ZÆØÅ]?[a-zæøå]+[.:]?$/.test(t) || /^[A-ZÆØÅ]{2,}[.:]?$/.test(t)) return n + 2;
     if (/^[A-ZÆØÅa-zæøå]+(?:[-\/][A-ZÆØÅa-zæøå]+)+[.:-]?$/.test(t)) return n + 2;
     if (/^[A-ZÆØÅa-zæøå]+-$/.test(t)) return n + 2;
@@ -17169,6 +17169,15 @@ function iwdieTxBest(I, tries, vocab, opts) {
   // (v1.79.0) what is read weighed against the best known word or phrase at any size - one a known word must explain
   // as well as iwdieTxTaken has it (0.24; 0.3 read in a font not the picture's)
   var spI = iwdieTxSpan(I.ink, I.w, I.h);
+  // (v1.89.0) two readings with a digit for another digit in one place: a case's code is its number, so the ink alone
+  // decides between them - 2349's F34 and F31, read so in Segoe UI, became the plant's F64 and F61 for the bonus a
+  // known word has. A letter read for a digit (F1S for F15) is no other number
+  var renumbered = function (a, b) {
+    a = String(a).replace(/ /g, ''); b = String(b).replace(/ /g, '');
+    if (a.length !== b.length) return false;
+    for (var u = 0; u < a.length; u++) if (a.charAt(u) !== b.charAt(u) && /\d/.test(a.charAt(u)) && /\d/.test(b.charAt(u))) return true;
+    return false;
+  };
   var orKnown = function (r) {
     var kb = iwdieTxKnownBest(I, tried, vocab, null, r ? r.text : best.text);
     if (!kb || kb.cost > (opts.loose ? 0.3 : 0.24)) return r;
@@ -17177,6 +17186,7 @@ function iwdieTxBest(I, tries, vocab, opts) {
     var recased = r && kb.text !== r.text && kb.text.toLowerCase() === r.text.toLowerCase() && kb.cost <= r.cost + 0.15 &&
       kb.text.split('').every(function (ch, u) { return ch === r.text.charAt(u) || 'cosuvwxzl'.indexOf(ch.toLowerCase()) >= 0; });
     if (r && iwdieTxTaken(r, opts) && !recased && (r.known || kb.cost > r.cost + 0.05)) return r;
+    if (r && iwdieTxTaken(r, opts) && renumbered(r.text, kb.text) && kb.cost > r.cost) return r;
     // (v1.82.8) nor a known word that is what was read with a full stop more or less, which the ink does not read as well
     if (r && iwdieTxTaken(r, opts) && kb.text !== r.text && kb.text.replace(/\.$/, '') === r.text.replace(/\.$/, '') && kb.cost > r.cost) return r;
     return { text: kb.text, cost: kb.cost, known: true, bank: kb.bank, base: kb.base, x0: spI ? spI[0] : 0, x1: spI ? spI[1] + 1 : I.w };
@@ -17211,6 +17221,9 @@ function iwdieTxBest(I, tries, vocab, opts) {
   // in another case counts half: the house's L-T over an l-T read in a font not the picture's
   var known = function (t) { return !!phrases[t.toLowerCase()] || t.split(' ').every(function (w) { return !!lows[w.toLowerCase()]; }); };
   var exact = function (t) { return !!whole[t] || t.split(' ').every(function (w) { return !!words[w]; }); };
+  // (v1.89.0) its words the panel, plant or house knows, whatever their case: iwdieTxTaken takes a phrase of codes and
+  // known words (2349's K-55 Kjølerom) as it takes one of codes alone
+  var kts = function (t) { return t.split(' ').filter(function (w) { return !!lows[w.toLowerCase()]; }); };
   var score = function (t, cost) {
     var toks = t.split(' '), kw = toks.filter(function (w) { return !!lows[w.toLowerCase()]; }).length, kx = toks.filter(function (w) { return !!words[w]; }).length;
     // the share of its words that are known, and that look like panels' words: a word split in two is not two words -
@@ -17251,7 +17264,7 @@ function iwdieTxBest(I, tries, vocab, opts) {
       if (w0 && w0.cost <= 0.3 && (!rescue || w0.score < rescue.score)) rescue = w0;
     });
     var sp0 = iwdieTxSpan(J.ink, J.w, J.h);
-    return orKnown({ text: rescue ? rescue.text : text0, cost: rescue ? rescue.cost : cost0, known: !!rescue, bank: bank0, base: base0,
+    return orKnown({ text: rescue ? rescue.text : text0, cost: rescue ? rescue.cost : cost0, known: !!rescue, kt: kts(rescue ? rescue.text : text0), bank: bank0, base: base0,
       x0: (J.x - I.x) + (sp0 ? sp0[0] : 0), x1: (J.x - I.x) + (sp0 ? sp0[1] + 1 : J.w) });
   }
   var variants = function (s0) {
@@ -17268,10 +17281,13 @@ function iwdieTxBest(I, tries, vocab, opts) {
     s0.replace(/[A-Za-zÆØÅæøå0-9][,.:'][A-Za-zÆØÅæøå0-9]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
     // a code read with a space in it (F 76): without (v1.79.0)
     s0.replace(/(^| )([A-ZÆØÅ]{1,3}) (\d{1,3})(?= |$)/g, function (m, pre, a1, d1, at) { add(s0.slice(0, at) + pre + a1 + d1 + s0.slice(at + m.length)); return m; });
-    // a case's code (K05, F60, AC1) as codes are written: no mark in it, its number in digits
-    var code = /^([A-ZÆØÅ]{1,3})[,.:']?([0-9OoSIlBZ]{1,3})$/.exec(s0);
-    if (code && /[^0-9]/.test(code[2] + s0.replace(code[1], '').replace(code[2], ''))) {
-      add(code[1] + code[2].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Il]/g, '1').replace(/B/g, '8').replace(/Z/g, '2'));
+    // a case's code (K05, F60, AC1; v1.89.0 K-30a) as codes are written: no mark in it but its hyphen, its number in
+    // digits - (v1.89.0) a z too, 2349's F22 read in Segoe UI as Fzz, and no space, its F26 as F z6
+    var flat = s0.replace(/ /g, '');
+    var code = /^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZz]{1,3})([a-e]?)$/.exec(flat);
+    if (code && (flat !== s0 || /[^0-9]/.test(code[3] + (code[2] === '-' ? '' : code[2])))) {
+      add(code[1] + (code[2] === '-' ? '-' : '') +
+        code[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Il]/g, '1').replace(/B/g, '8').replace(/[Zz]/g, '2') + code[4]);
     }
     var toks = s0.split(' ');
     toks.forEach(function (tk, i) {
@@ -17299,6 +17315,7 @@ function iwdieTxBest(I, tries, vocab, opts) {
   var stop = function (t) { return t.replace(/\.$/, ''); };
   var free = pick, fits = function (w) {
     if (free && w.text !== free.text && stop(w.text) === stop(free.text)) return w.cost <= free.cost;
+    if (free && renumbered(free.text, w.text)) return w.cost <= free.cost;
     return !free || free.cost > 0.14 || w.cost <= free.cost + 0.015 || (open(free.text) && !open(w.text));
   };
   asWide.forEach(function (p) {
@@ -17313,25 +17330,74 @@ function iwdieTxBest(I, tries, vocab, opts) {
     pick = better;
   }
   if (!pick) return orKnown(null);
+  // (v1.89.0) a case's code read with a letter or a mark for a digit, a space or a stray letter in it - read in a font
+  // not the picture's, Myriad's 1 and 2 come out as I, t and z: 2349's F10 as F I0, F22 as Fzz, K-11a as K- I Ia, K-02a
+  // as K-02ri. Where that reading is not taken, or is such a code itself, the code it would be, weighed at every size
+  // and baseline tried, when the ink reads it nearly as well (0.05 more) and it is taken
+  var taken = function (t, cost) { return iwdieTxTaken({ text: t, cost: cost, known: known(t), kt: kts(t) }, opts); };
+  var odd = iwdieTxCodeOdd(pick.text), at = null;
+  if (!late() && !known(pick.text) && (odd || !taken(pick.text, pick.cost))) {
+    iwdieTxCodes(pick.text).concat(text0 !== pick.text ? iwdieTxCodes(text0) : []).forEach(function (t) {
+      if (late() || t === pick.text) return;
+      var w = weigh(t), m = w ? { text: t, cost: w.cost } : null;
+      tried.forEach(function (tr) {
+        var f = iwdieTxForce(I.ink, I.w, I.h, tr.base, tr.bank, tr.gains, I.total, t, opts);
+        if (f && (!m || f.cost < m.cost - 1e-9)) m = { text: t, cost: f.cost, bank: tr.bank, base: tr.base };
+      });
+      if (m && m.cost <= pick.cost + 0.05 && taken(t, m.cost) && (!at || m.cost < at.cost)) at = m;
+    });
+  }
+  if (at && at.bank) {
+    return orKnown({ text: at.text, cost: at.cost, known: known(at.text), kt: kts(at.text), bank: at.bank, base: at.base,
+      x0: spI ? spI[0] : 0, x1: spI ? spI[1] + 1 : I.w });
+  }
+  if (at) pick = at;
   var span = iwdieTxSpan(J.ink, J.w, J.h);
-  return orKnown({ text: pick.text, cost: pick.cost, known: known(pick.text), bank: bank0, base: base0,
+  return orKnown({ text: pick.text, cost: pick.cost, known: known(pick.text), kt: kts(pick.text), bank: bank0, base: base0,
     x0: (J.x - I.x) + (span ? span[0] : 0), x1: (J.x - I.x) + (span ? span[1] + 1 : J.w) });
+}
+
+/** A case's code a reading would be (v1.89.0): its spaces out, its prefix of capitals (as many as there are, or as few),
+ *  a mark after it read off but a hyphen, the letters read for digits as the digits (O and o 0, S 5, I, l and t 1, B 8,
+ *  Z and z 2), and a suffix of a letter a-e - or, where up to two other letters stand there, none or each of them. Only
+ *  where a digit, a z or a hyphen says it is a code: Sol and To are words. -> [codes] (none when it is no code) */
+function iwdieTxCodes(s) {
+  var flat = String(s || '').replace(/ /g, ''), out = [];
+  [/^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøå]{0,2})$/, /^([A-ZÆØÅ]{1,3}?)([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøå]{0,2})$/].forEach(function (re) {
+    var m = re.exec(flat);
+    if (!m || !(/[\dZz]/.test(m[3]) || m[2] === '-')) return;
+    var head = m[1] + (m[2] === '-' ? '-' : '') + m[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Ilt]/g, '1').replace(/B/g, '8').replace(/[Zz]/g, '2');
+    (/^[a-e]?$/.test(m[4]) ? [m[4]] : ['', 'a', 'b', 'c', 'd', 'e']).forEach(function (x) { if (out.indexOf(head + x) < 0) out.push(head + x); });
+  });
+  return out;
+}
+
+/** Whether a reading is a case's code with a letter for a digit in it (v1.89.0), its spaces out: Fzz, Fz4, K-S4b, K-t 1c -
+ *  though not CO2, whose capitals are its prefix. */
+function iwdieTxCodeOdd(s) {
+  var m = /^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-e]?)$/.exec(String(s || '').replace(/ /g, ''));
+  return !!m && /[^0-9]/.test(m[3]) && /\d|z/.test(m[3]);
 }
 
 /** Whether a reading is taken (v1.78.0): one that looks like words and explains its ink well (cost 0.14 at most), or a
  *  little less well (0.24) and is a word or phrase the panel, plant or house knows, or (0.28) looks wholly like what
  *  panels say - codes, units, numbers, capitals, a short capitalised word. Two letters at least; a capital after a small
  *  letter in a word nobody knows (VarmlLrftspor) is a letter read wrong, but in a unit (kW, kWh). With `opts.loose`
- *  (v1.79.0: read in a font nobody gave) a known word at 0.3. */
+ *  (v1.79.0: read in a font nobody gave) a known word at 0.3. (v1.89.0) A code with a hyphen (K-30a) is a code, and
+ *  `r.kt` - the words of it the panel, plant or house knows - lets a known word stand beside codes (K-55 Kjølerom). */
 function iwdieTxTaken(r, opts) {
   if (!r || !iwdieTxWordy(r.text) || r.text.replace(/ /g, '').length < 2) return false;
   if (!r.known && r.text.split(' ').some(function (t) { return /[a-zæøå][A-ZÆØÅ]/.test(t) && !/^\(?(kW|kWh|MW|MWh|kVA|kPa|MPa|mA|pH|dB)\)?$/.test(t); })) return false;
   if (r.cost <= 0.14) return true;
   // (v1.79.0) read in a font nobody gave (`opts.loose`), a known word explains its ink less well
   if (r.cost <= (opts && opts.loose ? 0.3 : 0.24) && r.known) return true;
-  // a little less sure: each of its words a code, a unit, a number, capitals or a capitalised word - not any letters
+  // a little less sure: each of its words a code, a unit, a number, capitals or a capitalised word - not any letters;
+  // (v1.89.0) a case's code with a hyphen too (2349's K-30a, K-01, F-85), which no unit's name spells so, and a word the
+  // panel, plant or house knows (`r.kt`, iwdieTxBest's) beside a code (2349's K-55 Kjølerom)
   return r.cost <= 0.28 && r.text.split(' ').every(function (t) {
-    return /^[A-ZÆØÅ]{1,3}[a-zæøå]{0,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t) || /^[A-ZÆØÅ]{2,}[.:]?$/.test(t) || /^[A-ZÆØÅ][a-zæøå]{1,4}[.:-]?$/.test(t) ||
+    return /^[A-ZÆØÅ]{1,3}[a-zæøå]{0,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t) || /^[A-ZÆØÅ]{1,3}-\d{1,3}[a-zæøå]?$/.test(t) ||
+      (!!r.kt && r.kt.indexOf(t) >= 0) ||
+      /^[A-ZÆØÅ]{2,}[.:]?$/.test(t) || /^[A-ZÆØÅ][a-zæøå]{1,4}[.:-]?$/.test(t) ||
       /^\d+(?:[.,]\d+)?$/.test(t) || /^(%|°C|K|h|bar|=|\(kW\)|\(kWh\)|[A-ZÆØÅ]-[A-ZÆØÅ])$/.test(t) || /^[A-ZÆØÅa-zæøå]+\.°C$/.test(t);
   });
 }
@@ -23821,17 +23887,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       })).then(function () {
         // given: the card's fonts, and Myriad Pro installed - Illustrator's own, Thomas's pictures' font
         if (vcHasFont('Myriad Pro')) out.push({ family: 'Myriad Pro', label: 'Myriad Pro', trusted: true });
-        /* (v1.88.0) A free stand-in for the pictures' own font, so a machine without Myriad Pro is not left reading
-           them in Roboto alone. Myriad is a humanist; Roboto is a neo-grotesque, and its letters explain a humanist's
-           ink badly enough that whole runs stay drawing - on 2349's Oversikt that was K-10a, K-11c, K-31b and the
-           "Kjø" of K-55, each left as traced shapes. Source Sans 3 is Adobe's own open humanist, far closer in shape
-           and OFL rather than licensed, so it can simply be fetched.
+        /* Roboto, fetched once and kept a month where the machine lacks it (`ensure`, v1.88.0: a font at a time).
 
-           Both are offered, and the fit scoring below picks whichever actually explains this picture's ink. That is
-           what makes this safe: a font that reads no better is never chosen, so nothing can get worse.
-
-           Roboto no longer short-circuits the rest. Having it installed used to end the search, which is exactly the
-           machine that most needed another candidate. */
+           (v1.89.0) Source Sans 3, which 1.88.0 fetched beside it as a closer stand-in for Myriad, is not offered. Read
+           again with every font, 20 of Thomas's pictures: the fit took it on 8, always by 0.01 or less, and on none of
+           them did it read better than the font it displaced - worse on 4 (Sgc, Pgc and V3gc as Sqc, Pqc and V3qc, M-T
+           as M-I, and an Oversikt's names as KMI IA), as many words newly wrong as newly right on the other 4. Nor was
+           the font what left 2349's K-10a, K-11c and K-31b as drawing: the reading's rules for codes were, and with
+           them Segoe UI and Roboto read all 60 of that Oversikt's words right, Source Sans 3 55. */
         var ensure = function (family) {
           if (vcHasFont(family)) { out.push({ family: family, label: family }); return Promise.resolve(null); }
           var cache = {};
@@ -23853,7 +23916,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             })).then(function (oks) { if (oks.some(Boolean)) out.push({ family: 'IWDIE ' + family, label: family }); });
           });
         };
-        return ensure('Source Sans 3').then(function () { return ensure('Roboto'); });
+        return ensure('Roboto');
       }).then(function () {
         ['Arial', 'Segoe UI'].forEach(function (f) { if (vcHasFont(f)) out.push({ family: f, label: f }); });
         return out;
@@ -23988,10 +24051,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /** The reading functions a worker runs (v1.78.0). */
+    /** The reading functions a worker runs (v1.78.0; v1.89.0 the codes'). */
     function vcTxDeps() {
       return [iwdieTxGains, iwdieTxKerny, iwdieTxSpan, iwdieTxResidue, iwdieTxRead, iwdieTxForce, iwdieTxWordy, iwdieTxDist, iwdieTxCrop, iwdieTxShape, iwdieTxKnownBest, iwdieTxBest,
-        iwdieTxTaken, iwdieTxPieces, iwdieTxTries];
+        iwdieTxTaken, iwdieTxPieces, iwdieTxTries, iwdieTxCodes, iwdieTxCodeOdd];
     }
 
     /** The picture's words read in its own font, each to be a label object (v1.78.0). The tracer finds them (iwdieVzTrace
@@ -28275,6 +28338,8 @@ if (typeof module !== 'undefined' && module.exports) {
     txLabelSizes: iwdieTxLabelSizes,
     txFit: iwdieTxFit,
     txKnownBest: iwdieTxKnownBest,
+    txCodes: iwdieTxCodes,
+    txCodeOdd: iwdieTxCodeOdd,
     vzBoxes: iwdieVzBoxes,
     vzBoxTemplate: iwdieVzBoxTemplate,
     vzBoxKind: iwdieVzBoxKind,
