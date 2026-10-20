@@ -498,6 +498,36 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### An edit file of clusters goes straight onto the panel, the picture as it is (v1.95.0)
+
+Thomas tried 1.94.0 on 10257's Oversikt, and VectorCraft stopped at its card asking for the plant's .ai or Vectorize
+image. Making the picture a drawing first would also have replaced it. What he wanted: *when you insert json again you
+get the panel picture plus the changes*.
+
+- **Clusters only, placed here.** An edit file whose every op is a `cluster` (a case's value, bell, cooling and defrost,
+  all IWMAC objects) has a first button, **Insert N objects here**, in Insert JSON….
+  - It plans the clusters as VectorCraft does (the same planner) on the panel's own objects.
+  - It links each role's parameter through the plant's rows, as a sync from VectorCraft does.
+  - It puts the objects on the canvas with the Designer's own loader.
+  - The picture is not touched and nothing is saved: the Designer's Save does that.
+- **A case drawn in the picture.** A `{find}` target, such as a house symbol, stands in at the template's size round the
+  point Copilot found it at. The check says how many of them there are, to look over.
+- **Written for another state of the panel.** An edit file names the panel's objects as they stood when Copilot read the
+  panel. A cluster's `{object}` target must be a case box of this panel. Where one is not, the check says so, gives the
+  object counts, and offers neither button.
+  - 10257's saved Oversikt holds 172 objects: 43 clusters and no case box.
+  - The file was read from 120 objects, with case boxes `object_0` to `object_54`.
+  - Its clusters would have gone round alarms and values, here or in VectorCraft.
+- **Anything else** still opens in VectorCraft, as in 1.94.0: a symbol, a pipe, a caption, a value on its pill.
+  **Insert without checking** takes the same path the check would.
+
+Tested in the stub host:
+- an edit file whose cluster named a value as its case was refused, with neither button;
+- three clusters on three case boxes placed 10 objects: 3 linked (by name and unit name, by name and unit id, by
+  `[driver_id]`), 7 left unbound by the file, and no VectorCraft tab opened.
+
+Not run in the live Designer.
+
 ### Insert JSON… takes Copilot's VectorCraft edit file (v1.94.0)
 
 Copilot's edit skill writes a change to the drawing itself as an edit file (`iwmac-vc-edits_<plant>_<panel>_….json`,

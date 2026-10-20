@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.94.0
+// @version      1.95.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.94.0';
+var IWDIE_VERSION = '1.95.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12433,13 +12433,77 @@ function iwdieVcEditFile(doc, job) {
   return { ok: !problems.length, ops: ops || [], problems: problems, summary: typeof doc.summary === 'string' ? doc.summary : '', plant: doc.plant, panel: doc.panel };
 }
 
+/** An edit file Insert JSON… places on the panel itself (v1.95.0): one whose every op is a cluster - a case's value, bell,
+ *  cooling and defrost are IWMAC objects, nothing of the drawing - planned as VectorCraft plans it (iwdieCbPlan) on the
+ *  panel's objects as they stand: an {object} target the Designer's own case box; a {find} target a case drawn in the
+ *  picture, a house symbol, stood in for by the template's size round the point Copilot found it at (the centre of the
+ *  thing it found). Thomas, 2026-10-20, on 10257's Oversikt: VectorCraft stopped at its .ai card and would have made the
+ *  picture a drawing first - "when you insert json again you get the panel picture plus the changes".
+ *  `objects` the panel's (as exportPanelObjects gives them), `size` {w, h}, `sizes` iwdieCbSymbolSizes of the library.
+ *  -> {ok, why, found: [{id, x, y, w, h, text, bind}], errors, notes, standIns: [symbol], clusters} */
+function iwdieVcEditDirect(doc, objects, size, sizes) {
+  var none = function (why) { return { ok: false, why: why, found: [], errors: [], notes: [], standIns: [], clusters: 0 }; };
+  var f = iwdieVcEditFile(doc, null);
+  if (!f.ok) return none(f.problems.join('; '));
+  var other = [];
+  f.ops.forEach(function (o) { if (o.op !== 'cluster' && other.indexOf(o.op) < 0) other.push(o.op); });
+  if (other.length) return none('it changes the drawing too (' + other.join(', ') + '): VectorCraft makes it');
+  var items = [], standIns = [];
+  (objects || []).forEach(function (ob, i) {
+    if (!ob || typeof ob !== 'object' || !ob.name) return;
+    var b = { x: parseFloat(ob.posLeft), y: parseFloat(ob.posTop), w: parseFloat(ob.posWidth), h: parseFloat(ob.posHeight) };
+    if (![b.x, b.y, b.w, b.h].every(isFinite)) return;
+    items.push({ cid: 'c' + i, kind: 'object', ref: String(ob.name), name: String(ob.name), obj_id: String(ob.obj_id || ''), box: b,
+      layer: 'IWMAC-objekter', text: String(ob.tag_text == null ? '' : ob.tag_text) });
+  });
+  f.ops.forEach(function (o, i) {
+    var fd = o.target && o.target.find;
+    if (!fd || typeof fd !== 'object' || fd.kind !== 'symbol' || !fd.symbol || !Array.isArray(fd.near) || fd.near.length !== 2) return;
+    var z = iwdieCbSymbolBox(sizes, fd.symbol, 0), cx = +fd.near[0], cy = +fd.near[1];
+    if (!z || !isFinite(cx) || !isFinite(cy)) return;
+    items.push({ cid: 's' + i, kind: 'symbol', symbol: String(fd.symbol), k: 0, box: { x: cx - z.w / 2, y: cy - z.h / 2, w: z.w, h: z.h }, layer: 'Former' });
+    standIns.push(String(fd.symbol));
+  });
+  // each cluster's {object} target a case box of this panel: a file read from another state of it names other things so
+  var byName = {}, wrong = [], d0 = doc;
+  if (typeof d0 === 'string') { try { d0 = JSON.parse(d0); } catch (e) { d0 = null; } }
+  items.forEach(function (it) { if (it.kind === 'object') byName[it.ref] = it; });
+  f.ops.forEach(function (o) {
+    var t = o.target;
+    if (!t || typeof t !== 'object' || t.object === undefined) return;
+    var it = byName[String(t.object)];
+    if (!it) wrong.push(t.object + ' is not on this panel');
+    else if (!iwdieOvCaseKind(it)) wrong.push(t.object + ' is a ' + (it.obj_id || 'object') + ', no case box');
+  });
+  if (wrong.length) {
+    var made = d0 && d0.made_from && +d0.made_from.objects > 0 ? +d0.made_from.objects : 0, out = none('it was written for another state of this panel' +
+      (made ? ' (read from ' + made + ' objects; this one has ' + items.filter(function (it) { return it.kind === 'object'; }).length + ')' : '') + ': ' +
+      wrong.slice(0, 3).join('; ') + (wrong.length > 3 ? ', and ' + (wrong.length - 3) + ' more' : '') +
+      '. Export this panel as it is now and ask Copilot again');
+    out.mismatch = true;
+    return out;
+  }
+  var sz = size && size.w > 0 && size.h > 0 ? size : { w: 1400, h: 750 };
+  var plan = iwdieCbPlan(f.ops, { items: items, size: sz }, { sizes: sizes || {}, facts: iwdieCbFacts(items, sz) });
+  var kinds = [];
+  plan.steps.forEach(function (st) { var k = st['do'] === 'add' ? st.kind : st['do']; if (k !== 'object' && kinds.indexOf(k) < 0) kinds.push(k); });
+  if (kinds.length) return none('its plan changes the drawing too (' + kinds.join(', ') + '): VectorCraft makes it');
+  var found = plan.steps.map(function (st) {
+    return { id: st.obj_id, x: st.box.x, y: st.box.y, w: st.box.w, h: st.box.h, text: st.text || '', bind: st.bind ? String(st.bind) : '' };
+  });
+  return { ok: !plan.errors.length, why: plan.errors.slice(0, 6).join('; '), found: found, errors: plan.errors, notes: plan.notes,
+    standIns: standIns, clusters: f.ops.length };
+}
+
 /** An edit file picked, dropped or pasted in Insert JSON… (v1.94.0): what it is and what it would make, for the dialog -
  *  its ops counted by kind, its plant and panel against the Designer's (`here`: {plant, panel}), and what Insert does with
  *  it: the panel opened in VectorCraft with the file, planned there at once and made with Make it; Ctrl+S there brings it
  *  into the panel. Thomas, 2026-10-20: Copilot's iwmac-vc-edits_10257_oversikt file was refused by Insert JSON… as an
  *  unknown format. -> {ok, problems, ops, counts, html, text, className} */
-function iwdieVcEditFileReview(doc, here, fileName) {
+function iwdieVcEditFileReview(doc, here, fileName, extra, opts) {
   var esc = iwdieEscHtml, f = iwdieVcEditFile(doc, here || null), p = doc;
+  // (v1.95.0) problems found on this panel besides the file's own: a cluster's target that is no case box here
+  if (extra && extra.length) f = { ok: false, ops: f.ops, problems: f.problems.concat(extra), summary: f.summary };
   if (typeof doc === 'string') { try { p = JSON.parse(doc); } catch (e) { p = null; } }
   p = p && typeof p === 'object' ? p : {};
   var counts = {}, order = [];
@@ -12452,8 +12516,12 @@ function iwdieVcEditFileReview(doc, here, fileName) {
   var plant = p.plant != null && String(p.plant).trim() ? String(p.plant) : '—';
   if (here && here.plant && plant !== '—' && String(here.plant) !== plant) plant += ' (you are on ' + here.plant + ')';
   var title = f.ok ? '✅ An edit file for VectorCraft' : '⛔ This edit file cannot be opened on this panel';
-  var sub = f.ok ? 'It is not inserted here: its button opens this panel in VectorCraft with it, where it is planned on the drawing and made with ' +
-    'Make it. Ctrl+S there brings it into the panel.' : 'Fix what is below first. Nothing has touched the canvas.';
+  // (v1.95.0) `opts.here`: how many objects its clusters put on this panel itself, the picture as it is
+  var n = opts && opts.here > 0 ? +opts.here : 0;
+  var sub = !f.ok ? 'Fix what is below first. Nothing has touched the canvas.' :
+    n ? 'Its ' + iwdieN(n, 'object goes', 'objects go') + ' on this panel itself, the picture as it is - or the file opens in VectorCraft and is made there.' :
+    'It is not inserted here: its button opens this panel in VectorCraft with it, where it is planned on the drawing and made with ' +
+    'Make it. Ctrl+S there brings it into the panel.';
   var cell = function (k, v) { return '<div class="iwdie-g-k">' + esc(k) + '</div><div class="iwdie-g-v">' + esc(v) + '</div>'; };
   var html = '<div class="iwdie-verdict"><div class="iwdie-v-title">' + esc(title) + '</div><div class="iwdie-v-sub">' + esc(sub) + '</div>' +
     (fileName ? '<div class="iwdie-v-file">' + esc(fileName) + '</div>' : '') + '</div>' +
@@ -27256,18 +27324,69 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** An edit file staged here (v1.94.0): what it would make, and a button that opens this panel in VectorCraft with it. */
     function renderEditsReview(doc) {
-      var rv = iwdieVcEditFileReview(doc, { plant: currentPlantId(), panel: currentPanelName() }, stagedName);
+      var where = { plant: currentPlantId(), panel: currentPanelName() }, rv = iwdieVcEditFileReview(doc, where, stagedName);
+      // (v1.95.0) clusters only: placed on this panel itself, the picture as it is - VectorCraft would make it a drawing first
+      var here = rv.ok ? editsHerePlan(doc) : null, n = here && here.ok ? here.found.length : 0;
+      // its targets another state of this panel's: neither here nor in VectorCraft
+      if (here && here.mismatch) { rv = iwdieVcEditFileReview(doc, where, stagedName, [here.why]); here = null; }
+      else if (here && here.ok) rv = iwdieVcEditFileReview(doc, where, stagedName, null, { here: n });
+      if (here && here.ok) {
+        rv.html += '<div class="iwdie-sec iwdie-sec-info"><div class="iwdie-sec-h">Placed here, the picture as it is</div><div>' +
+          esc('Its ' + iwdieN(here.clusters, 'cluster is', 'clusters are') + ' IWMAC objects only: Insert puts the ' + iwdieN(n, 'object', 'objects') +
+            ' on this panel as VectorCraft would place them, linked to the plant’s rows, and the picture stays as it is.' +
+            (here.standIns.length ? ' ' + iwdieN(here.standIns.length, 'of them stands', 'of them stand') + ' on a case drawn in the picture (' +
+              here.standIns.filter(function (v, i, a) { return a.indexOf(v) === i; }).join(', ') + '), placed by where Copilot found it at the template’s size: look ' +
+              (here.standIns.length === 1 ? 'it' : 'them') + ' over.' : '')) + '</div></div>';
+      } else if (here && here.why && rv.ok) {
+        rv.html += '<div class="iwdie-sec iwdie-sec-info"><div class="iwdie-sec-h">Not placed here</div><div>' + esc(here.why) + '</div></div>';
+      }
       var html = rv.html + '<div class="iwdie-review-foot"><div class="iwdie-actions">' +
-        (rv.ok ? '<button class="iwdie-btn" id="iwdie_edits_open">Open in VectorCraft with these edits</button>' : '') +
+        (here && here.ok ? '<button class="iwdie-btn" id="iwdie_edits_here">Insert ' + esc(iwdieN(n, 'object', 'objects')) + ' here</button>' : '') +
+        (rv.ok ? '<button class="iwdie-btn' + (here && here.ok ? ' iwdie-secondary' : '') + '" id="iwdie_edits_open">Open in VectorCraft' + (here && here.ok ? ' instead' : ' with these edits') + '</button>' : '') +
         '<button class="iwdie-btn iwdie-secondary" id="iwdie_check_copy">📋 Copy report for the AI</button>' +
         '<button class="iwdie-link" id="iwdie_back">← Choose another file</button>' +
-        '</div><div class="iwdie-foot-note">' + esc(rv.ok ? 'Nothing changes here until Ctrl+S in VectorCraft, and the panel is saved with the Designer’s own Save, as always.'
+        '</div><div class="iwdie-foot-note">' + esc(rv.ok && here && here.ok ? 'Insert puts the objects on the canvas and saves nothing: the Designer’s Save does, and the panel opened again ' +
+          'without saving is as it was. In VectorCraft, nothing changes here until Ctrl+S there.' : rv.ok ? 'Nothing changes here until Ctrl+S in VectorCraft, and the panel is saved with the Designer’s own Save, as always.'
           : 'Open the panel this file was written for, or ask Copilot for one written for this panel.') + '</div></div>';
       var review = showReview(rv.className, html);
       if (!review) return;
       review.querySelector('#iwdie_check_copy').addEventListener('click', function () { copyToClipboard(rv.text); });
       var go = review.querySelector('#iwdie_edits_open');
       if (go) go.addEventListener('click', function () { openEditsInVectorCraft(doc, stagedName); });
+      var put = review.querySelector('#iwdie_edits_here');
+      if (put) put.addEventListener('click', function () { insertEditsHere(doc, stagedName); });
+    }
+
+    /** The plan of an edit file's clusters on this panel's objects (v1.95.0, iwdieVcEditDirect). -> its result */
+    function editsHerePlan(doc) {
+      var lib = iwdieLibWithBuiltin(libLoad());
+      return iwdieVcEditDirect(doc, exportPanelObjects(), exportPanelSize(), iwdieCbSymbolSizes(lib ? lib.items : []));
+    }
+
+    /** An edit file's clusters put on this panel (v1.95.0): planned on its objects, each role's parameter linked through the
+     *  plant's rows as a sync from VectorCraft links it, made by the Designer's own loader as Insert makes objects. The
+     *  picture stays as it is; nothing is saved - the Designer's Save does that. */
+    function insertEditsHere(doc, name) {
+      if (!hostReady()) { toast('IWMAC Designer not ready yet — host functions missing.', true); return; }
+      var d = editsHerePlan(doc);
+      if (!d.ok) { showErrors(['The edit file’s clusters cannot be placed on this panel: ' + (d.why || 'nothing to place') + '.']); return; }
+      closeImportPanel();
+      toast('Placing ' + iwdieN(d.found.length, 'object', 'objects') + ' from ' + (name || 'the edit file') + '…', false, 6000);
+      var objs = exportPanelObjects();
+      vcParams(objs).then(null, function () { return null; }).then(function (p) {
+        return vcLinkFound(d.found, { params: p });
+      }).then(null, function (e) { return { linked: [], failed: ['the plant’s rows could not be read: ' + ((e && e.message) || e)] }; }).then(function (lk) {
+        var res = vcPlaceObjects(d.found);
+        if (res.error) { toast('The objects could not be placed: ' + res.error, true, 12000); return; }
+        var unbound = d.found.filter(function (f) { return !f.bind; }).length;
+        var lines = ['✓ ' + iwdieN(res.placed, 'object', 'objects') + ' from ' + (name || 'the edit file') + ' on the panel' +
+          (res.already ? ' (' + res.already + ' already there)' : '') + ', the picture as it was.',
+          iwdieN(lk.linked.length, 'is', 'are') + ' linked to the plant’s rows' + (unbound ? '; ' + unbound + ' left unlinked by the file' : '') + '.'];
+        if (lk.failed.length) lines.push('Not linked: ' + lk.failed.slice(0, 4).join('; ') + (lk.failed.length > 4 ? ' and ' + (lk.failed.length - 4) + ' more' : '') + '.');
+        if (d.standIns.length) lines.push(iwdieN(d.standIns.length, 'cluster stands', 'clusters stand') + ' on a case drawn in the picture: look ' + (d.standIns.length === 1 ? 'it' : 'them') + ' over.');
+        lines.push('Save the panel with the Designer’s Save when it looks right.');
+        toast(lines.join(' '), !!lk.failed.length, 20000);
+      });
     }
 
     /** This panel in VectorCraft with an edit file to make there (v1.94.0): Edit in VectorCraft…, the file handed over with
@@ -27594,6 +27713,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.format === IWDIE_VC_EDITS_FORMAT) {
         var rv = iwdieVcEditFileReview(parsed, { plant: currentPlantId(), panel: currentPanelName() }, stagedName);
         if (!rv.ok) { showErrors(['This is an edit file for VectorCraft, and it cannot be opened on this panel: ' + rv.problems.join('; ') + '.']); return; }
+        // (v1.95.0) clusters only: placed on the panel itself, as the check's first button places them; one written for
+        // another state of this panel nowhere
+        var hp = editsHerePlan(parsed);
+        if (hp.mismatch) { showErrors(['This edit file cannot be used on this panel: ' + hp.why + '.']); return; }
+        if (hp.ok) { insertEditsHere(parsed, stagedName); return; }
         openEditsInVectorCraft(parsed, stagedName);
         return;
       }
@@ -28891,6 +29015,7 @@ if (typeof module !== 'undefined' && module.exports) {
     VC_EDITS_FORMAT: IWDIE_VC_EDITS_FORMAT,
     vcEditFile: iwdieVcEditFile,
     vcEditFileReview: iwdieVcEditFileReview,
+    vcEditDirect: iwdieVcEditDirect,
     cbClassify: iwdieCbClassify,
     svgClassMap: iwdieSvgClassMap,
     svgProp: iwdieSvgProp,
