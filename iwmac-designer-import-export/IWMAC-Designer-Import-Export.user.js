@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.96.0
+// @version      1.97.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.96.0';
+var IWDIE_VERSION = '1.97.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16389,10 +16389,11 @@ function iwdieVzPillOwner(box, objects) {
  *  with the object's placeholder, as vectors, and moves with it. Under one the Designer draws itself it is that
  *  object's own look a second time, and goes. `cols`: the picture's palette, [[r, g, b], ...] as iwdieVzPalette reads it.
  *  -> {unders: {name: [{markup, box}]}, carried, left} */
-function iwdieVzObjectPills(pic, W, H, cols, objects) {
+function iwdieVzObjectPills(pic, W, H, cols, objects, found) {
   var obs = (objects || []).filter(function (ob) { return ob && ob.name; }), unders = {}, used = {}, carried = 0, left = 0, gone = [];
   if (!obs.length) return { unders: unders, carried: 0, left: 0 };
-  (iwdieVcFindPills(pic, W, H, cols) || []).forEach(function (p) {
+  // (v1.97.0) `found`: the pills iwdieVcFindPills finds in `pic` with `cols`, found already - off the page, iwdieOvPalettePills
+  ((found || iwdieVcFindPills(pic, W, H, cols)) || []).forEach(function (p) {
     var ob = iwdieVzPillOwner(p.outer, obs);
     if (!ob) return;
     if (!ob.iwdieSelf) {
@@ -16405,6 +16406,15 @@ function iwdieVzObjectPills(pic, W, H, cols, objects) {
   });
   iwdieVcErasePills(pic, W, H, gone);
   return { unders: unders, carried: carried, left: left };
+}
+
+/** The picture's palette and its pills (v1.97.0), as the export's overview takes the objects' pills out of it
+ *  (ovClearObjects, iwdieVzObjectPills): one call, so that a worker can make it - the pills' rings are read pixel by
+ *  pixel, and on a Maskin picture that held the page for a third of a second. `pic` RGBA, W x H; not changed.
+ *  -> {cols: [[r, g, b]...], pills: iwdieVcFindPills'} */
+function iwdieOvPalettePills(pic, W, H) {
+  var cols = iwdieVzPalette(pic, W, H, {}).map(function (cc) { return cc.slice(0, 3); });
+  return { cols: cols, pills: iwdieVcFindPills(pic, W, H, cols) || [] };
 }
 
 /** The pixels of `pic` that show an object's own look where the object stands (v1.74.0): `looks` [{x, y, w, h, rgba}],
@@ -18106,23 +18116,31 @@ function iwdieVcReadLabelSvg(l, used) {
  *  `templates` [{k, w, h, rgba}] drawn from `items` (vcComponentTemplates), named by `names` (iwdieVcComponentNames).
  *  -> those templates */
 function iwdieVcSymbolLooks(templates, items, names, bg) {
-  var seen = {}, out = [], g = [0, 1, 2].map(function (c) { return Math.round((bg || [])[c] || 0); });
-  (templates || []).forEach(function (t) {
-    var it = items[t.k], sig = t.w + 'x' + t.h + ':' + iwdieVcPixelHash(t.rgba);
-    if (!it || seen[sig]) return;
-    seen[sig] = 1;
-    var name = String((it.sym && it.sym.name) || (names && names[t.k]) || '');
-    if (/^Pille/i.test(name) || iwdieSymIsObject(name)) return;
-    var solid = 0;
-    for (var i = 3; i < t.rgba.length; i += 4) if (t.rgba[i] >= 250) solid++;
-    if (solid < t.w * t.h * 0.2) return;
-    var p = iwdieVcPrepare(t, 0);
-    if (!p) return;
-    if (p.one && Math.abs(p.M[0] - g[0]) + Math.abs(p.M[1] - g[1]) + Math.abs(p.M[2] - g[2]) < 75) return;
-    if (iwdieVcIsPill(t, g)) return;
-    out.push(t);
-  });
+  var seen = {}, out = [], g = iwdieVcLookGround(bg);
+  (templates || []).forEach(function (t) { if (iwdieVcSymbolLookKeeps(t, items, names, g, seen)) out.push(t); });
   return out;
+}
+
+/** The ground iwdieVcSymbolLooks weighs a look against (v1.97.0): `bg`'s red, green and blue, whole. */
+function iwdieVcLookGround(bg) {
+  return [0, 1, 2].map(function (c) { return Math.round((bg || [])[c] || 0); });
+}
+
+/** Whether iwdieVcSymbolLooks keeps template `t` (v1.97.0: one template, so that the export can weigh them a few at a time,
+ *  vcSymbolLooksSliced): `g` its ground (iwdieVcLookGround), `seen` the twins met so far, which this adds to. */
+function iwdieVcSymbolLookKeeps(t, items, names, g, seen) {
+  var it = items[t.k], sig = t.w + 'x' + t.h + ':' + iwdieVcPixelHash(t.rgba);
+  if (!it || seen[sig]) return false;
+  seen[sig] = 1;
+  var name = String((it.sym && it.sym.name) || (names && names[t.k]) || '');
+  if (/^Pille/i.test(name) || iwdieSymIsObject(name)) return false;
+  var solid = 0;
+  for (var i = 3; i < t.rgba.length; i += 4) if (t.rgba[i] >= 250) solid++;
+  if (solid < t.w * t.h * 0.2) return false;
+  var p = iwdieVcPrepare(t, 0);
+  if (!p) return false;
+  if (p.one && Math.abs(p.M[0] - g[0]) + Math.abs(p.M[1] - g[1]) + Math.abs(p.M[2] - g[2]) < 75) return false;
+  return !iwdieVcIsPill(t, g);
 }
 
 /** A house symbol found in a picture, as the job's SVG has it (v1.74.0): a group named after it, with data-iwdie-symbol
@@ -18778,8 +18796,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
          it, which would corrupt the snapshots. */
       '.iwdie-progress-panel{width:420px}',
       '.iwdie-progress-panel h3{margin-bottom:14px}',
-      '.iwdie-progress-track{height:18px;background:#e4e9ee;border-radius:9px;overflow:hidden;margin:10px 0 8px}',
-      '.iwdie-progress-fill{height:100%;width:0;background:#2f6fb2;border-radius:9px;transition:width .2s}',
+      '.iwdie-progress-track{height:10px;background:#e8edf3;border-radius:5px;overflow:hidden;margin:10px 0 8px}',
+      '.iwdie-progress-fill{height:100%;width:0;background:linear-gradient(90deg,#2f6fb2,#4b95e0);border-radius:5px;transition:width .4s cubic-bezier(.22,.61,.36,1)}',
       '.iwdie-progress-line{font-size:13px;color:#334;min-height:18px}',
       '.iwdie-progress-sub{font-size:12px;color:#778;margin-top:2px}',
       '.iwdie-progress-note{font-size:11.5px;color:#996a00;background:#fdf6e3;border:1px solid #e8d9a0;border-radius:5px;padding:6px 10px;margin-top:10px}',
@@ -18795,6 +18813,49 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '@keyframes iwdie-turn{to{transform:rotate(360deg)}}',
       '.iwdie-ring{display:inline-block;width:10px;height:10px;box-sizing:border-box;border:2px solid #2f6fb2;border-right-color:transparent;' +
         'border-radius:50%;vertical-align:-1px;animation:iwdie-turn .8s linear infinite;will-change:transform}',
+      /* Export JSON's progress card (v1.97.0, exportProgressCard). The bar is scaled, not resized, and its highlight is moved
+         by transform: both run in the compositor, so they go on while reading the picture holds the page. Every text has
+         its own colour, size and weight, against the host's rule that greys every span. */
+      '.iwdie-xp-overlay{background:rgba(16,24,32,.32)}',
+      '.iwdie-xp-overlay.iwdie-xp-out{opacity:0;transition:opacity .18s ease-in}',
+      '.iwdie-xp{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:500px;max-width:92vw;box-sizing:border-box;' +
+        'background:#fff;border-radius:14px;box-shadow:0 22px 60px rgba(10,25,45,.30),0 2px 6px rgba(10,25,45,.12);padding:18px 22px 14px;' +
+        'z-index:2147483647;font:13px/1.45 "Segoe UI",Roboto,Arial,sans-serif;color:#1f2a37;animation:iwdie-xp-in .2s ease-out}',
+      '@keyframes iwdie-xp-in{from{opacity:0;transform:translate(-50%,calc(-50% + 10px))}to{opacity:1;transform:translate(-50%,-50%)}}',
+      '.iwdie-xp-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}',
+      '.iwdie-xp .iwdie-xp-title{min-width:0;font-size:15px;font-weight:600;color:#1f2a37}',
+      '.iwdie-xp .iwdie-xp-pct{flex:none;white-space:nowrap;font-size:24px;font-weight:600;color:#2f6fb2;font-variant-numeric:tabular-nums;letter-spacing:-.01em;transition:color .3s}',
+      '.iwdie-xp-track{position:relative;height:10px;border-radius:5px;background:#e8edf3;overflow:hidden}',
+      '.iwdie-xp-fill{position:absolute;top:0;right:0;bottom:0;left:0;transform-origin:0 50%;transform:scaleX(0);border-radius:5px;overflow:hidden;' +
+        'background:linear-gradient(90deg,#2f6fb2,#4b95e0);transition:transform .45s cubic-bezier(.22,.61,.36,1),background .3s;will-change:transform}',
+      '.iwdie-xp-shine{position:absolute;top:0;bottom:0;left:0;width:45%;will-change:transform;' +
+        'background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.55),rgba(255,255,255,0));animation:iwdie-xp-shine 1.6s ease-in-out infinite}',
+      '@keyframes iwdie-xp-shine{from{transform:translateX(-110%)}to{transform:translateX(240%)}}',
+      '.iwdie-xp .iwdie-xp-now{margin:10px 0 8px;min-height:19px;font-size:13px;font-weight:400;color:#33414f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      '.iwdie-xp-steps{list-style:none;margin:0;padding:8px 0 0;border-top:1px solid #edf1f5}',
+      '.iwdie-xp-steps li{display:flex;gap:8px;align-items:center;margin:0;padding:2px 0;font-size:12.5px;color:#9aa5b1;transition:color .25s}',
+      '.iwdie-xp-steps li span{font-size:12.5px;font-weight:400;color:inherit}',
+      '.iwdie-xp-steps li .i{width:14px;flex:none;text-align:center}',
+      '.iwdie-xp-steps li .l{flex:none}',
+      '.iwdie-xp-steps li .d{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:#7b8794}',
+      '.iwdie-xp-steps li .t{flex:none;width:46px;text-align:right;color:#7b8794;font-variant-numeric:tabular-nums}',
+      '.iwdie-xp-steps li.now{color:#1f2a37}',
+      '.iwdie-xp-steps li.done{color:#3b4754}',
+      '.iwdie-xp-steps li.done .i{color:#27884e;font-weight:600}',
+      '.iwdie-xp-steps li.none{color:#bcc5ce}',
+      '.iwdie-xp-steps li.bad .i{color:#c0392b;font-weight:600}',
+      '.iwdie-xp-foot{display:flex;align-items:center;justify-content:space-between;margin-top:10px}',
+      '.iwdie-xp .iwdie-xp-time{font-size:12px;font-weight:400;color:#7b8794;font-variant-numeric:tabular-nums}',
+      '.iwdie-xp-cancel{height:28px;padding:0 14px;border:1px solid #c9d2db;border-radius:14px;background:#fff;color:#33414f;' +
+        'font:600 12.5px "Segoe UI",Roboto,Arial,sans-serif;cursor:pointer}',
+      '.iwdie-xp-cancel:hover{background:#f2f5f8}',
+      '.iwdie-xp-cancel:disabled{opacity:.6;cursor:default}',
+      '.iwdie-xp.ok .iwdie-xp-fill{background:linear-gradient(90deg,#27884e,#3bb26c)}',
+      '.iwdie-xp.ok .iwdie-xp-pct{color:#27884e}',
+      '.iwdie-xp.bad .iwdie-xp-fill{background:#c0392b}',
+      '.iwdie-xp.bad .iwdie-xp-pct{color:#c0392b}',
+      '.iwdie-xp.ok .iwdie-xp-shine,.iwdie-xp.bad .iwdie-xp-shine{display:none}',
+      '@media (prefers-reduced-motion:reduce){.iwdie-xp,.iwdie-xp-shine{animation:none}.iwdie-xp-shine{display:none}.iwdie-xp-fill{transition:none}}',
       ''].join('\n');
     try {
       if (typeof GM_addStyle === 'function') { GM_addStyle(CSS); }
@@ -19057,12 +19118,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** The rows of the units given, four at a time. -> Promise<{rows: {unit_id: rows}, failed: [unit_id...]}> */
-    function ovRowsFor(ids) {
-      var out = { rows: {}, failed: [] }, queue = ids.slice(), workers = [];
+    function ovRowsFor(ids, onUnit) {
+      var out = { rows: {}, failed: [] }, queue = ids.slice(), workers = [], done = 0;
+      // (v1.97.0) `onUnit(done, of)` hears each unit as it has been read
+      var tell = function () { done++; if (onUnit) { try { onUnit(done, ids.length); } catch (e) {} } };
       var next = function () {
         if (!queue.length) return Promise.resolve();
         var u = queue.shift();
-        return ovUnitRows(u).then(function (rows) { out.rows[u] = rows; }, function () { out.failed.push(u); }).then(next);
+        return ovUnitRows(u).then(function (rows) { out.rows[u] = rows; }, function () { out.failed.push(u); }).then(tell).then(next);
       };
       for (var k = 0; k < Math.min(4, ids.length); k++) workers.push(next());
       return Promise.all(workers).then(function () { return out; });
@@ -19313,34 +19376,90 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** The picture's layout and style: what iwdieVzTrace finds in its pixels (off this page), and the texts of the drawing
-     *  it was made from, when it keeps one. -> Promise<{source, outline, texts, layers} | null> */
-    function ovPicture(url, size, fill, set, objs) {
-      if (!url) return Promise.resolve(null);
+     *  it was made from, when it keeps one. (v1.97.0) `card`: Export JSON's progress (exportProgressCard): each part tells
+     *  it how far it is as it goes, and the page gets a breath before each part that holds it. -> Promise<{source,
+     *  outline, texts, layers} | null> */
+    function ovPicture(url, size, fill, set, objs, card) {
+      var cd = card || null;
+      if (!url) {
+        if (cd) cd.leave(['picture', 'under', 'objects', 'symbols', 'layout'], 'no picture');
+        return Promise.resolve(null);
+      }
+      if (cd) cd.begin('picture', 'fetching it');
       return fetchBackgroundBytes(url).then(function (bg) {
         var mime = iwdieSniffMime(bg.bytes);
+        if (cd) cd.part('picture', 0.3, ovKindSay(mime) + ', ' + ovKb(bg.bytes.length));
         var drawn = mime === 'image/svg+xml' ? Promise.resolve(iwdieUtf8Decode(bg.bytes)) : vcDocumentOf(bg.bytes);
         return drawn.then(null, function () { return null; }).then(function (svg) {
           var got = null;
           if (svg) { try { got = ovSvgTexts(svg, size); } catch (e) { got = null; } }
-          return exportPaint(bg.bytes, mime !== 'application/octet-stream' ? mime : bg.mime, size, fill).then(function (c) {
+          if (cd) {
+            cd.part('picture', 0.6);
+            if (svg) cd.leave(['under', 'objects', 'symbols'], 'not needed: the picture is a drawing');
+          }
+          return vcBreath(window).then(function () {
+            return exportPaint(bg.bytes, mime !== 'application/octet-stream' ? mime : bg.mime, size, fill);
+          }).then(function (c) {
             var data = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
             // v1.76.0: a picture without its drawing has its house symbols looked for, beside the trace - a search that
             // fails, however, costs the export its symbols and nothing else. v1.77.0: and first the IWMAC objects it shows,
             // as Vectorize image looks for them, taken out before the symbols are looked for
-            var pixels = c.getContext('2d').getImageData(0, 0, c.width, c.height).data, seen = null;
-            var look = svg ? Promise.resolve(null) : Promise.resolve().then(function () {
+            var pixels = svg ? null : c.getContext('2d').getImageData(0, 0, c.width, c.height).data, seen = null;
+            if (cd) cd.end('picture', c.width + ' × ' + c.height + (svg ? ', a drawing' : ''));
+            var look = svg ? Promise.resolve(null) : vcBreath(window).then(function () {
               // what the panel's objects stand on, and their own looks shown a second time, out first - as Vectorize image
               // takes them out - or a value's pill under an object reads as a valve
+              if (cd) cd.begin('under', 'their pills and looks');
               return ovClearObjects(pixels, c.width, c.height, objs || []);
-            }).then(function () {
-              return vcFindObjects(pixels, c.width, c.height, objs || [], IWDIE_VZ_OBJECT_MS);
+            }).then(function (pills) {
+              if (cd) {
+                cd.end('under', pills >= 0 ? iwdieN(pills, 'pill', 'pills') : '');
+                cd.begin('objects', 'drawing their looks');
+              }
+              var t1 = Date.now();
+              return vcFindObjects(pixels, c.width, c.height, objs || [], IWDIE_VZ_OBJECT_MS, cd ? function (done, of) {
+                cd.part('objects', Math.max(of ? done / of : 0, (Date.now() - t1) / IWDIE_VZ_OBJECT_MS), done + ' of ' + of + ' looks');
+              } : null, undefined, cd ? function (job) { cd.onCancel(job.stop); } : null);
             }).then(function (fo) {
               if (fo) { seen = fo; iwdieVcErase(pixels, c.width, c.height, fo.holes); }
-            }, function () {}).then(function () {
-              return set ? ovFindSymbols(c, set, IWDIE_OV_SYMBOL_MS, pixels) : null;
-            }).then(null, function () { return null; });
-            return Promise.all([vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, c.width, c.height, { outline: true }], function () {}), look,
-              look.then(function () { return seen; })]);
+              if (cd) {
+                if (fo) cd.end('objects', iwdieN(fo.placed.length + fo.twice.length, 'found', 'found'));
+                else cd.leave(['objects'], 'left out');
+              }
+            }, function () { if (cd) cd.leave(['objects'], 'left out'); }).then(function () {
+              if (!set) {
+                if (cd) cd.leave(['symbols'], 'not needed for this panel');
+                return null;
+              }
+              if (cd) cd.begin('symbols', 'drawing the templates');
+              var t2 = Date.now();
+              return ovFindSymbols(c, set, IWDIE_OV_SYMBOL_MS, pixels, cd ? function (done, of) {
+                cd.part('symbols', Math.max(of ? done / of : 0, (Date.now() - t2) / IWDIE_OV_SYMBOL_MS), done + ' of ' + of + ' templates');
+              } : null, cd ? function (job) { cd.onCancel(job.stop); } : null).then(function (sy) {
+                if (cd) {
+                  if (sy) cd.end('symbols', iwdieN(sy.found.length, 'found', 'found'));
+                  else cd.leave(['symbols'], 'left out');
+                }
+                return sy;
+              });
+            }).then(null, function () {
+              if (cd) cd.leave(['symbols'], 'left out');
+              return null;
+            });
+            if (cd) cd.begin('layout', 'tracing it');
+            var trace = vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, c.width, c.height, { outline: true }],
+              cd ? function (p) { ovTraceTell(cd, p); } : function () {});
+            if (cd) {
+              trace = trace.then(function (vz) {
+                if (vz && vz.outline) cd.end('layout', iwdieN(vz.outline.pills.length, 'pill', 'pills') + ', ' + iwdieN(vz.outline.pipes.length, 'pipe', 'pipes'));
+                else cd.leave(['layout'], 'nothing found');
+                return vz;
+              }, function (e) {
+                cd.leave(['layout'], 'failed');
+                throw e;
+              });
+            }
+            return Promise.all([trace, look, look.then(function () { return seen; })]);
           }).then(function (r) {
             var vz = r[0], found = r[1], seen = r[2];
             if (!vz || !vz.outline) return null;
@@ -19354,40 +19473,92 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
+    /** iwdieVcSymbolLooks, a few templates at a time (v1.97.0): each weighed as it weighs them, in their order, with the
+     *  twins it has met so far, for 12 ms a turn - the page draws between turns. -> Promise<the same templates> */
+    function vcSymbolLooksSliced(templates, items, names, bg) {
+      var seen = {}, out = [], list = templates || [], i = 0, g = iwdieVcLookGround(bg);
+      return new Promise(function (resolve) {
+        (function some() {
+          var until = Date.now() + 12;
+          while (i < list.length && Date.now() < until) {
+            if (iwdieVcSymbolLookKeeps(list[i], items, names, g, seen)) out.push(list[i]);
+            i++;
+          }
+          if (i < list.length) setTimeout(some, 0); else resolve(out);
+        })();
+      });
+    }
+
+    /** A picture's kind for Export JSON's card (v1.97.0): PNG, JPEG, SVG. */
+    function ovKindSay(mime) {
+      var m = /^image\/([\w.+-]+)$/.exec(String(mime || ''));
+      return m ? m[1].replace('svg+xml', 'svg').toUpperCase() : 'a picture';
+    }
+
+    /** A size in kB or MB, for Export JSON's card (v1.97.0). */
+    function ovKb(n) {
+      n = Math.max(0, Number(n) || 0);
+      return n < 1048576 ? Math.max(1, Math.round(n / 1024)) + ' kB' : Math.round(n / 104857.6) / 10 + ' MB';
+    }
+
+    /** How far the trace is, from the phase iwdieVzTrace says it is in (v1.97.0): its colours, the pills, the pipes, then
+     *  the shapes one colour at a time - the most of it - and their fit. */
+    function ovTraceTell(card, p) {
+      var ph = p && p.phase, f = { palette: 0.04, pills: 0.12, pipes: 0.25, labels: 0.35, shapes: 0.9, done: 1 }[ph], say = '';
+      if (ph === 'colour' && p.n > 0) { f = 0.35 + 0.55 * Math.min(1, (p.i + 1) / p.n); say = 'colour ' + (p.i + 1) + ' of ' + p.n; }
+      else say = { palette: 'its colours', pills: 'its pills', pipes: 'its pipes', labels: 'its shapes, by colour', shapes: 'fitting the shapes', done: 'done' }[ph] || '';
+      if (f !== undefined) card.part('layout', f, say);
+    }
+
     /** What the panel's objects stand on in its picture, and their own looks it shows a second time, taken out of `data`
      *  (RGBA, w x h) for the export as Vectorize image takes them out (v1.77.0): each pill one stands on
      *  (iwdieVzObjectPills), and each look of one the Designer draws itself (vcLookMasks, iwdieVzEraseLooks). `objs` with
-     *  their places on the canvas; whether each draws itself is asked of the Designer here. -> Promise */
+     *  their places on the canvas; whether each draws itself is asked of the Designer here. (v1.97.0) The picture's pills
+     *  are found off this page (iwdieOvPalettePills), as Vectorize image finds them: reading their rings held the page for
+     *  a third of a second on a Maskin picture. -> Promise<how many pills the picture has, -1 when not known> */
     function ovClearObjects(data, w, h, objs) {
-      var drawn = {}, kinds = [];
+      var drawn = {}, kinds = [], n = -1;
       (objs || []).forEach(function (ob) {
         var k = String((ob && ob.obj_id) || '');
         if (!k) return;
         if (drawn[k] === undefined) { drawn[k] = vcDrawsItself(k); if (/^[\w.-]+$/.test(k)) kinds.push(k); }
         if (drawn[k]) ob.iwdieSelf = true;
       });
-      try {
-        var cols = iwdieVzPalette(data, w, h, {}).map(function (cc) { return cc.slice(0, 3); });
-        iwdieVzObjectPills(data, w, h, cols, objs);
-      } catch (e) {}
-      return vcObjectLooks(kinds).then(function (looks) {
+      return vcOffPage(iwdieOvPalettePills, iwdieVzWorkerDeps(), [data, w, h]).then(null, function () { return null; }).then(function (pp) {
+        try {
+          if (pp && pp.cols && pp.pills) {
+            n = pp.pills.length;
+            iwdieVzObjectPills(data, w, h, pp.cols, objs, pp.pills);
+          } else {
+            var cols = iwdieVzPalette(data, w, h, {}).map(function (cc) { return cc.slice(0, 3); });
+            iwdieVzObjectPills(data, w, h, cols, objs);
+          }
+        } catch (e) {}
+        return vcObjectLooks(kinds);
+      }).then(function (looks) {
         return vcLookMasks(objs, looks);
-      }).then(function (masks) { iwdieVzEraseLooks(data, w, h, masks); }, function () {});
+      }).then(function (masks) { iwdieVzEraseLooks(data, w, h, masks); }, function () {}).then(function () { return n; });
     }
 
     /** The house symbols a picture of pixels shows (v1.76.0), found for the export as Vectorize image finds them: the
      *  templates of `set` ('Oversikt' or 'Maskin') drawn at 1:1 and looked for in four quarter turns, in workers - for at most
-     *  `ms`, then left out. In reading order, top to bottom. -> Promise<{found: [{name, x, y, w, h, turn}], looked, ms} | null> */
-    function ovFindSymbols(c, set, ms, pixels) {
+     *  `ms`, then left out. In reading order, top to bottom. (v1.97.0) `step(done, of)` hears how far the workers are, and
+     *  `onJob(job)` gets the search, for a Cancel that ends it. -> Promise<{found: [{name, x, y, w, h, turn}], looked, ms} |
+     *  null> */
+    function ovFindSymbols(c, set, ms, pixels, step, onJob) {
       var t0 = Date.now(), lib = libSymbols(), items = iwdieSymItemsOfSet(lib && lib.items, set);
       if (!items.length) return Promise.resolve(null);
       // the picture as the object search left it (v1.77.0), else as it is
       var w = c.width, h = c.height, data = pixels || c.getContext('2d').getImageData(0, 0, w, h).data;
       var ground = (iwdieVzPalette(data, w, h, {})[0] || [204, 204, 204]).slice(0, 3);
       return vcComponentTemplates(items).then(function (templates) {
-        var looks = iwdieVcSymbolLooks(templates, items, iwdieVcComponentNames(items), ground);
+        // (v1.97.0) a few templates at a time, the page drawn between them: weighing them all at once held it for a quarter
+        // of a second on a Maskin picture
+        return vcSymbolLooksSliced(templates, items, iwdieVcComponentNames(items), ground);
+      }).then(function (looks) {
         if (!looks.length) return { found: [], looked: 0, ms: Date.now() - t0 };
-        var job = vcFindAll(data, w, h, looks, function () {}), timer = setTimeout(function () { job.stop(); }, ms);
+        var job = vcFindAll(data, w, h, looks, step || function () {}), timer = setTimeout(function () { job.stop(); }, ms);
+        if (onJob) { try { onJob(job); } catch (e) {} }
         return job.promise.then(function (found) {
           clearTimeout(timer);
           if (!found) return null;
@@ -19400,8 +19571,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /** All an overview is made of, read here: the units the Designer lists and the rows of those in scope, the picture,
-     *  the kinds of object, how tags are written, the kept components. -> Promise<src for iwdieBuildOverview> */
-    function ovGather(doc, url) {
+     *  the kinds of object, how tags are written, the kept components. (v1.97.0) `card`: Export JSON's progress.
+     *  -> Promise<src for iwdieBuildOverview> */
+    function ovGather(doc, url, card) {
       var units = Array.isArray(W.yourplantUnits) ? W.yourplantUnits : [], known = {};
       units.forEach(function (u) { if (u && u.unit_id != null) known[String(u.unit_id)] = 1; });
       var scope = ovScope(doc), ids = Object.keys(scope).filter(function (u) { return !units.length || known[u]; });
@@ -19412,18 +19584,41 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       try { src.kinds = ovKinds(doc); } catch (e) {}
       try { src.tagStyle = ovTagStyle(doc); } catch (e) {}
       try { var lib = libSymbols(); if (lib && lib.items && lib.items.length) src.library = lib; } catch (e) {}
-      var rows = ovRowsFor(ids).then(function (got) { src.rows = got.rows; src.failed = got.failed; }, function () {});
+      if (card) {
+        // each unit is a request to the plant: its share of the bar grows with how many there are
+        card.weigh('rows', 2 + Math.min(ids.length, 40) * 0.6);
+        card.begin('rows', ids.length ? '0 of ' + iwdieN(ids.length, 'unit', 'units') : '');
+      }
+      var rows = ovRowsFor(ids, card ? function (n, of) { card.part('rows', n / of, n + ' of ' + iwdieN(of, 'unit', 'units')); } : null).then(function (got) {
+        src.rows = got.rows; src.failed = got.failed;
+      }, function () {}).then(function () {
+        if (card) card.end('rows', ids.length ? iwdieN(ids.length, 'unit', 'units') + (src.failed.length ? ', ' + src.failed.length + ' not read' : '') : 'none on the panel');
+      });
       // v1.77.0: the panel's objects where they are on the canvas, for the IWMAC objects the picture shows
       var placed = iwdieOvObjects(doc).map(function (p) {
         return { name: p.o.name, obj_id: p.o.obj_id, posLeft: p.x, posTop: p.y, posWidth: parseInt(p.o.posWidth, 10) || 0, posHeight: parseInt(p.o.posHeight, 10) || 0 };
       });
-      var pic = ovTimeout(ovPicture(url, size, fill, iwdieOvSymbolSet(src.panelName), placed), 60000).then(function (p) { src.picture = p; }, function () { src.picture = null; });
+      var pic = ovTimeout(ovPicture(url, size, fill, iwdieOvSymbolSet(src.panelName), placed, card), 60000).then(function (p) { src.picture = p; }, function () { src.picture = null; });
+      // a part still going when the picture was given up (60 s) is left out of the bar
+      if (card) pic = pic.then(function () { card.leave(['picture', 'under', 'objects', 'symbols', 'layout'], 'left out'); });
       return Promise.all([rows, pic]).then(function () { return src; });
     }
 
-    /** The overview of the panel as it is now, or null when it could not be made. */
-    function ovBuild(doc, url) {
-      return ovGather(doc, url).then(function (src) { return iwdieBuildOverview(doc, src); }).then(null, function () { return null; });
+    /** The overview of the panel as it is now, or null when it could not be made. (v1.97.0) `card`: Export JSON's progress;
+     *  the page gets a breath before the overview is laid out. */
+    function ovBuild(doc, url, card) {
+      return ovGather(doc, url, card).then(function (src) {
+        if (!card) return iwdieBuildOverview(doc, src);
+        card.begin('overview', 'laying it out');
+        return vcBreath(window).then(function () {
+          var ov = iwdieBuildOverview(doc, src);
+          card.end('overview', '');
+          return ov;
+        });
+      }).then(null, function () {
+        if (card) card.leave(['overview'], 'left out');
+        return null;
+      });
     }
 
     /** Insert's check, then the plant's own word on the file's links (v1.62.0): each object bound to a parameter read
@@ -19445,7 +19640,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     /* ---------- export ---------- */
-    function buildEnvelopeAsync(allowEmpty, opt) {
+    function buildEnvelopeAsync(allowEmpty, opt, card) {
       var doc = collectCurrentDoc(allowEmpty);
       if (!doc) return Promise.resolve(null);
       var url = grabBackgroundUrl();
@@ -19457,9 +19652,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         opt.made.names = named.map(function (o) { return o.name; });
         url = 'data:image/svg+xml;base64,' + iwdieBytesToBase64(iwdieUtf8Encode(opt.svg));
       }
-      // the plant behind the panel, for an agent (v1.62.0), read while the background is embedded
-      toast('Reading the plant’s units and parameters, and the picture’s layout, for the export…', false, 4000);
-      return Promise.all([embedBackground(doc), ovBuild(doc, url)]).then(function (r) {
+      // the plant behind the panel, for an agent (v1.62.0), read while the background is embedded - (v1.97.0) step by step on
+      // Export JSON's card, where a toast said it once
+      if (!card) toast('Reading the plant’s units and parameters, and the picture’s layout, for the export…', false, 4000);
+      else {
+        card.end('panel', iwdieN(iwdieCountDocItems(doc), 'object', 'objects'));
+        card.begin('embed', '');
+      }
+      var embedded = embedBackground(doc);
+      if (card) embedded = embedded.then(function (d) { card.end('embed', d && d.image_data ? ovKb(String(d.image_data).length * 0.75) : 'no picture'); return d; });
+      return Promise.all([embedded, ovBuild(doc, url, card)]).then(function (r) {
         return iwdieBuildEnvelope(r[0], r[1] ? { overview: r[1] } : {});
       });
     }
@@ -19616,6 +19818,57 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       return name;
     }
 
+    /** downloadEnvelope as Export JSON's last steps on its card (v1.97.0): Insert's own check of the file, the file written,
+     *  then the picture for the AI beside it - with a breath between them, so the card is drawn as they go, and nothing
+     *  written once Cancel was pressed. -> Promise<file name | null> */
+    function downloadEnvelopeSteps(env, traceNote, card) {
+      var name = iwdieBuildExportFilename(env.source_plant_id, env.panel_name);
+      card.begin('check', 'reading the file as Insert reads it');
+      return vcBreath(window).then(function () {
+        // v1.76.0: what the file holds and where, first - with Insert's own check of the file as it goes out
+        var said = '';
+        try {
+          var check = iwdieCheckFile(iwdieStringifyEnvelope(env), { plantId: currentPlantId() });
+          var forAi = env.overview && env.overview.picture ? name.replace(/\.json$/i, '') + '-for-ai.png' : null;
+          env = iwdieEnvelopeWithContents(env, iwdieExportContents(env, { file: name, aiPicture: forAi, check: check }));
+          said = !check || !check.verdict ? '' : check.verdict === 'warnings' && check.warnings && check.warnings.length ? iwdieN(check.warnings.length, 'warning', 'warnings') : String(check.verdict);
+        } catch (e) {}
+        card.end('check', said);
+        if (card.cancelled()) return null;
+        card.begin('write', name);
+        return vcBreath(window).then(function () {
+          if (card.cancelled()) return null;
+          var blob = new Blob([iwdieStringifyEnvelope(env)], { type: 'application/json' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url; a.download = name;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+          card.end('write', ovKb(blob.size));
+          card.file(name);
+          hostOk('Exported ' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + traceNote +
+            (env.overview ? ' + ' + iwdieOvNote(env.overview) : '') + ' → ' + name);
+          // the picture for an agent beside it (v1.64.3): its pills numbered as the export lists them
+          if (!(env.overview && env.overview.picture)) { card.skip('ai', 'no picture'); return name; }
+          card.begin('ai', 'its pills numbered, its objects marked');
+          return ovAiPicture(env, name).then(function (file) {
+            if (file) {
+              card.end('ai', 'written');
+              card.file(file);
+              toast('The picture for the AI, beside the export: its pills numbered P1… as overview.picture.pills lists them, ' +
+                'its objects marked o0… → ' + file, false, 7000);
+            } else card.skip('ai', 'no picture');
+            return name;
+          }, function () {
+            card.skip('ai', 'could not be drawn');
+            return name;
+          });
+        });
+      });
+    }
+
     /* Background-only export (v1.11.0). An "Oversikt" panel that nobody has
        linked out from yet collects as zero objects, and refusing to export it
        was the one case where the button had nothing to offer — while being
@@ -19659,10 +19912,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     /** The export of the panel as it is (`opt` null), or of the panel as an optimised export made it (v1.83.0, `opt`:
      *  vcExportOptimised's). `said`: why an optimised one was not made, told after the download; `stop()`: whether Cancel was
-     *  pressed meanwhile, and nothing is downloaded. -> Promise */
-    function exportPanel(opt, said, stop) {
-      return buildEnvelopeAsync(true, opt).then(function (env) {
+     *  pressed meanwhile, and nothing is downloaded. (v1.97.0) `card`: Export JSON's progress card, which the export tells
+     *  how far it is as it goes; the promise then settles once both files are written. -> Promise */
+    function exportPanel(opt, said, stop, card) {
+      var writing = null;
+      return buildEnvelopeAsync(true, opt, card).then(function (env) {
         if (!env) return null;
+        if (card && card.cancelled()) return null;
         if (iwdieCountDocItems(env.panel) === 0) return exportBackgroundOnly(env);
         return iwdieCompleteExport(env, {
           decodeUtf8: function (bytes) { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); },
@@ -19678,25 +19934,60 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // (v1.96.0) a picture of pixels exported as its pixels, not traced beside them
           keepPixels: true,
           download: function (e, note) {
+            if (card) {
+              if (!card.cancelled()) writing = downloadEnvelopeSteps(e, note, card);
+              return null;
+            }
             if (stop && stop()) { toast('Export cancelled - no JSON was downloaded.', false, 5000); return null; }
             var name = downloadEnvelope(e, note);
             if (said) toast('Exported as the panel is, not read as Edit in VectorCraft reads it: ' + said + '.', false, 9000);
             return name;
           }
-        });
+        }).then(function (result) { return writing ? writing.then(function () { return result; }) : result; });
       });
     }
+
+    /** Export JSON's steps on its card (v1.97.0), each with its share of the bar: about what each took on the panels
+     *  measured - the searches of the picture and its trace the most, run in workers; the plant's rows weigh by how many
+     *  units are read (ovGather). */
+    var IWDIE_EXPORT_STEPS = [
+      ['panel', 'The panel’s objects', 1],
+      ['rows', 'The plant’s units and parameters', 4],
+      ['picture', 'The picture', 3],
+      ['under', 'What the objects stand on', 6],
+      ['objects', 'IWMAC objects the picture shows', 14],
+      ['symbols', 'House symbols in the picture', 14],
+      ['layout', 'The picture’s panels, pipes and pills', 16],
+      ['overview', 'The overview for the AI', 3],
+      ['embed', 'The picture into the file', 2],
+      ['check', 'Insert’s own check of the file', 3],
+      ['write', 'Writing the JSON', 2],
+      ['ai', 'The picture for the AI', 4]];
 
     /** Export JSON (v1.96.0: the panel as it is). Its picture goes in image_data byte for byte - a picture of pixels as its
      *  pixels, a PNG VectorCraft or Insert saved with the drawing it keeps beside it as panel.image_svg, as before 1.83.0 - and
      *  every object as it is: nothing read from the picture, nothing traced, no new object. Thomas, 2026-10-20: "if the
      *  background is just a PNG with objects placed on top, the export includes both the PNG background and all objects and
      *  the image data ... if the file already contains complete VectorCraft JSON data, it should be exported as-is". Copilot's
-     *  optimise.py reads such a picture into a drawing where it needs one. Shift+click reads it here first (doExportRead). */
+     *  optimise.py reads such a picture into a drawing where it needs one. Shift+click reads it here first (doExportRead).
+     *  (v1.97.0) Its progress shows as the work goes, on a card with the share of the work done and each step
+     *  (exportProgressCard) - Thomas, 2026-10-20: "the UI appears to freeze, and then the files suddenly export" - and the
+     *  page keeps drawing meanwhile; Cancel stops it, and nothing is downloaded. */
     function doExport(ev) {
       if (ev && ev.shiftKey) { doExportRead(); return; }
-      exportPanel(null, null, null).then(null, function (error) {
-        toast('Export blocked: ' + (error && error.message ? error.message : error) + '\nNo JSON was downloaded.', true, 9000);
+      var card = exportProgressCard('Export JSON', IWDIE_EXPORT_STEPS);
+      card.onCancel(function () {
+        card.close();
+        toast('Export cancelled - no JSON was downloaded.', false, 5000);
+      });
+      exportPanel(null, null, null, card).then(function (r) {
+        if (card.cancelled()) return;
+        if (r && r.env) card.finish(); else card.close();
+      }, function (error) {
+        if (card.cancelled()) return;
+        var msg = 'Export blocked: ' + (error && error.message ? error.message : error) + '\nNo JSON was downloaded.';
+        card.fail(msg);
+        toast(msg, true, 9000);
       });
     }
 
@@ -19838,66 +20129,209 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
        to the main thread, the only feedback left was Chrome's "Page
        Unresponsive". A centred panel with a bar, the stage the worker reports,
        the elapsed time and a Cancel that terminates the worker. */
-    /** The optimised export's steps on this page (v1.83.0), as the editor's tab shows Edit in VectorCraft's (vcPaper): each
-     *  step of `steps` ([[key, title]...]) with what it found and how long it took, a bar, the time so far, and Cancel. It
-     *  answers vcVectorize as vcPaper does - skipped() is whether Cancel was pressed - and close() takes it away. */
-    function exportProgress(title, steps) {
-      var overlay = document.createElement('div'), box = document.createElement('div'), esc = iwdieEscHtml;
-      overlay.className = 'iwdie-overlay';
-      box.className = 'iwdie-panel iwdie-progress-panel';
-      box.style.width = '560px';
-      box.innerHTML = '<h3>' + esc(title) + '</h3>' + steps.map(function (s) {
-        return '<div class="iwdie-step" data-k="' + esc(s[0]) + '"><span class="i">○</span><span>' + esc(s[1]) + '</span><span class="d"></span><span class="t"></span></div>';
-      }).join('') + '<div class="iwdie-progress-track"><div class="iwdie-progress-fill" style="width:2%"></div></div>' +
-        '<div class="iwdie-progress-sub">0.0 s</div><button class="iwdie-btn iwdie-secondary" style="margin-top:12px">Cancel</button>';
+    /** Export JSON's progress (v1.97.0), as the work goes: the share of the work done as one bar and its percentage, and
+     *  each step with what it is doing now and how long it took. `plan` [[key, label, weight]...]: a step's share of the bar
+     *  is its weight, and it fills only as that step tells of its own work (`part`: the units read, the templates looked
+     *  through, the trace's phases) or ends - the percentage is the work done, never a timer. Steps may run at once; one
+     *  that is not needed (`skip`, `leave`) leaves the whole. The bar eases to each new value and a highlight runs along it,
+     *  both in the compositor, so they move while the page is held; 100 % only once `finish` is called. Cancel calls what
+     *  `onCancel` gave it, and `cancelled()` says so. The Shift+click export drives it with its own share (`overall`). */
+    function exportProgressCard(title, plan) {
+      var esc = iwdieEscHtml, steps = {}, order = [], t0 = Date.now(), at = 0, explicit = null, shownPct = 0, raf = 0;
+      var finished = false, gone = false, cancelled = false, cancelers = [], files = [];
+      (plan || []).forEach(function (p) {
+        steps[p[0]] = { label: p[1], w: p[2] > 0 ? p[2] : 1, f: 0, state: 'todo', t0: 0, detail: '', time: '' };
+        order.push(p[0]);
+      });
+      var overlay = document.createElement('div'), box = document.createElement('div');
+      overlay.className = 'iwdie-overlay iwdie-xp-overlay';
+      box.className = 'iwdie-xp';
+      box.setAttribute('role', 'progressbar');
+      box.setAttribute('aria-valuemin', '0');
+      box.setAttribute('aria-valuemax', '100');
+      box.setAttribute('aria-valuenow', '0');
+      box.setAttribute('aria-label', title);
+      box.innerHTML = '<div class="iwdie-xp-head"><span class="iwdie-xp-title">' + esc(title) + '</span><span class="iwdie-xp-pct">0 %</span></div>' +
+        '<div class="iwdie-xp-track"><div class="iwdie-xp-fill"><div class="iwdie-xp-shine"></div></div></div>' +
+        '<div class="iwdie-xp-now" aria-live="polite">Starting…</div>' +
+        '<ol class="iwdie-xp-steps">' + order.map(function (k) {
+          return '<li class="todo" data-k="' + esc(k) + '"><span class="i">○</span><span class="l">' + esc(steps[k].label) +
+            '</span><span class="d"></span><span class="t"></span></li>';
+        }).join('') + '</ol>' +
+        '<div class="iwdie-xp-foot"><span class="iwdie-xp-time">0.0 s</span><button type="button" class="iwdie-xp-cancel">Cancel</button></div>';
       overlay.appendChild(box);
       overlayParent().appendChild(overlay);
-      var t0 = Date.now(), cur = null, began = 0, at = 0, cancelled = false, seen = {}, onSkip = null;
-      var fill = box.querySelector('.iwdie-progress-fill'), sub = box.querySelector('.iwdie-progress-sub'), btn = box.querySelector('button');
+      var fill = box.querySelector('.iwdie-xp-fill'), pctEl = box.querySelector('.iwdie-xp-pct'), nowEl = box.querySelector('.iwdie-xp-now');
+      var timeEl = box.querySelector('.iwdie-xp-time'), btn = box.querySelector('.iwdie-xp-cancel'), titleEl = box.querySelector('.iwdie-xp-title');
       var secs = function (ms) { return ms < 10000 ? (Math.round(ms / 100) / 10).toFixed(1) + ' s' : Math.round(ms / 1000) + ' s'; };
-      var tick = setInterval(function () { sub.textContent = secs(Date.now() - t0); }, 250);
-      var bar = function (part) {
-        if (typeof part !== 'number' || !isFinite(part)) return;
-        at = Math.max(at, Math.min(1, part));
-        fill.style.width = Math.max(2, Math.round(at * 100)) + '%';
+      var tick = setInterval(function () { timeEl.textContent = secs(Date.now() - t0); }, 200);
+      var whole = function () {
+        if (explicit !== null) return explicit;
+        var w = 0, d = 0;
+        order.forEach(function (k) {
+          var st = steps[k];
+          if (st.state === 'none') return;
+          w += st.w;
+          d += st.w * (st.state === 'done' ? 1 : st.f);
+        });
+        return w ? d / w : 0;
       };
-      var show = function (key, state, detail, time) {
-        var r = box.querySelector('.iwdie-step[data-k="' + key + '"]');
-        if (!r) return;
-        seen[key] = state;
-        r.className = 'iwdie-step ' + state;
+      // the number eases to the share done, a frame at a time
+      var paint = function () {
+        raf = 0;
+        var target = at * 100, diff = target - shownPct;
+        shownPct = Math.abs(diff) < 0.5 || document.hidden ? target : shownPct + diff * 0.2;
+        var n = finished ? Math.round(shownPct) : Math.floor(shownPct);
+        pctEl.textContent = n + ' %';
+        box.setAttribute('aria-valuenow', String(n));
+        if (shownPct !== target && !gone) raf = requestAnimationFrame(paint);
+      };
+      var update = function () {
+        at = Math.max(at, Math.min(finished ? 1 : 0.99, whole()));
+        fill.style.transform = 'scaleX(' + at.toFixed(4) + ')';
+        if (!raf && !gone) raf = requestAnimationFrame(paint);
+      };
+      var ICON = { todo: '○', done: '✓', none: '–', bad: '✕' };
+      var show = function (k) {
+        var st = steps[k], r = box.querySelector('li[data-k="' + k + '"]');
+        if (!st || !r) return;
+        r.className = st.state;
         var ic = r.querySelector('.i');
-        if (state === 'now') { if (!ic.querySelector('.iwdie-ring')) ic.innerHTML = '<span class="iwdie-ring"></span>'; }
-        else ic.textContent = state === 'done' ? '✓' : '–';
-        if (detail !== undefined && detail !== null) r.querySelector('.d').textContent = detail;
-        if (time) r.querySelector('.t').textContent = time;
+        if (st.state === 'now') { if (!ic.querySelector('.iwdie-ring')) ic.innerHTML = '<span class="iwdie-ring"></span>'; }
+        else ic.textContent = ICON[st.state] || '';
+        r.querySelector('.d').textContent = st.detail || '';
+        r.querySelector('.t').textContent = st.time || '';
+      };
+      var tell = function (k) {
+        var st = steps[k];
+        if (st && !finished) nowEl.textContent = (st.label + (st.detail ? ': ' + st.detail : '')).replace(/(…|\.\.\.)$/, '') + '…';
       };
       btn.addEventListener('click', function () {
+        if (finished) { card.close(); return; }
+        if (cancelled) return;
         cancelled = true;
         btn.disabled = true;
         btn.textContent = 'Cancelling…';
-        if (onSkip) onSkip();
+        cancelers.forEach(function (fn) { try { fn(); } catch (e) {} });
       });
+      var card = {
+        begin: function (k, detail) {
+          var st = steps[k];
+          if (!st || st.state === 'done' || st.state === 'none' || finished) return;
+          if (st.state !== 'now') { st.state = 'now'; st.t0 = Date.now(); }
+          if (detail !== undefined && detail !== null) st.detail = String(detail);
+          show(k); tell(k); update();
+        },
+        part: function (k, f, detail) {
+          var st = steps[k];
+          if (!st || st.state === 'done' || st.state === 'none' || finished) return;
+          if (st.state !== 'now') { st.state = 'now'; st.t0 = Date.now(); }
+          if (typeof f === 'number' && isFinite(f)) st.f = Math.max(st.f, Math.min(0.995, f));
+          if (detail !== undefined && detail !== null) st.detail = String(detail);
+          show(k); tell(k); update();
+        },
+        end: function (k, detail) {
+          var st = steps[k];
+          if (!st || st.state === 'done' || st.state === 'none' || finished) return;
+          st.time = secs(Date.now() - (st.t0 || Date.now()));
+          st.state = 'done';
+          st.f = 1;
+          if (detail !== undefined && detail !== null) st.detail = String(detail);
+          show(k); update();
+        },
+        skip: function (k, detail) {
+          var st = steps[k];
+          if (!st || st.state === 'done' || st.state === 'none' || finished) return;
+          st.state = 'none';
+          st.f = 0;
+          st.time = '';
+          st.detail = detail || 'not needed';
+          show(k); update();
+        },
+        leave: function (keys, why) { (keys || []).forEach(function (k) { card.skip(k, why); }); },
+        state: function (k) { return steps[k] ? steps[k].state : null; },
+        weigh: function (k, w) { if (steps[k] && w > 0) { steps[k].w = w; update(); } },
+        overall: function (f) {
+          if (typeof f !== 'number' || !isFinite(f)) return;
+          explicit = Math.max(explicit || 0, Math.min(1, f));
+          update();
+        },
+        file: function (name) { files.push(name); },
+        cancelled: function () { return cancelled; },
+        onCancel: function (fn) { if (typeof fn === 'function') cancelers.push(fn); },
+        finish: function (what) {
+          if (finished || gone) return;
+          order.forEach(function (k) { if (steps[k].state === 'now') card.end(k); else if (steps[k].state === 'todo') card.skip(k, 'not needed'); });
+          finished = true;
+          clearInterval(tick);
+          explicit = null;
+          at = 1;
+          fill.style.transform = 'scaleX(1)';
+          if (!raf) raf = requestAnimationFrame(paint);
+          box.classList.add('ok');
+          titleEl.textContent = title + ' - done';
+          nowEl.textContent = what || (files.length ? files[0] + (files.length > 1 ? '  +  its picture for the AI' : '') : 'Done');
+          timeEl.textContent = 'in ' + secs(Date.now() - t0);
+          btn.disabled = false;
+          btn.textContent = 'Close';
+          // it goes by itself; a pointer on it holds it
+          var hold = false;
+          box.addEventListener('mouseenter', function () { hold = true; });
+          box.addEventListener('mouseleave', function () { hold = false; });
+          (function later() { setTimeout(function () { if (gone) return; if (hold) later(); else card.close(); }, 3500); })();
+        },
+        fail: function (message) {
+          if (finished || gone) return;
+          order.forEach(function (k) { if (steps[k].state === 'now') { steps[k].state = 'bad'; show(k); } });
+          finished = true;
+          clearInterval(tick);
+          box.classList.add('bad');
+          titleEl.textContent = title + ' - stopped';
+          nowEl.style.whiteSpace = 'pre-line';
+          nowEl.textContent = String(message || '');
+          btn.disabled = false;
+          btn.textContent = 'Close';
+        },
+        close: function () {
+          if (gone) return;
+          gone = true;
+          clearInterval(tick);
+          if (raf) { cancelAnimationFrame(raf); raf = 0; }
+          overlay.classList.add('iwdie-xp-out');
+          setTimeout(function () { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 200);
+        }
+      };
+      update();
+      return card;
+    }
+
+    /** The optimised export's steps on this page (v1.83.0), as the editor's tab shows Edit in VectorCraft's (vcPaper): each
+     *  step of `steps` ([[key, title]...]) with what it found and how long it took, a bar, the time so far, and Cancel. It
+     *  answers vcVectorize as vcPaper does - skipped() is whether Cancel was pressed - and close() takes it away. (v1.97.0)
+     *  Drawn on Export JSON's card (exportProgressCard), its bar the share vcVectorize gives (`part`). */
+    function exportProgress(title, steps) {
+      var card = exportProgressCard(title, steps.map(function (st) { return [st[0], st[1], 1]; })), cur = null, onSkip = null;
+      card.onCancel(function () { if (onSkip) onSkip(); });
       var paper = {
         step: function (key, detail, part) {
           if (cur && cur !== key) paper.done(null);
-          if (cur !== key) { cur = key; began = Date.now(); }
-          show(key, 'now', detail || '');
-          bar(part);
+          cur = key;
+          card.begin(key, detail || '');
+          card.overall(part);
         },
-        say: function (detail, part) { if (cur) show(cur, 'now', detail); bar(part); },
+        say: function (detail, part) { if (cur) card.begin(cur, detail); card.overall(part); },
         done: function (detail, part) {
           if (!cur) return;
-          show(cur, 'done', detail, secs(Date.now() - began));
+          card.end(cur, detail);
           cur = null;
-          bar(part);
+          card.overall(part);
         },
-        none: function (key, detail) { if (!seen[key]) show(key, 'none', detail || ''); },
+        none: function (key, detail) { if (card.state(key) === 'todo') card.skip(key, detail || ''); },
         breath: function () { return vcBreath(window); },
         noSkip: function () {},
         onSkip: function (fn) { onSkip = fn; },
-        skipped: function () { return cancelled; },
-        close: function () { clearInterval(tick); overlay.remove(); }
+        skipped: function () { return card.cancelled(); },
+        close: function () { card.close(); }
       };
       return paper;
     }
@@ -24305,11 +24739,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  read against the panel's objects (iwdieVzObjectsSeen). `step(done, of)` hears how far it is, and `fetched(done, of)`
      *  how far the pictures are fetched, the first time in a week (v1.77.1). -> Promise<{placed, twice, kept, holes:
      *  [{x, y, w, h, rgba}] of placed and twice, looked: pictures} | null when it ran out of time> */
-    function vcFindObjects(data, w, h, objects, ms, step, fetched) {
+    function vcFindObjects(data, w, h, objects, ms, step, fetched, onJob) {
       return vcObjectStates(objects, fetched).then(function (st) {
         return vcStateTemplates(st).then(function (templates) {
           if (!templates.length) return { placed: [], twice: [], kept: [], holes: [], looked: 0 };
           var job = vcFindAll(data, w, h, templates, step || function () {}), timer = setTimeout(function () { job.stop(); }, ms);
+          // (v1.97.0) `onJob(job)`: the search, for a Cancel that ends it
+          if (onJob) { try { onJob(job); } catch (e) {} }
           return job.promise.then(function (found) {
             clearTimeout(timer);
             if (!found) return null;
@@ -28744,6 +29180,9 @@ if (typeof module !== 'undefined' && module.exports) {
     vzObjectPills: iwdieVzObjectPills,
     vzEraseLooks: iwdieVzEraseLooks,
     vcSymbolLooks: iwdieVcSymbolLooks,
+    vcSymbolLookKeeps: iwdieVcSymbolLookKeeps,
+    vcLookGround: iwdieVcLookGround,
+    ovPalettePills: iwdieOvPalettePills,
     vcSymbolSvg: iwdieVcSymbolSvg,
     vzWorkerDeps: iwdieVzWorkerDeps,
     OV_MAX_ROWS: IWDIE_OV_MAX_ROWS,

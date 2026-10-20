@@ -14,7 +14,8 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 
 1. Open the designer on the **source** plant, *Retrieve → Load* the panel you want to copy.
 2. Click **Export JSON** to download `iwmac-panel_<plant>_<name>_<stamp>.json`: the panel as it is, its picture byte
-   for byte and every object ([below](#export-json-gives-the-panel-as-it-is-v1960)). **Shift+click** reads a picture of
+   for byte and every object ([below](#export-json-gives-the-panel-as-it-is-v1960)). A card shows its progress, step by
+   step ([below](#export-json-shows-its-progress-as-it-goes-v1970)). **Shift+click** reads a picture of
    pixels first, as Edit in VectorCraft reads it, as 1.83.0 to 1.95.0 always did: the file then holds the panel as an
    edit there would leave it, its words as labels and the objects it shows as objects
    ([below](#export-json-gives-the-panel-as-edit-in-vectorcraft-makes-it-v1830)).
@@ -499,6 +500,51 @@ VectorCraft too, so they keep up with each other.
 - Checked in the stub host on the hosted VectorCraft 0.11.0: an object moved, one deleted and one added in the Designer,
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
+
+### Export JSON shows its progress as it goes (v1.97.0)
+
+Thomas: *the UI appears to freeze, and then the files suddenly export*. He asked for a modern progress bar with real-time
+percentages, status updates and smooth animations, an export that keeps the page responsive, and progress that reflects
+the actual work.
+
+- **A progress card from the first moment.** Export JSON opens a card at once:
+  - one bar for the whole export with its percentage, easing to each new value, a highlight running along it;
+  - a line under it with what is being done now: *The plant's units and parameters: 4 of 6 units*, *House symbols in the
+    picture: 84 of 196 templates*, *colour 5 of 17*;
+  - each step, with what it found and how long it took: the panel's objects, the plant's units and parameters, the
+    picture, what the objects stand on, the IWMAC objects and house symbols the picture shows, its panels, pipes and
+    pills, the overview, the picture into the file, Insert's own check, the JSON written, the picture for the AI;
+  - the time so far, and Cancel.
+
+  When both files are written the card turns green at 100 %, names the file, and goes after a few seconds; a pointer on
+  it holds it. An error stays on the card in red, beside the toast.
+- **The percentage is the work done.**
+  - Each step has its share of the bar: the picture's searches and its trace the most, the plant's rows by the number of
+    units read.
+  - A step fills only as it reports its own work: each unit read, the templates the workers have looked through, the
+    trace's phases, the step's end.
+  - A step that is not needed (a picture that is a drawing, a panel without a picture) leaves the whole.
+  - The bar never goes back, and shows 100 % only when the files are written.
+- **The page keeps drawing.** The longest stretch the export held the page went from 425 ms to 72 ms on a Maskin picture:
+  - the picture's pills are found in a worker, as Vectorize image already found them; reading their rings had held the
+    page for a third of a second;
+  - the house symbols' templates are weighed a few at a time, 12 ms a turn, with the page drawn between;
+  - the page gets a breath before each part that holds it;
+  - the bar and its highlight move in the compositor, so they keep moving even then.
+- **Cancel** stops the searches, and nothing is downloaded.
+- **Shift+click**, the read export of 1.83.0 to 1.95.0, shows its steps on the same card.
+- **The files are the same.** On four panels in the stub host, the JSON (time stamps aside) and the picture for the AI
+  were byte for byte those of 1.96.0.
+
+Tested in the stub host:
+- four plant pictures with their objects, with a CPU profile of the page and its long tasks before and after;
+- the percentage, read every 100 ms, rose from 2 % to 100 % and never went back;
+- six units ticked, each answered after 350 ms, showed as *4 of 6 units*;
+- Cancel at 0.7 s downloaded nothing;
+- Shift+click's card, and its Cancel;
+- the 1.96.0 export checks (a plain picture, a picture that keeps its drawing, Shift+click) passed again.
+
+Not run in the live Designer.
 
 ### Export JSON gives the panel as it is (v1.96.0)
 
