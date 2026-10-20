@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.98.2
+// @version      1.98.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.98.2';
+var IWDIE_VERSION = '1.98.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16422,20 +16422,17 @@ function iwdieExportUnconverted(env) {
   var data = String((env && env.image_data) || panel.image_data || '');
   if (!set || !/^data:image\/(png|jpe?g)[;,]/i.test(data) || String(panel.image_svg || '').trim()) return null;
   var what = set === 'Oversikt' ? 'its cases and names' : 'its words and house symbols';
-  // (v1.98.1) the plant's .ai converts it too, Ctrl+S after it - but only Vectorize image makes objects of what the
-  // picture shows: an Oversikt's cases as case boxes, its names as label objects. Its .ai leaves them drawn
-  var how = set === 'Oversikt'
-    ? 'Convert it first - Edit in VectorCraft…, Vectorize image, Ctrl+S - then Export JSON again: its cases become case ' +
-      'boxes and its names label objects. The plant’s .ai gives its exact drawing, but there its names and cases stay drawn.'
-    : 'Convert it first - Edit in VectorCraft…, open the plant’s .ai (its own exact drawing) or Vectorize image, Ctrl+S - ' +
-      'then Export JSON again.';
-  // (v1.98.2) or Copilot converts it: the kit's optimise.py reads the picture with this script's own functions, as
-  // Vectorize image does, and Insert JSON -> Replace of the file it gives converts the panel, with no VectorCraft step
-  how += ' Or ask Copilot to convert this export - it reads the picture as Vectorize image does - and load the file it ' +
-    'gives with Insert JSON… → Replace.';
+  // (v1.98.3) Copilot converts it by itself, whatever it is asked (Thomas, 2026-10-20: "always part of its default
+  // workflow"): the kit's optimise.py reads the picture with this script's own functions, as Vectorize image does, and
+  // Insert JSON -> Replace of the file it gives converts the panel. Converting here stays the other way: (v1.98.1) only
+  // Vectorize image makes objects of an Oversikt's cases and names, and a Maskin's .ai gives its own exact drawing
+  var here = set === 'Oversikt'
+    ? 'To convert it here instead: Edit in VectorCraft…, Vectorize image, Ctrl+S, then Export JSON again.'
+    : 'For the plant’s own exact drawing instead: Edit in VectorCraft…, open its .ai, Ctrl+S, then Export JSON again.';
   return { title: 'Not converted with VectorCraft',
-    text: 'This ' + set + ' panel’s picture is pixels. Copilot can link, add and move its objects, but ' + what +
-      ' are only pixels to it, and it cannot change the drawing. ' + how };
+    text: 'This ' + set + ' panel’s picture is pixels, so ' + what + ' are not objects yet. Copilot converts it by ' +
+      'itself - it reads the picture as Vectorize image does - and Insert JSON… → Replace of the file it gives converts ' +
+      'the panel. ' + here };
 }
 
 function iwdieOvPalettePills(pic, W, H) {

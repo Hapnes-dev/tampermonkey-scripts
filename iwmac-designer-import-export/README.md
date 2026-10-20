@@ -501,6 +501,26 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Copilot converts it by itself, unasked (v1.98.3)
+
+Thomas: *Copilot should not ask users to write "convert this" or "create v2". This should always be part of its default
+workflow.* The Copilot kit now converts a Maskin or Oversikt panel not converted with VectorCraft first, whatever it is
+asked to do, and delivers the converted file; Insert JSON… → Replace of that file converts the panel.
+
+So the warning no longer says Copilot cannot change the drawing, and no longer asks the user to ask for the conversion.
+It says the picture's cases and names, or words and house symbols, are not objects yet, that *Copilot converts it by
+itself - it reads the picture as Vectorize image does - and Insert JSON… → Replace of the file it gives converts the
+panel*, and it names converting here as the other way: Vectorize image for an Oversikt, the plant's `.ai` for a
+Maskin's exact drawing.
+
+In the same release the kit's overview skill works unattended. A user asks only *Can you create an overview image based
+on the attached documentation?*, and Copilot decides the panels the documents support, builds each, places and links
+its objects and checks it, with no question before the work:
+- An Oversikt's case that names its controller gets its cluster's rows by themselves.
+- A Maskin rack finds its pack controller by its rows.
+- A link with no row leaves that one object unlinked and named, rather than stopping the picture.
+- `export_rows.py --match` lists the rows a documentation tag names.
+
 ### Copilot converts an export too (v1.98.2)
 
 Thomas: *can you make so copilot can generate v2 json so i can put in insert json in iwmac designer so i don't have to
