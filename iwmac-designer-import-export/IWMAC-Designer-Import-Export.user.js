@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.99.0
+// @version      1.99.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.99.0';
+var IWDIE_VERSION = '1.99.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9703,8 +9703,18 @@ var IWDIE_VC_OBJ_Z = {
   value: '110', value_conn: '110', value_tag: '110', enum: '110', sensor: '110',
   alarm: '375', led: '375', pump: '375', valve: '375', compressor: '375', label: '1100'
 };
-/** An object whose z is not its role's (v1.71.0): the animated fans are Maskin's, in the 375 band, not a duct's 40. */
-var IWDIE_VC_OBJ_Z_BY_ID = {'V3_25px_anim_fan_nrm': '375', 'V3_32px_anim_fan_nrm': '375'};
+/** An object whose z is not its role's (v1.71.0): the animated fans are Maskin's, in the 375 band, not a duct's 40.
+ *  (v1.99.1) Every kind whose own z the Designer's registry gives otherwise than its role's band, as 6 194 saved panels
+ *  of 526 plants have them: a bare value at 1100 (235 plants), not 110; AK-PC strips at 360 (167), enable and run
+ *  strips at 1000 (159), a filter and the recirculation dampers at 110, the 3-way motor at 300, the small line 15. */
+var IWDIE_VC_OBJ_Z_BY_ID = {'V3_25px_anim_fan_nrm': '375', 'V3_32px_anim_fan_nrm': '375',
+  'number_v3_value_only': '1100', 'number_v3_white_value_only': '1100', 'number_v3_rc_temp_48': '1100',
+  'V3_akpc_772_781_781A_783_contr': '360', 'V3_akpc_782A_suct': '360', 'V3_akpc_783_781A_782A_cond': '360',
+  'V3_akpc_772_781_781A_783_suct': '360', 'V3_akpc_772_781_cond': '360',
+  'V3_81x21_enebled_disabled_nrm': '1000', 'V3_61x21_runn_stoped_nrm': '1000',
+  'numberV3_filter_with_diff_press': '110', 'number_v3_dummy_resirc_damp_hor': '110', 'number_v3_dummy_resirc_damp_vert': '110',
+  'number_v3_dummy_3way_motor_right': '300', 'number_v3_dummy_21x21_1x_pump_right': '15',
+  'number_v3_dummy_6x15_Line_Small_Down': '15'};
 
 /** How each object looks and how big it is on the Designer's canvas (v1.43.0), from its own two
  *  registries (reference_data, 2026-10-10): the render definition's size, which is what production

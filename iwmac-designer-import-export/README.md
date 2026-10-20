@@ -501,6 +501,24 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### An object placed in VectorCraft takes its kind's own z (v1.99.1)
+
+Measured on 6 194 saved panels of 526 plants (2026-10-21): an object's z belongs to its kind. The Designer's own
+registry gives the fleet's z for 231 of 237 kinds. VectorCraft placed a kind by its role's band instead, which put
+some kinds at another z than every plant uses:
+
+| Kind | Was | Now, as plants have it |
+|---|---|---|
+| a bare value (`number_v3_value_only`, `_white_value_only`, `rc_temp_48`) | 110 | 1100 (235 plants) |
+| an AK-PC strip | 40 | 360 (167 plants) |
+| an enable or run strip | 20 | 1000 (159 plants) |
+| the filter with its pressure, the recirculation dampers | 40 | 110 |
+
+`IWDIE_VC_OBJ_Z_BY_ID` lists them, three static dummies (the 3-way motor at 300, a small pump and line at 15) and the
+animated fans of 1.71.0. A panel that already has an object of the kind
+still lends its own z first, as before. The kit's `vc-object-catalogue.json` is written from this version, and its z
+now equals the fleet's for every kind both know.
+
 ### The plant's .ai opens open to edit, its background layer locked (v1.99.0)
 
 Thomas, with two screenshots of VectorCraft's Layers panel: *everything is locked when importing the .ai - it should be
