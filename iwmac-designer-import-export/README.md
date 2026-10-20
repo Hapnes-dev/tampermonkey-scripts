@@ -501,6 +501,24 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Copilot converts an export too (v1.98.2)
+
+Thomas: *can you make so copilot can generate v2 json so i can put in insert json in iwmac designer so i don't have to
+put in .ai file again*. It can, and now it says so.
+- **The tool.** The Copilot kit's `optimise.py` reads the picture as Vectorize image does: this script's own functions,
+  run in Copilot's sandbox.
+- **Insert does the rest.** Insert JSON… → Replace of the file it gives draws the drawing into the panel's picture (a
+  PNG that keeps it, as a sync from VectorCraft makes one) and places every object.
+- **2349's Oversikt, measured.** Its export from before the conversion, through `optimise.py`, gave the same 107
+  objects Vectorize image and Ctrl+S had made: 60 labels and 47 case boxes, all at the same places (one label 2 px
+  off). The case boxes differ only in an empty tag, written `""` where the Designer keeps `" "`. In the stub host,
+  Insert JSON… → Replace of that file placed all 247 objects and made the picture a PNG that keeps the drawing, and
+  Export JSON afterwards found the panel converted.
+
+So the warning now ends: *Or ask Copilot to convert this export - it reads the picture as Vectorize image does - and
+load the file it gives with Insert JSON… → Replace.* The Copilot kit tells the agent to do it when asked ("konverter",
+"lag v2"), and to offer it when a request needs the drawing.
+
 ### The warning names the plant's .ai where it serves (v1.98.1)
 
 Thomas asked whether a panel could be converted by opening the plant's `.ai` instead of Vectorize image, then Ctrl+S.

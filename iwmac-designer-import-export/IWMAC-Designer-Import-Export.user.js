@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.98.1
+// @version      1.98.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.98.1';
+var IWDIE_VERSION = '1.98.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16429,6 +16429,10 @@ function iwdieExportUnconverted(env) {
       'boxes and its names label objects. The plant’s .ai gives its exact drawing, but there its names and cases stay drawn.'
     : 'Convert it first - Edit in VectorCraft…, open the plant’s .ai (its own exact drawing) or Vectorize image, Ctrl+S - ' +
       'then Export JSON again.';
+  // (v1.98.2) or Copilot converts it: the kit's optimise.py reads the picture with this script's own functions, as
+  // Vectorize image does, and Insert JSON -> Replace of the file it gives converts the panel, with no VectorCraft step
+  how += ' Or ask Copilot to convert this export - it reads the picture as Vectorize image does - and load the file it ' +
+    'gives with Insert JSON… → Replace.';
   return { title: 'Not converted with VectorCraft',
     text: 'This ' + set + ' panel’s picture is pixels. Copilot can link, add and move its objects, but ' + what +
       ' are only pixels to it, and it cannot change the drawing. ' + how };
