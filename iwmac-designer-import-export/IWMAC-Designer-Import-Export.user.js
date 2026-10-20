@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.93.0
+// @version      1.94.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.93.0';
+var IWDIE_VERSION = '1.94.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1182,7 +1182,9 @@ function iwdieParsePayload(parsed) {
   }
   if (parsed.format) {
     return iwdieReject(parsed, ['Unknown format "' + parsed.format + '" — this is not an IWMAC Designer panel export' +
-      (parsed.format === 'vv-fbx-sketch' ? ' (it is a VV Designer logic sketch — wrong tool)' : '') + '.',
+      (parsed.format === 'vv-fbx-sketch' ? ' (it is a VV Designer logic sketch — wrong tool)' : '') +
+      // (v1.94.0) Insert JSON…'s check takes an edit file to VectorCraft before this; anything else that meets one says so
+      (parsed.format === IWDIE_VC_EDITS_FORMAT ? ' (it is an edit file for VectorCraft: pick it in Insert JSON…, which opens the panel there with it)' : '') + '.',
       '"format" must be exactly "' + IWDIE_FORMAT + '". It is checked before anything else is read, so no other value can import — however correct the rest of the file is.']);
   }
   // bare document?
@@ -12431,6 +12433,43 @@ function iwdieVcEditFile(doc, job) {
   return { ok: !problems.length, ops: ops || [], problems: problems, summary: typeof doc.summary === 'string' ? doc.summary : '', plant: doc.plant, panel: doc.panel };
 }
 
+/** An edit file picked, dropped or pasted in Insert JSON… (v1.94.0): what it is and what it would make, for the dialog -
+ *  its ops counted by kind, its plant and panel against the Designer's (`here`: {plant, panel}), and what Insert does with
+ *  it: the panel opened in VectorCraft with the file, planned there at once and made with Make it; Ctrl+S there brings it
+ *  into the panel. Thomas, 2026-10-20: Copilot's iwmac-vc-edits_10257_oversikt file was refused by Insert JSON… as an
+ *  unknown format. -> {ok, problems, ops, counts, html, text, className} */
+function iwdieVcEditFileReview(doc, here, fileName) {
+  var esc = iwdieEscHtml, f = iwdieVcEditFile(doc, here || null), p = doc;
+  if (typeof doc === 'string') { try { p = JSON.parse(doc); } catch (e) { p = null; } }
+  p = p && typeof p === 'object' ? p : {};
+  var counts = {}, order = [];
+  (f.ops || []).forEach(function (o) {
+    var k = o && typeof o.op === 'string' && o.op ? o.op : '?';
+    if (!(k in counts)) { counts[k] = 0; order.push(k); }
+    counts[k]++;
+  });
+  var what = order.map(function (k) { return counts[k] + ' ' + k; }).join(', ') || 'no ops';
+  var plant = p.plant != null && String(p.plant).trim() ? String(p.plant) : '—';
+  if (here && here.plant && plant !== '—' && String(here.plant) !== plant) plant += ' (you are on ' + here.plant + ')';
+  var title = f.ok ? '✅ An edit file for VectorCraft' : '⛔ This edit file cannot be opened on this panel';
+  var sub = f.ok ? 'It is not inserted here: its button opens this panel in VectorCraft with it, where it is planned on the drawing and made with ' +
+    'Make it. Ctrl+S there brings it into the panel.' : 'Fix what is below first. Nothing has touched the canvas.';
+  var cell = function (k, v) { return '<div class="iwdie-g-k">' + esc(k) + '</div><div class="iwdie-g-v">' + esc(v) + '</div>'; };
+  var html = '<div class="iwdie-verdict"><div class="iwdie-v-title">' + esc(title) + '</div><div class="iwdie-v-sub">' + esc(sub) + '</div>' +
+    (fileName ? '<div class="iwdie-v-file">' + esc(fileName) + '</div>' : '') + '</div>' +
+    '<div class="iwdie-glance">' + cell('Panel', p.panel ? String(p.panel) : '—') + cell('Plant', plant) + cell('Edits', what) +
+    cell('Made by', p.generator ? String(p.generator) : '—') + '</div>';
+  if (f.summary) html += '<div class="iwdie-sec iwdie-sec-info"><div class="iwdie-sec-h">What it says it does</div><div>' + esc(f.summary) + '</div></div>';
+  if (!f.ok) {
+    html += '<div class="iwdie-sec iwdie-sec-bad"><div class="iwdie-sec-h">Why it cannot be opened here</div><ul>' +
+      f.problems.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>';
+  }
+  var text = 'IWDIE check of ' + (fileName || 'the file') + ': ' + (f.ok ? 'an edit file for VectorCraft - Insert JSON… opens this panel in VectorCraft with it, ready to make.'
+    : 'an edit file for VectorCraft that cannot be opened on this panel.') + '\n- panel: ' + (p.panel || '—') + '; plant: ' + plant + '\n- edits: ' + what +
+    (f.summary ? '\n- summary: ' + f.summary : '') + (f.ok ? '' : '\n\nProblems:\n' + f.problems.map(function (x) { return '- ' + x; }).join('\n'));
+  return { ok: f.ok, problems: f.problems, ops: f.ops, counts: counts, html: html, text: text, className: 'iwdie-errlist' + (f.ok ? ' iwdie-ok' : '') };
+}
+
 /* ===================== An Oversikt's cases through Claude's bridge (v1.84.0) =====================
    Thomas, 2026-10-18: "kan du gå over MCP for se om du finner noen forbedringer slik at den kan enkelt hjelpe meg lage
    oversiktbilder". The bridge's ops drew a Maskin; an Oversikt also wants each case's cluster - its value in the middle,
@@ -22335,6 +22374,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             row: function (html) { var r = ui.el.querySelector('.iwdie-vcb-ai'); if (r) r.innerHTML = html; }, on: ui.on });
           // what the Designer's Ctrl+S sent while the editor was getting ready (v1.73.0)
           bringIn();
+          // an edit file Insert JSON… handed over with the job (v1.94.0): planned here at once, made with Make it - once: a
+          // reload of this tab does not offer it again (Open IWMAC JSON… does, the file picked once more)
+          if (job.edits && job.edits.doc) {
+            var editsKey = 'iwdie.vc.edits.' + job.id, editsOnce = false;
+            try { editsOnce = !!GM_getValue(editsKey, 0); } catch (e) { editsOnce = false; }
+            if (!editsOnce) {
+              try { GM_setValue(editsKey, Date.now()); } catch (e) {}
+              var handed = job.edits;
+              setTimeout(function () { claude.file(handed.name || 'the edit file', handed.doc); }, 400);
+            }
+          }
         });
       }, note);
     }
@@ -23061,7 +23111,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /* ---------- Edit in VectorCraft (v1.35.0): the Designer's side ---------- */
     /** Edit in VectorCraft… on the sidebar (v1.36.0, in place of Draw background…): the panel
      *  straight into the editor, in a new tab - or (v1.65.0) in the editor's tab `given`, one that Open IWMAC JSON… came from. */
-    function doEditInVectorCraft(given) {
+    function doEditInVectorCraft(given, edits) {
       if (!hostReady()) { toast('IWMAC Designer not ready yet — host functions missing.', true); return; }
       if (typeof GM_setValue !== 'function' || typeof GM_addValueChangeListener !== 'function') {
         toast('This needs Tampermonkey’s storage (GM_setValue) - update Tampermonkey and the script.', true, 8000);
@@ -23073,6 +23123,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       libMigrate();
       var url = grabBackgroundUrl();
       var info = { url: url, bg: null, found: null, objects: exportPanelObjects(), size: exportPanelSize(), plant: currentPlantId(), panel: currentPanelName(), els: {}, placed: [] };
+      // an edit file Insert JSON… handed over (v1.94.0): it goes along in the job, and the editor's tab plans it once ready
+      if (edits && edits.doc) info.edits = { name: String(edits.name || 'the edit file'), doc: edits.doc };
       // whether the Designer draws each object itself (v1.48.0): what one that does stands on in the
       // picture is left to it, not carried along
       var drawn = {};
@@ -23269,6 +23321,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var safe = String(info.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
         var job = { id: id, svg: svg, name: 'iwmac-' + (info.plant || 'plant') + '-' + safe + '.svg', panel: info.panel || '', plant: info.plant || '', at: Date.now(), version: IWDIE_VERSION,
           vector: !!info.vector, authored: !!info.authored, params: vcJobParams(info.params) };
+        if (info.edits) job.edits = info.edits;
         // the .ai chosen instead of a trace (v1.51.0) goes along, in Tampermonkey's storage until the editor's tab takes it;
         // one slot, as the job's: a job without one clears one an earlier job's tab never took
         if (info.ai) GM_setValue(IWDIE_VC_AI_KEY, { job: id, name: info.ai.name, type: info.ai.type, b64: iwdieBytesToBase64(info.ai.bytes), at: Date.now() });
@@ -27102,6 +27155,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var stageSeq = 0;
     function stageImportText(text, name) {
       stagedText = text; stagedName = name || 'the file';
+      // an edit file Copilot wrote for VectorCraft (v1.94.0): not inserted here - the panel opened there with it, ready to make
+      if (/"format"\s*:\s*"iwmac-vectorcraft-edits"/.test(text)) {
+        var ed = null;
+        try { ed = JSON.parse(text); } catch (e) { ed = null; }
+        if (ed && typeof ed === 'object' && ed.format === IWDIE_VC_EDITS_FORMAT) { ++stageSeq; stagedLack = 0; renderEditsReview(ed); return; }
+      }
       // the symbols the kept library can draw (v1.63.0): the names Insert finds in it
       var kept = /data-iwdie-symbol/.test(text) ? libSymbols() : null, names = [];
       if (kept) kept.items.forEach(function (it) {
@@ -27193,6 +27252,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (fix) fix.addEventListener('click', function () { copyToClipboard(diag.aiPrompt); });
       var ins = review.querySelector('#iwdie_insert_now');
       if (ins) ins.addEventListener('click', function () { importFromText(stagedText, { bgOnly: bgOnly }); });
+    }
+
+    /** An edit file staged here (v1.94.0): what it would make, and a button that opens this panel in VectorCraft with it. */
+    function renderEditsReview(doc) {
+      var rv = iwdieVcEditFileReview(doc, { plant: currentPlantId(), panel: currentPanelName() }, stagedName);
+      var html = rv.html + '<div class="iwdie-review-foot"><div class="iwdie-actions">' +
+        (rv.ok ? '<button class="iwdie-btn" id="iwdie_edits_open">Open in VectorCraft with these edits</button>' : '') +
+        '<button class="iwdie-btn iwdie-secondary" id="iwdie_check_copy">📋 Copy report for the AI</button>' +
+        '<button class="iwdie-link" id="iwdie_back">← Choose another file</button>' +
+        '</div><div class="iwdie-foot-note">' + esc(rv.ok ? 'Nothing changes here until Ctrl+S in VectorCraft, and the panel is saved with the Designer’s own Save, as always.'
+          : 'Open the panel this file was written for, or ask Copilot for one written for this panel.') + '</div></div>';
+      var review = showReview(rv.className, html);
+      if (!review) return;
+      review.querySelector('#iwdie_check_copy').addEventListener('click', function () { copyToClipboard(rv.text); });
+      var go = review.querySelector('#iwdie_edits_open');
+      if (go) go.addEventListener('click', function () { openEditsInVectorCraft(doc, stagedName); });
+    }
+
+    /** This panel in VectorCraft with an edit file to make there (v1.94.0): Edit in VectorCraft…, the file handed over with
+     *  the job, which the editor's tab plans as soon as it is ready. The tab is opened here, inside the click. */
+    function openEditsInVectorCraft(doc, name) {
+      var tab = W.open('about:blank', '_blank');
+      if (!tab) { toast('The browser blocked the new tab - allow pop-ups for this page, then try again.', true, 10000); return; }
+      closeImportPanel();
+      toast('Opening this panel in VectorCraft with ' + (name || 'the edit file') + ': read what it will make there, press Make it, then Ctrl+S.', false, 12000);
+      doEditInVectorCraft(tab, { name: name || 'the edit file', doc: doc });
     }
 
     /** opts.quick (v1.31.0): Insert without checking — see applyImportCore.
@@ -27505,6 +27590,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function applyImport(parsed, opts) {
       opts = opts || {};
+      // an edit file inserted without checking (v1.94.0): to VectorCraft, as the check's button sends it
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.format === IWDIE_VC_EDITS_FORMAT) {
+        var rv = iwdieVcEditFileReview(parsed, { plant: currentPlantId(), panel: currentPanelName() }, stagedName);
+        if (!rv.ok) { showErrors(['This is an edit file for VectorCraft, and it cannot be opened on this panel: ' + rv.problems.join('; ') + '.']); return; }
+        openEditsInVectorCraft(parsed, stagedName);
+        return;
+      }
       var bgOnly = !!opts.bgOnly || bgOnlyRequested();
       var quick = !!opts.quick;
       readPendingBackground(function (bg) { applyImportCore(parsed, bg, bgOnly, quick); });
@@ -28798,6 +28890,7 @@ if (typeof module !== 'undefined' && module.exports) {
     cbTargets: iwdieCbTargets,
     VC_EDITS_FORMAT: IWDIE_VC_EDITS_FORMAT,
     vcEditFile: iwdieVcEditFile,
+    vcEditFileReview: iwdieVcEditFileReview,
     cbClassify: iwdieCbClassify,
     svgClassMap: iwdieSvgClassMap,
     svgProp: iwdieSvgProp,

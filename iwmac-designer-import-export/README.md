@@ -498,6 +498,32 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Insert JSON… takes Copilot's VectorCraft edit file (v1.94.0)
+
+Copilot's edit skill writes a change to the drawing itself as an edit file (`iwmac-vc-edits_<plant>_<panel>_….json`,
+format `iwmac-vectorcraft-edits`) rather than a panel file. Until now it had to be opened inside VectorCraft. Thomas picked
+one in the Designer's **Insert JSON…** (58 clusters for 10257's Oversikt), and Insert refused it as an unknown format.
+
+- **Insert JSON… now recognises an edit file** and does not insert it. Its check says what the file is: the panel and
+  plant it was written for, its edits counted by kind, and what it says it does.
+- **Open in VectorCraft with these edits** opens the panel in VectorCraft, as Edit in VectorCraft… does, with the file
+  handed over. VectorCraft plans it on the drawing as soon as it is ready and says what it will make, with **Make it** and
+  **Leave it**.
+- **The usual review follows.** Make it opens the result as a version of its own (`… · edits 1.svg`). **Ctrl+S** there
+  brings it into the panel, and the panel is saved with the Designer's own Save, as always. Nothing changes in the
+  Designer before that Ctrl+S.
+- **A file for another plant or panel** gets the reason in the check, and no button.
+- **Insert without checking** sends an edit file the same way.
+- **Planned once.** A reload of the editor's tab does not plan the file again; **Open IWMAC JSON…** in VectorCraft's
+  banner still opens one by hand.
+
+Tested in the stub host on the hosted VectorCraft:
+- a file for another panel was refused with its reason;
+- the right one was handed over with the job and planned by itself, 6 edits;
+- Make it made it, and Ctrl+S synced one object placed and linked.
+
+Not run in the live Designer.
+
 ### Words read again against 152 pictures: codes, the legend's "=", a store's words (v1.93.0)
 
 Thomas asked for another round: *do another Harness*. 72 more panels of 44 more plants were fetched read-only from the
