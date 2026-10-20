@@ -501,6 +501,19 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The warning names the plant's .ai where it serves (v1.98.1)
+
+Thomas asked whether a panel could be converted by opening the plant's `.ai` instead of Vectorize image, then Ctrl+S.
+It can: the start card's *Choose the .ai file…* (or the banner's *Open plant .ai…*) puts the `.ai`'s own drawing in place
+of the picture, and Ctrl+S makes the panel's picture that drawing. But it is another conversion:
+- Only Vectorize image reads the picture. An Oversikt's cases become the Designer's own case boxes, its names label
+  objects, and the IWMAC objects it shows objects.
+- With the `.ai` its names and cases stay drawn, and nothing becomes an object.
+- The synced `.ai` drawing keeps no original picture, so Vectorize image is not offered for that panel afterwards.
+
+So the warning now names both ways for a Maskin, the `.ai` first (its own exact drawing), and Vectorize image for an
+Oversikt, saying what the `.ai` would leave drawn. Copilot's note says the same.
+
 ### Export JSON warns of a panel not converted with VectorCraft (v1.98.0)
 
 Thomas: *make a warning if the export is not converted with vectorcraft*. He had two exports of the same Oversikt to

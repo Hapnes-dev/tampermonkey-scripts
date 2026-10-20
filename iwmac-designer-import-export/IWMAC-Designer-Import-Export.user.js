@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.98.0
+// @version      1.98.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.98.0';
+var IWDIE_VERSION = '1.98.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16422,10 +16422,16 @@ function iwdieExportUnconverted(env) {
   var data = String((env && env.image_data) || panel.image_data || '');
   if (!set || !/^data:image\/(png|jpe?g)[;,]/i.test(data) || String(panel.image_svg || '').trim()) return null;
   var what = set === 'Oversikt' ? 'its cases and names' : 'its words and house symbols';
+  // (v1.98.1) the plant's .ai converts it too, Ctrl+S after it - but only Vectorize image makes objects of what the
+  // picture shows: an Oversikt's cases as case boxes, its names as label objects. Its .ai leaves them drawn
+  var how = set === 'Oversikt'
+    ? 'Convert it first - Edit in VectorCraft…, Vectorize image, Ctrl+S - then Export JSON again: its cases become case ' +
+      'boxes and its names label objects. The plant’s .ai gives its exact drawing, but there its names and cases stay drawn.'
+    : 'Convert it first - Edit in VectorCraft…, open the plant’s .ai (its own exact drawing) or Vectorize image, Ctrl+S - ' +
+      'then Export JSON again.';
   return { title: 'Not converted with VectorCraft',
     text: 'This ' + set + ' panel’s picture is pixels. Copilot can link, add and move its objects, but ' + what +
-      ' are only pixels to it, and it cannot change the drawing. Convert it first - Edit in VectorCraft…, Vectorize image, ' +
-      'Ctrl+S - then Export JSON again.' };
+      ' are only pixels to it, and it cannot change the drawing. ' + how };
 }
 
 function iwdieOvPalettePills(pic, W, H) {
