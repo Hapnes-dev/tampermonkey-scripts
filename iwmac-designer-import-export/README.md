@@ -13,9 +13,11 @@ Requires Tampermonkey. Auto-updates on every `@version` bump.
 ## Workflow: copy a panel's style to a new panel / another plant
 
 1. Open the designer on the **source** plant, *Retrieve → Load* the panel you want to copy.
-2. Click **Export JSON** to download `iwmac-panel_<plant>_<name>_<stamp>.json`. Since v1.83.0 a picture of pixels is
-   read first, as Edit in VectorCraft reads it: the file holds the panel as an edit there would leave it, its words as
-   labels and the objects it shows as objects ([below](#export-json-gives-the-panel-as-edit-in-vectorcraft-makes-it-v1830)).
+2. Click **Export JSON** to download `iwmac-panel_<plant>_<name>_<stamp>.json`: the panel as it is, its picture byte
+   for byte and every object ([below](#export-json-gives-the-panel-as-it-is-v1960)). **Shift+click** reads a picture of
+   pixels first, as Edit in VectorCraft reads it, as 1.83.0 to 1.95.0 always did: the file then holds the panel as an
+   edit there would leave it, its words as labels and the objects it shows as objects
+   ([below](#export-json-gives-the-panel-as-edit-in-vectorcraft-makes-it-v1830)).
 3. Open the designer on the **target** plant, *New → Create Panel* (or load an existing panel to combine into).
 4. Click **Insert JSON…**, pick/drop/paste the export. It is checked and read back first; **⚡ Insert without checking** skips that for pasted text.
 5. If the file comes from another plant, the script offers to **rewrite the driver-id plant prefixes** (`10113_…` → `<target>_…`) so objects can link to the target plant's drivers.
@@ -350,12 +352,12 @@ by the right names, each turned copy told apart.
     //   (v1.65.0) the drawing a PNG from VectorCraft or Insert keeps, stamped
     //   data-iwdie-drawing, in place of image_svg_trace - since v1.76.0 sized, its
     //   classes written on its elements, its hidden original left to image_data -
-    //   or (v1.83.0) a picture of pixels read as Edit in VectorCraft reads it,
+    //   or (v1.83.0; Shift+click since v1.96.0) a picture of pixels read as Edit in VectorCraft reads it,
     //   marked data-iwdie-optimised: the panel's picture from then on, with the
     //   objects made from it after the panel's own in single_objects
   },
   "image_data": "data:image/png;base64,…",   // v1.17.0: last in the file
-  "image_svg_trace": "<svg …>",              // v1.17.0: last in the file
+  "image_svg_trace": "<svg …>",              // v1.17.0: last in the file; Export JSON writes none since v1.96.0
   "change_log": []                            // v1.22.0: optional, written by an AI that modified the file
 }
 ```
@@ -497,6 +499,35 @@ VectorCraft too, so they keep up with each other.
 - Checked in the stub host on the hosted VectorCraft 0.11.0: an object moved, one deleted and one added in the Designer,
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
+
+### Export JSON gives the panel as it is (v1.96.0)
+
+Thomas: *if the background is just a PNG with objects placed on top, the export includes both the PNG background and
+all objects and the image data … if the file already contains complete VectorCraft JSON data, it should be exported
+as-is without any additional vectorization or modifications.*
+
+- **The panel as it is.** Export JSON no longer reads the picture, traces it or makes objects from it.
+  - A picture of pixels goes in `image_data` byte for byte, beside every object the panel has, as it has them. Nothing
+    is traced beside it: `image_svg_trace` is no longer written.
+  - A PNG VectorCraft or Insert saved, which keeps the drawing it was made from, goes in `image_data` byte for byte too.
+    That drawing goes beside it as `panel.image_svg`, as before 1.83.0, neither read again nor changed.
+  - An SVG picture is handed over as `panel.image_svg`, as before.
+  - No progress dialog: the export takes as long as the download.
+- **The picture read first is Shift+click.** Shift+click on Export JSON makes the file 1.83.0 to 1.95.0 made: a picture
+  of pixels read as Edit in VectorCraft reads it, with the objects made from it
+  ([below](#export-json-gives-the-panel-as-edit-in-vectorcraft-makes-it-v1830)). The button's tooltip says so.
+- **Copilot reads the picture where it needs to.** The Copilot kit's `optimise.py` makes that read file from a plain
+  export, the same file this script's Shift+click makes.
+
+Tested in the stub host:
+- a PNG with 9 objects: `image_data` the PNG byte for byte, the 9 objects, no `image_svg`, no trace, no dialog;
+- a PNG that keeps its drawing (made by Insert): `image_data` byte for byte, the drawing as `panel.image_svg`, no
+  dialog;
+- Shift+click opened the old progress dialog, and its Cancel left no JSON;
+- export, Insert JSON → Replace, export again: the same picture byte for byte and the same 9 objects, for both
+  panels.
+
+Not run in the live Designer.
 
 ### An edit file of clusters goes straight onto the panel, the picture as it is (v1.95.0)
 
@@ -3062,7 +3093,7 @@ on a real Maskin export that is six of the seventeen (`id`, `linked`,
 the same thing 58 times. The host requires them, so they are still written; the
 guide just tells a reader which ones carry no information about this panel.
 
-**The drawing's structure lives inside background-bearing exports too:** since v1.6.1, **Export JSON** automatically includes `image_svg_trace` whenever it embeds a raster or SVG background, without confirmation (at the top level since v1.17.0; `panel.image_svg_trace` in older files, and still read from there). It exists so an **AI can read how the drawing is structured** (where pipe runs, vessels and frames sit — geometry a PNG can't convey) and generate matching artwork via its own `image_svg`. Raster backgrounds use the existing worker tracer, its color-aware derived palette, and a fresh-pixel main-thread fallback if the worker fails; SVG backgrounds are strictly UTF-8 decoded and validated. Insert strips the field and never renders it; the embedded background always stays the real one. A valid panel with no embedded background omits the trace and exports normally. If required SVG decoding/validation or raster tracing fails, Export shows an error and does not download JSON.
+**The drawing's structure inside background-bearing exports (v1.6.1 to v1.95.0):** from v1.6.1, **Export JSON** automatically included `image_svg_trace` whenever it embedded a raster background, without confirmation (at the top level since v1.17.0; `panel.image_svg_trace` in older files, and still read from there). It existed so an **AI could read how the drawing is structured** (where pipe runs, vessels and frames sit — geometry a PNG can't convey) and generate matching artwork via its own `image_svg`. Raster backgrounds used the worker tracer, its color-aware derived palette, and a fresh-pixel main-thread fallback if the worker failed. **Since v1.96.0 Export JSON writes no trace:** a picture of pixels goes in `image_data` as it is, and Copilot's `optimise.py` reads it where a drawing is needed ([Export JSON gives the panel as it is](#export-json-gives-the-panel-as-it-is-v1960)). Insert strips a trace an older file carries and never renders it; the embedded background always stays the real one. SVG backgrounds are strictly UTF-8 decoded and validated, and handed over as `panel.image_svg`. A valid panel with no embedded background exports normally. If a required SVG decoding or validation fails, Export shows an error and does not download JSON.
 
 **The background image lives inside the JSON.** Export always embeds it (`panel.converted: "true"` + `image_data: "data:image/png;base64,…"` — the designer's own embedded-image format, at the top level since v1.17.0 and inside `panel` before that), so one file carries the whole panel, artwork included. Since v1.1.0 the Insert dialog also has an **optional background-image picker**: choose a PNG/JPG there *before* the .json and it is embedded into the imported panel on the fly. And since v1.2.0 **an AI can author the artwork itself**: put raw SVG markup in `panel.image_svg` (a string starting with `<svg`, `viewBox="0 0 1400 750"`, no `<script>`) and Insert validates it, converts it to a data-URL background and embeds it — verified live with a generated AHU drawing behind 79 objects. Priority on insert: picked file > `image_svg` > `image_data`.
 

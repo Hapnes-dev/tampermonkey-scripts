@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.95.0
+// @version      1.96.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.95.0';
+var IWDIE_VERSION = '1.96.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -3218,7 +3218,7 @@ function iwdieTraceWorkerInputs(code) {
 /* ---------- the picture's own drawing (v1.64.4) ---------- */
 
 /** The largest drawing Export hands over beside its picture, in characters: past it, Edit in VectorCraft still opens
- *  the drawing from the picture, and the export keeps its coarse trace instead. */
+ *  the drawing from the picture, and the export keeps the picture only (its coarse trace before 1.96.0). */
 var IWDIE_DRAWING_MAX = 3000000;
 
 /** A 32-bit FNV-1a of a string, as 8 hex digits. */
@@ -3479,7 +3479,7 @@ function iwdiePrepareExportTrace(env, deps) {
 
   // the picture's own drawing (v1.64.4): a PNG VectorCraft saved holds the SVG it was drawn from. Handed over as
   // panel.image_svg, stamped, it is the picture as vectors for an agent and for VectorCraft; the coarse trace is then
-  // not needed. Without one, the pixels are traced as before.
+  // not needed. Without one, the pixels stay as they are (v1.96.0, Export JSON; traced before).
   var own = typeof deps.drawingOf === 'function'
     ? Promise.resolve().then(function () { return deps.drawingOf(bg); }).then(null, function () { return null; })
     : Promise.resolve(null);
@@ -3514,6 +3514,8 @@ function iwdiePrepareExportTrace(env, deps) {
     return null;
   }).then(function (done) {
     if (done) return done;
+    // (v1.96.0) the panel as it is: a picture of pixels stays its pixels, in image_data - no trace beside it
+    if (deps.keepPixels) return { env: env, traceNote: '' };
     if (typeof deps.traceRaster !== 'function') throw new Error('Background tracer is unavailable.');
     return traced();
   });
@@ -18915,7 +18917,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         "<div id='manager_widget_iwdie'>",
         '  <fieldset>',
         '    <legend>Panel JSON</legend>',
-        "    <button id='iwdie_export_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.doExport()\">Export JSON</button>",
+        "    <button id='iwdie_export_btn' class='btn_full ui-button ui-corner-all' title='The panel as it is: its picture and every object. Shift+click: the picture read into a drawing first, as Edit in VectorCraft reads it' onclick=\"window.__IWDIE.doExport(event)\">Export JSON</button>",
         "    <button id='iwdie_import_btn' class='btn_full ui-button ui-corner-all' onclick=\"window.__IWDIE.openImportPanel()\">Insert JSON…</button>",
         "    <button id='iwdie_vc_btn' class='btn_full ui-button ui-corner-all' title='Edit the background in VectorCraft, a vector editor, in a new tab - saving there updates this panel' onclick=\"window.__IWDIE.editInVectorCraft()\">Edit in VectorCraft…</button>",
         "    <button id='iwdie_ai_btn' class='btn_full ui-button ui-corner-all' title='Background → Adobe Illustrator (.ai / .svg)' onclick=\"window.__IWDIE.doExportBackgroundAi()\">Background → Illustrator</button>",
@@ -19532,6 +19534,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       } catch (e) { return null; }
     }
 
+    // (v1.96.0) Export JSON no longer asks for this trace: it keeps a picture of pixels as it is
     function traceRasterBackground(bg) {
       if (!IWDIE_TRACER) return Promise.reject(new Error('Background tracer is unavailable.'));
       return new Promise(function (resolve, reject) {
@@ -19672,7 +19675,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return vcDocumentOf(parsed.bytes).then(function (svg) { return svg ? iwdieVcStripEditing(svg) : null; });
           },
           optimised: opt ? opt.made : null,
-          traceRaster: traceRasterBackground,
+          // (v1.96.0) a picture of pixels exported as its pixels, not traced beside them
+          keepPixels: true,
           download: function (e, note) {
             if (stop && stop()) { toast('Export cancelled - no JSON was downloaded.', false, 5000); return null; }
             var name = downloadEnvelope(e, note);
@@ -19683,13 +19687,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       });
     }
 
-    /** Export JSON (v1.83.0: always optimised). A panel whose picture is pixels is exported as Edit in VectorCraft and a save
+    /** Export JSON (v1.96.0: the panel as it is). Its picture goes in image_data byte for byte - a picture of pixels as its
+     *  pixels, a PNG VectorCraft or Insert saved with the drawing it keeps beside it as panel.image_svg, as before 1.83.0 - and
+     *  every object as it is: nothing read from the picture, nothing traced, no new object. Thomas, 2026-10-20: "if the
+     *  background is just a PNG with objects placed on top, the export includes both the PNG background and all objects and
+     *  the image data ... if the file already contains complete VectorCraft JSON data, it should be exported as-is". Copilot's
+     *  optimise.py reads such a picture into a drawing where it needs one. Shift+click reads it here first (doExportRead). */
+    function doExport(ev) {
+      if (ev && ev.shiftKey) { doExportRead(); return; }
+      exportPanel(null, null, null).then(null, function (error) {
+        toast('Export blocked: ' + (error && error.message ? error.message : error) + '\nNo JSON was downloaded.', true, 9000);
+      });
+    }
+
+    /** Export JSON as 1.83.0 to 1.95.0 always made it - since 1.96.0 Shift+click. A panel whose picture is pixels is exported as Edit in VectorCraft and a save
      *  there would leave it (vcExportOptimised): the picture read into a drawing, panel.image_svg, the panel's picture from
      *  then on, and its words, the IWMAC objects and the Designer's boxes it shows the Designer's objects, after the panel's
      *  own - the export an agent such as Copilot reads, and returns to Insert. Its steps show on the page, with Cancel. A
      *  panel whose picture is a drawing already, or has none, or nothing to make objects of, is exported as before; so is
      *  one whose picture could not be read so, and the toast says why. */
-    function doExport() {
+    function doExportRead() {
       var paper = null;
       var steps = [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['text', 'Text in the picture'],
         ['boxes', 'Cases, rooms and bars'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'], ['build', 'The drawing and the new objects'],
