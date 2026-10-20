@@ -498,6 +498,59 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Words read again against 152 pictures: codes, the legend's "=", a store's words (v1.93.0)
+
+Thomas asked for another round: *do another Harness*. 72 more panels of 44 more plants were fetched read-only from the
+Designer and every word on them written down by hand, so the ground truth is now 152 panels of 78 plants and 6 603
+words. They were read again in Node as the page reads them. 1.92.0 reads 5 433 of the words right and 385 wrong, and
+leaves 785 as drawing. 1.93.0 reads 5 560 right and 292 wrong, and leaves 751. On the 72 new panels alone,
+which no rule before this one was made on, it reads 2 263 right where 1.92.0 read 2 196, and 186 wrong where
+it read 234.
+
+- **The legend's "=".** *V3gc = Gc-bypass active* came out as *V3gc Gc-bypass active* on every Maskin picture.
+  - **Why:** the "=" stands four rows high. A piece under five rows was dropped before the join that adds the "=" saw it.
+  - **Now:** such a piece is kept for that join. Where the "=" stands a column from its valve, so that the two make one
+    piece, the piece's last part is weighed as the "=".
+- **A case's code.**
+  - A space read after its letter (*F 79*, eleven times on one Oversikt) or before its suffix (*k7 b*) is read off.
+    Two letters keep their space (*LV 1*, *PI 151*).
+  - A 1 read as the I, l or T of a prefix nobody writes (*K I5D*, *KT5*, *FI1b*) is tried as the 1 of a code family
+    the panel, plant and house write five times or more (K and F).
+  - A suffix read as two or three small letters (*K19rfi*) marks the reading as a code read wrong, and the codes it
+    would be are weighed.
+  - An S after the letter (*KS6*, *FS*) weighs a little more, so the 5 wins where the ink is close.
+  - Between two codes only the ink decides, as it has between two numbers since 1.89.0. A code read clearly as *P60* is
+    no longer pulled onto *F60* because the plant knows that one. This holds for a code's first letter and its number,
+    also among other words (*kjøtt K09* is not *Kjøtt K05*). A letter after the first that was read wrong is still
+    corrected: *CD2* is the house's *CO2*.
+- **o and c.** A c whose ink closes round its ground is an o, where the o explains the ink nearly as well. *To °C*
+  came out as *Tc °C* in Segoe UI on the Maskin pictures. The bowl must hold two pixels or more at half ink: a c whose
+  ends nearly meet (*Pc (°C)* on an old picture) stays a c.
+- **m read as rn.** A word ending in *rorn* is read as one in *rom* (*Tinerom*, *Fruktrom*), and *rn3* as *m3*, where
+  the ink allows it.
+- **A unit or a number beside the words.** A piece that reads well as a unit in brackets or as a number joins the words
+  before it, when it stands on their line, at their size, a word space or a little more from them: *Total energi (MWh)*,
+  *IWT 2*. Alone, it is no word.
+- **Words and strokes.**
+  - A word whose vowels make up a quarter of its letters is a word, however many f, l and I it has (*Avfall*,
+    *fullfart*). A 1 is a digit, not a stroke (*IWT11*).
+  - Two strokes alone that nobody knows are no word: *fl* on an Energi switch blade, *II* on a door bar.
+  - A colon after a letter ends a header (*Anleggsnr:*).
+- **The house's words.**
+  - *Run Cap %* is gone. The 152 pictures write *Run Cap. %* 75 times and the other never, and it pulled the full stop
+    off.
+  - *Low level* replaces *Low-level*: the template writes *Low-* and *level* on two lines.
+  - A store's rooms and an Oversikt's header are known: *Anleggsnr:*, *Fruktrom*, *Kjøtt*, *Isdisk*, *Meny* and others
+    that two plants or more write. Those the pictures write after another word in small letters are known in small
+    letters too, so the house's capital does not pull the picture's small letter.
+  - The Maskin pictures' *Po °C* (14 times on 7 plants) and *Pc bar* are known.
+  - A known word with a stop or a colon after it is not pulled onto another (*Åpen.*).
+
+Still read poorly: case codes 6 to 7 px high (*K19a*, *K18B* read as *K188*), words on gradient and frosted fills, bold
+headers, rotated codes, and pictures whose font is none of Roboto, Arial and Segoe UI (Tahoma and Verdana were tried
+and read no better). On the Energi template the phase labels (*L1*, *L2*, *L3*) are often found by no run or merged with
+the bus bar. Not run in the live Designer.
+
 ### Words on every kind of picture read: no picture left unread, Swedish, units (v1.92.0)
 
 Thomas asked for a deep dive: *do more of these to test and find more text that can you object text on … do a lot of

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.92.0
+// @version      1.93.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.92.0';
+var IWDIE_VERSION = '1.93.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16757,9 +16757,9 @@ var IWDIE_TX_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅÄÖabcdefghijklmnopqrstuv
  *  rooms. Known whatever the panel, with the panel's own and its plant's. */
 var IWDIE_TX_HOUSE = ['Symbolforklaring', 'Varme', 'Kjøl', 'Frys', 'Kommunikasjonsfeil', 'Alarm', 'Kjøl/Frys pågår', 'Avriming pågår', 'IWT',
   'Plugin', 'Information', 'Machine status', 'Room temperature', 'CO2 Alarm', 'Heat recovery information', 'Capacity %', 'Runtime',
-  'Runtime h', 'Run Cap. %', 'Reg Cap. %', 'Reg cap %', 'Run Cap %', 'VSD %', 'Ref', 'Ref °C', 'To °C', 'To offset', 'SH K', 'Suct.°C', 'Pc Bar', 'Tc °C',
+  'Runtime h', 'Run Cap. %', 'Reg Cap. %', 'Reg cap %', 'VSD %', 'Ref', 'Ref °C', 'To °C', 'To offset', 'SH K', 'Suct.°C', 'Pc Bar', 'Tc °C',
   'Pgc bar', 'Prec bar', 'Shp °C', 'Sgc °C', 'Liq. consumer', 'M-T', 'L-T', 'M-T Suct.', 'L-T Suct.', 'M-T Sd °C', 'L-T Sd °C', 'Gascooler', 'Hr enable',
-  'Oil-sep.', 'Low-level', 'Oil-', 'sep.', 'Low-', 'level', 'High-level', 'High-', 'Pump %', 'Consumer Ref %', 'Manuel', 'Running', 'Enabled', 'Meierirom', 'Fryserom', 'Kjølerom', 'Tekniskrom',
+  'Oil-sep.', 'Low level', 'Oil-', 'sep.', 'Low-', 'level', 'High-level', 'High-', 'Pump %', 'Consumer Ref %', 'Manuel', 'Running', 'Enabled', 'Meierirom', 'Fryserom', 'Kjølerom', 'Tekniskrom',
   'Maskinrom', 'Lager', 'Butikk', 'Hovedinntak', 'Total energi (kWh)', 'Effekt (kW)', 'Kjøl og Frys', 'Maskin', 'Ventilasjon',
   'Varmegjenvinning', 'Tilluft', 'Avtrekk', 'Uteluft', 'Avkast', 'Inngang', 'Kasse', 'Frukt', 'Bakeri', 'Hr active', 'Gc-bypass active',
   '= Hr active', '= Gc-bypass active', 'Varmluftsport', 'inngangsparti', 'Aerotemper', 'Varmepumpe', 'Gulvvarme', 'Radiator',
@@ -16776,7 +16776,15 @@ var IWDIE_TX_HOUSE = ['Symbolforklaring', 'Varme', 'Kjøl', 'Frys', 'Kommunikasj
   'Aktivitet', 'Oppvask', 'Rengjøring', 'Rekvisita', 'Kontor', 'Pakkerom', 'Tinerom', 'Iskremtorg', 'Kolonial', 'Meieri',
   'Ferskvare',
   // the older Oversikt pictures' legend, in Norwegian beside the Swedish one above (3694, 8193, 8409, 8652)
-  'Symbolforklaringer', 'Frys/kjøling pågår', 'Kommunikasjonsfeil på regulator/enhet'];
+  'Symbolforklaringer', 'Frys/kjøling pågår', 'Kommunikasjonsfeil på regulator/enhet',
+  // (v1.93.0) a store's rooms and an Oversikt's header, as two plants or more of 78 write them - and in small letters those
+  // they write after another word too, so a house word's capital is no pull on the picture's small letter
+  'Anleggsnr:', 'Anläggning:', 'Kjøtt', 'Kjøttrom', 'Fruktrom', 'Fisk', 'Avfall', 'Rom', 'Grønt', 'Kjeller', 'Kjølt', 'Kjøle', 'Kjøkken',
+  'Datarom', 'Disker', 'Isdisk', 'Emballert', 'Fryselager', 'Tilberedning', 'Mineralvann', 'Deli', 'Heis', 'Plan', 'Meny',
+  'System', 'Drift', 'Aggregat', 'Tørrkjøler', 'Fjernvarme', 'Utetemp', 'Væske', 'Nivå', 'Åpen', 'Tunnel', 'Översikt',
+  'kjøtt', 'fisk', 'avfall', 'rom', 'åpen', 'utetemp', 'nivå',
+  // and the Maskin pictures' Po °C (14 times on 7 plants) and Pc bar, beside the house's Pc Bar
+  'Po °C', 'Pc bar'];
 
 /** A word's ink (v1.78.0): how far each pixel of box `b` ({x, y, w, h}, grown by `pad`) of picture `pic` (RGBA, W x H) is
  *  from the box's ground - its commonest colour - towards its text's colour - the mean of its farthest pixels. 0..1, row
@@ -17079,7 +17087,7 @@ function iwdieTxForce(ink, w, h, base, bank, gains, total, text, opts) {
   if (end < 0) return null;
   var placed = [];
   for (i = L - 1, p = end; i >= 0; i--) { var p0 = backs[i][p]; if (need[i] >= 0) placed.push([need[i], p0]); p = p0; }
-  return { cost: iwdieTxResidue(ink, w, h, base, bank, placed, total), to: end / 4 };
+  return { cost: iwdieTxResidue(ink, w, h, base, bank, placed, total), to: end / 4, placed: placed };
 }
 
 /** Whether a reading looks like words rather than an icon read as letters (v1.78.0): mostly letters and digits, no run of
@@ -17096,15 +17104,17 @@ function iwdieTxWordy(s) {
   if (!alnum || marks > Math.max(1, 0.3 * s.length)) return false;
   if (/[.,:\/'()\-+]{2,}/.test(s)) return false;
   if (/^[.,:\/'\-+%°)&]/.test(s) || /^=(?! [A-ZÆØÅÄÖa-zæøåäö])/.test(s)) return false;
-  if (/[\/'(+:,=&]$/.test(s) || /[^A-Za-zÆØÅÄÖæøåäö]-$/.test(s)) return false;
+  // (v1.93.0) a colon after a letter ends a header - Anleggsnr:, SP endres ved: - after anything else no word
+  if (/[\/'(+,=&]$/.test(s) || /[^A-Za-zÆØÅÄÖæøåäö]-$/.test(s) || /[^A-Za-zÆØÅÄÖæøåäö]:$/.test(s)) return false;
   // mostly thin strokes - f, j, l, I, 1 - or a letter four times running is a figure's outline read as letters
   if (/([^\s0-9])\1\1\1/.test(s)) return false;
-  var thin = s.replace(/[^fjlI1|]/g, '').length;
-  if (s.replace(/ /g, '').length >= 5 && thin >= 0.5 * s.replace(/ /g, '').length) return false;
+  // (v1.93.0) but not a word with its vowels, a quarter of its letters (Avfall, fullfart), and a 1 is a digit, not a stroke (IWT11)
+  var thin = s.replace(/[^fjlI|]/g, '').length, vowels = function (t) { return t.replace(/[^aeiouyæøåäöAEIOUYÆØÅÄÖ]/g, '').length; };
+  if (s.replace(/ /g, '').length >= 5 && thin >= 0.5 * s.replace(/ /g, '').length && vowels(s) < s.replace(/ /g, '').length / 4) return false;
   // a word of six letters or more mostly of strokes - f, j, l, r, I, L, v, y, 1 - is an outline's edges read as letters
   var odd = s.split(' ').some(function (t) {
     var letters = t.replace(/[^A-Za-zÆØÅÄÖæøåäö0-9]/g, '');
-    return (letters.length >= 6 && letters.replace(/[^fjlrILvy1]/g, '').length >= 0.6 * letters.length) ||
+    return (letters.length >= 6 && letters.replace(/[^fjlrILvy1]/g, '').length >= 0.6 * letters.length && vowels(letters) < letters.length / 4) ||
       (letters.length === 5 && letters.replace(/[^fjlrILvy1]/g, '').length >= 4);
   });
   return !odd;
@@ -17238,6 +17248,22 @@ function iwdieTxBest(I, tries, vocab, opts) {
     for (var u = 0; u < a.length; u++) if (a.charAt(u) !== b.charAt(u) && /\d/.test(a.charAt(u)) && /\d/.test(b.charAt(u))) return true;
     return false;
   };
+  // (v1.93.0) and two readings that are both a case's code, one for another - 8415's P60, read so, became the plant's F60 -
+  // or that have one in the same place among their words (3214's kjøtt K09 as Kjøtt K05)
+  // - a code for another by its first letter or its number; a letter after the first read wrong is no other code (CO2 for
+  // CD2 is the house's CO2)
+  var recoded = function (a, b) {
+    var re = /^[A-ZÆØÅÄÖ]{1,3}-?\d{1,3}[a-fA-F]?$/, ta = String(a).split(' '), tb = String(b).split(' ');
+    var other = function (t, v) {
+      if (t === v || !re.test(t) || !re.test(v)) return false;
+      for (var u = 1; u < Math.min(t.length, v.length); u++) {
+        if (t.charAt(u) !== v.charAt(u) && /[A-Za-zÆØÅÄÖæøåäö]/.test(t.charAt(u)) && /[A-Za-zÆØÅÄÖæøåäö]/.test(v.charAt(u))) return false;
+      }
+      return true;
+    };
+    if (ta.length === tb.length) return ta.some(function (t, u) { return other(t, tb[u]); });
+    return other(String(a).replace(/ /g, ''), String(b).replace(/ /g, ''));
+  };
   var orKnown = function (r) {
     var kb = iwdieTxKnownBest(I, tried, vocab, null, r ? r.text : best.text);
     if (!kb || kb.cost > (opts.loose ? 0.3 : 0.24)) return r;
@@ -17246,7 +17272,7 @@ function iwdieTxBest(I, tries, vocab, opts) {
     var recased = r && kb.text !== r.text && kb.text.toLowerCase() === r.text.toLowerCase() && kb.cost <= r.cost + 0.15 &&
       kb.text.split('').every(function (ch, u) { return ch === r.text.charAt(u) || 'cosuvwxzl'.indexOf(ch.toLowerCase()) >= 0; });
     if (r && iwdieTxTaken(r, opts) && !recased && (r.known || kb.cost > r.cost + 0.05)) return r;
-    if (r && iwdieTxTaken(r, opts) && renumbered(r.text, kb.text) && kb.cost > r.cost) return r;
+    if (r && iwdieTxTaken(r, opts) && (renumbered(r.text, kb.text) || recoded(r.text, kb.text)) && kb.cost > r.cost) return r;
     // (v1.92.0) nor one only in another case that the ink reads less well, where the cases do not look alike
     if (r && iwdieTxTaken(r, opts) && kb.text !== r.text && kb.text.toLowerCase() === r.text.toLowerCase() && !lookCase(kb.text, r.text) && kb.cost > r.cost) return r;
     // (v1.82.8) nor a known word that is what was read with a full stop more or less, which the ink does not read as well
@@ -17293,7 +17319,10 @@ function iwdieTxBest(I, tries, vocab, opts) {
     // and a bracket left open or closed alone much heavier
     return cost - (known(t) ? (exact(t) ? 0.04 : 0.02) : 0) - 0.02 * (kw + kx) / toks.length - 0.02 * iwdieTxShape(t) / (2 * toks.length) +
       0.012 * t.replace(/ /g, '').length + 0.01 * (t.match(/q(?!u)/g) || []).length +
-      0.04 * Math.abs((t.match(/\(/g) || []).length - (t.match(/\)/g) || []).length);
+      0.04 * Math.abs((t.match(/\(/g) || []).length - (t.match(/\)/g) || []).length) +
+      // (v1.93.0) and an S after a case's letter, before its number or alone - 3214's K56 read as KS6 (0.220 against
+      // 0.227), 2313's P5 as PS - a little heavier: a 5 is what stands there
+      0.015 * (t.match(/(^| )[A-RT-ZÆØÅÄÖ]S(?=\d|$| )/g) || []).length;
   };
   var weighed = {}, weigh = function (t) {
     if (t in weighed) return weighed[t];
@@ -17365,6 +17394,9 @@ function iwdieTxBest(I, tries, vocab, opts) {
     var toks = s0.split(' ');
     toks.forEach(function (tk, i) {
       if (words[tk]) return;
+      // (v1.93.0) nor a known word with a stop or a colon after it, as the picture ends it (3214's Åpen.)
+      var mk = /^(.+?)[.:]$/.exec(tk);
+      if (mk && words[mk[1]]) return;
       var cap = Math.max(1, Math.floor(tk.length / 3)), low = tk.toLowerCase();
       Object.keys(words).forEach(function (w) {
         if (Math.abs(w.length - tk.length) > cap || iwdieTxDist(low, w.toLowerCase(), cap) > cap) return;
@@ -17388,7 +17420,7 @@ function iwdieTxBest(I, tries, vocab, opts) {
   var stop = function (t) { return t.replace(/\.$/, ''); };
   var free = pick, fits = function (w) {
     if (free && w.text !== free.text && stop(w.text) === stop(free.text)) return w.cost <= free.cost;
-    if (free && renumbered(free.text, w.text)) return w.cost <= free.cost;
+    if (free && (renumbered(free.text, w.text) || recoded(free.text, w.text))) return w.cost <= free.cost;
     // (v1.92.0) a word in another case - 8921's Kjølerom frukt as the plant's Frukt, 3214's ventilasjon as the house's
     // Ventilasjon - only by the ink
     if (free && w.text !== free.text && w.text.toLowerCase() === free.text.toLowerCase() && !lookCase(w.text, free.text)) return w.cost <= free.cost;
@@ -17412,8 +17444,18 @@ function iwdieTxBest(I, tries, vocab, opts) {
   // and baseline tried, when the ink reads it nearly as well (0.05 more) and it is taken
   var taken = function (t, cost) { return iwdieTxTaken({ text: t, cost: cost, known: known(t), kt: kts(t) }, opts); };
   var odd = iwdieTxCodeOdd(pick.text), at = null;
-  if (!late() && !known(pick.text) && (odd || !taken(pick.text, pick.cost))) {
-    iwdieTxCodes(pick.text).concat(text0 !== pick.text ? iwdieTxCodes(text0) : []).forEach(function (t) {
+  // (v1.93.0) a prefix nobody writes that is a family's - the codes the panel, plant and house write by the five or more,
+  // K and F on most plants - and an I, l or T after it: the family's code with a 1 there. 7153's K15D read as K I5D, 5242's
+  // K15 as KT5, 2359's F11b as FI1b
+  var fams = {}, odd2 = null, fm = /^([A-ZÆØÅÄÖ]{2,3})(\d{1,3}[a-zA-F]?)$/.exec(pick.text.replace(/ /g, ''));
+  if (fm) {
+    (vocab || []).forEach(function (v) {
+      String(v).split(' ').forEach(function (t) { var pm = /^([A-ZÆØÅÄÖ]{1,3})-?\d/.exec(t); if (pm) fams[pm[1]] = (fams[pm[1]] || 0) + 1; });
+    });
+    if (!fams[fm[1]] && /[IlT]$/.test(fm[1]) && (fams[fm[1].slice(0, -1)] || 0) >= 5) odd2 = fm[1].slice(0, -1) + '1' + fm[2];
+  }
+  if (!late() && !known(pick.text) && (odd || odd2 || !taken(pick.text, pick.cost))) {
+    iwdieTxCodes(pick.text).concat(text0 !== pick.text ? iwdieTxCodes(text0) : []).concat(odd2 ? [odd2] : []).forEach(function (t) {
       if (late() || t === pick.text) return;
       var w = weigh(t), m = w ? { text: t, cost: w.cost } : null;
       tried.forEach(function (tr) {
@@ -17428,6 +17470,30 @@ function iwdieTxBest(I, tries, vocab, opts) {
       x0: spI ? spI[0] : 0, x1: spI ? spI[1] + 1 : I.w });
   }
   if (at) pick = at;
+  // (v1.93.0) a c whose ink closes round is an o: read in a font whose o stands wider than the picture's, 2349's To °C came
+  // out as Tc °C (0.180 against 0.205). The ink's shape decides, where the o explains it nearly as well (0.05 more)
+  if (pick && pick.text.indexOf('c') >= 0 && bank0.index.o !== undefined && !late()) {
+    var fc = iwdieTxForce(J.ink, J.w, J.h, base0, bank0, gains0, J.total, pick.text, opts), oc = pick.text.split(''), nth = [];
+    for (var u2 = 0; u2 < oc.length; u2++) if (oc[u2] !== ' ') nth.push(u2);
+    if (fc && fc.placed) {
+      fc.placed.slice().reverse().forEach(function (lp, n) {
+        var t2 = bank0.chars[lp[0]].ph[lp[1] & 3];
+        if (bank0.chars[lp[0]].ch !== 'c' || !t2 || !t2.w) return;
+        var bx = (lp[1] >> 2) + t2.off;
+        if (iwdieTxBowl(J.ink, J.w, J.h, bx, bx + t2.w, base0 + t2.top, base0 + t2.top + t2.h)) oc[nth[n]] = 'o';
+      });
+    }
+    var wo = oc.join('') !== pick.text ? weigh(oc.join('')) : null;
+    if (wo && wo.cost <= pick.cost + 0.05) pick = wo;
+  }
+  // (v1.93.0) a word that ends in rorn is one in rom (Kjølerom, Tinerom), and an rn before a digit the m of m3, where the
+  // ink allows it (0.04 more): read in a font whose m stands narrower than the picture's, 4559's Tinerom Fisk came out as
+  // Tinerorn Fisk, 3933's Flow (m3/h) as Flow (rn3/h)
+  if (pick && /[Rr]orn(?![a-zæøåäö])|rn(?=\d)/.test(pick.text) && !late()) {
+    var wm = weigh(pick.text.replace(/([Rr]o)rn(?![a-zæøåäö])/g, '$1m').replace(/rn(?=\d)/g, 'm'));
+    if (wm && wm.cost <= pick.cost + 0.04) pick = wm;
+  }
+  if (pick && iwdieTxCodeJoin(pick.text) !== pick.text) pick = { text: iwdieTxCodeJoin(pick.text), cost: pick.cost, score: pick.score };
   var span = iwdieTxSpan(J.ink, J.w, J.h);
   return orKnown({ text: pick.text, cost: pick.cost, known: known(pick.text), kt: kts(pick.text), bank: bank0, base: base0,
     x0: (J.x - I.x) + (span ? span[0] : 0), x1: (J.x - I.x) + (span ? span[1] + 1 : J.w) });
@@ -17450,7 +17516,8 @@ function iwdieTxCodes(s) {
       var head = m[1] + (m[2] === '-' ? '-' : '') + m[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Ilt]/g, '1').replace(/[Zz]/g, '2');
       if (out.indexOf(head + m[4]) < 0) out.push(head + m[4]);
     });
-    [/^([A-ZÆØÅÄÖ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøåäö]{0,2})$/, /^([A-ZÆØÅÄÖ]{1,3}?)([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøåäö]{0,2})$/].forEach(function (re) {
+    // (v1.93.0) or three: 8150's K19a, 7 px high, read as K19rfi
+    [/^([A-ZÆØÅÄÖ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøåäö]{0,3})$/, /^([A-ZÆØÅÄÖ]{1,3}?)([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøåäö]{0,3})$/].forEach(function (re) {
       var m = re.exec(flat);
       if (!m || !(/[\dZz]/.test(m[3]) || m[2] === '-')) return;
       var head = m[1] + (m[2] === '-' ? '-' : '') + m[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Ilt]/g, '1').replace(/B/g, '8').replace(/[Zz]/g, '2');
@@ -17466,7 +17533,8 @@ function iwdieTxCodes(s) {
 function iwdieTxCodeOdd(s) {
   var flat = String(s || '').replace(/ /g, '');
   var m = /^([A-ZÆØÅÄÖ]{1,3})([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/.exec(flat) || /^([A-ZÆØÅÄÖ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-e]?)$/.exec(flat);
-  return !!m && /[^0-9]/.test(m[3]) && /\d|z/.test(m[3]);
+  // (v1.93.0) and one whose suffix is two or three small letters: no code is written so - 8150's K19a read as K19rfi
+  return (!!m && /[^0-9]/.test(m[3]) && /\d|z/.test(m[3])) || /^[A-ZÆØÅÄÖ]{1,3}-?\d{1,3}[a-zæøåäö]{2,3}$/.test(flat);
 }
 
 /** Whether a reading is taken (v1.78.0): one that looks like words and explains its ink well (cost 0.14 at most), or a
@@ -17478,6 +17546,9 @@ function iwdieTxCodeOdd(s) {
 function iwdieTxTaken(r, opts) {
   if (!r || !iwdieTxWordy(r.text) || r.text.replace(/ /g, '').length < 2) return false;
   if (!r.known && r.text.split(' ').some(function (t) { return /[a-zæøåäö][A-ZÆØÅÄÖ]/.test(t) && !/^\(?(kW|kWh|MW|MWh|kVA|kPa|MPa|mA|pH|dB)\)?$/.test(t); })) return false;
+  // (v1.93.0) two strokes alone - f, l, i, I, j, t, r - that nobody knows are a line's: 5510's Energi switch blade read as
+  // fl, a door bar as II
+  if (!r.known && /^[fliIjtr|]{2}$/.test(r.text.replace(/ /g, ''))) return false;
   if (r.cost <= 0.14) return true;
   // (v1.79.0) read in a font nobody gave (`opts.loose`), a known word explains its ink less well
   if (r.cost <= (opts && opts.loose ? 0.3 : 0.24) && r.known) return true;
@@ -17497,6 +17568,37 @@ function iwdieTxTaken(r, opts) {
 }
 
 /** A run's pieces (v1.78.0): its columns with ink (over 0.15), apart where `gapMin` columns have none. -> [{x0, x1}] */
+/** Whether the ink in a letter's box closes round its ground (v1.93.0) - an o's bowl, where a c's is open: the box a pixel
+ *  wider each way, ink from 0.45 up a wall, the ground reached from the box's edge four ways open, two pixels or more of
+ *  any other closed (an o's eight at 9 px; 8193's c, its ends a pixel apart in half ink, none). */
+function iwdieTxBowl(ink, w, h, x0, x1, y0, y1) {
+  x0 = Math.max(0, x0 - 1); x1 = Math.min(w, x1 + 1); y0 = Math.max(0, y0 - 1); y1 = Math.min(h, y1 + 1);
+  var bw = x1 - x0, bh = y1 - y0, i, x, y;
+  if (bw < 3 || bh < 3) return false;
+  var open = new Uint8Array(bw * bh), stack = [];
+  var ground = function (q) { return ink[(y0 + Math.floor(q / bw)) * w + x0 + q % bw] < 0.45; };
+  for (x = 0; x < bw; x++) stack.push(x, (bh - 1) * bw + x);
+  for (y = 0; y < bh; y++) stack.push(y * bw, y * bw + bw - 1);
+  while (stack.length) {
+    i = stack.pop();
+    if (open[i] || !ground(i)) continue;
+    open[i] = 1;
+    x = i % bw; y = (i - x) / bw;
+    if (x > 0) stack.push(i - 1);
+    if (x < bw - 1) stack.push(i + 1);
+    if (y > 0) stack.push(i - bw);
+    if (y < bh - 1) stack.push(i + bw);
+  }
+  for (var shut = 0, i2 = 0; i2 < bw * bh; i2++) if (!open[i2] && ground(i2)) shut++;
+  return shut >= 2;
+}
+
+/** A case's code read with a space in it, without (v1.93.0): a letter alone before its number (8921's F 70, 8522's F 2b)
+ *  or a suffix alone after it (6339's k7 b). Only the whole reading: LV 1 and PI 151, two letters, are written so. */
+function iwdieTxCodeJoin(s) {
+  return String(s || '').replace(/^([A-ZÆØÅÄÖ]) (\d{1,3}[a-f]?)$/, '$1$2').replace(/^([A-Za-zÆØÅÄÖ]{1,2}\d{1,3}) ([a-f])$/, '$1$2');
+}
+
 function iwdieTxPieces(I, gapMin) {
   var on = [], x, y, out = [], start = -1, run = 0;
   for (x = 0; x < I.w; x++) { var s = 0; for (y = 0; y < I.h; y++) s += I.ink[y * I.w + x]; on.push(s > 0.15); }
@@ -17578,7 +17680,13 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
         var C = iwdieTxCrop(I, Math.max(0, pc.x0 - pad), Math.min(I.w, pc.x1 + pad)), top = -1, bot = -1, y, x, s;
         for (y = 0; y < C.h && top < 0; y++) { s = 0; for (x = 0; x < C.w; x++) s += C.ink[y * C.w + x]; if (s > 0.15) top = y; }
         for (y = C.h - 1; y >= 0 && bot < 0; y--) { s = 0; for (x = 0; x < C.w; x++) s += C.ink[y * C.w + x]; if (s > 0.15) bot = y; }
-        if (top < 0 || bot + 1 - top < 5) return;
+        if (top < 0) return;
+        // (v1.93.0) under five rows high is no word, but may be a legend's "=" - 10214's, four rows - for the join below
+        if (bot + 1 - top < 5) {
+          var sp0 = iwdieTxSpan(C.ink, C.w, C.h);
+          if (sp0) fails.push({ x0: C.x - I.x + sp0[0], x1: C.x - I.x + sp0[1] + 1 });
+          return;
+        }
         var g = read(C, bot + 1 - top, bot + 1), off = C.x - I.x;
         if (iwdieTxTaken(g, opts)) {
           parts.push({ text: g.text, cost: g.cost, known: g.known, size: g.bank.size, base: g.base, x0: off + g.x0, x1: off + g.x1, space: g.bank.space });
@@ -17599,7 +17707,16 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
             });
           });
         }
-        if (unit) parts.push({ text: unit.text, cost: unit.cost, known: prev.known, size: prev.size, base: prev.base, x0: off + sp[0], x1: off + sp[1] + 1, space: prev.space, unit: true });
+        // (v1.93.0) or what it reads as itself, a unit in brackets or a number, read well at their size on their baseline a
+        // word space or a little more from them: 8809's Total energi (MWh), 3333's IWT 2
+        var near = 1;
+        if (!unit && prev && !prev.unit && sp && g && g.cost <= 0.2 && Math.abs(g.base - prev.base) <= 1 && Math.abs(g.bank.size - prev.size) <= 1.5 &&
+          off + sp[0] - prev.x1 <= 2.5 * Math.max(prev.space, 2) &&
+          (/^\((?:°C|%|%rh|A|V|Hz|kW|kWh|MW|MWh|bar|Pa|kPa|ppm|m3\/h|m3|l\/s|l\/h|K)\)$/.test(g.text) || /^\d{1,3}$/.test(g.text))) {
+          unit = { text: g.text, cost: g.cost };
+          near = 2.5;
+        }
+        if (unit) parts.push({ text: unit.text, cost: unit.cost, known: prev.known, size: prev.size, base: prev.base, x0: off + sp[0], x1: off + sp[1] + 1, space: prev.space, unit: true, near: near });
         else if (!again && sp) fails.push({ x0: off + sp[0], x1: off + sp[1] + 1 });
         // a wide piece that does not read - an icon with the words beside it, the run as high as the icon - in smaller pieces;
         // (v1.90.0) twice as wide as high is wide enough: a valve's tag beside the valve, 10210's V3gc and 2313's V3tw, is
@@ -17641,7 +17758,14 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
       fails.forEach(function (f) {
         var next = null;
         parts.forEach(function (p) { if (!p.unit && p.x0 >= f.x1 && (!next || p.x0 < next.x0)) next = p; });
-        if (!next || next.x0 - f.x1 > 2 * Math.max(next.space, 2) || /^= /.test(next.text) || f.x1 - f.x0 > 1.5 * next.size) return;
+        if (!next || next.x0 - f.x1 > 2 * Math.max(next.space, 2) || /^= /.test(next.text)) return;
+        // (v1.93.0) the piece's last part a column from the rest, where an icon stands next to the "=": the piece that did
+        // not read was the two together
+        if (f.x1 - f.x0 > 1.5 * next.size) {
+          var F = iwdieTxCrop(I, f.x0, f.x1), qe = iwdieTxPieces(F, 1), last = qe[qe.length - 1];
+          if (qe.length < 2 || !last || last.x1 - last.x0 > next.size) return;
+          f = { x0: f.x0 + last.x0, x1: f.x0 + last.x1 };
+        }
         var E = iwdieTxCrop(I, Math.max(0, f.x0 - 1), Math.min(I.w, f.x1 + 1)), fe = null;
         // at the words' size or a pixel either side, on their baseline or a row either side: an "=" stands mid-height
         [-1, -0.5, 0, 0.5, 1].forEach(function (dz) {
@@ -17658,11 +17782,11 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
       var joined = [], dBase = opts && opts.loose ? 2 : 1, dSize = opts && opts.loose ? 1.5 : 0.5;
       parts.forEach(function (p) {
         var q = joined[joined.length - 1];
-        if (q && Math.abs(q.base - p.base) <= dBase && Math.abs(q.size - p.size) <= dSize && p.x0 - q.x1 <= 1.5 * Math.max(q.space, 2)) {
+        if (q && Math.abs(q.base - p.base) <= dBase && Math.abs(q.size - p.size) <= dSize && p.x0 - q.x1 <= (p.near > 1 ? p.near : 1.5) * Math.max(q.space, 2)) {
           q.text += ' ' + p.text; q.x1 = p.x1; q.cost = Math.max(q.cost, p.cost); q.known = q.known && p.known;
         } else if (!p.unit) joined.push(p);
       });
-      joined.forEach(function (p) { delete p.space; delete p.unit; });
+      joined.forEach(function (p) { delete p.space; delete p.unit; delete p.near; });
       res = joined.length ? joined : null;
     }
     // (v1.92.0) a small run that reads as no words: a unit alone - 11087's %s split from Run Cap. by the tracer, (kWh) -
@@ -24257,7 +24381,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /** The reading functions a worker runs (v1.78.0; v1.89.0 the codes'). */
     function vcTxDeps() {
       return [iwdieTxGains, iwdieTxKerny, iwdieTxSpan, iwdieTxResidue, iwdieTxRead, iwdieTxForce, iwdieTxWordy, iwdieTxDist, iwdieTxCrop, iwdieTxShape, iwdieTxKnownBest, iwdieTxBest,
-        iwdieTxTaken, iwdieTxPieces, iwdieTxTries, iwdieTxCodes, iwdieTxCodeOdd];
+        iwdieTxTaken, iwdieTxPieces, iwdieTxTries, iwdieTxCodes, iwdieTxCodeOdd, iwdieTxBowl, iwdieTxCodeJoin];
     }
 
     /** The picture at its own size, its words to be read on (v1.91.0), where the canvas `c` has it at another
@@ -28579,6 +28703,8 @@ if (typeof module !== 'undefined' && module.exports) {
     txBest: iwdieTxBest,
     txTaken: iwdieTxTaken,
     txPieces: iwdieTxPieces,
+    txBowl: iwdieTxBowl,
+    txCodeJoin: iwdieTxCodeJoin,
     txTries: iwdieTxTries,
     txSizes: iwdieTxSizes,
     txReadAll: iwdieTxReadAll,
