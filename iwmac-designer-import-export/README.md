@@ -501,6 +501,34 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Export JSON warns of a panel not converted with VectorCraft (v1.98.0)
+
+Thomas: *make a warning if the export is not converted with vectorcraft*. He had two exports of the same Oversikt to
+send to Copilot, one before its conversion in VectorCraft and one after. The one after was the one to send: its cases
+are the Designer's own case boxes and its names are label objects. The one before has them only as pixels.
+
+- **The warning.** The progress card ends with an amber box, *Not converted with VectorCraft*, when a Maskin or
+  Oversikt panel's picture is pixels: a PNG or JPEG with no drawing beside it.
+  - It says what Copilot then cannot do. An Oversikt's cases and names, or a Maskin's words and house symbols, are only
+    pixels to Copilot, and it cannot change the drawing.
+  - It says how to convert the panel: Edit in VectorCraft…, Vectorize image, Ctrl+S, then Export JSON again. Its button
+    opens Edit in VectorCraft….
+  - The card then stays open for 15 s instead of 3.5 s, and a pointer on it holds it.
+- **Which panels.** The panel's name decides it, as it decides which house symbols the export looks for.
+  - Ventilasjon, curves, trends, lists, room control and Energi are never a drawing, and are not warned.
+  - A panel whose picture keeps a VectorCraft drawing is converted already.
+- **Copilot says it too.** The edit skill's `panel_format.py` notes such a file. When the request needs more, the agent
+  says under Next what converting would give.
+
+Tested:
+- **In Node:** an Oversikt and a Maskin of pixels were warned, each with its own words. A Ventilasjon, an Energi panel,
+  a converted panel and one without a picture were not.
+- **In the stub host:** a Maskin picture and an Oversikt picture of pixels showed the box and kept the card open. A
+  picture that keeps its drawing showed none. The stub names every panel "panel", so its Oversikt read as a Maskin
+  there; the Designer gives the export the panel's own name.
+
+Not run in the live Designer.
+
 ### Export JSON shows its progress as it goes (v1.97.0)
 
 Thomas: *the UI appears to freeze, and then the files suddenly export*. He asked for a modern progress bar with real-time

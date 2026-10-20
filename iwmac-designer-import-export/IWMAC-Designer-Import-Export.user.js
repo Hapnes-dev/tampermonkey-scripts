@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.97.0
+// @version      1.98.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.97.0';
+var IWDIE_VERSION = '1.98.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16412,6 +16412,22 @@ function iwdieVzObjectPills(pic, W, H, cols, objects, found) {
  *  (ovClearObjects, iwdieVzObjectPills): one call, so that a worker can make it - the pills' rings are read pixel by
  *  pixel, and on a Maskin picture that held the page for a third of a second. `pic` RGBA, W x H; not changed.
  *  -> {cols: [[r, g, b]...], pills: iwdieVcFindPills'} */
+/** Export JSON's warning for a panel not converted with VectorCraft (v1.98.0), or null. A Maskin or Oversikt panel
+ *  (iwdieOvSymbolSet) whose picture is pixels - a PNG or JPEG in image_data, no drawing beside it in panel.image_svg -
+ *  gives Copilot its objects only: an Oversikt's cases and names, a Maskin's words and house symbols, are pixels to it,
+ *  and it cannot change the drawing. Thomas, 2026-10-20: "make a warning if the export is not converted with
+ *  vectorcraft". Panels that are never a drawing (Ventilasjon, curves, lists, Energi) get none. -> {title, text} | null */
+function iwdieExportUnconverted(env) {
+  var panel = (env && env.panel) || {}, set = iwdieOvSymbolSet(env && env.panel_name != null ? env.panel_name : panel.panel_name);
+  var data = String((env && env.image_data) || panel.image_data || '');
+  if (!set || !/^data:image\/(png|jpe?g)[;,]/i.test(data) || String(panel.image_svg || '').trim()) return null;
+  var what = set === 'Oversikt' ? 'its cases and names' : 'its words and house symbols';
+  return { title: 'Not converted with VectorCraft',
+    text: 'This ' + set + ' panel’s picture is pixels. Copilot can link, add and move its objects, but ' + what +
+      ' are only pixels to it, and it cannot change the drawing. Convert it first - Edit in VectorCraft…, Vectorize image, ' +
+      'Ctrl+S - then Export JSON again.' };
+}
+
 function iwdieOvPalettePills(pic, W, H) {
   var cols = iwdieVzPalette(pic, W, H, {}).map(function (cc) { return cc.slice(0, 3); });
   return { cols: cols, pills: iwdieVcFindPills(pic, W, H, cols) || [] };
@@ -18855,6 +18871,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       '.iwdie-xp.bad .iwdie-xp-fill{background:#c0392b}',
       '.iwdie-xp.bad .iwdie-xp-pct{color:#c0392b}',
       '.iwdie-xp.ok .iwdie-xp-shine,.iwdie-xp.bad .iwdie-xp-shine{display:none}',
+      /* (v1.98.0) a warning at the card's end: amber, its own words, what to do a click away */
+      '.iwdie-xp-warn{margin-top:10px;padding:9px 11px;border:1px solid #e8c372;border-radius:9px;background:#fdf6e3}',
+      '.iwdie-xp-warn .iwdie-xp-warn-t{display:block;font-size:13px;font-weight:600;color:#7a5200;margin-bottom:3px}',
+      '.iwdie-xp-warn .iwdie-xp-warn-x{display:block;font-size:12.5px;font-weight:400;line-height:1.45;color:#5c4a1e}',
+      '.iwdie-xp-warn-go{margin-top:8px;height:26px;padding:0 12px;border:1px solid #c79a3a;border-radius:13px;background:#fff;' +
+        'color:#7a5200;font:600 12px "Segoe UI",Roboto,Arial,sans-serif;cursor:pointer}',
+      '.iwdie-xp-warn-go:hover{background:#fff8e6}',
       '@media (prefers-reduced-motion:reduce){.iwdie-xp,.iwdie-xp-shine{animation:none}.iwdie-xp-shine{display:none}.iwdie-xp-fill{transition:none}}',
       ''].join('\n');
     try {
@@ -19850,6 +19873,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           card.file(name);
           hostOk('Exported ' + iwdieSummarize(env.panel) + (env.background_embedded ? ' + background' : '') + traceNote +
             (env.overview ? ' + ' + iwdieOvNote(env.overview) : '') + ' → ' + name);
+          // (v1.98.0) a Maskin or Oversikt panel not converted with VectorCraft: what Copilot then cannot do, and the way to it
+          var unconverted = iwdieExportUnconverted(env);
+          if (unconverted) card.warn(unconverted.title, unconverted.text, ['Edit in VectorCraft…', function () { doEditInVectorCraft(); }]);
           // the picture for an agent beside it (v1.64.3): its pills numbered as the export lists them
           if (!(env.overview && env.overview.picture)) { card.skip('ai', 'no picture'); return name; }
           card.begin('ai', 'its pills numbered, its objects marked');
@@ -20138,7 +20164,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      *  `onCancel` gave it, and `cancelled()` says so. The Shift+click export drives it with its own share (`overall`). */
     function exportProgressCard(title, plan) {
       var esc = iwdieEscHtml, steps = {}, order = [], t0 = Date.now(), at = 0, explicit = null, shownPct = 0, raf = 0;
-      var finished = false, gone = false, cancelled = false, cancelers = [], files = [];
+      var finished = false, gone = false, cancelled = false, cancelers = [], files = [], warned = false;
       (plan || []).forEach(function (p) {
         steps[p[0]] = { label: p[1], w: p[2] > 0 ? p[2] : 1, f: 0, state: 'todo', t0: 0, detail: '', time: '' };
         order.push(p[0]);
@@ -20257,6 +20283,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           update();
         },
         file: function (name) { files.push(name); },
+        // (v1.98.0) a warning at the card's end, `go` [label, fn] what to do about it; the card then stays longer
+        warn: function (head, text, go) {
+          if (gone) return;
+          warned = true;
+          var w = document.createElement('div');
+          w.className = 'iwdie-xp-warn';
+          w.setAttribute('role', 'alert');
+          w.innerHTML = '<span class="iwdie-xp-warn-t">⚠ ' + esc(head) + '</span><span class="iwdie-xp-warn-x">' + esc(text) + '</span>' +
+            (go ? '<button type="button" class="iwdie-xp-warn-go">' + esc(go[0]) + '</button>' : '');
+          box.insertBefore(w, box.querySelector('.iwdie-xp-foot'));
+          if (go) w.querySelector('button').addEventListener('click', function () { card.close(); try { go[1](); } catch (e) {} });
+        },
         cancelled: function () { return cancelled; },
         onCancel: function (fn) { if (typeof fn === 'function') cancelers.push(fn); },
         finish: function (what) {
@@ -20278,7 +20316,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var hold = false;
           box.addEventListener('mouseenter', function () { hold = true; });
           box.addEventListener('mouseleave', function () { hold = false; });
-          (function later() { setTimeout(function () { if (gone) return; if (hold) later(); else card.close(); }, 3500); })();
+          (function later() { setTimeout(function () { if (gone) return; if (hold) later(); else card.close(); }, warned ? 15000 : 3500); })();
         },
         fail: function (message) {
           if (finished || gone) return;
@@ -29183,6 +29221,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcSymbolLookKeeps: iwdieVcSymbolLookKeeps,
     vcLookGround: iwdieVcLookGround,
     ovPalettePills: iwdieOvPalettePills,
+    exportUnconverted: iwdieExportUnconverted,
     vcSymbolSvg: iwdieVcSymbolSvg,
     vzWorkerDeps: iwdieVzWorkerDeps,
     OV_MAX_ROWS: IWDIE_OV_MAX_ROWS,
