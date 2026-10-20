@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.91.0
+// @version      1.92.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.91.0';
+var IWDIE_VERSION = '1.92.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -16751,7 +16751,7 @@ function iwdieVzBoxEdgesOff(pic, W, H, boxes) {
    (iwdieTxForce, iwdieTxBest). Only a reading that explains its ink well is taken; the rest stays drawing. */
 
 /** The letters a word of a panel picture is read as (v1.78.0). */
-var IWDIE_TX_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅabcdefghijklmnopqrstuvwxyzæøå0123456789.,:-+/%°()=&';
+var IWDIE_TX_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZÆØÅÄÖabcdefghijklmnopqrstuvwxyzæøåäö0123456789.,:-+/%°()=&';
 
 /** Words the house's pictures say (v1.78.0): the Oversikt template's legend, a Maskin's captions and information column,
  *  rooms. Known whatever the panel, with the panel's own and its plant's. */
@@ -16764,7 +16764,19 @@ var IWDIE_TX_HOUSE = ['Symbolforklaring', 'Varme', 'Kjøl', 'Frys', 'Kommunikasj
   'Varmegjenvinning', 'Tilluft', 'Avtrekk', 'Uteluft', 'Avkast', 'Inngang', 'Kasse', 'Frukt', 'Bakeri', 'Hr active', 'Gc-bypass active',
   '= Hr active', '= Gc-bypass active', 'Varmluftsport', 'inngangsparti', 'Aerotemper', 'Varmepumpe', 'Gulvvarme', 'Radiator',
   'Forbruksvann', 'Tappevann', 'Varmtvann', 'Turvann', 'Returvann', 'Tur', 'Retur', 'Pumpe', 'Shunt', 'Ventil', 'Akkumulatortank',
-  'Varmebatteri', 'Kjølebatteri', 'Vifte', 'Spjeld', 'Energi', 'Effekt', 'Forbruk'];
+  'Varmebatteri', 'Kjølebatteri', 'Vifte', 'Spjeld', 'Energi', 'Effekt', 'Forbruk',
+  // (v1.92.0) the Maskin template's valves and captions, as 59 of Thomas's pictures write them
+  'V3hr', 'V3gc', 'V3tw', 'V3gc%', 'Hr Req %', 'Hr Ref', 'Tw active', '= Tw active', 'Tw enable', 'Vhp OD %', 'Vrec OD %',
+  'Liq.Inject', 'Run Cap.', 'Reg Cap.', 'Sc3 °C', 'Frekvens (Hz)', 'Mengde (m3/h)', 'Volum (m3)', 'Retur (°C)', 'Tur (°C)',
+  'Kjølesystem', 'Frysesystem', 'Gasskjøler', 'CO2 Sugegass', 'Vifter', 'Inntak', 'Kald side', 'Varm side',
+  // the legend and the words of a Swedish plant's pictures (11087, 7903, 4203)
+  'Symbolförklaring', 'Symbolförklaringar', 'Värme', 'Kyl', 'Kylning pågår', 'Avfrostning pågår', 'Frys/kylning pågår', 'Larm',
+  'Kommunikationsfel', 'Karmvärmestyrning', 'Lufttemp (°C)', 'Luftfukt (%rh)', 'Daggpunkt (°C)', 'Utsignal (%)', 'Ström',
+  // a store's rooms on the Oversikt pictures
+  'Aktivitet', 'Oppvask', 'Rengjøring', 'Rekvisita', 'Kontor', 'Pakkerom', 'Tinerom', 'Iskremtorg', 'Kolonial', 'Meieri',
+  'Ferskvare',
+  // the older Oversikt pictures' legend, in Norwegian beside the Swedish one above (3694, 8193, 8409, 8652)
+  'Symbolforklaringer', 'Frys/kjøling pågår', 'Kommunikasjonsfeil på regulator/enhet'];
 
 /** A word's ink (v1.78.0): how far each pixel of box `b` ({x, y, w, h}, grown by `pad`) of picture `pic` (RGBA, W x H) is
  *  from the box's ground - its commonest colour - towards its text's colour - the mean of its farthest pixels. 0..1, row
@@ -17076,18 +17088,22 @@ function iwdieTxForce(ink, w, h, base, bank, gains, total, text, opts) {
 function iwdieTxWordy(s) {
   s = String(s || '');
   if (!s || s.length > 60) return false;
-  var marks = s.replace(/[A-Za-zÆØÅæøå0-9 ]/g, '').length, alnum = s.replace(/[^A-Za-zÆØÅæøå0-9]/g, '').length;
+  // (v1.92.0) a unit in brackets after the words - 11087's L1-N (V) - is what panels say: the words are judged without it
+  // (a unit alone is read by iwdieTxReadAll's unit rescue, a whole run's)
+  var bare = s.replace(/ \((?:°C|%|%rh|A|V|Hz|kW|kWh|bar|Pa|kPa|ppm|m3\/h|l\/s)\)$/, '');
+  if (bare !== s && bare) s = bare;
+  var marks = s.replace(/[A-Za-zÆØÅÄÖæøåäö0-9 ]/g, '').length, alnum = s.replace(/[^A-Za-zÆØÅÄÖæøåäö0-9]/g, '').length;
   if (!alnum || marks > Math.max(1, 0.3 * s.length)) return false;
   if (/[.,:\/'()\-+]{2,}/.test(s)) return false;
-  if (/^[.,:\/'\-+%°)&]/.test(s) || /^=(?! [A-ZÆØÅa-zæøå])/.test(s)) return false;
-  if (/[\/'(+:,=&]$/.test(s) || /[^A-Za-zÆØÅæøå]-$/.test(s)) return false;
+  if (/^[.,:\/'\-+%°)&]/.test(s) || /^=(?! [A-ZÆØÅÄÖa-zæøåäö])/.test(s)) return false;
+  if (/[\/'(+:,=&]$/.test(s) || /[^A-Za-zÆØÅÄÖæøåäö]-$/.test(s)) return false;
   // mostly thin strokes - f, j, l, I, 1 - or a letter four times running is a figure's outline read as letters
   if (/([^\s0-9])\1\1\1/.test(s)) return false;
   var thin = s.replace(/[^fjlI1|]/g, '').length;
   if (s.replace(/ /g, '').length >= 5 && thin >= 0.5 * s.replace(/ /g, '').length) return false;
   // a word of six letters or more mostly of strokes - f, j, l, r, I, L, v, y, 1 - is an outline's edges read as letters
   var odd = s.split(' ').some(function (t) {
-    var letters = t.replace(/[^A-Za-zÆØÅæøå0-9]/g, '');
+    var letters = t.replace(/[^A-Za-zÆØÅÄÖæøåäö0-9]/g, '');
     return (letters.length >= 6 && letters.replace(/[^fjlrILvy1]/g, '').length >= 0.6 * letters.length) ||
       (letters.length === 5 && letters.replace(/[^fjlrILvy1]/g, '').length >= 4);
   });
@@ -17125,13 +17141,13 @@ function iwdieTxCrop(I, x0, x1) {
 function iwdieTxShape(s) {
   return String(s || '').split(' ').reduce(function (n, t) {
     if (!t) return n;
-    if (/^[A-ZÆØÅ]{1,3}[a-zæøå]{0,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t) || /^[A-ZÆØÅ]{1,3}-\d{1,3}[a-zæøå]?$/.test(t) ||
-      /^[A-ZÆØÅ]{1,3}\d{1,3}[A-F]$/.test(t)) return n + 2;
-    if (/^[A-ZÆØÅ]?[a-zæøå]+[.:]?$/.test(t) || /^[A-ZÆØÅ]{2,}[.:]?$/.test(t)) return n + 2;
-    if (/^[A-ZÆØÅa-zæøå]+(?:[-\/][A-ZÆØÅa-zæøå]+)+[.:-]?$/.test(t)) return n + 2;
-    if (/^[A-ZÆØÅa-zæøå]+-$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅÄÖ]{1,3}[a-zæøåäö]{0,3}\d{1,3}[a-zæøåäö]{0,3}%?$/.test(t) || /^[A-ZÆØÅÄÖ]{1,3}-\d{1,3}[a-zæøåäö]?$/.test(t) ||
+      /^[A-ZÆØÅÄÖ]{1,3}\d{1,3}[A-F]$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅÄÖ]?[a-zæøåäö]+[.:]?$/.test(t) || /^[A-ZÆØÅÄÖ]{2,}[.:]?$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅÄÖa-zæøåäö]+(?:[-\/][A-ZÆØÅÄÖa-zæøåäö]+)+[.:-]?$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅÄÖa-zæøåäö]+-$/.test(t)) return n + 2;
     if (/^\d+(?:[.,]\d+)?$/.test(t) || /^(%|°C|°|K|h|=|&|\(kW\)|\(kWh\))$/.test(t)) return n + 2;
-    if (/^[A-ZÆØÅa-zæøå]+\.°C$/.test(t)) return n + 2;
+    if (/^[A-ZÆØÅÄÖa-zæøåäö]+\.°C$/.test(t)) return n + 2;
     return n;
   }, 0);
 }
@@ -17148,7 +17164,7 @@ function iwdieTxKnownBest(I, tried, vocab, late, hint) {
   (vocab || []).forEach(function (v) {
     v = String(v);
     cands[v] = 1;
-    v.split(' ').forEach(function (t) { if (t.length >= 3 && t.replace(/[^A-Za-zÆØÅæøå0-9]/g, '').length >= 2) cands[t] = 1; });
+    v.split(' ').forEach(function (t) { if (t.length >= 3 && t.replace(/[^A-Za-zÆØÅÄÖæøåäö0-9]/g, '').length >= 2) cands[t] = 1; });
   });
   var list = Object.keys(cands).filter(function (v) {
     var k = key(v), cap = Math.max(3, Math.floor(Math.max(k.length, h.length) / 2));
@@ -17189,8 +17205,11 @@ function iwdieTxBest(I, tries, vocab, opts) {
   var ALIKE = [['rn', 'm'], ['rr', 'n'], ['m', 'rn'], ['q', 'g'], ['g', 'q'], ['h', 'b'], ['b', 'h'], ['S', '5'], ['5', 'S'], ['O', '0'], ['0', 'O'],
     ['I', 'l'], ['l', 'I'], ['1', 'l'], ['l', '1'], ['I', '1'], ['1', 'I'], ['I.', 'L'], ['cl', 'd'], ['vv', 'w'], ['c', 'e'], ['e', 'c'], ['ii', 'u'], ['ri', 'n'],
     // (v1.82.8) a closing bracket read as a straight stroke: 11087's Daggpunkt (°C) as (°CI - an open one weighs more below
-    ['I', ')'], ['l', ')'], ['1', ')']];
-  var UNITS = ['bar', '°C', '%', 'K', 'h', 'kW', 'kWh', '(kW)', '(kWh)', 'ppm', 'Pa', 'kPa', 'm3/h', 'l/s', 'Hz', 'rpm', 'min'];
+    ['I', ')'], ['l', ')'], ['1', ')'],
+    // (v1.92.0) an H and an R in two strokes, read so in Roboto: Hr Req % as I-Ir Req %, Run Cap. as Fiun Cap.
+    ['I-I', 'H'], ['I-l', 'H'], ['l-I', 'H'], ['Fi', 'R'], ['Fl', 'R']];
+  var UNITS = ['bar', '°C', '%', 'K', 'h', 'kW', 'kWh', '(kW)', '(kWh)', 'ppm', 'Pa', 'kPa', 'm3/h', 'l/s', 'Hz', 'rpm', 'min',
+    '(°C)', '(%)', '(%rh)', '(A)', '(V)', '(Hz)', '(bar)', '(m3/h)'];
   var best = null, tried = [];
   (tries || []).forEach(function (tb) {
     if (best && late()) return;
@@ -17210,6 +17229,9 @@ function iwdieTxBest(I, tries, vocab, opts) {
   // (v1.89.0) two readings with a digit for another digit in one place: a case's code is its number, so the ink alone
   // decides between them - 2349's F34 and F31, read so in Segoe UI, became the plant's F64 and F61 for the bonus a
   // known word has. A letter read for a digit (F1S for F15) is no other number
+  var lookCase = function (a, b) {
+    return a.length === b.length && a.split('').every(function (ch, u) { return ch === b.charAt(u) || u === 0 || 'cosuvwxzil'.indexOf(ch.toLowerCase()) >= 0; });
+  };
   var renumbered = function (a, b) {
     a = String(a).replace(/ /g, ''); b = String(b).replace(/ /g, '');
     if (a.length !== b.length) return false;
@@ -17225,6 +17247,8 @@ function iwdieTxBest(I, tries, vocab, opts) {
       kb.text.split('').every(function (ch, u) { return ch === r.text.charAt(u) || 'cosuvwxzl'.indexOf(ch.toLowerCase()) >= 0; });
     if (r && iwdieTxTaken(r, opts) && !recased && (r.known || kb.cost > r.cost + 0.05)) return r;
     if (r && iwdieTxTaken(r, opts) && renumbered(r.text, kb.text) && kb.cost > r.cost) return r;
+    // (v1.92.0) nor one only in another case that the ink reads less well, where the cases do not look alike
+    if (r && iwdieTxTaken(r, opts) && kb.text !== r.text && kb.text.toLowerCase() === r.text.toLowerCase() && !lookCase(kb.text, r.text) && kb.cost > r.cost) return r;
     // (v1.82.8) nor a known word that is what was read with a full stop more or less, which the ink does not read as well
     if (r && iwdieTxTaken(r, opts) && kb.text !== r.text && kb.text.replace(/\.$/, '') === r.text.replace(/\.$/, '') && kb.cost > r.cost) return r;
     return { text: kb.text, cost: kb.cost, known: true, bank: kb.bank, base: kb.base, x0: spI ? spI[0] : 0, x1: spI ? spI[1] + 1 : I.w };
@@ -17315,28 +17339,28 @@ function iwdieTxBest(I, tries, vocab, opts) {
     // Segoe UI as KfVI15A (0.131; KM15A 0.132), its KM16B in Roboto as Kfvl168
     s0.replace(/f[VvYy][lIt1]?|[Il][Vv][Il]/g, function (m, at) { add(s0.slice(0, at) + 'M' + s0.slice(at + m.length)); return m; });
     // a space between two lower-case letters (a word read in two): read off
-    s0.replace(/[a-zæøå] [a-zæøå]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
+    s0.replace(/[a-zæøåäö] [a-zæøåäö]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
     // (v1.82.8) a full stop after the last letter (a speck read as one: 11087's Room temp as Room temp.): read off
-    if (/[A-Za-zÆØÅæøå]\.$/.test(s0)) add(s0.slice(0, -1));
+    if (/[A-Za-zÆØÅÄÖæøåäö]\.$/.test(s0)) add(s0.slice(0, -1));
     // a stray mark between two letters or digits (a speck read as a comma): read off
-    s0.replace(/[A-Za-zÆØÅæøå0-9][,.:'][A-Za-zÆØÅæøå0-9]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
+    s0.replace(/[A-Za-zÆØÅÄÖæøåäö0-9][,.:'][A-Za-zÆØÅÄÖæøåäö0-9]/g, function (m, at) { add(s0.slice(0, at + 1) + s0.slice(at + 2)); return m; });
     // a code read with a space in it (F 76): without (v1.79.0)
-    s0.replace(/(^| )([A-ZÆØÅ]{1,3}) (\d{1,3})(?= |$)/g, function (m, pre, a1, d1, at) { add(s0.slice(0, at) + pre + a1 + d1 + s0.slice(at + m.length)); return m; });
+    s0.replace(/(^| )([A-ZÆØÅÄÖ]{1,3}) (\d{1,3})(?= |$)/g, function (m, pre, a1, d1, at) { add(s0.slice(0, at) + pre + a1 + d1 + s0.slice(at + m.length)); return m; });
     // a case's code (K05, F60, AC1; v1.89.0 K-30a) as codes are written: no mark in it but its hyphen, its number in
     // digits - (v1.89.0) a z too, 2349's F22 read in Segoe UI as Fzz, and no space, its F26 as F z6
     var flat = s0.replace(/ /g, '');
-    var code = /^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZz]{1,3})([a-e]?)$/.exec(flat);
+    var code = /^([A-ZÆØÅÄÖ]{1,3})([,.:']?|-)([0-9OoSIlBZz]{1,3})([a-e]?)$/.exec(flat);
     if (code && (flat !== s0 || /[^0-9]/.test(code[3] + (code[2] === '-' ? '' : code[2])))) {
       add(code[1] + (code[2] === '-' ? '-' : '') +
         code[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Il]/g, '1').replace(/B/g, '8').replace(/[Zz]/g, '2') + code[4]);
     }
     // (v1.91.0) a code whose suffix is a capital A-F, as 3694's are written (KM15A, FR41B): its number in digits, its prefix
     // as many capitals as there are or as few - and such a B read as an 8 after the code's two digits (FR418)
-    [/^([A-ZÆØÅ]{1,3})([0-9OoSIlZz]{1,2})([A-F])$/, /^([A-ZÆØÅ]{1,3}?)([0-9OoSIlZz]{1,2})([A-F])$/].forEach(function (re) {
+    [/^([A-ZÆØÅÄÖ]{1,3})([0-9OoSIlZz]{1,2})([A-F])$/, /^([A-ZÆØÅÄÖ]{1,3}?)([0-9OoSIlZz]{1,2})([A-F])$/].forEach(function (re) {
       var cd = re.exec(flat);
       if (cd && (flat !== s0 || /[^0-9]/.test(cd[2]))) add(cd[1] + cd[2].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Il]/g, '1').replace(/[Zz]/g, '2') + cd[3]);
     });
-    var b8 = /^([A-ZÆØÅ]{1,3})(\d{2})8$/.exec(flat);
+    var b8 = /^([A-ZÆØÅÄÖ]{1,3})(\d{2})8$/.exec(flat);
     if (b8) add(b8[1] + b8[2] + 'B');
     var toks = s0.split(' ');
     toks.forEach(function (tk, i) {
@@ -17365,6 +17389,9 @@ function iwdieTxBest(I, tries, vocab, opts) {
   var free = pick, fits = function (w) {
     if (free && w.text !== free.text && stop(w.text) === stop(free.text)) return w.cost <= free.cost;
     if (free && renumbered(free.text, w.text)) return w.cost <= free.cost;
+    // (v1.92.0) a word in another case - 8921's Kjølerom frukt as the plant's Frukt, 3214's ventilasjon as the house's
+    // Ventilasjon - only by the ink
+    if (free && w.text !== free.text && w.text.toLowerCase() === free.text.toLowerCase() && !lookCase(w.text, free.text)) return w.cost <= free.cost;
     return !free || free.cost > 0.14 || w.cost <= free.cost + 0.015 || (open(free.text) && !open(w.text));
   };
   asWide.forEach(function (p) {
@@ -17414,16 +17441,16 @@ function iwdieTxBest(I, tries, vocab, opts) {
 function iwdieTxCodes(s) {
   var flat0 = String(s || '').replace(/ /g, ''), out = [];
   // (v1.91.0) an M read in strokes after its first capital (KfVl15D, Kfvl4A, KfvItC) read as the M - each reading's codes
-  var mm = /^([A-ZÆØÅ])(?:f[VvYy][lIt1]?|[Il][Vv][Il])(.*)$/.exec(flat0);
+  var mm = /^([A-ZÆØÅÄÖ])(?:f[VvYy][lIt1]?|[Il][Vv][Il])(.*)$/.exec(flat0);
   (mm ? [flat0, mm[1] + 'M' + mm[2]] : [flat0]).forEach(function (flat) {
     // (v1.91.0) a capital suffix after a number of one or two
-    [/^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/, /^([A-ZÆØÅ]{1,3}?)([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/].forEach(function (re) {
+    [/^([A-ZÆØÅÄÖ]{1,3})([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/, /^([A-ZÆØÅÄÖ]{1,3}?)([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/].forEach(function (re) {
       var m = re.exec(flat);
       if (!m || !(/[\dZz]/.test(m[3]) || m[2] === '-')) return;
       var head = m[1] + (m[2] === '-' ? '-' : '') + m[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Ilt]/g, '1').replace(/[Zz]/g, '2');
       if (out.indexOf(head + m[4]) < 0) out.push(head + m[4]);
     });
-    [/^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøå]{0,2})$/, /^([A-ZÆØÅ]{1,3}?)([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøå]{0,2})$/].forEach(function (re) {
+    [/^([A-ZÆØÅÄÖ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøåäö]{0,2})$/, /^([A-ZÆØÅÄÖ]{1,3}?)([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-zæøåäö]{0,2})$/].forEach(function (re) {
       var m = re.exec(flat);
       if (!m || !(/[\dZz]/.test(m[3]) || m[2] === '-')) return;
       var head = m[1] + (m[2] === '-' ? '-' : '') + m[3].replace(/[Oo]/g, '0').replace(/S/g, '5').replace(/[Ilt]/g, '1').replace(/B/g, '8').replace(/[Zz]/g, '2');
@@ -17438,7 +17465,7 @@ function iwdieTxCodes(s) {
  *  digit read as a letter: 3694's KR39B is a code as it is. */
 function iwdieTxCodeOdd(s) {
   var flat = String(s || '').replace(/ /g, '');
-  var m = /^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/.exec(flat) || /^([A-ZÆØÅ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-e]?)$/.exec(flat);
+  var m = /^([A-ZÆØÅÄÖ]{1,3})([,.:']?|-)([0-9OoSIlZzt]{1,2})([A-F])$/.exec(flat) || /^([A-ZÆØÅÄÖ]{1,3})([,.:']?|-)([0-9OoSIlBZzt]{1,3})([a-e]?)$/.exec(flat);
   return !!m && /[^0-9]/.test(m[3]) && /\d|z/.test(m[3]);
 }
 
@@ -17450,7 +17477,7 @@ function iwdieTxCodeOdd(s) {
  *  `r.kt` - the words of it the panel, plant or house knows - lets a known word stand beside codes (K-55 Kjølerom). */
 function iwdieTxTaken(r, opts) {
   if (!r || !iwdieTxWordy(r.text) || r.text.replace(/ /g, '').length < 2) return false;
-  if (!r.known && r.text.split(' ').some(function (t) { return /[a-zæøå][A-ZÆØÅ]/.test(t) && !/^\(?(kW|kWh|MW|MWh|kVA|kPa|MPa|mA|pH|dB)\)?$/.test(t); })) return false;
+  if (!r.known && r.text.split(' ').some(function (t) { return /[a-zæøåäö][A-ZÆØÅÄÖ]/.test(t) && !/^\(?(kW|kWh|MW|MWh|kVA|kPa|MPa|mA|pH|dB)\)?$/.test(t); })) return false;
   if (r.cost <= 0.14) return true;
   // (v1.79.0) read in a font nobody gave (`opts.loose`), a known word explains its ink less well
   if (r.cost <= (opts && opts.loose ? 0.3 : 0.24) && r.known) return true;
@@ -17458,11 +17485,14 @@ function iwdieTxTaken(r, opts) {
   // (v1.89.0) a case's code with a hyphen too (2349's K-30a, K-01, F-85), which no unit's name spells so, and a word the
   // panel, plant or house knows (`r.kt`, iwdieTxBest's) beside a code (2349's K-55 Kjølerom)
   return r.cost <= 0.28 && r.text.split(' ').every(function (t) {
-    return /^[A-ZÆØÅ]{1,3}[a-zæøå]{0,3}\d{1,3}[a-zæøå]{0,3}%?$/.test(t) || /^[A-ZÆØÅ]{1,3}-\d{1,3}[a-zæøå]?$/.test(t) ||
+    return /^[A-ZÆØÅÄÖ]{1,3}[a-zæøåäö]{0,3}\d{1,3}[a-zæøåäö]{0,3}%?$/.test(t) || /^[A-ZÆØÅÄÖ]{1,3}-\d{1,3}[a-zæøåäö]?$/.test(t) ||
       // (v1.91.0) a code whose suffix is a capital A-F (3694's KM15A)
-      /^[A-ZÆØÅ]{1,3}\d{1,3}[A-F]$/.test(t) || (!!r.kt && r.kt.indexOf(t) >= 0) ||
-      /^[A-ZÆØÅ]{2,}[.:]?$/.test(t) || /^[A-ZÆØÅ][a-zæøå]{1,4}[.:-]?$/.test(t) ||
-      /^\d+(?:[.,]\d+)?$/.test(t) || /^(%|°C|K|h|bar|=|\(kW\)|\(kWh\)|[A-ZÆØÅ]-[A-ZÆØÅ])$/.test(t) || /^[A-ZÆØÅa-zæøå]+\.°C$/.test(t);
+      /^[A-ZÆØÅÄÖ]{1,3}\d{1,3}[A-F]$/.test(t) || (!!r.kt && r.kt.indexOf(t) >= 0) ||
+      /^[A-ZÆØÅÄÖ]{2,}[.:]?$/.test(t) || /^[A-ZÆØÅÄÖ][a-zæøåäö]{1,4}[.:-]?$/.test(t) ||
+      /^\d+(?:[.,]\d+)?$/.test(t) || /^(%|°C|K|h|bar|=|\(kW\)|\(kWh\)|[A-ZÆØÅÄÖ]-[A-ZÆØÅÄÖ])$/.test(t) || /^[A-ZÆØÅÄÖa-zæøåäö]+\.°C$/.test(t) ||
+      /^\((?:°C|%|%rh|A|V|Hz|kW|kWh|bar|Pa|kPa|ppm|m3\/h|l\/s)\)$/.test(t) ||
+      // (v1.92.0) a phase's name: L1-N, L1-L2
+      /^[A-ZÆØÅÄÖ]\d-[A-ZÆØÅÄÖ]\d?$/.test(t);
   });
 }
 
@@ -17484,10 +17514,17 @@ function iwdieTxPieces(I, gapMin) {
  *  under it (0.88 to 0.93 of the size in all, the baseline 0.21 of the size up), each on its baseline and a row either
  *  way, among `sizes`, the sizes there are banks for; (v1.82.8) and a run 8 rows high or less as small letters alone
  *  (0.48 to 0.55 of the size): 3214's "rom" under Oppvask- was read at a size too small. -> [[size, base]] */
-function iwdieTxTries(h, bottom, sizes) {
+function iwdieTxTries(h, bottom, sizes, accent) {
   var out = [];
   (sizes || []).forEach(function (s) {
     var d;
+    // (v1.92.0) `accent`: only from an accent over the letters down to the descenders, 0.98 to 1.1 of the size - the
+    // house's legend line Avriming pågår, its å's ring over the capitals and its g and p under the line, was read at
+    // 15.5 px and up as "Avnrnirig pårjår" and only its Avriming kept, while it stands at 14.5 (forced, 0.101)
+    if (accent) {
+      if (s >= h / 1.1 - 0.5 && s <= h / 0.98 + 0.5 && !(s >= h / 0.93 - 1 && s <= h / 0.88 + 1)) for (d = -1; d <= 1; d++) out.push([s, Math.round(bottom - 0.21 * s) + d]);
+      return;
+    }
     if (s >= h / 0.71 - 1 && s <= h / 0.66 + 1) for (d = -1; d <= 1; d++) out.push([s, bottom + d]);
     if (s >= h / 0.93 - 1 && s <= h / 0.88 + 1) for (d = -1; d <= 1; d++) out.push([s, Math.round(bottom - 0.21 * s) + d]);
     if (h <= 8 && s >= h / 0.55 - 0.5 && s <= h / 0.48 + 0.5 && !(s >= h / 0.71 - 1 && s <= h / 0.66 + 1)) for (d = -1; d <= 1; d++) out.push([s, bottom + d]);
@@ -17503,6 +17540,8 @@ function iwdieTxSizes(h) {
   add(h / 0.93 - 1, h / 0.88 + 1);
   // (v1.82.8) small letters alone
   if (h <= 8) add(h / 0.55 - 0.5, h / 0.48 + 0.5);
+  // (v1.92.0) an accent over the letters to the descenders, for a run 12 rows high or more (iwdieTxReadAll)
+  if (h >= 12) add(h / 1.1 - 0.5, h / 0.98 + 0.5);
   return out.sort(function (a, b) { return a - b; });
 }
 
@@ -17516,17 +17555,23 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
   var sizes = Object.keys(banks).map(Number).sort(function (a, b) { return a - b; });
   // the sizes there are banks for, each on its baseline and a row either way; each reading - a run whole, a piece - with
   // its own time, so the pieces of an icon's run are not left the time its reading whole took
-  var read = function (I, h, bottom) {
-    var tries = iwdieTxTries(h, bottom, sizes).map(function (t) { return [banks[t[0]], t[1]]; }).filter(function (t) { return !!t[0]; });
+  var read = function (I, h, bottom, accent) {
+    var tries = iwdieTxTries(h, bottom, sizes, accent).map(function (t) { return [banks[t[0]], t[1]]; }).filter(function (t) { return !!t[0]; });
+    if (!tries.length) return null;
     return iwdieTxBest(I, tries, vocab, Object.assign({}, opts || {}, { until: Date.now() + ((opts && opts.runMs) || 1500) }));
   };
   var out = (runs || []).map(function (R, i) {
     // a run whose text hardly stands off its ground (under 40 apart) is no text: an erased symbol's residue
     if (!(R.I.contrast >= 40)) { if (say) say([i, null]); return null; }
     var I = R.I, got = read(I, R.h, R.bottom), res = null;
+    // (v1.92.0) not taken, 12 rows high or more and three times as wide: once more from an accent to the descenders
+    if (!iwdieTxTaken(got, opts) && R.h >= 12 && I.w >= 3 * R.h) {
+      var got2 = read(I, R.h, R.bottom, true);
+      if (iwdieTxTaken(got2, opts)) got = got2;
+    }
     if (iwdieTxTaken(got, opts)) res = [{ text: got.text, cost: got.cost, known: got.known, size: got.bank.size, base: got.base, x0: got.x0, x1: got.x1 }];
     else if (I.w > 3 * R.h && I.w <= 300) {
-      var parts = [], gap = Math.max(3, Math.round(0.3 * R.h));
+      var parts = [], fails = [], gap = Math.max(3, Math.round(0.3 * R.h));
       // each piece read with two columns of its margin - (v1.90.0) or `pad`: none for a piece a column from an icon
       var piece = function (pc, again, pad) {
         pad = pad == null ? 2 : pad;
@@ -17555,6 +17600,7 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
           });
         }
         if (unit) parts.push({ text: unit.text, cost: unit.cost, known: prev.known, size: prev.size, base: prev.base, x0: off + sp[0], x1: off + sp[1] + 1, space: prev.space, unit: true });
+        else if (!again && sp) fails.push({ x0: off + sp[0], x1: off + sp[1] + 1 });
         // a wide piece that does not read - an icon with the words beside it, the run as high as the icon - in smaller pieces;
         // (v1.90.0) twice as wide as high is wide enough: a valve's tag beside the valve, 10210's V3gc and 2313's V3tw, is
         // not three times the valve's height
@@ -17590,6 +17636,24 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
         }
       };
       iwdieTxPieces(I, gap).slice(0, 12).forEach(function (pc) { piece(pc, true); });
+      // (v1.92.0) a legend's "=" between an icon and its words - 10214's V3gc = Gc-bypass active - alone no word: a piece
+      // that did not read, just before words read, weighed as "=" at their size on their baseline, joins them
+      fails.forEach(function (f) {
+        var next = null;
+        parts.forEach(function (p) { if (!p.unit && p.x0 >= f.x1 && (!next || p.x0 < next.x0)) next = p; });
+        if (!next || next.x0 - f.x1 > 2 * Math.max(next.space, 2) || /^= /.test(next.text) || f.x1 - f.x0 > 1.5 * next.size) return;
+        var E = iwdieTxCrop(I, Math.max(0, f.x0 - 1), Math.min(I.w, f.x1 + 1)), fe = null;
+        // at the words' size or a pixel either side, on their baseline or a row either side: an "=" stands mid-height
+        [-1, -0.5, 0, 0.5, 1].forEach(function (dz) {
+          var bk = banks[next.size + dz];
+          if (!bk) return;
+          [-1, 0, 1].forEach(function (db) {
+            var f1 = iwdieTxForce(E.ink, E.w, E.h, next.base + db, bk, iwdieTxGains(E.ink, E.w, E.h, next.base + db, bk), E.total, '=', opts);
+            if (f1 && (!fe || f1.cost < fe.cost)) fe = f1;
+          });
+        });
+        if (fe && fe.cost <= 0.2) { next.text = '= ' + next.text; next.x0 = f.x0; next.cost = Math.max(next.cost, fe.cost); }
+      });
       // pieces on one line joined - (v1.79.0) read in a font not the picture's, their sizes and baselines a little apart
       var joined = [], dBase = opts && opts.loose ? 2 : 1, dSize = opts && opts.loose ? 1.5 : 0.5;
       parts.forEach(function (p) {
@@ -17600,6 +17664,24 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
       });
       joined.forEach(function (p) { delete p.space; delete p.unit; });
       res = joined.length ? joined : null;
+    }
+    // (v1.92.0) a small run that reads as no words: a unit alone - 11087's %s split from Run Cap. by the tracer, (kWh) -
+    // where one explains its ink well at a size and baseline it is read at
+    if (!res && I.w <= 4 * R.h && R.h <= 24) {
+      var unitBest = null;
+      iwdieTxTries(R.h, R.bottom, sizes).forEach(function (t) {
+        var bk = banks[t[0]];
+        if (!bk) return;
+        var gu = iwdieTxGains(I.ink, I.w, I.h, t[1], bk);
+        ['%', '°C', '(°C)', '(%)', '(kW)', '(kWh)', '(V)', '(A)', '(Hz)'].forEach(function (u) {
+          var f = iwdieTxForce(I.ink, I.w, I.h, t[1], bk, gu, I.total, u, opts);
+          if (f && f.cost <= 0.12 && (!unitBest || f.cost < unitBest.cost)) unitBest = { text: u, cost: f.cost, size: bk.size, base: t[1] };
+        });
+      });
+      if (unitBest) {
+        var spU = iwdieTxSpan(I.ink, I.w, I.h);
+        res = [{ text: unitBest.text, cost: unitBest.cost, known: true, size: unitBest.size, base: unitBest.base, x0: spU ? spU[0] : 0, x1: spU ? spU[1] + 1 : I.w }];
+      }
     }
     if (say) say([i, res]);
     return res;
@@ -17699,7 +17781,10 @@ function iwdieTxFit(runs, banks, vocab, opts, say) {
  *  them very well (0.05) and better than those given by 0.02. v1.79.0, Thomas: "all text should object text from the
  *  database so no vector on all panels" - else the font that reads them best, when it reads them at all (0.35): read in
  *  it with the words the panel, plant and house know (`opts.loose`), Segoe UI read 41 of his Oversikt's 42 words and 66 of
- *  his Maskin's 71 before those words carried more. -> index in scores | -1 */
+ *  his Maskin's 71 before those words carried more. (v1.92.0) And past 0.35 too, while it reads any of them: 21 of 97 of
+ *  Thomas's pictures with words to read - 3533's Energi, 4844's Maskin, 8409's Oversikt - read none, though in the font
+ *  that read their probe best many of their runs read well; the reading of each run decides whether it is taken.
+ *  -> index in scores | -1 */
 function iwdieTxFontChoice(scores) {
   var best = function (trusted) {
     var b = -1;
@@ -17709,7 +17794,7 @@ function iwdieTxFontChoice(scores) {
   var g = best(true), o = best(false), a = best(null);
   if (o >= 0 && scores[o].fit <= 0.05 && (g < 0 || scores[o].fit < scores[g].fit - 0.02)) return o;
   if (g >= 0 && scores[g].fit <= 0.25) return g;
-  return a >= 0 && scores[a].fit <= 0.35 ? a : -1;
+  return a >= 0 && scores[a].fit < 1 ? a : -1;
 }
 
 /** A reading's letters out of the picture (v1.78.0): within box `b` ({x, y, w, h}), each pixel on the way from `ground`
@@ -24214,7 +24299,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // (v1.91.0) the canvas the drawing is made on, the labels to go there, when the picture is read at its own size
       var put = own ? { data: data, w: w, h: h, x: own.x, y: own.y, kx: own.kx, ky: own.ky } : null;
       if (own) { data = own.data; w = own.w; h = own.h; }
-      return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, { words: true }], function () {}).then(function (tr) {
+      // (v1.92.0) its words found in a palette of 96 colours, not 48: on a picture of shaded boxes - 2794's, 3214's old
+      // Oversikt - the shades took every place of 48 and the black of the words was none of them, so no word was found
+      return vcOffPageSay(iwdieVzTrace, iwdieVzWorkerDeps(), [data, w, h, { words: true, max: 96 }], function () {}).then(function (tr) {
         var work = (tr && tr.work && tr.work.length === data.length) ? tr.work : data;
         // (v1.80.0) the edges of the boxes the Designer draws itself out of the way: a word beside a case read its edge as a letter
         work = iwdieVzBoxEdgesOff(work, w, h, iwdieVzBoxes(work, w, h, { inside: 0.8 }));
@@ -24228,10 +24315,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
         if (!R.length) return { labels: [], runs: runs.length, left: long, none: 'no run of it short enough to be a caption' };
         var vocab = vcTxVocab(objects);
-        // the glyphs of the sizes the runs may be, a size at a time, the page given its turn between (half pixels alone: `half`)
+        // the glyphs of the sizes the runs may be, a size at a time, the page given its turn between (half pixels alone: `half`);
+        // (v1.92.0) none over 60 px: a run as tall as a case or a box - 3533's Energi has one 135 rows high - is no caption
+        // to read whole, and its glyphs at 200 px held the page for minutes once a font was chosen for every picture
         var banksFor = function (family, list, half) {
           var banks = {}, want = [];
-          list.forEach(function (x) { iwdieTxSizes(x.h).forEach(function (s) { if (want.indexOf(s) < 0 && (!half || s * 2 === Math.round(s * 2))) want.push(s); }); });
+          list.forEach(function (x) { iwdieTxSizes(x.h).forEach(function (s) { if (s <= 60 && want.indexOf(s) < 0 && (!half || s * 2 === Math.round(s * 2))) want.push(s); }); });
           return want.reduce(function (p, s) {
             return p.then(function () { banks[s] = vcTxBank(family, s); return vcTxTurn(); });
           }, Promise.resolve()).then(function () { return banks; });

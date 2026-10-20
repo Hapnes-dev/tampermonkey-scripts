@@ -498,6 +498,53 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### Words on every kind of picture read: no picture left unread, Swedish, units (v1.92.0)
+
+Thomas asked for a deep dive: *do more of these to test and find more text that can you object text on … do a lot of
+different plants*. 97 panels of 40 plants were dumped in the stub host, more than half of them fetched read-only from the
+Designer for this. On 80 of them every word was written down by hand, 3 904 words in all. They were then
+read again in Node as the page reads them, from the tracer's own input. 1.91.0 read 2 859 of the words right and 162
+wrong, and left 883 as drawing. 1.92.0 reads 3 240 right and 167 wrong, and leaves 497.
+
+- **No picture left unread.** On 21 of the 97 pictures the page read no word at all, though they are full of words
+  (3533's and 4844's Energi, 4844's Maskin, 8409's and 3694's Oversikt).
+  - **Why:** a font is chosen by the median cost of eight probe runs, the widest that look like single words. On such
+    a picture those are boxes, bars and titles, so every font scored over 0.35 and none was chosen.
+  - **Now:** the best font is chosen whenever it reads any of the probe, and each run's own reading decides whether it
+    is taken. These 21 pictures hold 677 of the counted words: 73 were read right before (the Node rerun of 1.91.0 does
+    pick a font on a few of them), 319 now.
+- **Black words among shaded boxes.** The tracer's palette keeps 48 colours. On a picture of gradient boxes (2794's,
+  3214's old Oversikt) the shades took every place, and the black of the words was not among them, so the tracer found
+  no word. The words trace now keeps 96 colours. The drawing's own trace is unchanged.
+- **Glyphs no larger than 60 px.** Once a font is chosen for every picture, a run as tall as a box (135 rows on 3533's
+  Energi) asked for glyphs up to 200 px, and building them held the page for minutes. Runs that tall are no caption.
+- **Swedish.** ä, ö, Ä and Ö are among the letters read and in every letter class of the reader. The legend's Swedish
+  words are known: Symbolförklaring, Värme, Kyl, Larm, Kylning pågår and the rest. On the six Swedish panels, 137 words
+  are right now, against 92.
+- **Units.**
+  - A unit in brackets after the words (*L1-N (V)*, *Daggpunkt (°C)*) no longer makes the reading a run of marks.
+  - A unit in brackets and a phase's name (L1-N, L1-L2) are shapes panels use.
+  - A run that is only a unit, such as the % the tracer splits from *Run Cap.*, is read by trying each unit on it.
+  - A unit alone in a piece of a run, its words unread, stays drawing.
+- **An accent over the letters to the descenders.** *Avriming pågår*, with å's ring over the capitals and g and p under
+  the line, was read at 15.5 px and up, and only *Avriming* was kept. A run 12 rows high or more that is not taken is now
+  tried once more at the sizes that height gives from an accent down to the descenders.
+- **The house's words.**
+  - The Maskin template's valves and captions are known: V3hr, V3gc, V3tw, Hr Req %, = Tw active, Vhp OD % and the rest.
+  - So are the older Oversikt pictures' legend lines and a store's rooms (Oppvask, Rekvisita, Kontor …).
+  - An H and an R written in two strokes (*I-Ir*, *Fiun*) are tried as H and R.
+  - A word's case is changed toward a known word's only by the ink. This does not apply where the two cases look alike
+    (c, o, s, u, v, w, x, z, i, l) or at the reading's first letter: *Kjølerom frukt* stays lowercase, and *Capacity*
+    is not *CapacIty*.
+- **The legend's "="** between a valve and its words is weighed at the words' size, a pixel either side, when it is a
+  piece of its own.
+
+Still read poorly: the oldest Oversikt pictures in a small bitmap Arial (8193's codes 8 of 71, 3214's 12 of 58, bold
+titles such as *Anleggsnr: 2794*), and words drawn on frosted or gradient fills. The font choice still looks only at the
+widest runs, so on a picture of short codes it can pick a font that reads the legend best. Reading such a picture now
+takes a minute or more in the stub host (2794's Oversikt: 78 s) where it used to give up at once. Not run in the live
+Designer.
+
 ### Words beside lines and valves read (v1.90.0)
 
 To measure the text reader, Thomas's pictures were read again in Node from the page's own dumps. For 20 of them every
