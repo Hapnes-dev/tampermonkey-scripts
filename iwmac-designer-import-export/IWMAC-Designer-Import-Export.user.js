@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.98.3
+// @version      1.99.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.98.3';
+var IWDIE_VERSION = '1.99.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9304,6 +9304,169 @@ function iwdieAiArtboard(bytes, name) {
   var bb = /%%HiResBoundingBox:\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)/.exec(t) || /%%BoundingBox:\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)/.exec(t);
   var bw = bb ? bb[3] - bb[1] : 0, bh = bb ? bb[4] - bb[2] : 0;
   return bw > 0 && bh > 0 ? { w: bw, h: bh } : null;
+}
+
+/** Where the PDF object that starts at s[i] ends (v1.99.0): a dictionary, an array, a literal or hex string, a name, a
+ *  reference, a number or a keyword. -> the index past it, or -1 */
+function iwdiePdfValueEnd(s, i) {
+  var c = s.charAt(i), k, depth = 0;
+  if (c === '<' && s.charAt(i + 1) === '<') {
+    for (k = i; k < s.length; k++) {
+      var ch = s.charAt(k);
+      if (ch === '(') { k = iwdiePdfValueEnd(s, k) - 1; if (k < 0) return -1; }
+      else if (ch === '<' && s.charAt(k + 1) === '<') { depth++; k++; }
+      else if (ch === '>' && s.charAt(k + 1) === '>') { depth--; k++; if (!depth) return k + 1; }
+      else if (ch === '<') { k = s.indexOf('>', k); if (k < 0) return -1; }
+    }
+    return -1;
+  }
+  if (c === '[') {
+    for (k = i + 1; k < s.length; k++) {
+      var ca = s.charAt(k);
+      if (ca === ']') return k + 1;
+      if (/\s/.test(ca)) continue;
+      var e = iwdiePdfValueEnd(s, k);
+      if (e < 0) return -1;
+      k = e - 1;
+    }
+    return -1;
+  }
+  if (c === '(') {
+    for (k = i; k < s.length; k++) {
+      var cs = s.charAt(k);
+      if (cs === '\\') k++;
+      else if (cs === '(') depth++;
+      else if (cs === ')' && !--depth) return k + 1;
+    }
+    return -1;
+  }
+  if (c === '<') { k = s.indexOf('>', i); return k < 0 ? -1 : k + 1; }
+  var m = /^(?:\/[^\s\/\[\]<>(){}%]*|[+-]?\d+\s+\d+\s+R\b|[^\s\/\[\]<>(){}%]+)/.exec(s.slice(i, i + 256));
+  return m ? i + m[0].length : -1;
+}
+
+/** A PDF dictionary's own entries (v1.99.0): {key: [start, end]} of each value, offsets into `d`, which is the
+ *  dictionary from its '<<' to its '>>'. -> null when it does not read as one */
+function iwdiePdfEntries(d) {
+  if (String(d).slice(0, 2) !== '<<' || String(d).slice(-2) !== '>>') return null;
+  var out = {}, i = 2, n = d.length - 2;
+  while (i < n) {
+    while (i < n && /\s/.test(d.charAt(i))) i++;
+    if (i >= n) break;
+    if (d.charAt(i) !== '/') return null;
+    var key = /^\/[^\s\/\[\]<>(){}%]*/.exec(d.slice(i, i + 256))[0];
+    i += key.length;
+    while (i < n && /\s/.test(d.charAt(i))) i++;
+    var e = iwdiePdfValueEnd(d, i);
+    if (e < 0 || e > n) return null;
+    out[key.slice(1)] = [i, e];
+    i = e;
+  }
+  return out;
+}
+
+/** A PDF string's text (v1.99.0): a literal (...) with its escapes, or <hex>; UTF-16 with its byte-order mark decoded. */
+function iwdiePdfText(v) {
+  v = String(v || '');
+  var raw = v;
+  if (v.charAt(0) === '(') {
+    raw = v.slice(1, -1).replace(/\\(\r\n|[\r\n]|[0-7]{1,3}|.)/g, function (m, e) {
+      if (/^[\r\n]/.test(e)) return '';
+      if (/^[0-7]/.test(e)) return String.fromCharCode(parseInt(e, 8) & 255);
+      return { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' }[e] || e;
+    });
+  } else if (v.charAt(0) === '<') {
+    var h = v.slice(1, -1).replace(/\s+/g, '');
+    if (h.length % 2) h += '0';
+    raw = '';
+    for (var i = 0; i < h.length; i += 2) raw += String.fromCharCode(parseInt(h.substr(i, 2), 16));
+  }
+  if (raw.charCodeAt(0) === 0xFE && raw.charCodeAt(1) === 0xFF) {
+    var u = '';
+    for (var j = 2; j + 1 < raw.length; j += 2) u += String.fromCharCode(raw.charCodeAt(j) << 8 | raw.charCodeAt(j + 1));
+    return u;
+  }
+  return raw;
+}
+
+/** The plant's .ai with its background layer locked for VectorCraft (v1.99.0). VectorCraft takes a layer's lock from the
+ *  PDF part's optional content - the catalog's /OCProperties /D /Locked - not from Illustrator's own layer data, and an
+ *  .ai whose background Illustrator locked may list nothing there (2349's Maskin .ai): VectorCraft opened it unlocked.
+ *  An update is appended, as VectorCraft appends one itself (import_scan.rs, all_on): the catalog again, the background's
+ *  group - named Bakgrunn, Background or Backround - added to /D /Locked, a one-entry xref and a trailer pointing back
+ *  (/Prev). Nothing else changes. -> {bytes, ground: its name, added: false when /Locked held it already} | null when
+ *  the file has no such group, or a structure this does not take: an xref stream, or /OCProperties or its /D a reference */
+function iwdieAiLockGround(u8) {
+  if (!u8 || typeof u8.length !== 'number' || u8.length < 64) return null;
+  var s = iwdieLatin1(u8), sx = s.lastIndexOf('startxref');
+  if (sx < 0) return null;
+  var prev = +((/^startxref\s+(\d+)/.exec(s.slice(sx, sx + 40)) || [])[1]);
+  if (!(prev >= 0) || s.slice(prev, prev + 4) !== 'xref') return null;
+  // the objects' offsets from the xref sections, the newest first, and the newest trailer
+  var offsets = {}, trailer = null;
+  for (var at = prev, hops = 0; at >= 0 && hops < 16 && s.slice(at, at + 4) === 'xref'; hops++) {
+    var tr = s.indexOf('trailer', at);
+    if (tr < 0) return null;
+    var tok = s.slice(at + 4, tr).trim().split(/\s+/);
+    for (var k = 0; k + 1 < tok.length;) {
+      var first = +tok[k], count = +tok[k + 1];
+      if (!(first >= 0) || !(count >= 0)) return null;
+      k += 2;
+      for (var j = 0; j < count && k + 2 < tok.length; j++, k += 3) {
+        if (tok[k + 2] === 'n' && offsets[first + j] === undefined) offsets[first + j] = [+tok[k], +tok[k + 1]];
+      }
+    }
+    var ts = s.indexOf('<<', tr), te = ts < 0 ? -1 : iwdiePdfValueEnd(s, ts);
+    if (te < 0) return null;
+    var dict = s.slice(ts, te);
+    if (trailer === null) trailer = dict;
+    if (/\/XRefStm\b/.test(dict)) return null;
+    var pv = /\/Prev\s+(\d+)/.exec(dict);
+    at = pv ? +pv[1] : -1;
+  }
+  var root = trailer && /\/Root\s+(\d+)\s+(\d+)\s+R/.exec(trailer);
+  if (!root) return null;
+  var objAt = function (num, gen) {
+    var o = offsets[num];
+    if (!o || o[1] !== +gen) return null;
+    var head = new RegExp('^\\s*' + num + '\\s+' + gen + '\\s+obj\\s*').exec(s.slice(o[0], o[0] + 64));
+    if (!head || s.substr(o[0] + head[0].length, 2) !== '<<') return null;
+    var d = o[0] + head[0].length, e = iwdiePdfValueEnd(s, d);
+    return e < 0 ? null : s.slice(d, e);
+  };
+  var refs = function (text) { var r = [], re = /(\d+)\s+(\d+)\s+R\b/g, m; while ((m = re.exec(text))) r.push(m[1] + ' ' + m[2]); return r; };
+  var cat = objAt(root[1], root[2]), ce = cat && iwdiePdfEntries(cat);
+  if (!ce || !ce.OCProperties) return null;
+  var ocp = cat.slice(ce.OCProperties[0], ce.OCProperties[1]), oe = iwdiePdfEntries(ocp);
+  if (!oe || !oe.OCGs || !oe.D) return null;
+  var dText = ocp.slice(oe.D[0], oe.D[1]), de = iwdiePdfEntries(dText);
+  if (!de) return null;
+  var ground = null, name = '';
+  refs(ocp.slice(oe.OCGs[0], oe.OCGs[1])).some(function (ref) {
+    var p = ref.split(' '), g = objAt(p[0], p[1]), ge = g && iwdiePdfEntries(g);
+    var nm = ge && ge.Name ? iwdiePdfText(g.slice(ge.Name[0], ge.Name[1])).trim() : '';
+    if (/^(bakgrunn|background|backround|00_background_locked)$/i.test(nm)) { ground = ref; name = nm; }
+    return !!ground;
+  });
+  if (!ground) return null;
+  var newD;
+  if (de.Locked) {
+    var lk = dText.slice(de.Locked[0], de.Locked[1]);
+    if (lk.charAt(0) !== '[') return null;
+    if (refs(lk).indexOf(ground) >= 0) return { bytes: u8, ground: name, added: false };
+    newD = dText.slice(0, de.Locked[1] - 1) + ' ' + ground + ' R]' + dText.slice(de.Locked[1]);
+  } else newD = dText.slice(0, -2) + '/Locked[' + ground + ' R]>>';
+  var newOcp = ocp.slice(0, oe.D[0]) + newD + ocp.slice(oe.D[1]);
+  var newCat = cat.slice(0, ce.OCProperties[0]) + newOcp + cat.slice(ce.OCProperties[1]);
+  var lead = /[\r\n]$/.test(s) ? '' : '\n', pad = function (v, n) { v = String(v); while (v.length < n) v = '0' + v; return v; };
+  var obj = root[1] + ' ' + root[2] + ' obj\n' + newCat + '\nendobj\n', start = s.length + lead.length;
+  var xref = start + obj.length;
+  var add = lead + obj + 'xref\n' + root[1] + ' 1\n' + pad(start, 10) + ' ' + pad(root[2], 5) + ' n \ntrailer\n<<' +
+    trailer.slice(2, -2).replace(/\/Prev\s+\d+/, '') + '/Prev ' + prev + '>>\nstartxref\n' + xref + '\n%%EOF\n';
+  var out = new Uint8Array(u8.length + add.length);
+  out.set(u8, 0);
+  for (var i = 0; i < add.length; i++) out[u8.length + i] = add.charCodeAt(i) & 255;
+  return { bytes: out, ground: name, added: true };
 }
 
 /** A drawing without the helpers a paste of the IWMAC objects leaves in it (v1.55.0): the hidden frame (IWMAC-ramme)
@@ -21687,8 +21850,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // Ctrl+2) lock what it holds; then, `fresh`, a new layer over it (Ctrl+L) - an .ai has none of its own for the objects -
       // else the drawing's own IWMAC-objekter, current since Select All ended on its anchor; then Fit Artboard in Window
       // (Ctrl+0), which puts the view's centre on the artboard's, and `paste` pasted in place - and let go of (Deselect,
-      // Ctrl+Shift+A), so a key or a drag meant for one does not take them all. -> Promise<pasted>
-      var lockAndPaste = function (paste, fresh) {
+      // Ctrl+Shift+A), so a key or a drag meant for one does not take them all. (v1.99.0) `open`, an .ai's drawing: nothing
+      // locked - Select All only makes its top layer the current one, for the new layer to go over it, and Deselect lets go
+      // of it; its background layer, locked as it opened (iwdieAiLockGround), stays locked, as Select All passes it by.
+      // -> Promise<pasted>
+      var lockAndPaste = function (paste, fresh, open) {
         if (busy) return Promise.resolve(false);
         busy = true;
         // the pointer and the keyboard kept off VectorCraft meanwhile (v1.56.0): a click between the keys took the
@@ -21700,7 +21866,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var end = function (v) { state.guarding = false; if (guard.parentNode) guard.parentNode.removeChild(guard); busy = false; return v; };
         var step = function () { return settle(150, 8); }, pasted = false;
         key('a', 'KeyA', { ctrl: true });
-        return step().then(function () { key('2', 'Digit2', { ctrl: true }); return step(); })
+        return step().then(function () {
+          if (open) key('a', 'KeyA', { ctrl: true, shift: true });
+          else key('2', 'Digit2', { ctrl: true });
+          return step();
+        })
           .then(function () { if (fresh) { key('l', 'KeyL', { ctrl: true }); return step(); } })
           .then(function () { key('0', 'Digit0', { ctrl: true }); return step(); })
           .then(function () { return paste ? pasteInPlace(paste) : false; })
@@ -22183,16 +22353,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       objLine('<b>' + objItems.length + '</b> in the IWMAC menu');
       // the drawing under the IWMAC objects: locked once they are on it, so only they move (v1.55.0)
-      tip('iwdie-vcb-d', 'What is drawn under the IWMAC objects - the panel’s picture and what was drawn or traced on it, or the plant’s .ai - is locked ' +
-        'once they are on it, so a click or a drag there moves nothing: only the objects move. Unlock frees it all (VectorCraft’s Object › Unlock All, ' +
-        'Ctrl+Alt+2); Object › Lock › Selection (Ctrl+2) locks what is selected again.');
+      // (v1.99.0) the plant's .ai stays open to edit: only its background layer is locked
+      tip('iwdie-vcb-d', 'What is drawn under the IWMAC objects - the panel’s picture and what was drawn or traced on it - is locked ' +
+        'once they are on it, so a click or a drag there moves nothing: only the objects move. The plant’s .ai stays open to edit: only its ' +
+        'background layer is locked. Unlock frees it all (VectorCraft’s Object › Unlock All, Ctrl+Alt+2); Object › Lock › Selection (Ctrl+2) ' +
+        'locks what is selected again.');
       var drawLine = function (how) {
         var d = ui.el.querySelector('.iwdie-vcb-d');
         d.className = 'iwdie-vcb-d' + (how === 'missing' ? ' iwdie-vcb-e' : '');
         d.innerHTML = how === 'locked' ? 'locked - only the IWMAC objects move · <button class="iwdie-vcb-l" data-act="unlock">Unlock</button>'
           : how === 'missing' ? 'locked, without the IWMAC objects · <button class="iwdie-vcb-l" data-act="again">Put them on</button>'
           : how === 'unlocked' ? 'unlocked - <b>Ctrl+2</b> locks what is selected' : how === 'as' ? 'as it is - nothing locked'
-          : how === 'ground' ? 'as it is - Bakgrunn locked · <button class="iwdie-vcb-l" data-act="unlock">Unlock</button>' : esc2(how || '');
+          : how === 'ground' ? 'as it is - Bakgrunn locked · <button class="iwdie-vcb-l" data-act="unlock">Unlock</button>'
+          : how === 'ai' ? 'open to edit - nothing locked' : how === 'ai-ground' ? 'open to edit - its background layer locked'
+          : esc2(how || '');
       };
       drawLine('opening…');
       ui.on('unlock', function () {
@@ -22412,7 +22586,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         saves.hold = 'Wait a moment: ' + name + ' is being opened.';
         var done = function (r) { saves.hold = ''; return r; };
         return f.arrayBuffer().then(function (ab) {
-          var bytes = new Uint8Array(ab), objs = null, drawn = null;
+          var bytes = new Uint8Array(ab), objs = null, drawn = null, ground = null;
           // (v1.86.0) one saved without PDF content (v1.85.0: VectorCraft, as any PDF reader, sees only Illustrator's notice)
           // drawn here from Illustrator's own data in it, and that drawing opened
           var open = iwdieAiPdfNotice(bytes) ? (note(named + ' has no PDF content (Illustrator’s <b>Create PDF Compatible File</b> was off): ' +
@@ -22421,8 +22595,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             var board = res ? { w: res.w, h: res.h } : iwdieAiArtboard(bytes, name), doc = res ? name.replace(/\.ai$/i, '') + '.svg' : name;
             try { objs = syncer && source ? iwdieVcLiftObjects(source, board, { under: false }) : null; } catch (e) { objs = null; }
             // on the menu bar a file opens as a document; on a drawing it would be placed as art
+            // (v1.99.0) its background layer locked as VectorCraft reads a layer's lock, from the PDF part (iwdieAiLockGround);
+            // a drawing made of its own data leaves out what Illustrator hides, as its background often is
+            var locked = null;
+            if (!res) { try { locked = iwdieAiLockGround(bytes); } catch (e) { locked = null; } }
+            ground = locked ? locked.ground : null;
             if (res) vcDropFile(res.svg, doc, 'image/svg+xml', title && title !== 'VectorCraft' ? 'menu' : 'center');
-            else vcDropFile(bytes, name, f.type || 'application/pdf', title && title !== 'VectorCraft' ? 'menu' : 'center');
+            else vcDropFile(locked ? locked.bytes : bytes, name, f.type || 'application/pdf', title && title !== 'VectorCraft' ? 'menu' : 'center');
             return titled(doc, 120000);
           }, function (err) {
             note(named + ' has no PDF content, and its own data could not be drawn here (' + esc2(String((err && err.message) || err)) + '). ' +
@@ -22433,6 +22612,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!ok) { note(named + ' did not open here.', true, true); return null; }
             // how it opened, in the notes that follow: as File › Open opens it, or drawn from its own data and what of (v1.86.0)
             var how = drawn ? ', drawn from Illustrator’s own data in it: ' + vcAiDrawnSay(drawn) + '.' : ', as File › Open opens it.';
+            // (v1.99.0) open to edit, all but its background layer
+            how += ground ? ' Its background layer, ' + esc2(ground) + ', is locked; the rest is open to edit.' : ' Nothing in it is locked.';
+            var opened = ground ? 'ai-ground' : 'ai';
             lastAi = f;
             // its components read meanwhile, to go around its artboard once the IWMAC objects are seen to (v1.59.0)
             if (syncer) readComp(f, function (html) { around(html); });
@@ -22448,27 +22630,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               });
             };
             if (!n) {
-              drawLine('as');
+              drawLine(opened);
               note('✓ ' + named + ' is open' + how, false, true);
               return finish({ ai: true, count: 0, added: false }, named + ' is open' + how);
             }
             return syncer.ask('Add the IWMAC objects?', named + ' is open' + how, [
               { act: 'add', title: 'Add the panel’s ' + iwdieN(n, 'object', 'objects'), text: 'As placeholders where they are on the panel, on a layer of their own on top. ' +
-                'The drawing is locked under them, so only they move; Ctrl+S then syncs them and the drawing to the Designer.' },
-              { act: 'none', title: 'Just the drawing', text: 'Nothing added, nothing locked. Ctrl+S still syncs it, as the panel’s background; ' +
+                'The drawing stays open to edit; Ctrl+S then syncs them and the drawing to the Designer.' },
+              { act: 'none', title: 'Just the drawing', text: 'Nothing added. Ctrl+S still syncs it, as the panel’s background; ' +
                 'the panel’s objects stay as they are.' }
             ]).then(function (act) {
               if (act !== 'add') {
-                drawLine('as');
+                drawLine(opened);
                 note('✓ ' + named + ' is open as it is.', false, true);
                 return finish({ ai: true, count: n, added: false }, named + ' is open as it is.');
               }
               note('Putting the panel’s ' + iwdieN(n, 'IWMAC object', 'IWMAC objects') + ' on ' + named + '…', false, true);
-              return syncer.lockAndPaste(objs.paste, true).then(function () {
-                drawLine('locked');
+              // (v1.99.0) the drawing left open to edit, but for its background layer, locked as it opened
+              return syncer.lockAndPaste(objs.paste, true, true).then(function () {
+                drawLine(opened);
                 return finish({ ai: true, count: n, added: true }, 'The panel’s ' + iwdieN(n, 'IWMAC object is', 'IWMAC objects are') + ' on ' + named +
-                  ', on a layer of their own over its drawing, which is locked: only they move.',
-                  '<b>Ctrl+S</b> syncs. To change the drawing, Unlock it under Drawing above.');
+                  ', on a layer of their own over its drawing, which stays open to edit' + (ground ? ' but for its background layer, ' + esc2(ground) +
+                  ', locked.' : '.'), '<b>Ctrl+S</b> syncs.');
               });
             });
           });
@@ -29207,6 +29390,9 @@ if (typeof module !== 'undefined' && module.exports) {
     xmlTop: iwdieXmlTop,
     xmlEnd: iwdieXmlEnd,
     aiArtboard: iwdieAiArtboard,
+    aiLockGround: iwdieAiLockGround,
+    pdfEntries: iwdiePdfEntries,
+    pdfText: iwdiePdfText,
     vcStripHelpers: iwdieVcStripHelpers,
     vcLiftObjects: iwdieVcLiftObjects,
     vcGroundFirst: iwdieVcGroundFirst,

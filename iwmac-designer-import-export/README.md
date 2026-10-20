@@ -501,6 +501,30 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The plant's .ai opens open to edit, its background layer locked (v1.99.0)
+
+Thomas, with two screenshots of VectorCraft's Layers panel: *everything is locked when importing the .ai - it should be
+open all, except for background*.
+- **Why it was locked.** Since 1.55.0 the panel's IWMAC objects were pasted onto an `.ai` after Select All and
+  Object › Lock › Selection (Ctrl+A, Ctrl+2), so that only they would move. That locked every object of the drawing, one
+  by one.
+- **Now the drawing stays open.** Select All only makes the top layer the current one, for the objects' new layer to go
+  over it, and Deselect lets go of it. The script locks nothing.
+- **The background layer is locked as the file opens.**
+  - VectorCraft takes a layer's lock from the `.ai`'s PDF part (the catalog's `/OCProperties /D /Locked`), not from
+    Illustrator's own layer data.
+  - 2349's Maskin `.ai` has its *Backround* locked in Illustrator, but lists nothing there, so VectorCraft opened it
+    unlocked.
+  - The script now appends an update to the file before VectorCraft opens it, as VectorCraft appends one itself: the
+    catalog again, with the layer named Bakgrunn, Background or Backround in `/Locked`.
+  - A file that lists it already is left as it is.
+- **Measured** on the hosted VectorCraft with 2349's Maskin `.ai`:
+  - The Layers panel shows Backround locked, and Maskinrom, Rør and the objects' layer open.
+  - A click on the artboard where only the background lies selects nothing; one on a drawn shape takes it.
+  - Ctrl+S synced the drawing and the six objects as before.
+- An `.ai` without PDF content is drawn from Illustrator's own data, which leaves out what Illustrator hides, as it often
+  hides its background; nothing of it is locked.
+
 ### Copilot converts it by itself, unasked (v1.98.3)
 
 Thomas: *Copilot should not ask users to write "convert this" or "create v2". This should always be part of its default
