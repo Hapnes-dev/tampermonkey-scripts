@@ -501,6 +501,31 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The Oversikt legend, Symbolforklaring, as one group to add, move and edit (v1.100.0)
+
+Thomas, with the Oversikt template's .ai and a screenshot of its legend column: *make this info panel a permanent group
+in VectorCraft*, add it, move it and edit it by hand there, and let Copilot add it on the right when asked.
+
+- **One group of named rows.** `iwdieOvLegendGroup` writes the legend as one group, `Symbolforklaring`. It holds its
+  grey side, its title and a group per row: Varme, Kjøl, Frys, Kommunikasjonsfeil, Alarm, Kjøl/Frys pågår, Avriming
+  pågår, IWT and Plugin, each its swatch or icon with its word. Its right edge stands on the panel's and its side is as
+  high as the panel. It is the same legend as before, row for row, and the Oversikt template's .ai has the same rows,
+  colours and icons within 2 px.
+- **The IWMAC menu's first row** is *Symbolforklaring · på plass til høyre*. Chosen, it goes on in its place on the
+  right, on a layer of its own: Fit Artboard in Window, then a paste in place with a hidden frame centred on the
+  artboard. The frame is `IWMAC-limramme`, which a sync drops. It is not `IWMAC-ramme`, which tells a sync that the
+  objects' layer came with a paste of them and lets it remove the panel's objects missing from the save. A search for
+  *symbol*, *forklaring*, *legend* or *info* finds the row too.
+- **Libraries** offers the legend among *Oversikt grupper*, to drag anywhere.
+- **The bridge's `legend` op** (Claude) puts the same group in Tekst. Before, the shapes went in Bakgrunn and the
+  words in Tekst. Bakgrunn is locked when a drawing opens in VectorCraft, so the legend could not be moved there.
+- **Measured** in the stub host on the hosted VectorCraft:
+  - The menu's row put the legend at 1151.25, 0, 248.75 × 750, on a new layer between Bakgrunn and Rør, its eleven
+    rows named.
+  - Ctrl+S synced it into the picture without the frame. Opened again, the group and its rows were there.
+  - A Copilot Oversikt opened with Bakgrunn locked. A click on its legend took the whole group, and a drag moved it
+    120 px; synced, it stood at x 1031, its 112 objects untouched.
+
 ### An object placed in VectorCraft takes its kind's own z (v1.99.1)
 
 Measured on 6 194 saved panels of 526 plants (2026-10-21): an object's z belongs to its kind. The Designer's own

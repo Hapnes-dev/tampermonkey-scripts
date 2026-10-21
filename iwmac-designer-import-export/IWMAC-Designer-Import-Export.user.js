@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.99.1
+// @version      1.100.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.99.1';
+var IWDIE_VERSION = '1.100.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8591,8 +8591,9 @@ function iwdieSymIsObject(name) {
  *  in from the house templates built into the script (Maskin; Oversikt since v1.72.0) - so, with nothing imported, the
  *  templates' own, always - less those an IWMAC object shows; and after them (v1.75.0) the Oversikt template's
  *  arrangements, each one group of those pieces with its names as label placeholders, on layers of their own (Oversikt
- *  kjøl grupper, Oversikt frys grupper, Oversikt grupper). -> a library ({..., items, filled, builtin when nothing was
- *  kept, objects: how many were left out, groups: how many arrangements}) or null */
+ *  kjøl grupper, Oversikt frys grupper, Oversikt grupper), and since v1.100.0 the legend column (iwdieOvLegendItem). ->
+ *  a library ({..., items, filled, builtin when nothing was kept, objects: how many were left out, groups: how many
+ *  arrangements, legend: 1 with the legend}) or null */
 function iwdieLibForVc(kept) {
   var lib = iwdieLibWithBuiltin(kept);
   if (!lib || !lib.items) return null;
@@ -8600,9 +8601,12 @@ function iwdieLibForVc(kept) {
   IWDIE_SYM_OBJECT_FAMILIES.forEach(function (n) { objects[iwdieSymKey(n)] = 1; });
   var items = lib.items.filter(function (it) { return !(it.sym && objects[iwdieSymKey(it.sym.name)]); });
   if (!items.length) return null;
-  var groups = iwdieSymGroupItems(items), out = {};
+  var groups = iwdieSymGroupItems(items), out = {}, legend = null;
+  // (v1.100.0) and the Oversikt legend, Symbolforklaring, after them
+  try { legend = iwdieOvLegendItem(); } catch (e) { legend = null; }
   Object.keys(lib).forEach(function (k) { out[k] = lib[k]; });
-  out.items = items.concat(groups);
+  out.items = items.concat(groups, legend ? [legend] : []);
+  out.legend = legend ? 1 : 0;
   out.objects = lib.items.length - items.length;
   out.groups = groups.length;
   return out;
@@ -9470,10 +9474,11 @@ function iwdieAiLockGround(u8) {
 }
 
 /** A drawing without the helpers a paste of the IWMAC objects leaves in it (v1.55.0): the hidden frame (IWMAC-ramme)
- *  that put them where they were, and the anchor (IWMAC-anker) that made their layer the one pasted into. */
+ *  that put them where they were, and the anchor (IWMAC-anker) that made their layer the one pasted into - and since
+ *  v1.100.0 the hidden frame a paste of the legend in its place leaves (IWMAC-limramme, IWMAC-limramme-2 ...). */
 function iwdieVcStripHelpers(svg) {
   var s = String(svg || ''), cut = [], m;
-  var re = /<[A-Za-z][\w:-]*\b[^>]*\s(?:id|data-name)\s*=\s*"IWMAC-(?:ramme|anker)"[^>]*>/g;
+  var re = /<[A-Za-z][\w:-]*\b[^>]*\s(?:id|data-name)\s*=\s*"IWMAC-(?:ramme|anker|limramme(?:-\d+)?)"[^>]*>/g;
   while ((m = re.exec(s))) {
     var end = iwdieXmlEnd(s, m.index);
     if (end < 0) break;
@@ -12757,10 +12762,77 @@ var IWDIE_OV_ARIAL = [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584
   222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584];
 var IWDIE_OV_LATIN1 = {"°": 400, "Æ": 1000, "Ø": 778, "Å": 667, "æ": 889, "ø": 611, "å": 556, "é": 556, "è": 556, "ü": 556, "ö": 556, "ä": 556, "Ö": 778, "Ä": 667, "Ü": 722, "µ": 556, "²": 333, "³": 333, "·": 278, "–": 556, "—": 1000, "×": 584};
 
-/** The legend column, Symbolforklaring, as his v6 Oversikt pictures draw it: the kit's assets/oversikt-legend.json, cut
- *  from 10112 Bunnpris Betna's v6 .ai, its symbols written out in place. `shapes` go in Bakgrunn, `words` in Tekst; the
- *  drawing area ends where it begins. */
+/** The legend column, Symbolforklaring, as his v6 Oversikt pictures draw it: the kit's reference_data/oversikt-legend.json,
+ *  cut from a plant's v6 .ai, its symbols written out in place - the Oversikt template's own legend, row for row (its .ai
+ *  measured 2026-10-21: the same rows, colours and icons within 2 px). The drawing area ends where it begins. Since
+ *  v1.100.0 a drawing takes it as one group of named rows (iwdieOvLegendGroup). */
 var IWDIE_OV_LEGEND = { x: 1151.25, shapes: "<g data-name=\"Symbolforklaring\"><g id=\"Grå_Side\"><rect x=\"1151.25\" width=\"248.75\" height=\"750\" fill=\"#cdd2d7\"></rect></g><g><path d=\"M1190.03,103.65c-6.06,0-11-4.93-11-11s4.94-11,11-11h40c6.07,0,11,4.94,11,11s-4.93,11-11,11H1190.03Z\" fill=\"#f3c96a\"></path><path d=\"M1230.03,82.65c5.53,0,10,4.48,10,10s-4.47,10-10,10h-40c-5.52,0-10-4.47-10-10s4.48-10,10-10H1230.03M1230.03,80.65h-40c-6.61,0-12,5.39-12,12s5.39,12,12,12h40c6.62,0,12-5.38,12-12S1236.65,80.65,1230.03,80.65H1230.03Z\" fill=\"#e6e8ea\"></path></g><g><path d=\"M1190.03,143.87c-6.06,0-11-4.94-11-11s4.94-11,11-11h40c6.07,0,11,4.93,11,11s-4.93,11-11,11H1190.03Z\" fill=\"#b0e0ef\"></path><path d=\"M1230.03,122.87c5.53,0,10,4.47,10,10s-4.47,10-10,10h-40c-5.52,0-10-4.48-10-10s4.48-10,10-10H1230.03M1230.03,120.87h-40c-6.61,0-12,5.38-12,12s5.39,12,12,12h40c6.62,0,12-5.39,12-12S1236.65,120.87,1230.03,120.87H1230.03Z\" fill=\"#e6e8ea\"></path></g><g><path d=\"M1190.03,184.08c-6.06,0-11-4.93-11-11s4.94-11,11-11h40c6.07,0,11,4.94,11,11s-4.93,11-11,11H1190.03Z\" fill=\"#8eb2d1\"></path><path d=\"M1230.03,163.08c5.53,0,10,4.48,10,10s-4.47,10-10,10h-40c-5.52,0-10-4.48-10-10s4.48-10,10-10H1230.03M1230.03,161.08h-40c-6.61,0-12,5.38-12,12s5.39,12,12,12h40c6.62,0,12-5.38,12-12S1236.65,161.08,1230.03,161.08H1230.03Z\" fill=\"#e6e8ea\"></path></g><g transform=\"translate(1198.0331 281.7252)\"><g><g><path d=\"M12,23c-6.07,0-11-4.93-11-11S5.93,1,12,1s11,4.93,11,11S18.07,23,12,23Z\" fill=\"#3c505e\"></path><path d=\"M12,2c5.51,0,10,4.49,10,10s-4.49,10-10,10S2,17.51,2,12,6.49,2,12,2M12,0C5.37,0,0,5.37,0,12s5.37,12,12,12,12-5.37,12-12S18.63,0,12,0H12Z\" fill=\"#fff\"></path></g><g><g><line x1=\"12\" y1=\"4\" x2=\"12\" y2=\"20\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></line><polyline points=\"14.44 5.98 12 8.42 9.56 5.98\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline><polyline points=\"9.56 18.02 12 15.58 14.44 18.02\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline></g><g><line x1=\"5.08\" y1=\"8\" x2=\"18.92\" y2=\"16\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></line><polyline points=\"8.01 6.88 8.9 10.21 5.58 11.1\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline><polyline points=\"15.99 17.12 15.1 13.79 18.42 12.9\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline></g><g><line x1=\"18.92\" y1=\"8\" x2=\"5.08\" y2=\"16\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></line><polyline points=\"18.42 11.1 15.1 10.21 15.99 6.88\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline><polyline points=\"5.58 12.9 8.9 13.79 8.01 17.12\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\"></polyline></g></g></g></g><g transform=\"translate(1198.0331 321.9398)\"><g><g><path d=\"M12,23c-6.07,0-11-4.93-11-11S5.93,1,12,1s11,4.93,11,11S18.07,23,12,23Z\" fill=\"#3c505e\"></path><path d=\"M12,2c5.51,0,10,4.49,10,10s-4.49,10-10,10S2,17.51,2,12,6.49,2,12,2M12,0C5.37,0,0,5.37,0,12s5.37,12,12,12,12-5.37,12-12S18.63,0,12,0H12Z\" fill=\"#fff\"></path></g><g><path d=\"M12.53,15.86c0,1.37-1.11,2.48-2.48,2.48s-2.48-1.11-2.48-2.48c0-2.12,2.48-5.81,2.48-5.81C10.05,10.05,12.53,13.74,12.53,15.86Z\" fill=\"#fff\"></path><path d=\"M16.43,10.06c0,.96-.77,1.73-1.73,1.73s-1.72-.77-1.72-1.73c0-1.48,1.72-4.04,1.72-4.04C14.7,6.02,16.43,8.58,16.43,10.06Z\" fill=\"#fff\"></path></g></g></g><g transform=\"translate(1193.0331 236.5106)\"><g><g><path d=\"M17,33c-8.82,0-16-7.18-16-16S8.18,1,17,1s16,7.18,16,16S25.82,33,17,33Z\" fill=\"#ee473b\"></path><path d=\"M17,2c8.27,0,15,6.73,15,15s-6.73,15-15,15S2,25.27,2,17,8.73,2,17,2M17,0C7.61,0,0,7.61,0,17s7.61,17,17,17,17-7.61,17-17S26.39,0,17,0H17Z\" fill=\"#fff\"></path></g><g id=\"Alarm_Active_Button\"><g><g><path d=\"M24.63,12.66l-1.39,1.27c2.52,2.77,2.52,7.27,0,10.04l1.39,1.27C27.79,21.77,27.79,16.13,24.63,12.66\" fill=\"#fff\"></path><path d=\"M10.76,13.93l-1.39-1.27c-3.16,3.47-3.16,9.11,0,12.58l1.39-1.27C8.24,21.2,8.24,16.7,10.76,13.93\" fill=\"#fff\"></path><rect x=\"10.17\" y=\"20.09\" width=\"13.67\" height=\"1.95\" fill=\"#fff\"></rect><path d=\"M17,5.45c.54,0,.98.43.98.97s-.44.98-.98.98-.98-.44-.98-.98S16.46,5.45,17,5.45\" fill=\"#fff\"></path><path d=\"M18.45,23.15c-.77.47-2.13.47-2.9,0l-.83-.5-1.01,1.67.83.51c.69.41,1.58.62,2.46.62s1.77-.21,2.46-.62l.83-.51-1.01-1.67L18.45,23.15Z\" fill=\"#fff\"></path><path d=\"M14.33,11.76c.93-1.09,1.59-1.43,2.67-1.43s1.74.34,2.67,1.43c.1,4.01,1.78,8.33,4.16,8.33v-1.96c-.53-.05-2.21-2.59-2.21-6.72v-.35l-.22-.27c-1.2-1.49-2.36-2.41-4.4-2.41s-3.2.92-4.4,2.41l-.22.27v.35c0,4.13-1.68,6.67-2.21,6.72v1.96C12.55,20.09,14.23,15.77,14.33,11.76\" fill=\"#fff\"></path></g></g></g></g></g><g><rect x=\"1209.1\" y=\"378.2\" width=\"1.88\" height=\"10\" fill=\"#3d4f5f\"></rect><path d=\"M1214.32,369.97c-1.15-1.14-2.67-1.77-4.29-1.77s-3.14.63-4.28,1.77c-1.15,1.15-1.78,2.67-1.78,4.29s.63,3.14,1.78,4.29l1.32-1.33c-.79-.79-1.22-1.84-1.22-2.96s.43-2.17,1.22-2.96c1.58-1.58,4.34-1.58,5.92,0,.8.79,1.23,1.84,1.23,2.96s-.43,2.17-1.23,2.96l1.33,1.33c1.15-1.15,1.78-2.67,1.78-4.29S1215.47,371.12,1214.32,369.97\" fill=\"#3d4f5f\"></path><path d=\"M1210.03,373.04c.61,0,1.1.49,1.1,1.1s-.49,1.09-1.1,1.09-1.09-.49-1.09-1.09S1209.43,373.04,1210.03,373.04\" fill=\"#3d4f5f\"></path></g><g><g><path d=\"M1215.01,410.67l-3.18,3.18,1.48,1.49,3.19-3.19c.41-.41.41-1.07,0-1.48S1215.42,410.26,1215.01,410.67Z\" fill=\"#3c505e\"></path><path d=\"M1218.16,413.81l-3.19,3.19,1.49,1.48,3.18-3.18c.42-.41.42-1.08,0-1.49S1218.57,413.4,1218.16,413.81Z\" fill=\"#3c505e\"></path></g><path d=\"M1210.34,412.36l-1.29,1.29c-2.1,2.1-2.1,5.51,0,7.61s5.51,2.1,7.61,0l1.29-1.29\" fill=\"none\" stroke=\"#3d4f5f\" stroke-miterlimit=\"10\" stroke-width=\"2\"></path><path d=\"M1209.05,421.26l-2.09,2.09c-.78.78-2.05.78-2.83,0l-.52-.52c-.77-.77-1.99-1.42-2.69-1.43l-1.29-.02\" fill=\"none\" stroke=\"#3d4f5f\" stroke-miterlimit=\"10\" stroke-width=\"2\"></path></g><g><g><path d=\"M1210.03,226.55c-7.3,0-13.25-5.95-13.25-13.25s5.95-13.25,13.25-13.25,13.25,5.94,13.25,13.25S1217.34,226.55,1210.03,226.55Z\" fill=\"#ee473b\"></path><path d=\"M1210.03,200.8c6.9,0,12.5,5.6,12.5,12.5s-5.6,12.5-12.5,12.5-12.5-5.61-12.5-12.5S1203.14,200.8,1210.03,200.8M1210.03,199.3c-7.73,0-14,6.26-14,14s6.27,14,14,14,14-6.27,14-14S1217.77,199.3,1210.03,199.3H1210.03Z\" fill=\"#fff\"></path></g><line x1=\"1210.03\" y1=\"207.17\" x2=\"1210.03\" y2=\"219.42\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\" stroke-width=\"2\"></line><g><polyline points=\"1200.75 207.85 1206.19 213.3 1200.75 218.74\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\" stroke-width=\"2\"></polyline><polyline points=\"1219.31 218.74 1213.87 213.3 1219.31 207.85\" fill=\"none\" stroke=\"#fff\" stroke-miterlimit=\"10\" stroke-width=\"2\"></polyline></g></g></g>", words: "<g data-name=\"Symbolforklaring\"><text x=\"1178.97\" y=\"58.55\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"18\" fill=\"#3c505e\">Symbolforklaring</text><text x=\"1253.64\" y=\"96.49\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Varme</text><text x=\"1253.64\" y=\"136.43\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Kjøl</text><text x=\"1253.64\" y=\"177.37\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Frys</text><text x=\"1253.64\" y=\"218.31\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Kommunikasjonsfeil</text><text x=\"1253.64\" y=\"255.99\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Alarm</text><text x=\"1253.64\" y=\"297\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Kjøl/Frys pågår</text><text x=\"1253.64\" y=\"339.02\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Avriming pågår</text><text x=\"1253.64\" y=\"383.54\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">IWT</text><text x=\"1253.64\" y=\"421.6\" font-family=\"Roboto, Arial, sans-serif\" font-size=\"14\" fill=\"#3c505e\">Plugin</text></g>" };
+
+/** The legend's rows (v1.100.0): the name of each piece of IWDIE_OV_LEGEND.shapes after the grey side, in their order -
+ *  the word it stands beside, so the piece and its word go into one group. */
+var IWDIE_OV_LEGEND_ROWS = ['Varme', 'Kjøl', 'Frys', 'Kjøl/Frys pågår', 'Avriming pågår', 'Alarm', 'IWT', 'Plugin', 'Kommunikasjonsfeil'];
+
+/** The id of a part of the legend (v1.100.0): `Symbolforklaring-` and its name in ASCII ("Kjøl/Frys pågår" ->
+ *  "Symbolforklaring-Kjol-Frys-pagar"); VectorCraft shows a group's id as its name. */
+function iwdieOvLegendId(name) {
+  var fold = { 'æ': 'ae', 'ø': 'o', 'å': 'a', 'Æ': 'Ae', 'Ø': 'O', 'Å': 'A' };
+  return 'Symbolforklaring-' + String(name).replace(/[æøåÆØÅ]/g, function (c) { return fold[c]; }).replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/** The legend column as one group (v1.100.0), the way a drawing takes it: `Symbolforklaring`, holding the grey side, the
+ *  title and a group per row - its swatch or icon and its word - each with an id, so VectorCraft names each and the user
+ *  moves the whole, or retexts, recolours or deletes a row. Its right edge on the panel's and its side as high as the
+ *  panel (`size` {w, h}, 1400 x 750 unless given); `at` {x, y} puts its top left there instead. -> SVG text (one <g>) */
+function iwdieOvLegendGroup(size, at) {
+  var L = IWDIE_OV_LEGEND, f = iwdieDrawFmt, esc = iwdieDrawEsc;
+  var W = size && +size.w > 0 ? +size.w : 1400, H = size && +size.h > 0 ? +size.h : 750, colW = 1400 - L.x;
+  var x0 = at && isFinite(at.x) ? +at.x : W - colW, y0 = at && isFinite(at.y) ? +at.y : 0, dx = x0 - L.x, dy = y0;
+  var inner = function (t) { return t.slice(t.indexOf('>') + 1, t.lastIndexOf('</g>')); };
+  var shapes = inner(L.shapes), pieces = iwdieXmlTop(shapes).map(function (e) { return shapes.slice(e.start, e.end); });
+  var part = function (key, name, body) {
+    return '<g id="' + esc(iwdieOvLegendId(key)) + '" data-name="' + esc(name) + '">' + body + '</g>';
+  };
+  // the rows top to bottom, as the words stand: each word with the piece IWDIE_OV_LEGEND_ROWS names beside it
+  var rows = (inner(L.words).match(/<text\b[^>]*>[^<]*<\/text>/g) || []).map(function (t, k) {
+    if (k === 0) return part('tittel', 'Tittel', t);
+    var name = iwdieSvgEntities(/>([^<]*)</.exec(t)[1]), at = IWDIE_OV_LEGEND_ROWS.indexOf(name);
+    return part(name, name, (at >= 0 ? pieces[at + 1] || '' : '') + t);
+  });
+  return '<g id="Symbolforklaring" data-name="Symbolforklaring"' + (Math.abs(dx) > 0.004 || Math.abs(dy) > 0.004 ?
+    ' transform="translate(' + f(dx) + ' ' + f(dy) + ')"' : '') + '>' +
+    part('side', 'Grå side', '<rect x="' + f(L.x) + '" y="0" width="' + f(colW) + '" height="' + f(H) + '" fill="#cdd2d7"/>') +
+    rows.join('') + '</g>';
+}
+
+/** The legend as VectorCraft pastes it in its place (v1.100.0): its group on the panel (`size`) and a hidden frame
+ *  (IWMAC-limramme, which a sync leaves out - not IWMAC-ramme, which tells a sync the objects' layer came with a paste of
+ *  them) whose centre is the artboard's, inside one group with an id that VectorCraft takes apart. VectorCraft pastes centred on the view's centre, which is the artboard's once fitted (Ctrl+0): the legend
+ *  lands where the panel has it, on the right. -> SVG text */
+function iwdieOvLegendPaste(size) {
+  var W = size && +size.w > 0 ? +size.w : 1400, H = size && +size.h > 0 ? +size.h : 750, f = iwdieDrawFmt;
+  var frame = '<path id="IWMAC-limramme" data-name="IWMAC-limramme" d="M' + f(-W) + ' ' + f(-H) + 'h1v1h-1z M' + f(2 * W - 1) + ' ' + f(2 * H - 1) +
+    'h1v1h-1z" fill="#000000" fill-opacity="0" display="none"/>';
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="' + f(W) + '" height="' + f(H) + '" viewBox="0 0 ' + f(W) + ' ' + f(H) + '">' +
+    '<g id="IWMAC-lim" data-name="IWMAC-lim">' + frame + iwdieOvLegendGroup({ w: W, h: H }) + '</g></svg>';
+}
+
+/** The legend as a file VectorCraft places where it is dropped (v1.100.0): its group at 0, 0 as the file's one top-level
+ *  group, which VectorCraft takes apart into the group it places - named after the file - keeping its parts and their
+ *  names (iwdieVcComponentFileSvg's way). `h` the side's height (750 unless given). -> SVG text */
+function iwdieOvLegendFileSvg(h) {
+  var H = +h > 0 ? +h : 750, W = Math.ceil(1400 - IWDIE_OV_LEGEND.x), f = iwdieDrawFmt;
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + f(H) + '" viewBox="0 0 ' + W + ' ' + f(H) + '">' +
+    iwdieOvLegendGroup({ w: 1400, h: H }, { x: 0, y: 0 }) + '</svg>';
+}
+
+/** The legend as a component VectorCraft's Libraries and IWMAC menu offer (v1.100.0), on the layer of the Oversikt
+ *  template's arrangements: its parts as Draw shapes at 0, 0 - each row a named group - read from iwdieOvLegendFileSvg.
+ *  -> a library item, or null */
+function iwdieOvLegendItem() {
+  var W = Math.ceil(1400 - IWDIE_OV_LEGEND.x), read = iwdieSvgAiLayers(iwdieOvLegendFileSvg(750), { w: W, h: 750 }), shapes = [];
+  ((read && read.layers) || []).forEach(function (l) { shapes.push.apply(shapes, l.items || []); });
+  return shapes.length ? { name: 'Symbolforklaring', layer: 'Oversikt grupper', w: W, h: 750, shapes: shapes } : null;
+}
 
 /** How wide a case's name is as a label object: Arial at 12 px, rounded up, 2 over (oversikt.py's text_w + 2). -> px */
 function iwdieOvNameWidth(text) {
@@ -13105,6 +13177,7 @@ function iwdieOvFillKind(fill) {
  *    cluster  {target, roles?, label?, caption?, wall?, room?}          a cluster (and name) on a case already drawn
  *    name     {text, over: [targets] | at: {x, y}}                      a name of no single case, as a label object
  *    legend   {}                                                        the legend column, Symbolforklaring, as his v6
+ *             Oversikt pictures draw it: one group of named rows in Tekst (v1.100.0), its right edge on the panel's
  *  An arrangement's symbol op takes `cases` (v1.84.0): its cases in the order of its names, each a name or {label,
  *  roles, caption}, null for none - each with its cluster - or `clusters: true` for clusters under the template's names.
  *  A place (`at`) is {x, y} (its top left), {cx, cy} (its centre), or {near: target, side: right|left|above|below, gap?,
@@ -13474,8 +13547,10 @@ function iwdieCbPlan(ops, scene, ctx) {
         // (v1.84.0) the legend column as his v6 Oversikt pictures draw it, once
         var hasLegend = items.some(function (it) { return (it.kind === 'text' && /symbolforklaring/i.test(it.text || '')) || (it.layer === 'Bakgrunn' && it.box && Math.abs(it.box.x - IWDIE_OV_LEGEND.x) < 2 && it.box.w > 200); });
         if (hasLegend || ov.legend) { notes.push('op ' + (i + 1) + ': the drawing has its legend already'); break; }
-        steps.push({ 'do': 'add', kind: 'art', art: 'legend', part: 'shapes', layer: 'Bakgrunn', box: { x: IWDIE_OV_LEGEND.x, y: 0, w: size.w - IWDIE_OV_LEGEND.x, h: size.h }, ref: o.ref, op: i });
-        steps.push({ 'do': 'add', kind: 'art', art: 'legend', part: 'words', layer: 'Tekst', box: { x: IWDIE_OV_LEGEND.x, y: 0, w: size.w - IWDIE_OV_LEGEND.x, h: size.h }, op: i });
+        // (v1.100.0) one group of named rows in Tekst - not locked with Bakgrunn when the drawing opens - its right edge
+        // on the panel's: the user moves it, retexts or deletes a row
+        var lw = 1400 - IWDIE_OV_LEGEND.x;
+        steps.push({ 'do': 'add', kind: 'art', art: 'legend', layer: 'Tekst', box: { x: size.w - lw, y: 0, w: lw, h: size.h }, ref: o.ref, op: i });
         ov.legend = true;
         break;
       }
@@ -13645,7 +13720,7 @@ function iwdieCbMarkup(s, cid, looks, used) {
   }
   if (s.kind === 'art') {
     // (v1.84.0) a piece of the house's own drawing, by its name only - never markup an op carries
-    var art = s.art === 'legend' ? IWDIE_OV_LEGEND[s.part === 'words' ? 'words' : 'shapes'] : '';
+    var art = s.art === 'legend' ? iwdieOvLegendGroup({ w: s.box.x + s.box.w, h: s.box.h }) : '';
     return art ? art.replace(/^<g\b/, '<g' + c) : '';
   }
   if (s.kind === 'pipe') {
@@ -21226,9 +21301,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     /** The IWMAC menu on the editor's page; `say(html, bad)` hears what went wrong. With the kept
      *  components (`lib`, v1.45.0), those are in it too, by Illustrator layer: VectorCraft's own
      *  Libraries panel does not scroll, so a big library cannot be seen whole there. With the plant's
-     *  parameters (`params`, v1.63.0: the job's), each unit's rows by group, placed bound. */
-    function vcObjectMenu(say, looks, lib, params) {
+     *  parameters (`params`, v1.63.0: the job's), each unit's rows by group, placed bound. Since v1.100.0 the Oversikt
+     *  legend, Symbolforklaring, first: chosen, it goes on in its place on the right (`extra.legend`, a promise of
+     *  whether it did), else where the next click lands. */
+    function vcObjectMenu(say, looks, lib, params, extra) {
       if (document.getElementById('iwdie-vcm')) return;
+      extra = extra || {};
       var esc2 = iwdieEscHtml, all = iwdieVcObjects(looks), byId = {}, roles = [], byRole = {};
       all.forEach(function (o) {
         byId[o.id] = o;
@@ -21353,6 +21431,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return { label: (alias || r[1]) + ' · ' + u[1], w: o.w, h: o.h, name: IWDIE_VC_OBJ_PREFIX + o.id + ' ' + bindText(u, r),
           svg: function () { return iwdieVcObjectSvg(shown); } };
       };
+      // (v1.100.0) the legend column, Symbolforklaring: its own row, put on in its place
+      var legendRow = function () {
+        return '<div class="iwdie-vcm-i iwdie-vcm-ic" data-legend="1" title="Symbolforklaring: the Oversikt legend, one group of rows, on the right">' +
+          '<span class="iwdie-vcm-p"><svg width="30" height="30" viewBox="0 0 30 30"><rect x="3" width="24" height="30" fill="#cdd2d7"/>' +
+          '<rect x="6" y="6" width="9" height="4" rx="2" fill="#f3c96a"/><rect x="6" y="12" width="9" height="4" rx="2" fill="#b0e0ef"/>' +
+          '<rect x="6" y="18" width="9" height="4" rx="2" fill="#8eb2d1"/><circle cx="10.5" cy="26" r="2.5" fill="#ee473b"/></svg></span>' +
+          '<span class="iwdie-vcm-l">Symbolforklaring</span><span class="iwdie-vcm-k">på plass til høyre</span></div>';
+      };
+      var legendHit = function (q) { return /symbol|forklar|legend|info/i.test(q); };
+      var legendSize = extra.size && extra.size.w > 0 ? extra.size : { w: 1400, h: 750 };
+      var placeLegend = function () {
+        close();
+        stop();
+        var asFile = function () {
+          choose({ label: 'Symbolforklaring', w: Math.ceil(1400 - IWDIE_OV_LEGEND.x), h: legendSize.h, name: 'Symbolforklaring',
+            svg: function () { return iwdieOvLegendFileSvg(legendSize.h); } });
+        };
+        if (typeof extra.legend !== 'function') { asFile(); return; }
+        extra.legend(iwdieOvLegendPaste(legendSize)).then(function (ok) {
+          if (ok) say('✓ <b>Symbolforklaring</b> is on the right, a group of its rows on a layer of its own: drag it, or double-click a row to ' +
+            'change its word or colour; Delete takes a row out. <b>Ctrl+S</b> syncs it into the picture.');
+          else { say('Symbolforklaring could not be put on in its place: click where it goes.', true); asFile(); }
+        }, function () { asFile(); });
+      };
       var layerRow = function (l) {
         return '<div class="iwdie-vcm-i" data-layer="' + esc2(l) + '"><span class="iwdie-vcm-l">' + esc2(l) + '</span>' +
           '<span class="iwdie-vcm-k">' + byLayer[l].length + '</span><span class="iwdie-vcm-k">▸</span></div>';
@@ -21369,6 +21471,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       var thingOf = function (row) {
         if (!row) return null;
+        if (row.getAttribute('data-legend') !== null) return { legend: true };
         if (row.getAttribute('data-param') !== null) { var pp = row.getAttribute('data-param').split(':'); return paramThing(+pp[0], +pp[1]); }
         if (row.getAttribute('data-comp') !== null && comps[+row.getAttribute('data-comp')]) return compThing(+row.getAttribute('data-comp'));
         return byId[row.getAttribute('data-id')] ? objThing(byId[row.getAttribute('data-id')]) : null;
@@ -21405,6 +21508,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       var choose = function (th) {
         if (!th) return;
+        if (th.legend) { placeLegend(); return; }
         close();
         stop();
         placing = th;
@@ -21466,9 +21570,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var paramHead = '<div class="iwdie-vcm-x"></div><div class="iwdie-vcm-h">Parametere · placed linked when synced</div>';
           var noParams = params && !pu.length ? '<div class="iwdie-vcm-x"></div><div class="iwdie-vcm-h">Parametere: none read - link an object on the panel to a unit, or tick ' +
             'units in the Parameter Selector, then Edit in VectorCraft again</div>' : '';
-          list.innerHTML = !q ? roles.map(roleRow).join('') + (pu.length ? paramHead + pu.map(function (u, ui) { return unitRow(ui); }).join('') : noParams) +
+          var legendHead = '<div class="iwdie-vcm-h">Oversikt</div>';
+          list.innerHTML = !q ? legendHead + legendRow() + '<div class="iwdie-vcm-x"></div>' + roles.map(roleRow).join('') +
+              (pu.length ? paramHead + pu.map(function (u, ui) { return unitRow(ui); }).join('') : noParams) +
               (layers.length ? compHead + layers.map(layerRow).join('') : '')
-            : hits.length || compHits.length || paramHits.length ? hits.map(objectRow).join('') +
+            : hits.length || compHits.length || paramHits.length || legendHit(q) ? (legendHit(q) ? legendRow() : '') + hits.map(objectRow).join('') +
               (paramHits.length ? paramHead + paramHits.map(function (h) { return paramRow(h[0], h[1]); }).join('') : '') +
               (compHits.length ? compHead + compHits.map(compRow).join('') : '')
             : '<div class="iwdie-vcm-n">Nothing matches.</div>';
@@ -21481,7 +21587,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         input.addEventListener('input', fill);
         input.addEventListener('keydown', function (e) {
           if (e.key !== 'Enter') return;
-          choose(thingOf(list.querySelector('[data-id],[data-param],[data-comp]')));
+          choose(thingOf(list.querySelector('[data-legend],[data-id],[data-param],[data-comp]')));
         });
         menu.addEventListener('mouseover', function (e) {
           var row = rowOf(e);
@@ -21906,6 +22012,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           .then(function () { if (pasted) { key('0', 'Digit0', { ctrl: true, alt: true }); return step(); } })
           .then(function () { return end(pasted); }, function () { return end(false); });
       };
+      // the legend column put on in its place (v1.100.0): on a new layer over the rest (Ctrl+L), the artboard fitted (Ctrl+0)
+      // for the paste - the legend's group and a hidden frame centred on the artboard - to land in place, and let go of
+      // (Ctrl+Shift+A). -> Promise<pasted>
+      var pasteInPlaceNew = function (paste) {
+        if (busy || !paste) return Promise.resolve(false);
+        busy = true;
+        var guard = document.createElement('div');
+        guard.className = 'iwdie-vcs-g';
+        document.body.appendChild(guard);
+        state.guarding = true;
+        var end = function (v) { state.guarding = false; if (guard.parentNode) guard.parentNode.removeChild(guard); busy = false; return v; };
+        var step = function () { return settle(150, 8); }, pasted = false;
+        key('l', 'KeyL', { ctrl: true });
+        return step().then(function () { key('0', 'Digit0', { ctrl: true }); return step(); })
+          .then(function () { return pasteInPlace(paste); })
+          .then(function (ok) { pasted = ok; key('a', 'KeyA', { ctrl: true, shift: true }); return step(); })
+          .then(function () { return end(pasted); }, function () { return end(false); });
+      };
       // the background locked, the rest left to edit (v1.65.1): with the other layers' objects hidden as the drawing opened
       // (iwdieVcGroundFirst), Select All (Ctrl+A) takes Bakgrunn's alone and Object › Lock › Selection (Ctrl+2) locks them;
       // Object › Show All (Ctrl+Alt+3) brings the rest back, and Deselect (Ctrl+Shift+A) lets go of it. -> Promise<done>
@@ -21980,6 +22104,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         lockAndPaste: lockAndPaste,
         lockGround: lockGround,
         pasteAround: pasteAround,
+        // (v1.100.0) SVG pasted in place on a layer of its own: the legend from the IWMAC menu
+        pasteInPlaceNew: pasteInPlaceNew,
         ask: ask,
         // a sync as Ctrl+S starts one; `quiet` for one that starts by itself (v1.56.0)
         sync: sync,
@@ -23076,7 +23202,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return ai || openPanel();
         }).then(null, function () { return null; }).then(function (opened) {
           if (!opened) return;
-          try { vcObjectMenu(note, looks, lib, job.params || null); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
+          // (v1.100.0) the legend put on in its place, on the panel's size
+          var sized = iwdieSvgSize(job.svg) || {}, extra = { size: { w: sized.width || 1400, h: sized.height || 750 },
+            legend: function (paste) { return syncer && syncer.pasteInPlaceNew ? syncer.pasteInPlaceNew(paste) : Promise.resolve(false); } };
+          try { vcObjectMenu(note, looks, lib, job.params || null, extra); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
           return objText.then(function (pages) {
             return pause(1200).then(function () {
               vcDropFiles(asFiles(pages), 'menu');
@@ -24314,7 +24443,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // what a paste of the objects leaves (v1.55.0): the frame came with them, so their layer is in the save; the anchor
       // marks a drawing whose objects come only so - one without the frame did not get them. Neither stays in the picture.
       var framed = /\s(?:id|data-name)\s*=\s*"IWMAC-ramme"/.test(svg), anchored = /\s(?:id|data-name)\s*=\s*"IWMAC-anker"/.test(svg);
-      if (framed || anchored) svg = iwdieVcStripEditing(iwdieVcStripHelpers(svg));
+      // (v1.100.0) the frame a paste of the legend leaves goes too, and says nothing of the objects' layer
+      var limmed = /\s(?:id|data-name)\s*=\s*"IWMAC-limramme(?:-\d+)?"/.test(svg);
+      if (framed || anchored || limmed) svg = iwdieVcStripEditing(iwdieVcStripHelpers(svg));
       var none = { svg: svg, found: [], skipped: 0, layer: framed, frames: 0, stale: 0 };
       if (!/IWMAC[ _]/.test(svg)) return none;
       var doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
@@ -29706,6 +29837,12 @@ if (typeof module !== 'undefined' && module.exports) {
     ovKindOf: iwdieOvKindOf,
     ovNativeCase: iwdieOvNativeCase,
     ovLegend: IWDIE_OV_LEGEND,
+    OV_LEGEND_ROWS: IWDIE_OV_LEGEND_ROWS,
+    ovLegendId: iwdieOvLegendId,
+    ovLegendGroup: iwdieOvLegendGroup,
+    ovLegendPaste: iwdieOvLegendPaste,
+    ovLegendFileSvg: iwdieOvLegendFileSvg,
+    ovLegendItem: iwdieOvLegendItem,
     OV_PALETTE: IWDIE_OV_PALETTE,
     OV_ROLE: IWDIE_OV_ROLE,
     cbFind: iwdieCbFind,
