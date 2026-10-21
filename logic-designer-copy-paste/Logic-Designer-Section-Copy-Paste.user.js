@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Logic Designer Section Copy/Paste
 // @namespace    https://logic-designer-section.local
-// @version      1.7.79
+// @version      1.7.83
 // @description  Copy/paste selected node subgraphs (with internal wires and variable bindings) in the iwmac logic designer.
 // @author       Henrik Monge
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -295,13 +295,14 @@ function buildSnapshot({ nodes, wires }) {
 
       // ─── User-editable keyboard shortcuts ──────────────────────────
       // Each shortcut: { key: 'w' (single lowercase char), label: 'W' (menu display) }.
-      // MULTIWIRE / REMOVE are unmodified canvas keys. PASTE_PLACE is a Ctrl chord.
+      // MULTIWIRE / REMOVE / QUICK_ADD are unmodified canvas keys. PASTE_PLACE is a Ctrl chord.
       // To rebind, change both `key` and `label` so the keyboard handler AND the
       // menu entry stay in sync. PASTE_PLACE additionally has `ctrl: true` so the
       // handler knows to treat it as a Ctrl chord.
       const SHORTCUTS = {
         MULTIWIRE:   { key: 'w', label: 'W' },
         REMOVE:      { key: 'r', label: 'R' },
+        QUICK_ADD:   { key: 's' }, // search box at the cursor; no menu entry
         PASTE_PLACE: { key: 'b', label: 'Ctrl+B', ctrl: true },
       };
 
@@ -4588,9 +4589,7 @@ function buildSnapshot({ nodes, wires }) {
             background: #eee;
             color: #333;
             border-color: #bbb;
-            overflow-x: auto;
-            overflow-y: hidden;
-            scrollbar-width: thin;
+            overflow: hidden;
           }
           .ldscp-menu-topbar .ldscp-menu-item {
             flex: 0 0 auto;
@@ -4603,7 +4602,6 @@ function buildSnapshot({ nodes, wires }) {
           .ldscp-menu-topbar .ldscp-menu-item:hover { background: #ddd; color: #222; }
           .ldscp-menu-topbar .ldscp-menu-item-kbd { display: none; }
           .ldscp-menu-topbar select { background: #f4f4f4 !important; }
-          .ldscp-menu-topbar::-webkit-scrollbar { height: 6px; }
           .ldscp-menu-topbar .ldscp-paste-tags-panel {
             position: fixed;
             background: #202020;
@@ -4782,6 +4780,56 @@ function buildSnapshot({ nodes, wires }) {
             pointer-events: none;
           }
           .ldscp-toast-error { background: rgba(140, 30, 30, 0.92); }
+          .ldscp-quick-add {
+            position: fixed;
+            z-index: 100001;
+            box-sizing: border-box;
+            width: 300px;
+            padding: 4px;
+            background: rgba(20, 20, 20, 0.96);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+            font: 13px/1.3 sans-serif;
+          }
+          .ldscp-quick-add input { box-sizing: border-box; width: 100%; padding: 6px 8px; font: inherit; }
+          .ldscp-quick-add-list { max-height: 260px; overflow-y: auto; }
+          .ldscp-quick-add-list:not(:empty) { margin-top: 4px; }
+          .ldscp-quick-add-list button {
+            display: block;
+            width: 100%;
+            padding: 5px 8px;
+            border: 0;
+            border-radius: 4px;
+            background: transparent;
+            color: #d4d4d4;
+            font: inherit;
+            font-weight: 600;
+            text-align: left;
+            cursor: pointer;
+          }
+          .ldscp-quick-add-list button:hover,
+          .ldscp-quick-add-list button[aria-selected="true"] { background: rgba(255, 255, 255, 0.12); color: #fff; }
+          .ldscp-quick-add-list small { display: block; font-weight: normal; opacity: 0.6; }
+          .ldscp-quick-add-doc {
+            position: absolute;
+            top: 0;
+            box-sizing: border-box;
+            width: 300px;
+            padding: 8px 10px;
+            background: rgba(20, 20, 20, 0.96);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+            color: #d4d4d4;
+          }
+          .ldscp-quick-add-doc b {
+            display: block;
+            margin-top: 8px;
+            color: #fff;
+            border-bottom: 1px dashed rgba(255, 255, 255, 0.3);
+          }
+          .ldscp-quick-add-doc b:first-child { margin-top: 0; }
           .ldscp-mode-banner {
             position: fixed;
             top: 14px;
@@ -5530,6 +5578,11 @@ function buildSnapshot({ nodes, wires }) {
           saveFloatingPosition();
         });
 
+        // Text labels the Top bar may hide (the icon stays; the button title keeps the name).
+        const fitLabels = [...menu.children].filter((item) => String(item.className).includes('ldscp-menu-item'))
+          .flatMap((item) => [...item.children].slice(1).filter((el) => el.tagName.toUpperCase() === 'SPAN'));
+        let tooNarrow = 0; // widest Top bar space where even the icons overflowed
+
         // ponytail: reuse the same buttons/poll; align with the user-probed native row.
         function applyToolbarLayout() {
           const toolbar = layout === 'top'
@@ -5548,7 +5601,7 @@ function buildSnapshot({ nodes, wires }) {
           const reference = controls[0];
           const top = reference ? Math.max(rect.top, reference.top + (reference.height - 40) / 2) : 0;
           const right = Math.min(rect?.right || 0, innerWidth, ...labels.map(r => r.left)) - 8;
-          const docked = !!reference && rect.height >= 40 && right - left >= 400;
+          const docked = !!reference && rect.height >= 40 && right - left >= 400 && right - left > tooNarrow;
           const floating = layout === 'free';
           const wasDocked = menu.classList.contains('ldscp-menu-topbar');
           menu.classList.toggle('ldscp-menu-topbar', docked);
@@ -5565,8 +5618,22 @@ function buildSnapshot({ nodes, wires }) {
           tagsPanel.style.left = docked ? left + 'px' : '';
           tagsPanel.style.top = docked ? top + 44 + 'px' : '';
           if (wasDocked !== docked) closeMenu();
+          // While Paste tags is open the actions are hidden, so keep the last fit.
+          const fitting = tagsPanel.style.display === 'none';
+          if (fitting) for (const label of fitLabels) label.hidden = docked;
           if (docked) {
             menu.hidden = false;
+            // ponytail: never scroll. Start icon-only, then show labels left to right while they fit.
+            if (fitting) {
+              if (menu.scrollWidth > menu.clientWidth) { // icons alone overflow: Corner button
+                tooNarrow = right - left; // ponytail: kept for the session; a font change needs a reload
+                return applyToolbarLayout();
+              }
+              for (const label of fitLabels) {
+                label.hidden = false;
+                if (menu.scrollWidth > menu.clientWidth) { label.hidden = true; break; }
+              }
+            }
             const size = menu.getBoundingClientRect();
             menu.style.top = Math.max(rect.top, reference.top + (reference.height - size.height) / 2) + 'px';
             tagsPanel.style.top = parseFloat(menu.style.top) + size.height + 4 + 'px';
@@ -5766,6 +5833,172 @@ function buildSnapshot({ nodes, wires }) {
       }
 
       // ═══════════════════════════════════════════════════════════════
+      //  Quick add (S) — search the left menu's blocks and processes from an
+      //  empty canvas spot. Adding sends the toolbox callback a menu click
+      //  sends, then moves the new block(s) to the cursor. Undo = paste undo.
+      // ═══════════════════════════════════════════════════════════════
+      const QuickAdd = (() => {
+        let box = null;
+
+        // Same entries the toolbox renders: system blocks allowed in this paper
+        // mode, plus process-library leaves (type "7") in function mode.
+        function catalog(tb, paper) {
+          const items = [];
+          for (const group of tb.system_blocks || []) {
+            for (const [id, block] of Object.entries(group.blocks || {})) {
+              if (!block.mode || block.mode === 'both' || block.mode === paper.mode) {
+                items.push({ id, label: block.alias_text || id, group: group.alias_text, doc: block.documentation });
+              }
+            }
+          }
+          const walk = (levels) => {
+            for (const level of levels || []) {
+              if (String(level.type) === '7' && level.eid in (paper.blocks || {})) {
+                items.push({ id: level.eid, label: level.title || level.eid, group: 'Process' });
+              }
+              walk(level.children);
+            }
+          };
+          if (paper.mode === 'function') walk(tb.user_blocks_hierarchy);
+          return items;
+        }
+
+        function close() {
+          if (!box) return;
+          document.removeEventListener('pointerdown', onOutside, true);
+          box.remove();
+          box = null;
+        }
+
+        function onOutside(event) {
+          if (!box.contains(event.target)) close();
+        }
+
+        function addAt(item, at, paper, tb) {
+          const before = new Set(Object.keys(paper.elements || {}));
+          try {
+            tb.callback({ id: tb.get_id(), action: 'select', value: item.id }); // what a menu click sends
+          } catch (err) {
+            console.error(`[${SCRIPT_NAME}] quick add failed:`, err);
+          }
+          const refs = Object.keys(paper.elements || {})
+            .filter((key) => /^\d+$/.test(key) && !before.has(key)).map(Number);
+          if (refs.length === 0) {
+            toast(`Could not add ${item.label}.`, 'error');
+            return;
+          }
+          if (at) {
+            // Blocks with required inputs arrive with helper blocks: keep their layout.
+            const positions = refs.map((ref) => HostAdapter.getNodePosition(ref));
+            const minX = Math.min(...positions.map((p) => p.x));
+            const minY = Math.min(...positions.map((p) => p.y));
+            refs.forEach((ref, i) => {
+              MoveObserver.suppressNextFor(ref); // placement is part of the add, not its own undo step
+              paper.__move_block(paper.elements[ref], at.x + positions[i].x - minX, at.y + positions[i].y - minY);
+            });
+          }
+          paper.changed = true;
+          undoHistory.push({ type: 'paste', timestamp: new Date().toISOString(), payload: { nodeRefs: refs } });
+        }
+
+        // Returns false (key left to the host) unless the cursor is on an empty canvas spot.
+        function open() {
+          if (box || MultiWireMode.isActive() || RemoveConnectorsMode.isActive() || GhostPasteMode.isActive()) return false;
+          const paper = W.logic_designer?.paper;
+          const tb = W.logic_designer?.toolbox;
+          const hit = lastCursorClient && document.elementFromPoint(lastCursorClient.x, lastCursorClient.y);
+          if (!tb?.system_blocks || !paper?.paper?.canvas?.contains(hit) || resolveBlockRefShared(hit) != null) return false;
+          const at = clientToSvgWorld(lastCursorClient);
+          const items = catalog(tb, paper);
+
+          // Own result list inside the box: the browser draws a <datalist> popup
+          // itself, and on this page it landed offset from the input.
+          const left = Math.min(lastCursorClient.x, window.innerWidth - 310);
+          box = document.createElement('div');
+          box.className = 'ldscp-quick-add';
+          box.style.left = `${left}px`;
+          box.style.top = `${Math.min(lastCursorClient.y, window.innerHeight - 320)}px`;
+          const input = document.createElement('input');
+          input.placeholder = 'Add block or process…';
+          input.autocomplete = 'off';
+          const list = document.createElement('div');
+          list.className = 'ldscp-quick-add-list';
+          // Documentation panel beside the box (on its left when the screen edge is near).
+          const doc = document.createElement('div');
+          doc.className = 'ldscp-quick-add-doc';
+          doc.hidden = true;
+          doc.style[left > window.innerWidth - 620 ? 'right' : 'left'] = 'calc(100% + 6px)';
+          list.addEventListener('mouseleave', () => { doc.hidden = true; });
+          box.append(input, list, doc);
+          document.body.appendChild(box);
+          document.addEventListener('pointerdown', onOutside, true);
+
+          let matches = [];
+          let active = 0;
+          const pick = (item) => {
+            close();
+            if (item) addAt(item, at, paper, tb);
+            else toast(`Nothing matches "${input.value.trim()}".`);
+          };
+          const highlight = () => [...list.children].forEach((row, i) => {
+            row.setAttribute('aria-selected', String(i === active));
+            if (i === active) row.scrollIntoView({ block: 'nearest' });
+          });
+          // Same sections as the host's Documentation dialog. Its texts may hold HTML
+          // (e.g. <b>); parsed inertly and shown as plain text.
+          const plain = (html) => new DOMParser().parseFromString(String(html), 'text/html').body.textContent;
+          const showDoc = (item) => {
+            doc.hidden = !item.doc;
+            if (!item.doc) return; // processes have no documentation
+            const { logics, inputs, outputs } = item.doc;
+            const pins = (texts, none) => (texts?.length ? texts.map((text, i) => `#${i + 1}: ${plain(text)}`) : [none]);
+            doc.replaceChildren();
+            for (const [title, lines] of [['Block Name', [item.label]], ['Logics', [plain(logics || '')]],
+              ['Inputs', pins(inputs, 'No inputs')], ['Outputs', pins(outputs, 'No outputs')]]) {
+              doc.appendChild(document.createElement('b')).textContent = title;
+              for (const line of lines) doc.appendChild(document.createElement('div')).textContent = line;
+            }
+          };
+          // ponytail: substring match, every match rendered; rank or cap if a big process library feels slow.
+          input.addEventListener('input', () => {
+            const query = input.value.trim().toLowerCase();
+            matches = query ? items.filter((item) => `${item.label} ${item.group} ${item.id}`.toLowerCase().includes(query)) : [];
+            active = 0;
+            doc.hidden = true;
+            list.replaceChildren(...matches.map((item) => {
+              const row = document.createElement('button');
+              row.type = 'button';
+              row.addEventListener('mouseenter', () => showDoc(item));
+              const group = document.createElement('small');
+              group.textContent = item.group;
+              row.append(item.label, group);
+              row.addEventListener('click', () => pick(item));
+              return row;
+            }));
+            highlight();
+          });
+          input.addEventListener('keydown', (event) => {
+            event.stopPropagation(); // keep the host's canvas shortcuts out of the search box
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              close();
+            } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              active = Math.max(0, Math.min(matches.length - 1, active + (event.key === 'ArrowDown' ? 1 : -1)));
+              highlight();
+            } else if (event.key === 'Enter' && input.value.trim()) {
+              event.preventDefault();
+              pick(matches[active]);
+            }
+          });
+          input.focus();
+          return true;
+        }
+
+        return { open };
+      })();
+
+      // ═══════════════════════════════════════════════════════════════
       //  Keyboard shortcuts (Ctrl/Cmd + C / V on the canvas)
       // ═══════════════════════════════════════════════════════════════
 
@@ -5837,6 +6070,10 @@ function buildSnapshot({ nodes, wires }) {
             if (k === SHORTCUTS.REMOVE.key) {
               event.preventDefault();
               RemoveConnectorsMode.toggle();
+              return;
+            }
+            if (k === SHORTCUTS.QUICK_ADD.key) {
+              if (QuickAdd.open()) event.preventDefault();
               return;
             }
           }
