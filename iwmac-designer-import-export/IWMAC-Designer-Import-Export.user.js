@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.101.0
+// @version      1.101.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -21360,10 +21360,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       var font = '"Source Sans 3","Segoe UI",Roboto,Arial,sans-serif';
       var css = [
-        // the title in VectorCraft's bar, after Help, as its own titles are: 13 px, the bar's text colour, the hover fill
-        '.iwdie-vcm{position:fixed;left:419px;top:4px;height:24px;padding:0 6px;box-sizing:border-box;border-radius:3px;z-index:2147483646;',
-        '  font:400 13px/24px ' + font + ';color:#d1d1d1;cursor:default;-webkit-user-select:none;user-select:none}',
-        '.iwdie-vcm:hover,.iwdie-vcm.iwdie-on{background:#606060;color:#ffffff}',
+        // the title in VectorCraft's bar, after Help, as its own titles are (measured on 0.14.0, v1.101.1): 13 px in their
+        // text colour, its first letter 12 px after Help's last, as theirs are apart; no fill on hover, and while its menu
+        // is open the box an open title has - 3 px either side of the word, 4 px corners. 0.14.0 set its titles wider than
+        // 0.11.0, so at 419 px the word stood against Help
+        '.iwdie-vcm{position:fixed;left:430px;top:4px;height:23px;padding:0 3px;box-sizing:border-box;border-radius:4px;z-index:2147483646;',
+        '  font:400 13px/22px ' + font + ';color:#e3e8f0;cursor:default;-webkit-user-select:none;user-select:none}',
+        '.iwdie-vcm.iwdie-on{background:#353c49}',
         // its menus as VectorCraft's: the panel colour, a 1 px border, 6 px corners and margin, the popup shadow
         '.iwdie-vcm-m{position:fixed;z-index:2147483646;min-width:230px;max-height:calc(100vh - 40px);overflow-y:auto;padding:6px;box-sizing:border-box;',
         '  background:#535353;border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);',

@@ -501,6 +501,20 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The IWMAC title in VectorCraft 0.14.0's menu bar, spaced as its own titles are (v1.101.1)
+
+Thomas, with a screenshot of the bar: *make spacing better*. VectorCraft 0.14.0 sets its menu titles a little wider
+than 0.11.0 did, so *Help* now ends at x 422 instead of 410, and the IWMAC title, fixed at 419 px, stood against it.
+0.14.0 also draws a darker bar (`#1b1f27`) with near-white titles (`#e3e8f0`), no fill on hover, and a `#353c49` box
+with 4 px corners round a title whose menu is open. The title now follows that:
+- It stands at 430 px, so its first letter is 12 px after Help's last, as Window and Help are apart. With 3 px either
+  side and 23 px of height, its open box is the size of an open title's.
+- Its text is in the titles' colour. A hover adds nothing, and the open box is theirs.
+
+Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC stand 11, 12 and 12 px apart, and IWMAC's
+capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
+Designer.
+
 ### A .ai without PDF content: the right words, tabs where Illustrator set them, opacity as it is (v1.101.0)
 
 Measured on the house's own library of 105 Illustrator templates (2026-10-22): each opened in Illustrator and exported
