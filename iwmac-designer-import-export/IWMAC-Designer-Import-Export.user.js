@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.103.0
+// @version      1.104.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.103.0';
+var IWDIE_VERSION = '1.104.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -251,7 +251,7 @@ var IWDIE_PANEL_SCHEMA = [
   { field: 'containers', type: 'array of containers', required: 'yes', meaning: 'Grouped objects (table rows, room cards). [] on most panels. See schema.container.', example: '[]' },
   { field: 'graphics', type: 'array', required: 'yes', meaning: 'Opaque host graphics records. Preserve verbatim; never author one; [] on almost every panel.', example: '[]' },
   { field: 'converted', type: 'string', required: 'no', allowed: '"true"', meaning: 'Present as "true" when a background picture is embedded in image_data.', example: 'true' },
-  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'AI-authored background artwork: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert draws it into the panel\'s picture as a sync from VectorCraft does - a PNG that keeps the drawing, uploaded to the plant\'s pictures - so Edit in VectorCraft opens its layers and Background → Illustrator writes them as an .ai; Export hands it back here, stamped data-iwdie-drawing. Author one when the plant has no picture of its own: the picture of a Maskin, Oversikt or Energi, and on a Ventilasjon only what no Designer object makes (a component without an object, a custom duct or connection) with the grey column from x 1150; never on curve, list or room-control panels, and never as a replacement for a supplied picture, which is copied verbatim. Every element a Designer object fits is that object, not a drawing. See drawing_style for how the house draws ducts, zones and the exchanger.', example: '<svg viewBox="0 0 1400 750" ...>' }
+  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'AI-authored background artwork: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert draws it into the panel\'s picture as a sync from VectorCraft does - a PNG that keeps the drawing, uploaded to the plant\'s pictures - so Edit in VectorCraft opens its layers and Background → Illustrator writes them as an .ai; Export hands it back here, stamped data-iwdie-drawing. Author one only when the plant has none: on Maskin, Oversikt or Energi; on Ventilasjon only for what no object makes, with the grey column from x 1150; never on curve, list or room-control panels, nor to replace a supplied picture, which is copied verbatim. What a Designer object fits is that object. See drawing_style for how the house draws ducts, zones and the exchanger.', example: '<svg viewBox="0 0 1400 750" ...>' }
 ];
 
 /** One row per top-level key of the export file, in file order. */
@@ -755,7 +755,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       'Copy the geometry of a real export of the same panel type when you have one - the one supplied, else a reference export from your knowledge base: positions, sizes, zIndex and object vocabulary, with only the plant-specific content replaced. With none to copy, build from layout (where things go, in measured pixels), signal_to_object (which object a parameter row wants) and parameter_selection (which rows belong on a panel at all) - and say in your answer that the geometry is derived, not cloned.',
       'Set panel.plant_id and source_plant_id to the target plant number when the file is for one plant, or "" for a reusable template; set generator and panel.saved_by to your agent name.',
       'Link from the parameter source when it is supplied (linking); otherwise leave every object unlinked with a descriptive alias_text and say so in your answer.',
-      'A production panel sits on a drawing. Copy the plant\'s own background when it has one, byte for byte; never redraw it. When the plant has none, author image_svg to the construction in drawing_style and overview.style, with a Designer object for every element one fits: the picture of a Maskin, Oversikt or Energi; on a Ventilasjon, whose ducts, dampers, coils and fans are objects, only what no object makes (a component without one, a custom duct or connection) over the grey column from x 1150. Never for a curve, list or room-control panel.',
+      'A production panel sits on a drawing. Copy the plant\'s own background when it has one, byte for byte; never redraw it. When it has none, author image_svg to drawing_style and overview.style, a Designer object for every element one fits: on Maskin, Oversikt or Energi the picture; on Ventilasjon (ducts, dampers, coils, fans are objects) only what no object makes. Never for a curve, list or room-control panel.',
       'Leave containers and graphics as [] unless the panel type is container-built (list panels, room-control tables); then clone the container structure from a reference export.'
     ],
     object_catalogue: IWDIE_OBJECT_CATALOGUE,
@@ -1370,7 +1370,7 @@ var IWDIE_QUICK_START = [
   '2. Every object has the same 17 fields (schema.object_entry); a new unlinked one uses linking.unlinked_new_object.',
   '3. obj_id only from object_catalogue or copied from an object of a supplied export; never invent one.',
   '4. Which object a parameter row wants: signal_to_object. Where it goes: layout. Which rows belong on a panel at all: parameter_selection.',
-  '5. The picture is the plant\'s own background, copied byte for byte. When the plant has none, author panel.image_svg on Maskin, Oversikt and Energi, and on Ventilasjon only for what no Designer object makes (its ducts, fans, dampers and coils are objects); never on curve, list or room-control panels. Native objects first: whatever a Designer object fits, and whatever shows a signal, is an object over the picture.',
+  '5. The picture is the plant\'s own background, copied byte for byte. When the plant has none, author panel.image_svg on Maskin, Oversikt and Energi, on Ventilasjon only for what no object makes; never on curve, list or room-control panels. Whatever a Designer object fits, and whatever shows a signal, is an object over the picture.',
   '6. tag_text is what the operator reads (caption_conventions); alias_text is the signal, and the key a linker matches.',
   '7. Link only by copying driver_id, unit_id and alias_text from one row of the plant parameter source - overview.parameters or overview.signals in an export, or the parameter export; otherwise leave driver_id "driver_id" and linked "false".',
   '8. zIndex: copy the band of the same role from this file. Ventilasjon uses 5 ducts and headers, 40 equipment, 110 values, 375 bells, LEDs and pumps, 1100 labels; Maskin puts its values at 1100; Oversikt uses 110 for values and 375 for its symbols. Never carry bands across panel types.',
@@ -2106,17 +2106,17 @@ var IWDIE_COMMON_MISTAKES = [
 
 var IWDIE_DRAWING_STYLE = {
   canvas: '1400 x 750 on a standard panel. Ventilasjon and Maskin keep x 1145-1400 for the settings or information column and the drawing left of it; an Oversikt plan uses the full width.',
-  scope: 'For a picture you are asked to draw on a type that has artwork. This plant\'s own colours, pipes, pills and text are in overview.style: use them first. duct, duct_colours, zone_box, exchanger and settings_band are the Ventilasjon house construction, for a drawn Ventilasjon picture the user asks for or the plant already has.',
+  scope: 'For a picture you are asked to draw on a type that has artwork. This plant\'s own colours, pipes, pills and text are in overview.style: use them first. duct, duct_colours, zone_box, exchanger and settings_band are the Ventilasjon construction, for what its objects do not make.',
   layers: 'Top-level groups, each a layer when the panel is edited in VectorCraft: <g id="Bakgrunn" data-name="Bakgrunn"> (ground, panels), <g id="Ror" data-name="Rør"> (pipes, ducts), Former (equipment, boxes), Tekst (fixed text). An export\'s overview.style has this plant\'s own colours, pipe widths, pills and text.',
   editable: 'Every element at the top is one of those groups, with an id and no opacity, filter or mask: one thing loose there and VectorCraft opens the whole drawing as one layer. Each piece of equipment is a group with its own id beside its data-name (VectorCraft names only what has an id), or a house symbol. Text stays <text>, never outlines; hide with display="none"; an arrowhead is a path, not a marker; declare xmlns:xlink if you write xlink:href. Insert then makes the drawing the panel\'s picture as a sync from VectorCraft does, so it stays vectors in VectorCraft and in Illustrator.',
-  duct: 'Not a solid bar: a WHITE casing 16 wide with round caps, and a 2 wide coloured core on the same centre line. Draw both from one path so they stay together.',
-  duct_colours: { avtrekk: '#F3C96A', tilluft: '#F79E7A', uteluft: '#B0E0EF' },
+  duct: 'Not a solid bar: a WHITE casing 18 wide, square ends and corners, and a 4 wide coloured core on the same centre line, as the Designer\'s duct objects are. Draw both from one path.',
+  duct_colours: { avtrekk: '#F7DE87', tilluft: '#FFB193', uteluft: '#C4EAED' },
   zone_box: 'Rounded rectangle, fill #CDD2D7, white border 5 wide, rx 16. One per zone at the end of the runs.',
   exchanger: 'Rounded pill, fill #CED1D2 with a #A6A6A9 hairline, a white inner pill 3 wide inset 8, and a grey triangle at each end. Place it across both runs.',
   settings_band: '#CDD2D7 at about half opacity behind the settings column.',
-  in_the_artwork: 'Pipes, equipment outlines and frames that show no signal, zone boxes, flow arrows, enclosures and fixed picture text (Tekst layer). On Maskin: pipes, compressors, the gas cooler with its fan circles, valve symbols with their tags, empty pills.',
-  symbols: 'On Maskin, place the house symbols rather than drawing them: <use data-iwdie-symbol="Kompressor" x="120" y="80"/> in Former, width and height to fit a box, data-iwdie-turn="90" to turn it. overview.parts.components.symbols lists those the plant\'s library has (Kompressor, Gaskjøler4Lav, BeholderNivå, Ventil, Motorventil, Pil, Føler, KjølGrader, PilleMørk...). Insert draws each from the library kept in the browser; a name it lacks becomes a red dashed box. Join each pipe at a symbol\'s port (the ports column there): [u, v, way] at turn 0, the pipe ending at x + u * width, y + v * height. A picture already drawn so lists its symbols and its layout in overview.picture (symbols, layout): add in its rows, at their spacing, with values where its values stand.',
-  stays_objects: 'Whatever shows or sets a signal: values, setpoints, state strips, LEDs, alarm bells, and the fans, pumps, filters, dampers and valves that are linked. A caption is fixed picture text or a label object, never both.',
+  in_the_artwork: 'Pipes, equipment outlines and frames that show no signal, zone boxes, flow arrows, enclosures and fixed picture text (Tekst layer). On Maskin: pipes, the gas cooler with its fan circles, vessels, valve symbols with their tags, empty pills.',
+  symbols: 'On Maskin, place the house symbols rather than drawing them: <use data-iwdie-symbol="Gaskjøler4Lav" x="120" y="80"/> in Former, for equipment no Designer object fits (a compressor is V3_co2_compressor_31x35_nrm), width and height to fit a box, data-iwdie-turn="90" to turn it. overview.parts.components.symbols lists those the plant\'s library has (Kompressor, Gaskjøler4Lav, BeholderNivå, Ventil, Motorventil, Pil, Føler, KjølGrader, PilleMørk...). Insert draws each from the library kept in the browser; a name it lacks becomes a red dashed box. Join each pipe at a symbol\'s port (the ports column there): [u, v, way] at turn 0, the pipe ending at x + u * width, y + v * height. A picture already drawn so lists its symbols and its layout in overview.picture (symbols, layout): add in its rows, at their spacing, with values where its values stand.',
+  stays_objects: 'Whatever shows or sets a signal: values, setpoints, state strips, LEDs, alarm bells, and the fans, pumps, filters, dampers and valves that are linked; and every element a Designer object fits (a compressor, a case box), linked or not. A caption is fixed picture text or a label object, never both.',
   never: 'No fake numbers, no drawn bells or LEDs, no text where a label object belongs, no dark fills except a setpoint pill (overview.style.pills).'
 };
 
@@ -2310,7 +2310,7 @@ function iwdieBuildAiFixPrompt(parsed, errors, facts, improvised) {
   L.push('- "counts" must equal the real array lengths.');
   L.push('- The canvas is 1400 x 750. Objects outside it are not visible.');
   L.push('- Every file the userscript exports carries an "ai_guide" with the complete field-by-field contract, the linking rules and worked examples — read it and follow it. You may keep or omit "ai_guide" and "summary" in your answer; never edit them.');
-  L.push('- A panel sits on a drawing: copy the plant\'s own background when it has one, byte for byte. When the plant has none, author "image_svg" for a Maskin, Oversikt or Energi, and for a Ventilasjon only what no Designer object makes (its ducts, fans, dampers and coils are objects; the drawing carries the grey column from x 1150); never for a curve, list or room-control panel. Native objects first: every element a Designer object fits is that object, and whatever shows or sets a signal stays an object.');
+  L.push('- A panel sits on a drawing: copy the plant\'s own background when it has one, byte for byte. When it has none, author "image_svg" for a Maskin, Oversikt or Energi, for a Ventilasjon only what no object makes (with the grey column from x 1150); never for a curve, list or room-control panel. Whatever a Designer object fits, and whatever shows or sets a signal, stays an object.');
   L.push('');
   L.push('Return the corrected JSON file and nothing else.');
   return L.join('\n');
@@ -12800,6 +12800,13 @@ function iwdieVcEditFileReview(doc, here, fileName, extra, opts) {
  *  light blue, freezer cases and freezer rooms dark blue, the rooms that are no cooling position light grey. */
 var IWDIE_OV_PALETTE = { cold: '#b0e0ef', freezer: '#8eb2d1', heated: '#f3c96a', room: '#e4e7ea' };
 
+/** The arrangements' pieces that are plain rectangles, fill only (oversikt.py's RECT_PIECES; the v6 template's Disk 68.6 x
+ *  28.9, Gavl 59.8 x 28.6, DiskKort 58 x 27.3, DiskSmal 65 x 21 and OvalDisk 25 x 66.5, each a 4-point path): a case that is
+ *  one of them is the Designer's own case box, native first (Thomas, 2026-10-22). The round, oval, angled and curved
+ *  pieces and the checkouts no box reproduces stay drawn. */
+var IWDIE_OV_RECT_PIECES = ['KjølDisk', 'FrysDisk', 'KjølGavl', 'FrysGavl', 'KjølDiskKort', 'FrysDiskKort', 'KjølDiskSmal',
+  'FrysDiskSmal', 'KjølOvalDisk', 'FrysOvalDisk'];
+
 /** A case's cluster (oversikt.py's ROLE): each role's object kind, its width and its height. */
 var IWDIE_OV_ROLE = {
   value: ['number_v3_40px_no_conn_no_tag', 42, 22], alarm: ['V3_R_34px_circular_alarm_nrm', 34, 34],
@@ -13250,6 +13257,8 @@ function iwdieOvFillKind(fill) {
  *             Oversikt pictures draw it: one group of named rows in Tekst (v1.100.0), its right edge on the panel's
  *  An arrangement's symbol op takes `cases` (v1.84.0): its cases in the order of its names, each a name or {label,
  *  roles, caption}, null for none - each with its cluster - or `clusters: true` for clusters under the template's names.
+ *  (2026-10-22, native first as oversikt.py) A case that is one plain rectangular module (IWDIE_OV_RECT_PIECES) is the
+ *  Designer's own case box, and the arrangement draws its other pieces only (`native: false` on the op or a case: drawn).
  *  A place (`at`) is {x, y} (its top left), {cx, cy} (its centre), or {near: target, side: right|left|above|below, gap?,
  *  align?: start|center|end}; `free: true` moves it to the nearest free place. A target is {cid} or {ref} (one placed
  *  earlier in the same edit) - or, written where no cid is known (v1.69.0), {object: name} or {find: {...}}, made cids
@@ -13331,7 +13340,8 @@ function iwdieCbPlan(ops, scene, ctx) {
     if (iwdieSymIsObject(real)) {
       notes.push('op ' + (i + 1) + ': ' + real + ' is what an IWMAC object shows on a live panel; placed as drawing all the same');
     }
-    steps.push({ 'do': 'add', kind: 'symbol', name: real, box: box, k: k, ref: ref, op: i });
+    var symStep = { 'do': 'add', kind: 'symbol', name: real, box: box, k: k, ref: ref, op: i };
+    steps.push(symStep);
     boxes.push(box);
     keep(ref, { box: box, symbol: real, k: k });
     addLabel(label, box, i);
@@ -13339,7 +13349,7 @@ function iwdieCbPlan(ops, scene, ctx) {
     // roles, caption} (null leaves one out), or `clusters: true` under the template's names - their names and clusters
     // placed with every other case's, the names where the template writes them first
     if (grp && (Array.isArray(o.cases) || o.clusters === true)) {
-      var gp = iwdieSymGroupPlace(grp, box, k), named = {};
+      var gp = iwdieSymGroupPlace(grp, box, k), named = {}, boxed = [];
       gp.names.forEach(function (n, j) {
         var e = Array.isArray(o.cases) ? o.cases[j] : grp.text, pc = gp.pieces[n.slot];
         if (e === null || e === undefined || e === false || !pc) return;
@@ -13348,6 +13358,17 @@ function iwdieCbPlan(ops, scene, ctx) {
         if (cro === false) return;
         // its box to the pixel, as oversikt.py takes a piece's
         var pb = [iwdieOvRhu(pc.x), iwdieOvRhu(pc.y), Math.max(1, iwdieOvRhu(pc.w)), Math.max(1, iwdieOvRhu(pc.h))];
+        // (2026-10-22) native first, as oversikt.py: a case that is one plain rectangular module of the template is the
+        // Designer's own case box at the module's place - its kind the case's own, else the arrangement's - and the module
+        // is left out of the drawing; a round, oval, angled or curved piece stays the template's (native: false draws all)
+        var pk = ce.kind !== undefined ? iwdieOvKindOf(ce.kind) : /^frys/i.test(grp.name) ? 'freezer' : 'cold';
+        var nat = IWDIE_OV_RECT_PIECES.indexOf(pc.name) >= 0 && o.native !== false && ce.native !== false ? iwdieOvNativeCase(pk, pb[2], pb[3]) : '';
+        if (nat) {
+          var nb = { x: pb[0], y: pb[1], w: pb[2], h: pb[3] };
+          steps.push({ 'do': 'add', kind: 'object', obj_id: nat, box: nb, bind: '', text: ' ', ovCase: true, op: i });
+          boxes.push(nb);
+          boxed.push(n.slot);
+        }
         ov.cases.push({ key: ck, box: pb, roles: cro, label: ce.label || grp.text, caption: ce.caption, wall: ce.wall,
           nameAt: { x: n.x, y: n.y, just: n.just }, op: i, ref: ce.ref });
         ov.all.push([ck, pb]);
@@ -13356,6 +13377,9 @@ function iwdieCbPlan(ops, scene, ctx) {
       });
       // its other pieces (an angled run's corners, a checkout) lie in no cluster's way
       gp.pieces.forEach(function (pc, slot) { if (!named[slot]) ov.plugs.push([pc.x, pc.y, pc.x + pc.w, pc.y + pc.h, 'piece:grp' + (i + 1)]); });
+      // the drawing draws the pieces no case box stands for; an arrangement of plain modules alone draws nothing
+      if (boxed.length >= gp.pieces.length) steps.splice(steps.indexOf(symStep), 1);
+      else if (boxed.length) symStep.without = boxed.sort(function (a, b) { return a - b; });
       return box;
     }
     // an arrangement's cases named (v1.75.0): a label object where the template writes each name - the names given in the
@@ -13684,7 +13708,8 @@ function iwdieCbClassify(d) {
     it.kind = 'symbol'; it.symbol = sym; it.k = parseInt(a['data-iwdie-k'], 10) || 0;
     if (a['data-iwdie-missing']) it.missing = true;
     var grp = iwdieSymGroup(sym);
-    if (grp) it.group = grp.pieces.length;
+    // (2026-10-22) less the pieces the Designer's own case boxes stand for (data-iwdie-without)
+    if (grp) it.group = grp.pieces.length - String(a['data-iwdie-without'] || '').split(/[\s,]+/).filter(Boolean).length;
     return it;
   }
   var fill = String(a.fill || '').toLowerCase(), stroke = String(a.stroke || '').toLowerCase();
@@ -13763,8 +13788,10 @@ function iwdieCbMarkup(s, cid, looks, used) {
   var f = iwdieDrawFmt, esc = iwdieDrawEsc, c = ' data-iwdie-cid="' + esc(cid) + '"';
   if (s.kind === 'symbol') {
     var deg = (s.k & 3) * 90;
+    // (2026-10-22) an arrangement whose plain modules are case boxes: the pieces it leaves out (iwdieSymExpandGroups)
+    var wo = Array.isArray(s.without) && s.without.length ? ' data-iwdie-without="' + s.without.join(' ') + '"' : '';
     return '<use data-iwdie-symbol="' + esc(s.name) + '" x="' + f(s.box.x) + '" y="' + f(s.box.y) + '" width="' + f(s.box.w) + '" height="' + f(s.box.h) + '"' +
-      (deg ? ' data-iwdie-turn="' + deg + '"' : '') + (s.k & 4 ? ' data-iwdie-flip="1"' : '') + c + '/>';
+      (deg ? ' data-iwdie-turn="' + deg + '"' : '') + (s.k & 4 ? ' data-iwdie-flip="1"' : '') + wo + c + '/>';
   }
   if (s.kind === 'object') {
     var base = iwdieVcObjects(looks || null).filter(function (o) { return o.id === s.obj_id; })[0], o = {};
@@ -14530,9 +14557,13 @@ function iwdieSymExpandGroups(svg) {
     out += s.slice(from, r.at);
     from = r.end;
     var g = iwdieSymGroup(r.name), pl = iwdieSymGroupPlace(g, { x: r.x, y: r.y, w: r.w, h: r.h }, r.k);
+    // (2026-10-22) the pieces the Designer's own case boxes stand for are left out (data-iwdie-without, the bridge's plan)
+    var wo = (r.without || []).filter(function (v) { return v >= 0 && v < pl.pieces.length; });
     out += '<g id="' + esc(iwdieVcSvgId(r.id || g.name, used)) + '" data-name="' + esc(g.name) + '" data-iwdie-symbol="' + esc(g.name) +
-      '" data-iwdie-group="' + esc(g.name) + '" data-iwdie-k="' + r.k + '"' + (r.cid ? ' data-iwdie-cid="' + esc(r.cid) + '"' : '') + '>' +
-      pl.pieces.map(function (p) {
+      '" data-iwdie-group="' + esc(g.name) + '" data-iwdie-k="' + r.k + '"' + (wo.length ? ' data-iwdie-without="' + wo.join(' ') + '"' : '') +
+      (r.cid ? ' data-iwdie-cid="' + esc(r.cid) + '"' : '') + '>' +
+      pl.pieces.map(function (p, slot) {
+        if (wo.indexOf(slot) >= 0) return '';
         var deg = (p.k & 3) * 90;
         return '<use data-iwdie-symbol="' + esc(p.name) + '" x="' + f(p.x) + '" y="' + f(p.y) + '" width="' + f(p.w) + '" height="' + f(p.h) + '"' +
           (deg ? ' data-iwdie-turn="' + deg + '"' : '') + (p.k & 4 ? ' data-iwdie-flip="1"' : '') + '/>';
@@ -14722,8 +14753,10 @@ function iwdieSymRefs(svg) {
     var turn = Math.round((parseFloat(attr(a, 'data-iwdie-turn')) || 0) / 90) % 4;
     if (turn < 0) turn += 4;
     var flip = /^(1|true|x|yes)$/i.test(attr(a, 'data-iwdie-flip'));
+    // (2026-10-22) an arrangement's pieces the Designer's own case boxes stand for, left out of its drawing
+    var without = attr(a, 'data-iwdie-without').split(/[\s,]+/).filter(Boolean).map(Number).filter(function (v) { return isFinite(v); });
     out.push({ name: m[3].trim(), x: num('x'), y: num('y'), w: Math.max(0, num('width')), h: Math.max(0, num('height')),
-      k: turn + (flip ? 4 : 0), id: attr(a, 'id'), cid: attr(a, 'data-iwdie-cid'), at: m.index, end: end });
+      k: turn + (flip ? 4 : 0), id: attr(a, 'id'), cid: attr(a, 'data-iwdie-cid'), without: without, at: m.index, end: end });
     re.lastIndex = end;
   }
   return out;

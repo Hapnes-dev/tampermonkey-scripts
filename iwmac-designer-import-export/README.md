@@ -531,6 +531,27 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### The bridge's arrangements as case boxes, and drawn ducts the duct objects' measure (v1.104.0)
+
+Native first in the bridge too (Thomas, 2026-10-22), as Copilot's `oversikt.py` does it:
+
+- **An Oversikt arrangement's plain modules are the Designer's own case boxes.** The bridge's `symbol` op for an
+  arrangement with `cases` (an island, a row, a front run) placed every module as drawing. Each case that is one plain
+  rectangular module of the template - Disk, Gavl, DiskKort, DiskSmal, OvalDisk, cold or freezer
+  (`IWDIE_OV_RECT_PIECES`) - is now the case box `oversikt.py` gives it, at the module's place, with its cluster; the
+  arrangement draws only the pieces no box reproduces (round, angled and curved pieces, checkouts), and nothing when
+  every piece is a box. The drawing records what it leaves out (`data-iwdie-without`), so Insert, the check and Edit
+  in VectorCraft draw the same. `native: false` on the op or on a case draws the module as before.
+- **The drawing guide's ducts** (`drawing_style.duct`): a white casing 18 wide with square ends and corners and a 4 wide
+  core in the duct objects' own colours (supply `#ffb193`, exhaust `#f7de87`, fresh `#c4eaed`), measured on the
+  Designer's own duct icons, so a duct drawn on a Ventilasjon meets the objects without a step. It said 16 wide with
+  round caps and a 2 wide core in the house's colours.
+- **The guide's Maskin advice**: a compressor is the Designer's compressor object, not a drawn symbol; the house
+  symbols are for the equipment no object fits, and a symbol for the same thing gives only its box and ports.
+- Checked with the kit's bridge tests (`test-claude-bridge.js`: an island's three boxes and the pieces it leaves out,
+  a fully boxed island drawing nothing, `native: false`) and its comparison with `oversikt.py` (17 case boxes more on
+  each side). Not run in the live Designer.
+
 ### Native objects first, and a drawing on a Ventilasjon for what no object makes (v1.103.0)
 
 Thomas's rule for the pictures an AI makes (2026-10-22): every element a Designer object fits is that object, and
