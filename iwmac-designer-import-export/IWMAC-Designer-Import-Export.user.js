@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.100.0
+// @version      1.101.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.100.0';
+var IWDIE_VERSION = '1.101.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6259,8 +6259,8 @@ function iwdieAiTdParse(u8) {
  *  ruler origin that puts that space on the art's. `text`: the native art. -> {fonts: [PostScript names],
  *  stories: [{text, runs: [{len, font, size, fill, stroke, stw}], frames: [{frame, runs: [{x, y, adv, from, count}]}]}],
  *  frames: [[a, b, c, d, e, f]], ruler: [x, y]} or null */
-function iwdieAiTextDoc(text) {
-  var at = text.indexOf('/AI11TextDocument');
+function iwdieAiTextDoc(text, key) {
+  var at = text.indexOf(key || '/AI11TextDocument');
   if (at < 0) return null;
   var lineEnd = text.indexOf('\n', at), stop = text.indexOf('~>', lineEnd);
   if (lineEnd < 0 || stop < 0) return null;
@@ -6359,7 +6359,7 @@ function iwdieAiTextDoc(text) {
     });
     return story;
   });
-  return { fonts: fonts, stories: stories, frames: frames, ruler: rm ? [+rm[1], +rm[2]] : [0, 0] };
+  return { fonts: fonts, stories: stories, frames: frames, ruler: rm ? [+rm[1], +rm[2]] : [0, 0], ownRuler: !!rm };
 }
 
 /** The gradients a .ai's native art defines (v1.86.0): by name, linear or radial, and their stops - where each is
@@ -6519,8 +6519,10 @@ function iwdieAiArtRange(text, from, to, inDef) {
     if (inSym) continue;
     var trimmed = line.trim();
     if (inText) {
-      var fi = /^(-?\d+)\s+\/FrameIndex/.exec(trimmed), si = /^(-?\d+)\s+\/StoryIndex/.exec(trimmed);
+      var fi = /^(-?\d+)\s+\/FrameIndex/.exec(trimmed), si = /^(-?\d+)\s+\/StoryIndex/.exec(trimmed), fu = /^(-?\d+)\s+\/FreeUndo/.exec(trimmed);
       if (fi && textItem) textItem.frame = +fi[1];
+      // (v1.101.0) 1: its story is in the undo-free text document (a symbol instance's own art, a styled text's copy)
+      if (fu && textItem && +fu[1] === 1) textItem.free = true;
       if (si && textItem) textItem.story = +si[1];
       if (/:\s*$/.test(trimmed)) inText++;
       else if (/^;/.test(trimmed) && --inText === 0) { if (textItem) { add(textItem); done1(textItem); } textItem = null; }
@@ -6596,9 +6598,10 @@ function iwdieAiArtRange(text, from, to, inDef) {
         }
         case 'XW': {
           // the parts of an object with an appearance: 9 its art ends, 6 its source art begins
-          // 6: the end of the block of the object before's own attributes - an opacity there is that object's
+          // 6: the end of the block of the object before's own attributes - an opacity there is that object's, and
+          // (v1.101.0) stays the state for what follows, as any Xy does: Illustrator writes the next change itself
           if (L >= 1 && n[0] === 6 && trail) {
-            if (trail.xy && trail.obj) { trail.obj.op = trail.xy.op; trail.obj.blend = trail.xy.blend; st.op = trail.op; st.blend = trail.blend; }
+            if (trail.xy && trail.obj) { trail.obj.op = trail.xy.op; trail.obj.blend = trail.xy.blend; }
             trail = null;
           }
           break;
@@ -6754,6 +6757,10 @@ function iwdieAiCssFont(ps) {
 function iwdieAiArtSvg(text, opts) {
   opts = opts || {};
   var art = iwdieAiArtTree(text), td = iwdieAiTextDoc(text), grads = iwdieAiGradients(text);
+  // (v1.101.0) the undo-free text document, which `1 /FreeUndo` objects index: its frames on the main one's ruler
+  var tdFree = iwdieAiTextDoc(text, '/AI11UndoFreeTextDocument');
+  if (tdFree && td && !tdFree.ownRuler) tdFree.ruler = td.ruler;
+  var tdOf = function (it) { return it && it.free ? tdFree : td; };
   var b = art.board || { x0: 0, y0: 0, x1: 1400, y1: 750 }, W = b.x1 - b.x0, H = b.y1 - b.y0;
   var useDepth = 0, useBox = null, f = iwdieDrawFmt, esc = iwdieDrawEsc, used = {}, defs = [], counts = { paths: 0, texts: 0, pictures: 0, gradients: 0, clips: 0, layers: 0 }, left = {};
   var cmyk = opts.cmyk || iwdieCmykSwop;
@@ -6830,6 +6837,7 @@ function iwdieAiArtSvg(text, opts) {
   };
   var named = function (name) { return name ? ' id="' + esc(iwdieVcSvgId(name, used)) + '" data-name="' + esc(name) + '"' : ''; };
   var textSvg = function (it) {
+    var td = tdOf(it);
     if (!td || it.story < 0) { left.text = 1; return ''; }
     var story = td.stories[it.story];
     if (!story) { left.text = 1; return ''; }
@@ -6846,14 +6854,25 @@ function iwdieAiArtSvg(text, opts) {
     };
     var out = [];
     fr.runs.forEach(function (g) {
-      var k = 0;
+      // (v1.101.0) without the glyphs' places (older files): how far the pieces drawn so far reach, in Arial's widths
+      var k = 0, cur = 0, placed = g.adv.length > 0;
       while (k < g.count) {
         // one piece of the run in one style
         var sty = styleAt(g.from + k), e = k + 1;
         while (e < g.count && styleAt(g.from + e) === sty) e++;
+        // (v1.101.0) a tab ends a piece: what follows it starts at its first glyph's place, or without places at the next
+        // of Illustrator's default stops, every 36 pt from where the line starts - not one space on from the text before
+        var tab = story.text.indexOf('\t', g.from + k) - g.from;
+        if (tab === k) {
+          if (!placed) cur = (Math.floor(cur / 36 + 1e-6) + 1) * 36;
+          k++;
+          if (placed) while (k < g.count - 1 && story.text.charAt(g.from + k) === ' ') k++;
+          continue;
+        }
+        if (tab > k && tab < e) e = tab;
         var chars = story.text.substr(g.from + k, e - k).replace(/[\r\n\u0003\u0005]+$/, '').replace(/[\r\n\u0003\u0005]/g, ' ');
         if (chars.replace(/\s/g, '')) {
-          var font = iwdieAiCssFont(td.fonts[sty.font] || ''), x = g.x + (g.adv[k] || 0), y = g.y - (sty.bs || 0);
+          var font = iwdieAiCssFont(td.fonts[sty.font] || ''), x = g.x + (placed ? g.adv[k] || 0 : cur), y = g.y - (sty.bs || 0);
           var fill = sty.fill ? hex(sty.fill) : 'none', op = (sty.fill && sty.fill.op < 1 ? sty.fill.op : 1) * (it.op < 1 ? it.op : 1);
           // the type as scaled: its size the vertical scale's, its width stretched by the horizontal over that
           var size = (sty.size || 12) * (sty.vs || 1), stretch = (sty.hs || 1) / (sty.vs || 1), at;
@@ -6873,6 +6892,7 @@ function iwdieAiArtSvg(text, opts) {
             (op < 1 ? ' opacity="' + f(op) + '"' : '') + ' xml:space="preserve">' + esc(chars) + '</text>');
           counts.texts++;
         }
+        if (!placed) cur += iwdieAiTextWidth(chars, (sty.size || 12) * (sty.hs || 1), /Bold|Black|Heavy/i.test(td.fonts[sty.font] || '') ? 'Bold' : '');
         k = e;
       }
     });
@@ -6968,8 +6988,8 @@ function iwdieAiArtSvg(text, opts) {
       if (!(it.sym in symBox)) { var sb = null; (art.symbols[it.sym] || []).forEach(function (c) { sb = union(sb, boxOf(c, (depth || 0) + 1)); }); symBox[it.sym] = sb; }
       return symBox[it.sym] ? corners(it.m, symBox[it.sym].x0, symBox[it.sym].y0, symBox[it.sym].x1, symBox[it.sym].y1) : null;
     }
-    if (it.kind === 'text' && td) {
-      var story = td.stories[it.story], fr = story && story.frames[it.frame || 0];
+    if (it.kind === 'text' && tdOf(it)) {
+      var td = tdOf(it), story = td.stories[it.story], fr = story && story.frames[it.frame || 0];
       if (!fr) return null;
       var mt = td.frames[fr.frame] || [1, 0, 0, 1, 0, 0], tb = null, size = (story.runs[0] && story.runs[0].size) || 12;
       fr.runs.forEach(function (r) {

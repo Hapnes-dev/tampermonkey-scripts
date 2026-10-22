@@ -501,6 +501,36 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### A .ai without PDF content: the right words, tabs where Illustrator set them, opacity as it is (v1.101.0)
+
+Measured on the house's own library of 105 Illustrator templates (2026-10-22): each opened in Illustrator and exported
+to PNG, then drawn by the script's reader (`iwdieAiArtSvg`, the route VectorCraft's tab takes for a .ai saved without
+PDF content) and compared pixel by pixel. Three faults showed, all three in the reader of Illustrator's own data:
+
+- **A second text document.** Illustrator keeps the text of a .ai in two documents: `/AI11TextDocument` and
+  `/AI11UndoFreeTextDocument`. A text object marked `1 /FreeUndo` takes its story from the second. These are a symbol
+  instance's own text and the expanded copy of a text with an appearance. The reader took every story from the first,
+  so such a text came out with another text's words, or not at all. That is 2 084 of the templates' 25 245 text
+  objects, in 60 of the 105 files: every Maskin template. The information column's "2,7 °C" pills read
+  "Information", three times over, and the title "Heat recovery information" was missing. Each text is now taken from
+  the document it names, its frames on the main document's ruler.
+- **Tabs.** A tab was drawn as one space, so "V3hr⇥= Hr active" ran its words into the valve symbol beside them. What
+  follows a tab now starts where Illustrator's layout put its first glyph. When a file gives no glyph places (older
+  files), it starts at Illustrator's next default tab stop, every 36 pt from where the line starts.
+- **Opacity is a state.** Illustrator writes `Xy` (blend mode and opacity) where it changes and nothing where it does
+  not. The reader gave an `Xy` in the block after an object to that object, which was right. But then it put the state
+  back as it was before the block, which was wrong. After a group that returned to 100 %, everything that followed kept
+  the 75 % multiply of a picture before it: the table, words and logo of a customer's Energi template. The state now
+  stays what the block set. In Illustrator's own export, the only items drawn below 100 % are those an `Xy` before them
+  set so.
+
+Of the 105 templates, none came out worse and 44 better. After both drawings are shrunk 4 × 4, so that text
+antialiasing evens out, 0.26 % of cells differed on average before and 0.13 % now. The customer's Energi template went
+from 4.08 % of pixels off to 1.79 %. Most of what still differs is text in a font the browser lacks: Myriad Pro, which a
+few templates still use where the house font is Roboto. The twelve plant files of the 1.86.0 test set draw exactly as
+before. The kit's `test-ai-own-data.js` builds both documents, tabs with and without glyph places, and the state after a
+group's block. Not run in the live Designer.
+
 ### The Oversikt legend, Symbolforklaring, as one group to add, move and edit (v1.100.0)
 
 Thomas, with the Oversikt template's .ai and a screenshot of its legend column: *make this info panel a permanent group
