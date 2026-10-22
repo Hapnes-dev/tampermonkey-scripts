@@ -531,6 +531,34 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### The house's colours and text styles in VectorCraft's Libraries; flow arrows beside their pipe (v1.102.0)
+
+Measured on the house's own 105 Illustrator templates and its colour sheet, `IWMAC_HIG_FARGER.ai` (2026-10-22).
+
+- **IWMAC husstil in Libraries.** Edit in VectorCraft… now drops one more library, *IWMAC husstil*, before the IWMAC
+  objects, so Libraries still shows those first; it is in the list of libraries. It holds:
+  - the colour sheet's own colours by its own names: **Teknisk**, the pipes by temperature (Kaldest `#70abc5` for LT
+    suction, Kald `#83c2ce` for MT suction, Varm `#efad64`, Varmest `#f79e7a` for the discharge, Ekstra 1 `#9ace81`,
+    Ekstra 2 `#8ec0a2` for heat recovery water) and the CO2 liquid line `#efd243` that every final Maskin draws;
+    **Kjøl / frys**, the cases (Frys `#8eb2d1`, Kjøl `#b0e0ef`, Varmedisk `#f3c96a`);
+  - **Tegning**, the colours every template draws in: text `#3c505e`, rings and leads `#697c86`, equipment
+    `#9ea5af`, the column `#cdd2d7`, the ground `#e6e8ea`, white, status green `#6cc5a2`, alarm red `#ee473b`;
+  - **Tekst**, seven character styles in Roboto Regular, as 95 % of the templates' words: captions 12 px
+    `#3c505e`, Energi captions 12 px `#697c86`, words on a status pill 12 px white, values 11, legend rows 14,
+    titles 18 and unit tags 7.
+
+  A click on a colour paints the selection's fill (or its stroke when the stroke is active); a click on a text
+  style sets the selected words. A CMYK template shows each colour 1 off in a channel, its own conversion: the
+  same colour. The kit's `reference_data/house-style.json` holds the same, and a test keeps the two alike.
+- **CB-F01, flow arrows.** The house's drawings set a flow arrow beside its pipe, 5 to 12 px off it, and an end
+  arrow 10 px past an open line's end: 314 and 123 of them in the Maskin templates, none on the pipe. The bridge's
+  check took one more than 3 px off for one on no pipe, so every arrow of a house drawing was reported. An arrow
+  within 12.5 px of a pipe running its way, and up to 15 px past its end, is now on it; one farther off, or across
+  a pipe, is still reported.
+- Checked in the stub host on the hosted VectorCraft 0.14.0: *IWMAC husstil* was in the Libraries list with its four
+  groups (7, 3, 8 colours and 7 text styles). A click on Kjøl filled the selected receiver `#b0e0ef`, and a click on
+  Tittel 18 set the selected *Information* to 18 px. Not run in the live Designer.
+
 ### A .ai without PDF content: the right words, tabs where Illustrator set them, opacity as it is (v1.101.0)
 
 Measured on the house's own library of 105 Illustrator templates (2026-10-22): each opened in Illustrator and exported

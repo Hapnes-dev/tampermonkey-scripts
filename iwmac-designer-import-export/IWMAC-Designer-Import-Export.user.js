@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.101.2
+// @version      1.102.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.101.0';
+var IWDIE_VERSION = '1.102.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9035,6 +9035,54 @@ function iwdieVcLibraryFile(lib, thumbs, opts) {
     graphics: graphics, groups: groups });
 }
 
+/** The house's colours and text styles (v1.102.0), measured on its 105 Illustrator templates and its colour sheet,
+ *  IWMAC_HIG_FARGER.ai (2026-10-22). First the sheet's own colours by its own names: the pipes by temperature
+ *  ("Teknisk": Kaldest the LT suction, Kald the MT suction, Varmest the discharge, Ekstra 2 the heat recovery water)
+ *  and the cases ("Kjøl / frys"); then the colours every template draws in, the CO2 liquid line among them. The text
+ *  styles are Roboto Regular, as 95 % of the templates' words: captions and rows 12 px, values 11, legend rows 14,
+ *  titles 18. A CMYK template shows each of them 1 off in a channel, which is the same colour. The kit's
+ *  reference_data/house-style.json holds the same, and a test keeps the two alike. */
+var IWDIE_HOUSE_STYLE = {
+  name: 'IWMAC husstil',
+  colours: [
+    ['Teknisk', 'Kaldest', '#70abc5'], ['Teknisk', 'Kald', '#83c2ce'], ['Teknisk', 'Varm', '#efad64'],
+    ['Teknisk', 'Varmest', '#f79e7a'], ['Teknisk', 'Ekstra 1', '#9ace81'], ['Teknisk', 'Ekstra 2', '#8ec0a2'],
+    ['Teknisk', 'Væske (CO2)', '#efd243'],
+    ['Kjøl / frys', 'Frys', '#8eb2d1'], ['Kjøl / frys', 'Kjøl', '#b0e0ef'], ['Kjøl / frys', 'Varmedisk', '#f3c96a'],
+    ['Tegning', 'Tekst', '#3c505e'], ['Tegning', 'Strek', '#697c86'], ['Tegning', 'Utstyr', '#9ea5af'],
+    ['Tegning', 'Kolonne', '#cdd2d7'], ['Tegning', 'Bakgrunn', '#e6e8ea'], ['Tegning', 'Hvit', '#ffffff'],
+    ['Tegning', 'Status grønn', '#6cc5a2'], ['Tegning', 'Alarm rød', '#ee473b']
+  ],
+  text: [
+    ['Etikett 12', 12, '#3c505e'], ['Etikett 12 Energi', 12, '#697c86'], ['Tekst på status 12', 12, '#ffffff'],
+    ['Verdi 11', 11, '#697c86'], ['Symbolforklaring 14', 14, '#3c505e'], ['Tittel 18', 18, '#3c505e'],
+    ['Enhet 7', 7, '#697c86']
+  ]
+};
+
+/** The house style as a .vclibrary (v1.102.0): its colours and its text styles (Roboto Regular), each kind in groups
+ *  named as the colour sheet groups them, for VectorCraft's Libraries. A click on a colour paints the selection's fill
+ *  or stroke, a click on a text style sets the selected words. -> JSON text */
+function iwdieVcHouseLibraryFile() {
+  var rgb = function (h) {
+    var v = function (k) { return Math.round(parseInt(h.slice(k, k + 2), 16) / 255 * 10000) / 10000; };
+    return { model: 'rgb', r: v(1), g: v(3), b: v(5) };
+  };
+  var s = IWDIE_HOUSE_STYLE, groups = [], by = {};
+  var colors = s.colours.map(function (c) {
+    if (!by[c[0]]) { by[c[0]] = { name: c[0], items: [] }; groups.push(by[c[0]]); }
+    by[c[0]].items.push({ kind: 'color', item: c[1] });
+    return { name: c[1], color: rgb(c[2]) };
+  });
+  var text = { name: 'Tekst', items: [] };
+  var charStyles = s.text.map(function (t) {
+    text.items.push({ kind: 'charStyle', item: t[0] });
+    return { name: t[0], attrs: { font_family: 'Roboto', font_style: 'Regular', size: t[1], fill: { type: 'solid', color: rgb(t[2]) } } };
+  });
+  groups.push(text);
+  return JSON.stringify({ name: s.name, colors: colors, charStyles: charStyles, paraStyles: [], graphics: [], groups: groups });
+}
+
 /** VectorCraft's Libraries panel shows a library whole and cannot scroll (0.9.0), so a big library
  *  goes to it in pages (v1.47.0), each small enough to show whole: at most `cap` graphics, a group's
  *  heading costing `head` of them (4 unless given). The layers in order, each whole on a page while it
@@ -12442,7 +12490,9 @@ function iwdieCbCheck(items, size, opts) {
  *  longer across than down points along a horizontal run, else along a vertical one, its centre within `tol` px (3) of
  *  the run and of its span. One near a pipe whose runs are not known (a curve) is let be. -> [item] */
 function iwdieCbStrayArrows(items, tol) {
-  tol = tol === undefined ? 3 : tol;
+  // (v1.102.0) the house's own drawings set a flow arrow beside its pipe, 5 to 12 px off it, and past an open line's
+  // end (105 templates, 2026-10-22): on a pipe running its way means within 12.5 px of it, up to 15 px past its end
+  var side = tol === undefined ? 12.5 : tol, reach = tol === undefined ? 15 : tol;
   var runs = [], unknown = [];
   items.forEach(function (it) {
     if (it.kind !== 'pipe') return;
@@ -12454,11 +12504,11 @@ function iwdieCbStrayArrows(items, tol) {
     var cx = s.box.x + s.box.w / 2, cy = s.box.y + s.box.h / 2, across = s.box.w >= s.box.h;
     var on = runs.some(function (r) {
       var a = r[0], b = r[1];
-      if (across) return Math.abs(a[1] - b[1]) < 0.5 && Math.abs(cy - a[1]) <= tol && cx >= Math.min(a[0], b[0]) - tol && cx <= Math.max(a[0], b[0]) + tol;
-      return Math.abs(a[0] - b[0]) < 0.5 && Math.abs(cx - a[0]) <= tol && cy >= Math.min(a[1], b[1]) - tol && cy <= Math.max(a[1], b[1]) + tol;
+      if (across) return Math.abs(a[1] - b[1]) < 0.5 && Math.abs(cy - a[1]) <= side && cx >= Math.min(a[0], b[0]) - reach && cx <= Math.max(a[0], b[0]) + reach;
+      return Math.abs(a[0] - b[0]) < 0.5 && Math.abs(cx - a[0]) <= side && cy >= Math.min(a[1], b[1]) - reach && cy <= Math.max(a[1], b[1]) + reach;
     });
     if (on) return false;
-    return !unknown.some(function (u) { return cx >= u.x - tol && cx <= u.x + u.w + tol && cy >= u.y - tol && cy <= u.y + u.h + tol; });
+    return !unknown.some(function (u) { return cx >= u.x - side && cx <= u.x + u.w + side && cy >= u.y - side && cy <= u.y + u.h + side; });
   });
 }
 
@@ -23235,7 +23285,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           try { vcObjectMenu(note, looks, lib, job.params || null, extra); } catch (e) { objLine('The IWMAC menu could not be added: ' + esc2(String((e && e.message) || e)), true); }
           return objText.then(function (pages) {
             return pause(1200).then(function () {
-              vcDropFiles(asFiles(pages), 'menu');
+              // (v1.102.0) the house's colours and text styles first, then the objects: Libraries shows the last
+              vcDropFiles([{ data: iwdieVcHouseLibraryFile(), name: IWDIE_HOUSE_STYLE.name + '.vclibrary', type: 'application/json' }]
+                .concat(asFiles(pages)), 'menu');
             });
           }).then(null, failed(objLine, 'The IWMAC objects')).then(function () {
             return libText ? libText.then(function (pages) {
@@ -29607,6 +29659,8 @@ if (typeof module !== 'undefined' && module.exports) {
     vcAppearance: iwdieVcAppearance,
     vcNativeDoc: iwdieVcNativeDoc,
     vcLibraryFile: iwdieVcLibraryFile,
+    vcHouseLibraryFile: iwdieVcHouseLibraryFile,
+    HOUSE_STYLE: IWDIE_HOUSE_STYLE,
     vcThumbSvg: iwdieVcThumbSvg,
     VC_ZCHUNK: IWDIE_VC_ZCHUNK,
     VC_BUDGET: IWDIE_VC_BUDGET,
