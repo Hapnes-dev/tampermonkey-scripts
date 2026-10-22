@@ -4402,14 +4402,19 @@ The hosted build carries none of this script's changes. The script only adds the
 catches the save while the page runs. Nothing leaves the browser: the editor is a static page,
 and the panel goes from tab to tab through Tampermonkey's storage.
 
-**The hosted copy.** It is VectorCraft 0.11.0, built from the official source at that release
-with its licences and notices. Until 2026-10-17 it was the official web build byte for byte
-(0.10.0 until 2026-10-15, 0.9.0 until 2026-10-12). Since then it differs in two ways:
+**The hosted copy.** It is VectorCraft 0.14.0 (since 2026-10-22; 0.11.0 before), built from the
+official source at that release with its licences and notices. Until 2026-10-17 it was the official
+web build byte for byte (0.10.0 until 2026-10-15, 0.9.0 until 2026-10-12). Since then it differs in
+these ways:
 - **WebAssembly SIMD is on.** The official web release is built without it, so its canvas renderer
   runs scalar code. With SIMD, VectorCraft draws a frame of a drag on 10214's Maskin in 5.0 ms
   instead of 11.5 ms, and in 7.1 ms instead of 17.4 ms at 1920 × 1080. The pixels are the same.
 - **The ArtCraft name is taken out** (the repository's `build/debrand.py`): the Discord button and
   the Help menu's ArtCraft links.
+- **A fix its release does not have yet** (since 0.14.0, the repository's `build/patches/`). From
+  0.12.0 VectorCraft opens a stroked zigzag in an .ai, such as the Maskin template's heat exchanger,
+  as its bounding rectangle, and a sync would put that rectangle in the panel's picture. The PDF
+  reader's fix is open upstream; the build carries it until a release has it.
 
 The repository's `build/build.sh` makes it from a release tag. **To move to a newer release, follow
 [UPDATING.md](https://github.com/Hapnes-dev/iwmac-vector/blob/main/UPDATING.md)**:
@@ -4433,8 +4438,11 @@ bridge without breaking anything else. It relies on these:
 reach OK, and Escape closes the dialog; in 0.13.1 they even take *VectorCraft Template*. Since 1.83.2 the script
 answers by the clicks first, which take SVG in 0.11.0 and 0.13.1 alike, ready after 10.7 s on either.
 
-**VectorCraft 0.13.1 is not hosted yet.** It opens the house Maskin template's heat exchanger as a rectangle (see
-1.83.2), so the hosted copy stays 0.11.0 until a release that opens it right.
+**VectorCraft 0.14.0 is hosted since 2026-10-22,** with the heat exchanger's fix taken ahead of its release (above).
+0.13.1 was never hosted: it opened the house Maskin template's heat exchanger as a rectangle (see 1.83.2). On 0.14.0,
+in the stub host, this script's syncs placed as many objects as on 0.11.0, an .ai opened from the card gave the same
+results, and the first save was answered by the clicks, ready after 11.5 s. The colours VectorCraft takes from an .ai
+move by up to 8 in a channel since 0.12.0, from its colour management.
 
 The ArtCraft name and marks belong to the ArtCraft team and are not open source. Their brand
 terms ask a published modified build to carry none of them, so the hosted build has them taken
