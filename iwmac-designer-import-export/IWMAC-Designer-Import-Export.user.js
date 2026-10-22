@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.101.1
+// @version      1.101.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -21013,11 +21013,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!el) {
           el = document.createElement('div');
           el.id = 'iwdie-ai-say';
-          el.style.cssText = 'position:fixed;left:56px;top:76px;z-index:2147483647;max-width:420px;padding:10px 14px;background:#424242;border:1px solid #383838;' +
-            'border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#d1d1d1';
+          // the banner's look, in VectorCraft 0.14.0's colours (v1.101.2)
+          el.style.cssText = 'position:fixed;left:56px;top:76px;z-index:2147483647;max-width:420px;padding:10px 14px;background:#272c36;border:1px solid #11141a;' +
+            'border-radius:6px;box-shadow:0 6px 14px rgba(0,0,0,.5);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#e4e9f1';
           document.body.appendChild(el);
         }
-        el.style.color = bad ? '#ff9f9f' : '#d1d1d1';
+        el.style.color = bad ? '#ff9f9f' : '#e4e9f1';
         el.innerHTML = html;
         clearTimeout(el.iwdieT);
         el.iwdieT = setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 12000);
@@ -21053,11 +21054,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var css = [
           // the drawing's top left: clear of the Libraries panel on the right and of the dialogs' buttons
           // and not selectable: Ctrl+A in VectorCraft would select its text as well (v1.39.0)
-          '.iwdie-vcb{position:fixed;left:56px;top:76px;z-index:2147483647;width:360px;padding:12px 30px 12px 14px;box-sizing:border-box;background:#424242;',
-          '  border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#d1d1d1;-webkit-user-select:none;user-select:none}',
+          // in VectorCraft 0.14.0's colours (v1.101.2): its panels' #272c36, their dark edge, its text and its coral accent
+          '.iwdie-vcb{position:fixed;left:56px;top:76px;z-index:2147483647;width:360px;padding:12px 30px 12px 14px;box-sizing:border-box;background:#272c36;',
+          '  border:1px solid #11141a;border-radius:6px;box-shadow:0 6px 14px rgba(0,0,0,.5);font:400 12.5px/1.45 "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;color:#e4e9f1;-webkit-user-select:none;user-select:none}',
           '.iwdie-vcb b{color:#ffffff;font-weight:600}',
           '.iwdie-vcb .iwdie-vcb-t{font-weight:600;color:#ffffff;margin-bottom:4px;cursor:default;user-select:none}',
-          '.iwdie-vcb .iwdie-vcb-t::before{content:"\\25BE";color:#b0b0b0;font-weight:400;margin-right:5px}',
+          '.iwdie-vcb .iwdie-vcb-t::before{content:"\\25BE";color:#99a2b2;font-weight:400;margin-right:5px}',
           // folded: the title alone, a small tab over the drawing's corner
           '.iwdie-vcb.iwdie-min{width:auto;padding:6px 30px 6px 12px}',
           '.iwdie-vcb.iwdie-min .iwdie-vcb-t{margin:0;white-space:nowrap}',
@@ -21065,30 +21067,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           '.iwdie-vcb.iwdie-min .iwdie-vcb-b,.iwdie-vcb.iwdie-min .iwdie-vcb-a,.iwdie-vcb.iwdie-min .iwdie-vcb-n{display:none}',
           // what to do, then a row for each thing there is, its label to the left (v1.50.0)
           '.iwdie-vcb .iwdie-vcb-g{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 10px;margin-top:8px}',
-          '.iwdie-vcb .iwdie-vcb-g>span:nth-child(odd){color:#9a9a9a}',
+          '.iwdie-vcb .iwdie-vcb-g>span:nth-child(odd){color:#99a2b2}',
           '.iwdie-vcb .iwdie-vcb-n{margin-top:8px}',
           '.iwdie-vcb .iwdie-vcb-n:empty{display:none}',
           '.iwdie-vcb .iwdie-vcb-s{color:#8fd19e}',
           // a link that is a button, and the files to choose from (v1.49.0)
-          '.iwdie-vcb .iwdie-vcb-l{border:0;background:none;padding:0;margin:0;color:#78b4ff;font:inherit;cursor:pointer;text-decoration:underline;text-underline-offset:2px}',
-          '.iwdie-vcb .iwdie-vcb-l:hover{color:#a9cfff}',
+          '.iwdie-vcb .iwdie-vcb-l{border:0;background:none;padding:0;margin:0;color:#f06a52;font:inherit;cursor:pointer;text-decoration:underline;text-underline-offset:2px}',
+          '.iwdie-vcb .iwdie-vcb-l:hover{color:#ff8e78}',
           '.iwdie-vcb .iwdie-vcb-l b{color:inherit}',
-          '.iwdie-vcb .iwdie-vcb-q{color:#d1d1d1}',
-          '.iwdie-vcb .iwdie-vcb-k{display:block;width:100%;margin-top:4px;padding:5px 8px;border:0;border-radius:4px;background:#4d4d4d;color:#e6e6e6;',
+          '.iwdie-vcb .iwdie-vcb-q{color:#e4e9f1}',
+          '.iwdie-vcb .iwdie-vcb-k{display:block;width:100%;margin-top:4px;padding:5px 8px;border:0;border-radius:5px;background:#39404d;color:#e4e9f1;',
           '  font:inherit;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-          '.iwdie-vcb .iwdie-vcb-k:hover{background:#5d5d5d}',
-          '.iwdie-vcb .iwdie-vcb-k small{display:block;color:#a8a8a8;font-size:11.5px;overflow:hidden;text-overflow:ellipsis}',
+          '.iwdie-vcb .iwdie-vcb-k:hover{background:#424a58}',
+          '.iwdie-vcb .iwdie-vcb-k small{display:block;color:#99a2b2;font-size:11.5px;overflow:hidden;text-overflow:ellipsis}',
           '.iwdie-vcb .iwdie-vcb-e{color:#ff9f9f}',
-          '.iwdie-vcb .iwdie-vcb-x{position:absolute;top:5px;right:6px;width:20px;height:20px;border:0;background:transparent;color:#b0b0b0;font:16px/20px Arial,sans-serif;cursor:default;padding:0}',
+          '.iwdie-vcb .iwdie-vcb-x{position:absolute;top:5px;right:6px;width:20px;height:20px;border:0;background:transparent;color:#99a2b2;font:16px/20px Arial,sans-serif;cursor:default;padding:0}',
           '.iwdie-vcb .iwdie-vcb-x:hover{color:#ffffff}',
           // the buttons (v1.73.1): alike, two to a row, as VectorCraft's own Quick Actions draws its flat buttons - under a rule,
           // out to the banner's right edge as far as its left one
-          '.iwdie-vcb .iwdie-vcb-a{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:10px -16px 0 0;padding-top:10px;border-top:1px solid #4b4b4b}',
-          '.iwdie-vcb .iwdie-vcb-a button{height:24px;min-width:0;padding:0 6px;border:1px solid #646464;border-radius:3px;background:#4b4b4b;color:#ffffff;',
+          '.iwdie-vcb .iwdie-vcb-a{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:10px -16px 0 0;padding-top:10px;border-top:1px solid #323946}',
+          '.iwdie-vcb .iwdie-vcb-a button{height:24px;min-width:0;padding:0 6px;border:1px solid #39404d;border-radius:5px;background:#39404d;color:#ffffff;',
           '  font:400 12.5px "Source Sans 3","Segoe UI",Roboto,Arial,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}',
-          '.iwdie-vcb .iwdie-vcb-a button:hover{background:#5a5a5a;border-color:#8a8a8a}',
-          '.iwdie-vcb .iwdie-vcb-a button:active{background:#303030;border-color:#5f5f5f}',
-          '.iwdie-vcb .iwdie-vcb-a button:focus-visible{outline:1px solid #378ef0;outline-offset:1px}'
+          '.iwdie-vcb .iwdie-vcb-a button:hover{background:#424a58;border-color:#424a58}',
+          '.iwdie-vcb .iwdie-vcb-a button:active{background:#2f3540;border-color:#2f3540}',
+          '.iwdie-vcb .iwdie-vcb-a button:focus-visible{outline:1px solid #f06a52;outline-offset:1px}'
         ].join('\n');
         var st = document.createElement('style');
         st.id = 'iwdie-vcb-style';
@@ -21367,31 +21369,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         '.iwdie-vcm{position:fixed;left:430px;top:4px;height:23px;padding:0 3px;box-sizing:border-box;border-radius:4px;z-index:2147483646;',
         '  font:400 13px/22px ' + font + ';color:#e3e8f0;cursor:default;-webkit-user-select:none;user-select:none}',
         '.iwdie-vcm.iwdie-on{background:#353c49}',
-        // its menus as VectorCraft's: the panel colour, a 1 px border, 6 px corners and margin, the popup shadow
+        // its menus as VectorCraft's: the panel colour, a 1 px border, 6 px corners and margin, the popup shadow; since v1.101.2
+        // 0.14.0's: #272c36, a dark edge, a #353c49 row under the pointer, grey counts and #323946 separators
         '.iwdie-vcm-m{position:fixed;z-index:2147483646;min-width:230px;max-height:calc(100vh - 40px);overflow-y:auto;padding:6px;box-sizing:border-box;',
-        '  background:#535353;border:1px solid #383838;border-radius:6px;box-shadow:0 4px 7px rgba(0,0,0,.47);',
-        '  font:400 13px/1.326 ' + font + ';color:#d1d1d1;-webkit-user-select:none;user-select:none}',
+        '  background:#272c36;border:1px solid #11141a;border-radius:6px;box-shadow:0 6px 14px rgba(0,0,0,.5);',
+        '  font:400 13px/1.326 ' + font + ';color:#e4e9f1;-webkit-user-select:none;user-select:none}',
         '.iwdie-vcm-i{display:flex;align-items:center;gap:8px;height:24px;padding:0 6px;border-radius:3px;white-space:nowrap;cursor:default}',
-        '.iwdie-vcm-i:hover,.iwdie-vcm-i.iwdie-on{background:#606060;color:#ffffff}',
+        '.iwdie-vcm-i:hover,.iwdie-vcm-i.iwdie-on{background:#353c49;color:#ffffff}',
         '.iwdie-vcm-l{flex:1}',
-        '.iwdie-vcm-k{color:#b0b0b0;font-size:11.5px}',
-        '.iwdie-vcm-i:hover .iwdie-vcm-k,.iwdie-vcm-i.iwdie-on .iwdie-vcm-k{color:#e4e4e4}',
+        '.iwdie-vcm-k{color:#a0a5b0;font-size:11.5px}',
+        '.iwdie-vcm-i:hover .iwdie-vcm-k,.iwdie-vcm-i.iwdie-on .iwdie-vcm-k{color:#e4e9f1}',
         '.iwdie-vcm-p{flex:none;width:44px;height:22px;display:flex;align-items:center;justify-content:center}',
         '.iwdie-vcm-p img{max-width:44px;max-height:22px}',
         // a component's row: a bigger picture of it
         '.iwdie-vcm-i.iwdie-vcm-ic{height:34px}',
         '.iwdie-vcm-ic .iwdie-vcm-p{width:52px;height:30px}',
         '.iwdie-vcm-ic .iwdie-vcm-p img{max-width:52px;max-height:30px}',
-        '.iwdie-vcm-h{padding:2px 6px 4px;color:#b0b0b0;font-size:11px;line-height:1.4}',
-        '.iwdie-vcm-x{height:1px;background:#4b4b4b;margin:5px 0}',
-        '.iwdie-vcm-s{display:block;width:100%;height:26px;box-sizing:border-box;margin:0 0 6px;padding:0 7px;background:#454545;border:1px solid #5f5f5f;',
-        '  border-radius:2px;color:#ffffff;font:400 12.5px ' + font + ';outline:none}',
-        '.iwdie-vcm-s:focus{border-color:#378ef0}',
-        '.iwdie-vcm-s::placeholder{color:#b0b0b0}',
-        '.iwdie-vcm-n{padding:4px 6px;color:#b0b0b0}',
+        '.iwdie-vcm-h{padding:2px 6px 4px;color:#99a2b2;font-size:11px;line-height:1.4}',
+        '.iwdie-vcm-x{height:1px;background:#323946;margin:5px 0}',
+        '.iwdie-vcm-s{display:block;width:100%;height:26px;box-sizing:border-box;margin:0 0 6px;padding:0 7px;background:#1a1e26;border:1px solid #3a414e;',
+        '  border-radius:5px;color:#e4e9f1;font:400 12.5px ' + font + ';outline:none}',
+        '.iwdie-vcm-s:focus{border-color:#f06a52}',
+        '.iwdie-vcm-s::placeholder{color:#868b94}',
+        '.iwdie-vcm-n{padding:4px 6px;color:#99a2b2}',
         // while one is being placed: a note by the pointer
-        '.iwdie-vcm-t{position:fixed;z-index:2147483647;pointer-events:none;padding:4px 8px;background:#535353;border:1px solid #383838;border-radius:6px;',
-        '  box-shadow:0 4px 7px rgba(0,0,0,.47);font:400 12px ' + font + ';color:#d1d1d1;white-space:nowrap}',
+        '.iwdie-vcm-t{position:fixed;z-index:2147483647;pointer-events:none;padding:4px 8px;background:#272c36;border:1px solid #11141a;border-radius:6px;',
+        '  box-shadow:0 6px 14px rgba(0,0,0,.5);font:400 12px ' + font + ';color:#e4e9f1;white-space:nowrap}',
         '.iwdie-vcm-t b{color:#ffffff;font-weight:600}'
       ].join('\n');
       var st = document.createElement('style');
@@ -21679,34 +21682,35 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (document.getElementById('iwdie-vcs-style')) return;
       var esc2 = iwdieEscHtml, font = '"Source Sans 3","Segoe UI",Roboto,Arial,sans-serif';
       var css = [
-        // a VectorCraft dialog: the panel colour, a 1 px border, 6 px corners, the window shadow, 22 px padding
+        // a VectorCraft dialog: the panel colour, a 1 px border, 6 px corners, the window shadow, 22 px padding; since v1.101.2
+        // 0.14.0's: #272c36 with a dark edge, its #39404d buttons with 6 px corners, OK in its coral
         '.iwdie-vcs{position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483646;background:rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;',
-        '  font:400 13px/1.4 ' + font + ';color:#d1d1d1;-webkit-user-select:none;user-select:none}',
-        '.iwdie-vcs-d{width:430px;box-sizing:border-box;padding:22px;background:#535353;border:1px solid #383838;border-radius:6px;box-shadow:0 8px 14px rgba(0,0,0,.55)}',
+        '  font:400 13px/1.4 ' + font + ';color:#e4e9f1;-webkit-user-select:none;user-select:none}',
+        '.iwdie-vcs-d{width:430px;box-sizing:border-box;padding:22px;background:#272c36;border:1px solid #11141a;border-radius:8px;box-shadow:0 8px 18px rgba(0,0,0,.55)}',
         '.iwdie-vcs-t{font-size:16px;font-weight:600;color:#ffffff;margin-bottom:14px}',
         // a question's first line (v1.55.0)
         '.iwdie-vcs-l{margin:-6px 0 12px}',
         '.iwdie-vcs-l b{color:#ffffff;font-weight:600}',
-        '.iwdie-vcs-o{display:block;width:100%;margin:0 0 8px;padding:10px 12px;box-sizing:border-box;text-align:left;background:#454545;border:1px solid #5f5f5f;',
-        '  border-radius:4px;color:#d1d1d1;font:inherit;cursor:default}',
+        '.iwdie-vcs-o{display:block;width:100%;margin:0 0 8px;padding:10px 12px;box-sizing:border-box;text-align:left;background:#1a1e26;border:1px solid #3a414e;',
+        '  border-radius:6px;color:#e4e9f1;font:inherit;cursor:default}',
         '.iwdie-vcs-o b{display:block;color:#ffffff;font-weight:600;font-size:13px;margin-bottom:2px}',
-        '.iwdie-vcs-o span{display:block;color:#b0b0b0;font-size:12px}',
-        '.iwdie-vcs-o:hover{background:#606060}',
-        '.iwdie-vcs-o.iwdie-on{border-color:#378ef0;box-shadow:inset 0 0 0 1px #378ef0}',
+        '.iwdie-vcs-o span{display:block;color:#99a2b2;font-size:12px}',
+        '.iwdie-vcs-o:hover{background:#353c49}',
+        '.iwdie-vcs-o.iwdie-on{border-color:#f06a52;box-shadow:inset 0 0 0 1px #f06a52}',
         '.iwdie-vcs-a{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}',
-        '.iwdie-vcs-b{height:28px;padding:0 16px;border:0;border-radius:14px;background:transparent;color:#d1d1d1;box-shadow:inset 0 0 0 1.5px #b0b0b0;',
+        '.iwdie-vcs-b{height:28px;padding:0 16px;border:0;border-radius:6px;background:#39404d;color:#e4e9f1;',
         '  font:600 12.5px ' + font + ';cursor:default}',
-        '.iwdie-vcs-b:hover{background:#606060;color:#ffffff}',
-        '.iwdie-vcs-p{background:#1473e6;color:#ffffff;box-shadow:none}',
-        '.iwdie-vcs-p:hover{background:#378ef0}',
+        '.iwdie-vcs-b:hover{background:#424a58;color:#ffffff}',
+        '.iwdie-vcs-p{background:#e8573f;color:#ffffff}',
+        '.iwdie-vcs-p:hover{background:#f06a52}',
         // while VectorCraft's own dialogs are being answered: the pointer is kept off them
         '.iwdie-vcs-g{position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483645;cursor:progress}',
         // and they are covered (v1.57.0): a card in VectorCraft's look where they open, so it runs as by itself
         '.iwdie-vcs-cover{position:fixed;left:50%;top:50%;width:560px;height:560px;margin:-290px 0 0 -280px;z-index:2147483646;box-sizing:border-box;',
-        '  display:flex;align-items:center;justify-content:center;text-align:center;background:#535353;border:1px solid #383838;border-radius:6px;',
-        '  box-shadow:0 8px 14px rgba(0,0,0,.55);font:400 13px/1.5 ' + font + ';color:#d1d1d1;cursor:progress}',
+        '  display:flex;align-items:center;justify-content:center;text-align:center;background:#272c36;border:1px solid #11141a;border-radius:8px;',
+        '  box-shadow:0 8px 18px rgba(0,0,0,.55);font:400 13px/1.5 ' + font + ';color:#e4e9f1;cursor:progress}',
         '.iwdie-vcs-cover b{display:block;color:#ffffff;font-size:15px;font-weight:600;margin-bottom:4px}',
-        '.iwdie-vcs-cover span{display:block;color:#b0b0b0}'
+        '.iwdie-vcs-cover span{display:block;color:#99a2b2}'
       ].join('\n');
       var st = document.createElement('style');
       st.id = 'iwdie-vcs-style';

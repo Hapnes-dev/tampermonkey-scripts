@@ -501,6 +501,22 @@ VectorCraft too, so they keep up with each other.
   then Ctrl+S there gave *1 moved, 1 added, 1 taken out*, and Ctrl+S in VectorCraft afterwards changed nothing on the
   panel. A label added and relabelled gave *1 added*, then *1 changed*. Not run in the live Designer.
 
+### The IWMAC menu, the banner, the question and the cover in VectorCraft 0.14.0's colours (v1.101.2)
+
+After 1.101.1 the title sat in 0.14.0's bar, but what opens from it, and the script's other pieces on the editor's page,
+still had 0.11.0's grey panels and blue accent beside 0.14.0's navy ones. They now take the colours 0.14.0 draws its own
+with, measured from its menus, the Document Setup dialog and the Properties panel:
+- **Panels** (the IWMAC menu and its submenus, the banner, the note for a dropped .ai, the question, the cover over Save
+  As): `#272c36` with a `#11141a` edge, the text `#e4e9f1`, labels and counts `#99a2b2` and `#a0a5b0`.
+- **Rows and buttons:** the row under the pointer `#353c49`, buttons `#39404d` with 5 to 6 px corners, separators
+  `#323946`, fields `#1a1e26` with a `#3a414e` border.
+- **The accent is 0.14.0's coral:** OK `#e8573f`, a chosen option, the search field's focus and the banner's links
+  `#f06a52`. The green of *Ready* and the red of a fault stay.
+
+Measured in the stub on the hosted 0.14.0 build, beside VectorCraft's own Help and Window menus and its Document Setup
+dialog. The Designer's own Edit in VectorCraft dialog and the card and progress tabs it opens keep the grey look. Not
+run in the live Designer.
+
 ### The IWMAC title in VectorCraft 0.14.0's menu bar, spaced as its own titles are (v1.101.1)
 
 Thomas, with a screenshot of the bar: *make spacing better*. VectorCraft 0.14.0 sets its menu titles a little wider
