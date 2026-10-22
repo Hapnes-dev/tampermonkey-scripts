@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.102.0
+// @version      1.103.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.102.0';
+var IWDIE_VERSION = '1.103.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -251,7 +251,7 @@ var IWDIE_PANEL_SCHEMA = [
   { field: 'containers', type: 'array of containers', required: 'yes', meaning: 'Grouped objects (table rows, room cards). [] on most panels. See schema.container.', example: '[]' },
   { field: 'graphics', type: 'array', required: 'yes', meaning: 'Opaque host graphics records. Preserve verbatim; never author one; [] on almost every panel.', example: '[]' },
   { field: 'converted', type: 'string', required: 'no', allowed: '"true"', meaning: 'Present as "true" when a background picture is embedded in image_data.', example: 'true' },
-  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'AI-authored background artwork: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert draws it into the panel\'s picture as a sync from VectorCraft does - a PNG that keeps the drawing, uploaded to the plant\'s pictures - so Edit in VectorCraft opens its layers and Background → Illustrator writes them as an .ai; Export hands it back here, stamped data-iwdie-drawing. Author one only for a type that has artwork (Maskin, Oversikt, Energi) when the plant has none; never on Ventilasjon, curve, list or room-control panels, and never as a replacement for a supplied picture, which is copied verbatim. See drawing_style for how the house draws ducts, zones and the exchanger.', example: '<svg viewBox="0 0 1400 750" ...>' }
+  { field: 'image_svg', type: 'string (SVG markup)', required: 'no', meaning: 'AI-authored background artwork: starts with "<svg", carries a viewBox matching the panel size, contains no <script>. Insert draws it into the panel\'s picture as a sync from VectorCraft does - a PNG that keeps the drawing, uploaded to the plant\'s pictures - so Edit in VectorCraft opens its layers and Background → Illustrator writes them as an .ai; Export hands it back here, stamped data-iwdie-drawing. Author one when the plant has no picture of its own: the picture of a Maskin, Oversikt or Energi, and on a Ventilasjon only what no Designer object makes (a component without an object, a custom duct or connection) with the grey column from x 1150; never on curve, list or room-control panels, and never as a replacement for a supplied picture, which is copied verbatim. Every element a Designer object fits is that object, not a drawing. See drawing_style for how the house draws ducts, zones and the exchanger.', example: '<svg viewBox="0 0 1400 750" ...>' }
 ];
 
 /** One row per top-level key of the export file, in file order. */
@@ -343,7 +343,7 @@ function iwdiePanelJsonSchema() {
   panel.properties.image_svg = { $ref: '#/$defs/drawing' };
   // v1.76.0: a drawing an agent writes keeps every rule; one Export handed over (stamped data-iwdie-drawing on its root) is
   // the picture's own, and may hold a picture of pixels under it
-  var drawing = { type: 'string', description: 'The panel\'s picture as vectors (authored on Maskin, Oversikt and Energi only, never on Ventilasjon). ' +
+  var drawing = { type: 'string', description: 'The panel\'s picture as vectors (authored on Maskin, Oversikt and Energi; on Ventilasjon only for what no Designer object makes; never on curve, list or room-control panels). ' +
     IWDIE_DRAWING_RULES.join(' ') + ' A drawing Export handed over carries data-iwdie-drawing on its root, and may hold the picture under it as an <image>.',
     pattern: '^<svg\\b[\\s\\S]*</svg>\\s*$', not: { pattern: '<script|<foreignObject' },
     if: { not: { pattern: '^<svg\\b[^>]*\\sdata-iwdie-drawing=' } }, then: { not: { pattern: '<image\\b|visibility\\s*=\\s*["\']hidden' } } };
@@ -755,7 +755,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       'Copy the geometry of a real export of the same panel type when you have one - the one supplied, else a reference export from your knowledge base: positions, sizes, zIndex and object vocabulary, with only the plant-specific content replaced. With none to copy, build from layout (where things go, in measured pixels), signal_to_object (which object a parameter row wants) and parameter_selection (which rows belong on a panel at all) - and say in your answer that the geometry is derived, not cloned.',
       'Set panel.plant_id and source_plant_id to the target plant number when the file is for one plant, or "" for a reusable template; set generator and panel.saved_by to your agent name.',
       'Link from the parameter source when it is supplied (linking); otherwise leave every object unlinked with a descriptive alias_text and say so in your answer.',
-      'A production panel sits on a drawing. Copy the plant\'s own background when it has one, byte for byte; never redraw it. Author image_svg only for a type that has artwork (Maskin, Oversikt, Energi) when the plant has none, to the construction in drawing_style and overview.style. A Ventilasjon panel sits on the blank sidebar and its ducts, dampers, coils and fans are objects: never author image_svg for it, nor for a curve, list or room-control panel.',
+      'A production panel sits on a drawing. Copy the plant\'s own background when it has one, byte for byte; never redraw it. When the plant has none, author image_svg to the construction in drawing_style and overview.style, with a Designer object for every element one fits: the picture of a Maskin, Oversikt or Energi; on a Ventilasjon, whose ducts, dampers, coils and fans are objects, only what no object makes (a component without one, a custom duct or connection) over the grey column from x 1150. Never for a curve, list or room-control panel.',
       'Leave containers and graphics as [] unless the panel type is container-built (list panels, room-control tables); then clone the container structure from a reference export.'
     ],
     object_catalogue: IWDIE_OBJECT_CATALOGUE,
@@ -1370,7 +1370,7 @@ var IWDIE_QUICK_START = [
   '2. Every object has the same 17 fields (schema.object_entry); a new unlinked one uses linking.unlinked_new_object.',
   '3. obj_id only from object_catalogue or copied from an object of a supplied export; never invent one.',
   '4. Which object a parameter row wants: signal_to_object. Where it goes: layout. Which rows belong on a panel at all: parameter_selection.',
-  '5. The picture is the plant\'s own background, copied byte for byte. Author panel.image_svg only on a type that has artwork (Maskin, Oversikt, Energi) when the plant has none; never on Ventilasjon (its ducts are objects on the blank sidebar), curve, list or room-control panels. Whatever shows a signal is an object over the picture.',
+  '5. The picture is the plant\'s own background, copied byte for byte. When the plant has none, author panel.image_svg on Maskin, Oversikt and Energi, and on Ventilasjon only for what no Designer object makes (its ducts, fans, dampers and coils are objects); never on curve, list or room-control panels. Native objects first: whatever a Designer object fits, and whatever shows a signal, is an object over the picture.',
   '6. tag_text is what the operator reads (caption_conventions); alias_text is the signal, and the key a linker matches.',
   '7. Link only by copying driver_id, unit_id and alias_text from one row of the plant parameter source - overview.parameters or overview.signals in an export, or the parameter export; otherwise leave driver_id "driver_id" and linked "false".',
   '8. zIndex: copy the band of the same role from this file. Ventilasjon uses 5 ducts and headers, 40 equipment, 110 values, 375 bells, LEDs and pumps, 1100 labels; Maskin puts its values at 1100; Oversikt uses 110 for values and 375 for its symbols. Never carry bands across panel types.',
@@ -2310,7 +2310,7 @@ function iwdieBuildAiFixPrompt(parsed, errors, facts, improvised) {
   L.push('- "counts" must equal the real array lengths.');
   L.push('- The canvas is 1400 x 750. Objects outside it are not visible.');
   L.push('- Every file the userscript exports carries an "ai_guide" with the complete field-by-field contract, the linking rules and worked examples — read it and follow it. You may keep or omit "ai_guide" and "summary" in your answer; never edit them.');
-  L.push('- A panel sits on a drawing: copy the plant\'s own background when it has one, byte for byte. Author "image_svg" only for a type that has artwork (Maskin, Oversikt, Energi) when the plant has none; never for a Ventilasjon (its ducts, fans, dampers and coils are objects on the blank sidebar), curve, list or room-control panel. Whatever shows or sets a signal stays an object.');
+  L.push('- A panel sits on a drawing: copy the plant\'s own background when it has one, byte for byte. When the plant has none, author "image_svg" for a Maskin, Oversikt or Energi, and for a Ventilasjon only what no Designer object makes (its ducts, fans, dampers and coils are objects; the drawing carries the grey column from x 1150); never for a curve, list or room-control panel. Native objects first: every element a Designer object fits is that object, and whatever shows or sets a signal stays an object.');
   L.push('');
   L.push('Return the corrected JSON file and nothing else.');
   return L.join('\n');

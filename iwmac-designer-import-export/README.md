@@ -531,6 +531,21 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Native objects first, and a drawing on a Ventilasjon for what no object makes (v1.103.0)
+
+Thomas's rule for the pictures an AI makes (2026-10-22): every element a Designer object fits is that object, and
+VectorCraft draws the rest - never only objects, never only drawing. The texts an export hands to an AI said the
+opposite for a Ventilasjon: "never author image_svg" on it. Now they say:
+
+- The panel file's `image_svg` field, the schema's drawing (`PANEL-FILE.schema.json`, `panel-file.schema.json`), the
+  export's overview guidance and its read-me: author a picture when the plant has none of its own - the whole picture
+  of a Maskin, Oversikt or Energi, and on a Ventilasjon only what no Designer object makes (a component without an
+  object, a custom duct or connection), over the grey column from x 1150. Its ducts, fans, dampers and coils stay
+  objects. Never on a curve, list or room-control panel, and never instead of a supplied picture, which is copied
+  byte for byte.
+- Nothing else changed: Insert JSON already drew an `image_svg` on any panel type and kept its objects
+  (`applyImportDoc`), and Edit in VectorCraft brings every object along as a placeholder.
+
 ### The house's colours and text styles in VectorCraft's Libraries; flow arrows beside their pipe (v1.102.0)
 
 Measured on the house's own 105 Illustrator templates and its colour sheet, `IWMAC_HIG_FARGER.ai` (2026-10-22).
