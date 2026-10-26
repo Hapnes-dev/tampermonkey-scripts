@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.71.0
+// @version      1.72.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, and chat macros (type / in a chat).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -16918,6 +16918,9 @@
   const ZENDESK_HANDOVER_MACRO_ID = "1900005365194";
   const ZENDESK_HANDOVER_GROUP_ID = 24854481;   // IWMAC Support
   const ZENDESK_HANDOVER_TAGS = ["aktivering_basic"];
+  // The rebuild checklist has its own macro; found by title because its id was
+  // never recorded here. Group and tags fall back to the ones above.
+  const ZENDESK_HANDOVER_OMB_MACRO_TITLE = "Sjekkliste Overlevering IWMAC Kulde til Service (Ombygging)";
 
   function gmZendeskSendRaw(method, url, body, extraHeaders) {
     return new Promise((resolve, reject) => {
@@ -18840,12 +18843,21 @@
     }
   }
 
-  async function zendeskCreateHandoverTicket(subject, html) {
+  async function zendeskHandoverMacro(ombygging) {
+    if (!ombygging) return (await zendeskApiRequest("GET", "/macros/" + ZENDESK_HANDOVER_MACRO_ID + ".json"))?.macro;
+    const res = await zendeskApiRequest("GET", "/macros/search.json?query=" + encodeURIComponent(ZENDESK_HANDOVER_OMB_MACRO_TITLE));
+    const want = ZENDESK_HANDOVER_OMB_MACRO_TITLE.toLowerCase();
+    const m = (res?.macros ?? []).find((x) => String(x?.title ?? "").trim().toLowerCase() === want);
+    if (!m) throw new Error("macro «" + ZENDESK_HANDOVER_OMB_MACRO_TITLE + "» not found");
+    return m;
+  }
+
+  async function zendeskCreateHandoverTicket(subject, html, ombygging) {
     let groupId = ZENDESK_HANDOVER_GROUP_ID;
     let tags = ZENDESK_HANDOVER_TAGS.slice();
     try {
-      const m = await zendeskApiRequest("GET", "/macros/" + ZENDESK_HANDOVER_MACRO_ID + ".json");
-      const actions = m?.macro?.actions ?? [];
+      const m = await zendeskHandoverMacro(ombygging);
+      const actions = m?.actions ?? [];
       const g = Number(actions.find((x) => x?.field === "group_id")?.value);
       const t = String(actions.find((x) => x?.field === "current_tags")?.value ?? "").trim();
       if (Number.isFinite(g) && g > 0) groupId = g;
@@ -19623,12 +19635,27 @@
   }
 
   const JA_NEI = ["Ja", "Nei"];
+  const DTS_MAL_NY = "Ny leveranse";
+  const DTS_MAL_OMB = "Ombygging";
+  const dtsIsOmb = (a) => a?.mal === DTS_MAL_OMB;
+  function dtsTitleSuffix(ombygging) {
+    return DTS_HANDOVER_SUBJECT + (ombygging ? " ---Ombygging---" : "");
+  }
+  function dtsDefaultTitle(p, a) {
+    return dtsPlantId(p) + " - " + dtsPlantName(p) + " - " + dtsTitleSuffix(dtsIsOmb(a));
+  }
   function dtsSteps(p, a) {
     const whenNo5 = () => a.q5 === "Nei";
-    return [
+    const head = [
+      { key: "mal", type: "choice", options: [DTS_MAL_NY, DTS_MAL_OMB], def: DTS_MAL_NY,
+        label: "Hvilken sjekkliste?",
+        hint: "Ombygging bruker macroen «" + ZENDESK_HANDOVER_OMB_MACRO_TITLE + "»." },
       { key: "title", type: "text", label: "Tittel på Zendesk-saken",
-        hint: "PlantID - Anleggsnavn - Avblokkering og Overlevering (rediger ved behov)",
-        def: dtsPlantId(p) + " - " + dtsPlantName(p) + " - Avblokkering og Overlevering" },
+        hint: "PlantID - Anleggsnavn - " + dtsTitleSuffix(dtsIsOmb(a)) + " (rediger ved behov)",
+        def: dtsDefaultTitle(p, a) },
+    ];
+    if (dtsIsOmb(a)) return head.concat(dtsStepsOmbygging(p, a, whenNo5)).filter((s) => !s.when || s.when());
+    return head.concat([
       { key: "q1", type: "choice", options: ["Ja", "Nei", "ANEO"],
         label: "1. Er abonnementsavtalen signert?",
         // Driven by the subscription agreement's own state, not the chip's
@@ -19678,10 +19705,152 @@
           { k: "annet",     label: "Annen relevant informasjon", def: "" },
         ] },
       { key: "review", type: "review", label: "Ferdig — /overlevering-macroen er fylt ut" },
-    ].filter((s) => !s.when || s.when());
+    ]).filter((s) => !s.when || s.when());
   }
 
+  // Answer keys are shared with the new-plant list where the question is the
+  // same, so switching template keeps what was already answered.
+  function dtsStepsOmbygging(p, a, whenNo5) {
+    return [
+      { key: "q3", type: "fields", label: "1. Legg ved linker til Oneflow",
+        fields: [
+          { k: "ordre", label: "Ordre tilbudet", def: String(p.oneflowUrl || "") },
+          { k: "abm",   label: "Abonnementsavtalen", def: String(p.oneflowSubscriptionUrl || "") },
+        ] },
+      { key: "q4", type: "choice", options: JA_NEI, label: "2. Er nøkkelinformasjon og link til Zendesk-overlevering lagt til i PANG-notater?" },
+      { key: "q5", type: "choice", options: JA_NEI, label: "3. Er leveransen komplett i henhold til ordren?" },
+      { key: "q6", type: "textarea", when: whenNo5, label: "4. Hva gjenstår etter overlevering?" },
+      { key: "q7", type: "textarea", when: whenNo5, label: "5. Hvem er ansvarlig for å løse disse manglene?" },
+      { key: "q10", type: "choice", options: JA_NEI, label: "6. Er det lagt inn IK-mat?",
+        hint: "Sett opp IK-mat her: http://toolbox.iwmac.local/ikmat_setup/" },
+      { key: "q11", type: "choice", options: JA_NEI, label: "7. Er remote access satt opp?",
+        hint: "Gjerne bekreft ved å sjekke om du får tilgang via remote access." },
+      { key: "q12", type: "choice", options: JA_NEI, label: "8. Integrert i energinett?" },
+      { key: "q13", type: "choice", options: JA_NEI, label: "9. Er det lagt inn tidsstyring på ventilasjonen?",
+        hint: "Hvis det er standard ventilasjon, skal dette alltid legges inn dersom ventilasjon er inkludert i ordren." },
+      { key: "o10", type: "choice", options: JA_NEI,
+        label: "10. Er Younium oppdatert med korrekt plant ID og antall systemer etter ombygging?",
+        hint: "NB: Pass på at kunden ikke blir liggende med 2 ordrer. " + dtsYouniumHint(p) },
+      { key: "q15", type: "choice", options: JA_NEI,
+        label: "11. Har du lagret all dokumentasjon i anleggsmappe: 99-underlag fra kunde?",
+        hintRich: () => dtsFilesCard(p) },
+      { key: "q16", type: "fields", label: "12. Tilleggsinformasjon",
+        fields: [
+          { k: "internt",   label: "Hvem har gjort leveransen internt", def: String(p.ownerName || "") },
+          { k: "bestiller", label: "Hvem er bestiller", def: String(p.client || "") },
+          { k: "g4",        label: "Er det brukt 4G", def: "" },
+          { k: "annet",     label: "Annen relevant informasjon", def: "" },
+        ] },
+      { key: "review", type: "review", label: "Ferdig — ombyggings-macroen er fylt ut" },
+    ];
+  }
+
+  function dtsBuildTextOmbygging(p, a) {
+    const c = (q, opt) => (a[q] === opt ? "[x]" : "[ ]");
+    const t = (v) => String(v ?? "").trim();
+    const NB = " ";
+    const BULLET = "•" + NB;
+    const yn = (q) => [c(q, "Ja") + " Ja", c(q, "Nei") + " Nei"];
+    const L = [t(a.title) || dtsDefaultTitle(p, a), ""];
+    L.push("Leveranseavdelingens Sjekkliste til Support");
+    L.push("Vennligst besvar følgende spørsmål i forbindelse med leveranse:", "");
+    L.push("1." + NB + "Legg ved linker til Oneflow:");
+    L.push("ordre tilbudet: " + t(a.q3_ordre), "abonnementsavtalen: " + t(a.q3_abm), "");
+    L.push("2." + NB + "Er nøkkelinformasjon og link til Zendesk-overlevering lagt til i PANG-notater?", ...yn("q4"), "");
+    L.push("3." + NB + "Er leveransen komplett i henhold til ordren?", ...yn("q5"), "");
+    L.push("4." + NB + "Hvis nei: Hva gjenstår etter overlevering?", "Svar: " + (a.q5 === "Nei" ? t(a.q6) : ""), "");
+    L.push("5." + NB + "Hvis nei: Hvem er ansvarlig for å løse disse manglene?", "Svar: " + (a.q5 === "Nei" ? t(a.q7) : ""), "");
+    L.push("6." + NB + "Er det lagt inn IK-mat?", ...yn("q10"), "");
+    L.push("7." + NB + "Er remote access satt opp? (Gjerne bekreft ved å sjekke om du får tilgang via remote access)", ...yn("q11"), "");
+    L.push("8." + NB + "Integrert i energinett?", ...yn("q12"), "");
+    L.push("9." + NB + "Er det lagt inn tidsstyring på ventilasjonen? (Hvis det er standard ventilasjon, skal dette alltid legges inn dersom ventilasjon er inkludert i ordren.)", ...yn("q13"), "");
+    L.push("10." + NB + "Er younium oppdatert med korrekt plant ID og antall systemer etter ombygging?");
+    L.push("(Bruk AM Counter: http://toolbox.iwmac.local/am_counter/ for å sjekke om det stemmer med posisjonene i Younium)");
+    L.push(...yn("o10"), "NB : Pass på at kunden ikke blir liggende med 2 ordrer.", "");
+    L.push("11." + NB + "Har du lagret all dokumentasjon i anleggs mappe : 99-underlag fra kunde?", ...yn("q15"), "");
+    L.push("12." + NB + "Tilleggsinformasjon:", "");
+    L.push(BULLET + "Hvem har gjort leveransen internt: " + t(a.q16_internt));
+    L.push(BULLET + "Hvem er bestiller: " + t(a.q16_bestiller));
+    L.push(BULLET + "Er det brukt 4G: " + t(a.q16_g4));
+    L.push(BULLET + "Annen relevant informasjon: " + t(a.q16_annet), "", "");
+    L.push("DEL 2,", "Følges opp Service", "Sjekkliste for Service oppfølging");
+    L.push("Vennligst besvar og gjennomfør følgende ved oppfølging av sak:", "");
+    L.push(BULLET + "Sjekk at anlegg er avblokkert", "[ ]", "");
+    L.push(BULLET + "Kanseller gammelt anlegg om det er byttet anleggsnummer og flytt brukere / tilganger til nytt anlegg", "[ ]", "");
+    L.push(BULLET + "Sjekk at younium er aktiv", "[ ]", "");
+    L.push("Tilleggsinformasjon:", "");
+    for (const s of DTS_NB_TEXT) L.push(BULLET + s);
+    return L.join("\n");
+  }
+
+  function dtsBuildHtmlOmbygging(p, a) {
+    const e = (v) => escHtml(String(v ?? "").trim());
+    const c = (q, opt) => (a[q] === opt ? "[x]" : "[]");
+    const SP = "<p>&nbsp;</p>";
+    const item = (inner) => "<li><p>" + inner + "</p>" + SP + "</li>";
+    const link = (v) => {
+      const u = String(v ?? "").trim();
+      if (!/^https?:\/\//i.test(u)) return e(u);
+      return '<a href="' + escHtml(u) + '">' + escHtml(u) + "</a>";
+    };
+    const q = (text, bold) => (bold === false ? e(text) : "<strong>" + e(text) + "</strong>");
+    const yn = (key) => ["Ja", "Nei"].map((o) => "<br>" + c(key, o) + " " + o).join("");
+    const H = [];
+    H.push("<h3><strong>Leveranseavdelingens Sjekkliste til Support</strong></h3>");
+    H.push("<p>Vennligst besvar følgende spørsmål i forbindelse med leveranse:</p>");
+    H.push("<ol>");
+    H.push(item(q("Legg ved linker til Oneflow:") +
+      "<br>ordre tilbudet: " + link(a.q3_ordre) +
+      "<br>abonnementsavtalen: " + link(a.q3_abm)));
+    H.push(item(q("Er nøkkelinformasjon og link til Zendesk-overlevering lagt til i PANG-notater?") + yn("q4")));
+    H.push(item(q("Er leveransen komplett i henhold til ordren?") + yn("q5")));
+    H.push(item(q("Hvis nei: Hva gjenstår etter overlevering?") + "<br>Svar:&nbsp;" + (a.q5 === "Nei" ? e(a.q6) : "")));
+    H.push(item(q("Hvis nei: Hvem er ansvarlig for å løse disse manglene?") + "<br>Svar:&nbsp;" + (a.q5 === "Nei" ? e(a.q7) : "")));
+    H.push(item(q("Er det lagt inn IK-mat?") + yn("q10")));
+    H.push(item(q("Er remote access satt opp? (Gjerne bekreft ved å sjekke om du får tilgang via remote access)", false) + yn("q11")));
+    H.push(item(q("Integrert i energinett?") + yn("q12")));
+    H.push(item(q("Er det lagt inn tidsstyring på ventilasjonen? (Hvis det er standard ventilasjon, skal dette alltid legges inn dersom ventilasjon er inkludert i ordren.)", false) + yn("q13")));
+    H.push(item(q("Er younium oppdatert med korrekt plant ID og antall systemer etter ombygging?") +
+      '<br>(Bruk AM Counter: <a href="http://toolbox.iwmac.local/am_counter/">http://toolbox.iwmac.local/am_counter/</a> for å sjekke om det stemmer med posisjonene i Younium)' +
+      yn("o10") +
+      "<br><strong>NB :</strong> Pass på at kunden ikke blir liggende med 2 ordrer."));
+    H.push(item(q("Har du lagret all dokumentasjon i anleggs mappe : 99-underlag fra kunde?", false) + yn("q15")));
+    H.push("<li><p>" + q("Tilleggsinformasjon:") + "</p></li>");
+    H.push("</ol>");
+    H.push("<ul>" +
+      "<li>Hvem har gjort leveransen internt: " + e(a.q16_internt) + "</li>" +
+      "<li>Hvem er bestiller: " + e(a.q16_bestiller) + "</li>" +
+      "<li>Er det brukt 4G: " + e(a.q16_g4) + "</li>" +
+      "<li>Annen relevant informasjon: " + e(a.q16_annet) + "</li>" +
+      "</ul>");
+    H.push("<hr><p>&nbsp;</p>");
+    H.push("<p>DEL 2,</p>");
+    H.push("<p><strong>Følges opp Service</strong></p>");
+    H.push("<h3><strong>Sjekkliste for Service oppfølging</strong></h3>");
+    H.push("<p>Vennligst besvar og gjennomfør følgende ved oppfølging av sak:</p>");
+    H.push("<ul>");
+    H.push(item("<strong>Sjekk at anlegg er avblokkert</strong><br>[]"));
+    H.push(item("<strong>Kanseller gammelt anlegg om det er byttet anleggsnummer og flytt brukere / tilganger til nytt anlegg</strong><br>[]"));
+    H.push(item("<strong>Sjekk at younium er aktiv</strong><br>[]"));
+    H.push("</ul>");
+    H.push("<p><strong>Tilleggsinformasjon:</strong></p>");
+    H.push(DTS_NB_HTML);
+    return H.join("");
+  }
+
+  const DTS_NB_TEXT = [
+    "NB! husk å legge til Kenneth Sjølstad - kenneth.sjolstad@bunnpris.no på alle nye bunnpris anlegg!",
+    "NB! husk å legge til Øystein Eng (oystein.eng@kjopmannshuset.no) og Kristoffer Kjelsberg (kristoffer.kjelsberg@joker.no) om det er Joker eller SPAR-butikker",
+    "NB! husk å legge til Erik Halstensen med firm_admin og service-tilgang på alle nye Meny butikker",
+  ];
+  const DTS_NB_HTML = "<ul>" +
+    '<li><strong>NB!</strong> husk å legge til Kenneth Sjølstad - <a href="mailto:kenneth.sjolstad@bunnpris.no">kenneth.sjolstad@bunnpris.no</a> på alle nye bunnpris anlegg!</li>' +
+    '<li><strong>NB!</strong> husk å legge til Øystein Eng (<a href="mailto:oystein.eng@kjopmannshuset.no">oystein.eng@kjopmannshuset.no</a>) og Kristoffer Kjelsberg (<a href="mailto:kristoffer.kjelsberg@joker.no">kristoffer.kjelsberg@joker.no</a>) om det er Joker eller SPAR-butikker</li>' +
+    "<li><strong>NB!</strong> husk å legge til Erik Halstensen med firm_admin og service-tilgang på alle nye Meny butikker</li>" +
+    "</ul>";
+
   function dtsBuildText(p, a) {
+    if (dtsIsOmb(a)) return dtsBuildTextOmbygging(p, a);
     const cb = (on) => (on ? "[x]" : "[ ]");
     const c = (q, opt) => cb(a[q] === opt);
     const t = (v) => String(v ?? "").trim();
@@ -19692,7 +19861,7 @@
     const BULLET = "•" + NB;
     const SUB = "   " + BULLET;
     const L = [];
-    L.push(t(a.title) || (dtsPlantId(p) + " - " + dtsPlantName(p) + " - Avblokkering og Overlevering"));
+    L.push(t(a.title) || dtsDefaultTitle(p, a));
     L.push("");
     L.push("Leveranseavdelingens Sjekkliste til Support");
     L.push("Vennligst besvar følgende spørsmål i forbindelse med leveranse:");
@@ -19813,6 +19982,7 @@
   // composer looks like the macro instead of hand-drawn "1." numbers.
   // Bold/plain per question follows the macro (11, 13, 14 and 15 are plain).
   function dtsBuildHtml(p, a) {
+    if (dtsIsOmb(a)) return dtsBuildHtmlOmbygging(p, a);
     const e = (v) => escHtml(String(v ?? "").trim());
     const box = (on) => (on ? "[x]" : "[]");
     const c = (q, opt) => box(a[q] === opt);
@@ -20175,7 +20345,10 @@
         // fought you on the questions where you want to change your mind after
         // reading the hint. Click to choose, then Next.
         b.addEventListener("click", () => {
+          // A title still on the old template's default follows the switch; an edited one stays.
+          const untouchedTitle = step.key === "mal" && (a.title === undefined || a.title === dtsDefaultTitle(p, a));
           a[step.key] = opt;
+          if (untouchedTitle) delete a.title;
           dtsSaveAnswers();
           renderDeliveryWizardStep();
         });
@@ -20422,8 +20595,7 @@
     const a = p.answers || {};
     const ed = document.getElementById("deliveryWizardReviewHtml");
     const html = ed ? ed.innerHTML : dtsBuildHtml(p, a);
-    const subject = String(a.title || "").trim() ||
-      (dtsPlantId(p) + " - " + dtsPlantName(p) + " - Avblokkering og Overlevering");
+    const subject = String(a.title || "").trim() || dtsDefaultTitle(p, a);
     // Creating a ticket is outward-facing and can't be undone from here, so it
     // always asks first and names what it is about to do.
     const already = String(a.zendeskTicketId ?? "").trim();
@@ -20437,7 +20609,7 @@
     btn.disabled = true;
     btn.textContent = "Oppretter…";
     try {
-      const ticket = await zendeskCreateHandoverTicket(subject, html);
+      const ticket = await zendeskCreateHandoverTicket(subject, html, dtsIsOmb(a));
       const id = String(ticket?.id ?? "").trim();
       if (!id) throw new Error("Zendesk returnerte ingen sak-id.");
       // Read it back before claiming success. The POST response is Zendesk's

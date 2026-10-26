@@ -263,6 +263,8 @@ Walks the 16 questions of *Leveranseavdelingens Sjekkliste til Support*, pre-fil
 | 14. AM Counter hint | The project's Younium subscription link, else the order link |
 | 16. Leveransen internt / bestiller | Rocketlane's project owner and customer company |
 
+The first step picks the checklist. **Ny leveranse** is the 16 questions above. **Ombygging** (v1.72.0) is the rebuild checklist: the Oneflow links, PANG notes, completeness, IK-mat, remote access, energinett, ventilation schedule, Younium plant ID and system count after the rebuild, and documentation, with its own DEL 2 for service (plant unblocked, old plant cancelled and users moved, Younium active). Its title is `<plant ID> - <plant name> - Avblokkering og Overlevering ---Ombygging---`, and its ticket takes group and tags from the Zendesk macro *Sjekkliste Overlevering IWMAC Kulde til Service (Ombygging)*, looked up by title. Answers shared by both lists carry over when you switch.
+
 Answers are saved per project in `GM` storage as you go, so a half-finished checklist survives a reload. Picking an answer does **not** jump to the next question — click the option, then **Next →** — so a mis-click costs nothing and you can change your mind after reading the hint.
 
 The last step is an **editable rich preview** of exactly what will be sent. From there:
