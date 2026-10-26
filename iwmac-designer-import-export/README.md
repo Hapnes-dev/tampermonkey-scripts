@@ -531,6 +531,16 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A container without its type no longer stops Insert (v1.104.1)
+
+A panel file Copilot made (a damper list) carried an objects container without `type`, `header_footer` and `title`.
+Insert JSON handed it to the Designer, which reads the container's type unconditionally, and stopped with *The
+designer refused the objects: TypeError: Cannot read properties of undefined (reading 'indexOf')*.
+`iwdieNormalizeDoc` now fills a container's keys as the host writes them, as it already did for objects: `type`
+`container_c` (a valid type is kept), `header_footer` `[]`, `title`, `id`, `container_type`, `className`, `linked`,
+`linked_to`, numeric size, position and z, and its items' empty fields. The kit's `validate.py` now checks every file
+against the panel schema too, whatever its family, so Copilot sees such a file fail before it is handed over.
+
 ### The bridge's arrangements as case boxes, and drawn ducts the duct objects' measure (v1.104.0)
 
 Native first in the bridge too (Thomas, 2026-10-22), as Copilot's `oversikt.py` does it:

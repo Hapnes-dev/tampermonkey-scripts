@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.104.0
+// @version      1.104.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.104.0';
+var IWDIE_VERSION = '1.104.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -2449,6 +2449,29 @@ function iwdieNormalizeDoc(doc) {
       c.unique_id = 'custom_import';
     }
     if (!Array.isArray(c.items)) c.items = [];
+    // (v1.104.1) the host reads these unconditionally: a container without "type" stopped Insert with
+    // "Cannot read properties of undefined (reading 'indexOf')" (a Copilot spjeldliste, 2026-10-26). Fill a plain
+    // objects_container's keys as the host writes them; a table_container keeps its own.
+    if (c.id == null) c.id = 'objects_container';
+    if (typeof c.container_type !== 'string' || !c.container_type) c.container_type = 'objects_container';
+    if (typeof c.className !== 'string' || !c.className) c.className = c.container_type;
+    if (typeof c.type !== 'string' || !/^container_(c|hc|hcf|cf)$/.test(c.type)) c.type = 'container_c';
+    if (!Array.isArray(c.header_footer)) c.header_footer = [];
+    if (typeof c.name !== 'string' || !c.name) c.name = 'objects_container_0';
+    if (c.title == null) c.title = 'Objects Container';
+    if (c.linked == null) c.linked = '0';
+    if (c.linked_to == null) c.linked_to = '0';
+    ['width', 'height', 'left', 'top'].forEach(function (k) { c[k] = parseInt(c[k], 10) || 0; });
+    c.zIndex = parseInt(c.zIndex, 10) || 4;
+    c.items.forEach(function (o) {
+      if (o == null || typeof o !== 'object') return;
+      ['tag_text', 'link_name', 'link_tag', 'sub_group', 'unit_id', 'unit_ref', 'alias_text'].forEach(function (k) {
+        if (o[k] == null) o[k] = '';
+      });
+      if (o.driver_id == null) o.driver_id = 'driver_id';
+      if (o.zIndex == null) o.zIndex = 'default';
+      ['posLeft', 'posTop', 'posWidth', 'posHeight'].forEach(function (k) { o[k] = parseInt(o[k], 10) || 0; });
+    });
   });
   return d;
 }
