@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.165
+// @version      4.166
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2191,7 +2191,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.165';
+    const SCRIPT_VERSION   = '4.166';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2649,6 +2649,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_CAL_ENABLED = 'cal_enabled';   // user toggle — the panel, and Book week's head + check-up
     const KEY_ZD_ENABLED  = 'zd_enabled';    // v4.150: read the Zendesk cases you commented on (default on)
     const KEY_ZD_PLANT_FIELD = 'zd_plant_field'; // id of the "Plant ID" ticket field, looked up once
+    const KEY_GFX_FACTS = 'gfx_facts_v1';        // v4.166: { '<commit>': { at, panels: [...] } } — a drawing save's panel facts, kept for good
     const KEY_CAL_ASKED   = 'cal_ask_date';  // 'YYYY-MM-DD' Book week last ASKED about the calendar (v4.129)
     const KEY_WEEK_FILL   = 'week_fill_mode'; // v4.154: Book week fills each day to the workday ('fill') or books actual time ('actual')
     const KEY_CAL_DAY_END = 'cal_day_end';    // v4.160: 'HH:MM' — calendar time after this is overtime: unticked, warned
@@ -3270,6 +3271,35 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             rows.set(key, cols);
         }
         return { fields, pkIdx, rdIdx, rows };
+    }
+    // A drawing save's panel facts, from the two versions of iw_sys_graphic_designer (v4.166 moved this out of
+    // bookTexts so the facts can be kept): which panels changed, revision from → to, and whether the layout
+    // (xml/json) or a background image changed; panels added as new rows.
+    function gfxFactsOf(ver) {
+        const d = chgDiff(ver), out = [], byPanel = new Map();
+        for (const m of d.modified) { if (!byPanel.has(m.key)) byPanel.set(m.key, []); byPanel.get(m.key).push(m); }
+        for (const [key, mods] of byPanel) {
+            const rev = mods.find(m => m.col === 'revision');
+            out.push({ panel: String(key).split(CHG_SEP).filter(Boolean).join(' / ') || '(panel)', added: false,
+                rev: !!rev, from: rev ? rev.from : null, to: rev ? rev.to : null,
+                what: [].concat(mods.some(m => m.col === 'xml' || m.col === 'json') ? ['layout'] : [],
+                    mods.some(m => /picture|image|thumb|icon/i.test(m.col || '')) ? ['background image'] : []) });
+        }
+        for (const a of d.added) { const l = chgRowLabel(a); if (l) out.push({ panel: l, added: true, rev: false, from: null, to: null, what: [] }); }
+        return out;
+    }
+    function gfxFactsKnown() {
+        const m = GM_getValue(KEY_GFX_FACTS, {});
+        return m && typeof m === 'object' ? m : {};
+    }
+    function gfxFactsRemember(cids, facts) {
+        const m = gfxFactsKnown();
+        let added = 0;
+        cids.forEach((c, i) => { if (facts[i]) { m[String(c)] = { at: Date.now(), panels: facts[i] }; added++; } });
+        if (!added) return;
+        const keys = Object.keys(m);
+        if (keys.length > GFX_FACTS_KEEP) keys.sort((a, b) => (m[b].at || 0) - (m[a].at || 0)).slice(GFX_FACTS_KEEP).forEach(k => { delete m[k]; });
+        GM_setValue(KEY_GFX_FACTS, m);
     }
     function chgDiff(ver) {
         const o = chgDecodeSide(ver && ver.old), n = chgDecodeSide(ver && ver.new);
@@ -5433,6 +5463,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const RL_API = 'https://kiona.api.rocketlane.com/api/v1';
     const KEY_RL_PROJECTS = 'rl_projects_cache';      // { fetched_at, list: [{id, name}] }
     const RL_PROJECTS_TTL_MS = 24 * 60 * 60 * 1000;   // project inventory refreshes daily (or on a cache miss)
+    const BOOK_MAX_GRAPHIC = 4;                       // v4.166: newest drawing saves of a plant-day read for panel detail (each can be 40 MB)
+    const GFX_FACTS_KEEP = 600;                       // v4.166: drawing saves whose facts are kept in this browser (newest first)
     const BOOK_MAX_COMMITS = 12;                      // newest triggered commits whose CONTENT is diffed for the notes (4 until v4.149 — a split row lost its unit names)
     const BOOK_MAX_COMMITS_SCAN = 12;                 // newest triggered commits whose TABLE LIST feeds the matcher and the task split (v4.141)
     // "RAC" in the matched project name or in a changed table ⇒ the work is gateway setup, not integration.
@@ -5450,12 +5482,38 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         } catch (e) { /* fall through */ }
         return null;
     }
+    // Rocketlane READS go through the page's own fetch (v4.166). The tenant API answers this page's origin
+    // (CORS allows it, api-key header included — measured 2026-10-27), and a big reply comes many times faster
+    // that way than through GM_xmlhttpRequest: a 4–5 MB page of the project list took 1–1.5 s by fetch and about
+    // 20 s by GM, so the project re-download (15 pages, 60+ MB) ran for over five minutes inside one Book day.
+    // Writes stay on GM_xmlhttpRequest, as proven since v4.62. A fetch that fails below HTTP (CORS, a blocked
+    // request, a sandbox without fetch) hands that read to GM and every later one too, for the session.
+    let _rlPageFetchOk = typeof fetch === 'function' && typeof AbortController === 'function';
     function rlFetch(method, path, body) {
+        const creds = rlCreds();
+        if (!creds) return Promise.resolve({ status: 0, json: null, error: 'no api-key (open Rocketlane while logged in)' });
+        const url = RL_API + path;
+        if (!url.startsWith(RL_API)) return Promise.resolve({ status: 0, json: null, error: 'origin pin' }); // never send the key elsewhere
+        if (method === 'GET' && _rlPageFetchOk) return rlFetchByPage(url, creds).then(r => r || rlFetchByGM(method, url, body, creds));
+        return rlFetchByGM(method, url, body, creds);
+    }
+    async function rlFetchByPage(url, creds) {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 30000);
+        try {
+            const r = await fetch(url, { method: 'GET', headers: { 'api-key': creds.apiKey, accept: 'application/json' }, credentials: 'omit', signal: ac.signal });
+            const raw = await r.text();
+            let j = null; try { j = JSON.parse(raw); } catch (e) { /* not JSON */ }
+            return { status: r.status, json: j, raw };
+        } catch (err) {
+            if (err && err.name === 'AbortError') return { status: 0, json: null, error: 'timeout' };
+            _rlPageFetchOk = false;
+            LOG('rl: page fetch unavailable — reading through GM_xmlhttpRequest from now on:', String(err && err.message || err));
+            return null;
+        } finally { clearTimeout(timer); }
+    }
+    function rlFetchByGM(method, url, body, creds) {
         return new Promise((resolve) => {
-            const creds = rlCreds();
-            if (!creds) { resolve({ status: 0, json: null, error: 'no api-key (open Rocketlane while logged in)' }); return; }
-            const url = RL_API + path;
-            if (!url.startsWith(RL_API)) { resolve({ status: 0, json: null, error: 'origin pin' }); return; } // never send the key elsewhere
             GM_xmlhttpRequest({
                 method, url,
                 headers: Object.assign({ 'api-key': creds.apiKey, 'accept': 'application/json' },
@@ -5472,19 +5530,41 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // ("2184 - Meny Hundvåg: ombygging"), which is what plant→project matching keys on. ARCHIVED projects
     // are dropped: they reject time entries with 400 "Invalid projectId", and plants can have an archived
     // duplicate next to the live project (2619 had both — the archived one matched first and 400'd).
+    // v4.166: four pages at a time (there are ~15, each 4–5 MB — every project comes with all its fields), one
+    // download in flight however many callers ask, and only a COMPLETE list is cached: until now a page that
+    // failed half-way cached the pages before it as the whole inventory for a day.
+    const RL_PROJECTS_MISS_REFRESH_MS = 60 * 60 * 1000; // a plant with no project re-reads the list only past this age
+    let _rlProjectsInflight = null;
+    function rlProjectsAgeMs() {
+        const c = GM_getValue(KEY_RL_PROJECTS, null);
+        return c && c.v === 2 && c.fetched_at ? Date.now() - c.fetched_at : Infinity;
+    }
     async function rlProjects(force) {
         const cached = GM_getValue(KEY_RL_PROJECTS, null);
         if (!force && cached && cached.v === 2 && cached.list && (Date.now() - cached.fetched_at) < RL_PROJECTS_TTL_MS) return cached.list;
-        const list = [];
-        for (let page = 1; page <= 20; page++) {
-            const r = await rlFetch('GET', `/projects?pageSize=100&page=${page}`);
-            const arr = Array.isArray(r.json) ? r.json : null;
-            if (!arr) break;
-            for (const p of arr) if (p && p.projectId && p.projectName && !p.archived) list.push({ id: p.projectId, name: p.projectName });
-            if (arr.length < 100) break;
-        }
-        if (list.length) GM_setValue(KEY_RL_PROJECTS, { v: 2, fetched_at: Date.now(), list });
-        return list.length ? list : (cached && cached.list) || [];
+        if (_rlProjectsInflight) return _rlProjectsInflight;
+        _rlProjectsInflight = (async () => {
+            const list = [], seen = new Set();
+            let complete = false;
+            for (let first = 1; first <= 20 && !complete; first += 4) {
+                const nums = [first, first + 1, first + 2, first + 3].filter(p => p <= 20);
+                const replies = await Promise.all(nums.map(p => rlFetch('GET', `/projects?pageSize=100&page=${p}`)));
+                let failed = false;
+                for (const r of replies) {
+                    const arr = Array.isArray(r.json) ? r.json : null;
+                    if (!arr) { failed = true; break; }
+                    for (const p of arr) {
+                        if (p && p.projectId && p.projectName && !p.archived && !seen.has(p.projectId)) { seen.add(p.projectId); list.push({ id: p.projectId, name: p.projectName }); }
+                    }
+                    if (arr.length < 100) { complete = true; break; }
+                }
+                if (failed) break;
+            }
+            if (complete && list.length) { GM_setValue(KEY_RL_PROJECTS, { v: 2, fetched_at: Date.now(), list }); return list; }
+            LOG('rl: project list incomplete —', list.length, 'read; keeping the cached list');
+            return (cached && cached.list && cached.list.length) ? cached.list : list;
+        })();
+        try { return await _rlProjectsInflight; } finally { _rlProjectsInflight = null; }
     }
     // Billability per project, once per session (v4.137). One GET per project that appears in a plan;
     // a rejection at book time also writes `false` here so the rest of that project's rows skip the
@@ -5502,7 +5582,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         return findProjectForPlant(list, plantId, lastBooked).project;
     }
     let _rlCategories = null; // name → categoryId (session cache)
-    async function rlCategories() {
+    let _rlCategoriesInflight = null; // v4.166: the early warm-up and the plan share one read
+    function rlCategories() {
+        if (_rlCategories) return Promise.resolve(_rlCategories);
+        if (!_rlCategoriesInflight) _rlCategoriesInflight = rlCategoriesRead().finally(() => { _rlCategoriesInflight = null; });
+        return _rlCategoriesInflight;
+    }
+    async function rlCategoriesRead() {
         if (_rlCategories) return _rlCategories;
         // One retry — a lone 429/hiccup on this call left a whole Book week day category-less (v4.99,
         // seen live: Monday's project rows all ⚠ no-category while Tue–Fri were fine).
@@ -5782,25 +5868,25 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         }
         // Per-panel detail, drawer-style: first rev → last rev + what was edited (layout / background
         // image), for the newest few graphic saves. Feeds both the names and the Notes lines.
-        const gJobs = [...new Set(graphicCids)].slice(-BOOK_MAX_COMMITS).map(c => ({ table_name: 'iw_sys_graphic_designer', commit: c }));
-        if (gJobs.length) {
+        // v4.166: a save's versions are the plant's WHOLE designer table, twice — 40 MB a save on 9660, whose
+        // three saves on 26.10 took 175 s as one 124 MB batch. So: the facts of a save (a few hundred bytes)
+        // are kept for good in this browser, since a commit never changes; only saves not seen before are
+        // read, one request each, three at a time; and only the newest BOOK_MAX_GRAPHIC of a plant-day.
+        const gCids = [...new Set(graphicCids)].slice(-BOOK_MAX_GRAPHIC).map(String);
+        if (gCids.length) {
             try {
-                phase(0.7, `reading ${gJobs.length} drawing save${gJobs.length === 1 ? '' : 's'}`);
-                const vers = await gmFetchTwoVersionsBatch(gJobs);
-                for (let i = 0; i < gJobs.length; i++) {
-                    const ver = vers[i]; if (!ver) continue;
-                    const d = chgDiff(ver), cid = String(gJobs[i].commit);
-                    const byPanel = new Map();
-                    for (const m of d.modified) { if (!byPanel.has(m.key)) byPanel.set(m.key, []); byPanel.get(m.key).push(m); }
-                    for (const [key, mods] of byPanel) {
-                        const rev = mods.find(m => m.col === 'revision');
-                        F.panel.push({ cid, panel: String(key).split(CHG_SEP).filter(Boolean).join(' / ') || '(panel)', added: false,
-                            rev: !!rev, from: rev ? rev.from : null, to: rev ? rev.to : null,
-                            what: [].concat(mods.some(m => m.col === 'xml' || m.col === 'json') ? ['layout'] : [],
-                                mods.some(m => /picture|image|thumb|icon/i.test(m.col || '')) ? ['background image'] : []) });
-                    }
-                    for (const a of d.added) { const l = chgRowLabel(a); if (l) F.panel.push({ cid, panel: l, added: true, rev: false, from: null, to: null, what: [] }); }
+                const known = gfxFactsKnown();
+                const missing = gCids.filter(c => !known[c]);
+                if (missing.length) {
+                    phase(0.7, `reading ${missing.length} drawing save${missing.length === 1 ? '' : 's'}`);
+                    const got = await pMap(missing, async c => {
+                        const [ver] = await gmFetchTwoVersionsBatch([{ table_name: 'iw_sys_graphic_designer', commit: c }]);
+                        return ver ? gfxFactsOf(ver) : null;
+                    }, 3);
+                    gfxFactsRemember(missing, got);
+                    missing.forEach((c, i) => { if (got[i]) known[c] = { panels: got[i] }; });
                 }
+                for (const cid of gCids) for (const f of ((known[cid] && known[cid].panels) || [])) F.panel.push(Object.assign({ cid }, f));
             } catch (e) { /* fallback text */ }
         }
         // A screen created today is NEW for all of the day's work on it (v4.158): its later edits are part
@@ -6346,7 +6432,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // A plant with no project may simply be newer than the daily project cache (8949 was booked
             // into the bucket while "8949 - Prix Selje: MQTT aftermarked" existed). Refresh the inventory
             // once per session on the first miss and look again (v4.133).
-            if (!match.project && !_projectsRefreshedThisSession) {
+            // v4.166: only when the list is over an hour old — this ran on the first such plant of EVERY
+            // session, and no-project plants are routine, so nearly every Book paid for a full re-download.
+            if (!match.project && !_projectsRefreshedThisSession && rlProjectsAgeMs() > RL_PROJECTS_MISS_REFRESH_MS) {
                 _projectsRefreshedThisSession = true;
                 try { projects = await rlProjects(true); match = findProjectForPlant(projects, v.plant_id, taskPrior.projLast, pinOpts); } catch (e) { /* keep the cached list */ }
             }
@@ -7215,7 +7303,20 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
 
     // The confirm-then-book flow, rendered inside the .catsum container.
+    // Start the reads every plan needs at once (v4.166) — the project list, the timesheet categories, the
+    // booking habits, the week's sheet and Zendesk — instead of after Outlook and Zendesk, one by one. Each
+    // shares its read with whoever asks next, so the plan build finds them done or in flight. Errors are left
+    // to the real callers, which already handle them.
+    function warmBookingReads(iso) {
+        const quiet = f => { try { const p = f(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* the plan asks again */ } };
+        quiet(() => rlProjects(false));
+        quiet(() => rlCategories());
+        quiet(() => rlTaskPrior());
+        quiet(() => rlEntriesOn(iso));
+        quiet(() => zdWeekActivity(mondayOfISO(iso)));
+    }
     function openBookingFlow(container, visits, iso) {
+        warmBookingReads(iso);
         const saved = container.innerHTML;
         container.innerHTML = `<div class="bookplan"><div class="bookplan-head">⤴ Book to timesheet — building plan…</div>${bookProgressMarkup()}</div>`;
         const box = container.querySelector('.bookplan');
@@ -7631,7 +7732,15 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
     const _zdOsloFmt = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Oslo', year: 'numeric', month: '2-digit', day: '2-digit' });
     const zdOsloDate = ts => { const d = new Date(ts); return isFinite(d) ? _zdOsloFmt.format(d) : ''; };
-    async function zdWeekActivity(mondayIso) {
+    // One read per week in flight (v4.166): the early warm-up and attachZendesk share it.
+    const _zdWeekInflight = new Map(); // mondayIso -> Promise
+    function zdWeekActivity(mondayIso) {
+        if (_zdWeekInflight.has(mondayIso)) return _zdWeekInflight.get(mondayIso);
+        const p = zdWeekActivityRead(mondayIso).finally(() => _zdWeekInflight.delete(mondayIso));
+        _zdWeekInflight.set(mondayIso, p);
+        return p;
+    }
+    async function zdWeekActivityRead(mondayIso) {
         if (!GM_getValue(KEY_ZD_ENABLED, true)) return { ok: false, off: true, items: [] };
         const sunday = addDaysISO(mondayIso, 6), today = todayISO();
         const ttl = (today >= mondayIso && today <= sunday) ? ZD_TTL_NOW_MS : ZD_TTL_PAST_MS;
@@ -7668,7 +7777,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     await pMap(tickets, async t => {
                         const c = await zdGet(`/tickets/${t.id}/comments.json?sort_order=desc&per_page=100`);
                         if (c.status === 200 && c.json) items.push(...zdMyDays(t, c.json.comments || [], meId, fieldId, mondayIso, sunday, zdOsloDate));
-                    }, 4);
+                    }, 8); // v4.166: 8 at a time (was 4) — each is a GM round trip
                     res = { ok: true, items };
                 }
             }
@@ -7933,6 +8042,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
 
         async function build() {
             if (!opts) { renderOptions(); return; }
+            warmBookingReads(monday); // v4.166: Rocketlane and Zendesk while the full-scan check and Outlook run
             const force = forceScanOnce; forceScanOnce = false;
             const mySeq = ++seq;
             box.innerHTML = headHtml() + bookProgressMarkup() + '<div class="rl-week-status">Building plans…</div>';
