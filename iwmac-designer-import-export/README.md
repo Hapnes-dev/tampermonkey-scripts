@@ -4536,8 +4536,8 @@ The hosted build carries none of this script's changes. The script only adds the
 catches the save while the page runs. Nothing leaves the browser: the editor is a static page,
 and the panel goes from tab to tab through Tampermonkey's storage.
 
-**The hosted copy.** It is VectorCraft 0.14.0 (since 2026-10-22; 0.11.0 before), built from the
-official source at that release with its licences and notices. Until 2026-10-17 it was the official
+**The hosted copy.** It is VectorCraft 0.17.0 (since 2026-10-27; 0.14.0 from 2026-10-22, 0.11.0
+before), built from the official source at that release with its licences and notices. Until 2026-10-17 it was the official
 web build byte for byte (0.10.0 until 2026-10-15, 0.9.0 until 2026-10-12). Since then it differs in
 these ways:
 - **WebAssembly SIMD is on.** The official web release is built without it, so its canvas renderer
@@ -4548,7 +4548,8 @@ these ways:
 - **A fix its release does not have yet** (since 0.14.0, the repository's `build/patches/`). From
   0.12.0 VectorCraft opens a stroked zigzag in an .ai, such as the Maskin template's heat exchanger,
   as its bounding rectangle, and a sync would put that rectangle in the panel's picture. The PDF
-  reader's fix is open upstream; the build carries it until a release has it.
+  reader's fix was closed upstream without being merged (2026-10-24); the build carries it until a
+  release has it.
 
 The repository's `build/build.sh` makes it from a release tag. **To move to a newer release, follow
 [UPDATING.md](https://github.com/Hapnes-dev/iwmac-vector/blob/main/UPDATING.md)**:
@@ -4577,6 +4578,16 @@ answers by the clicks first, which take SVG in 0.11.0 and 0.13.1 alike, ready af
 in the stub host, this script's syncs placed as many objects as on 0.11.0, an .ai opened from the card gave the same
 results, and the first save was answered by the clicks, ready after 11.5 s. The colours VectorCraft takes from an .ai
 move by up to 8 in a channel since 0.12.0, from its colour management.
+
+**VectorCraft 0.17.0 is hosted since 2026-10-27,** with the same fix; 0.15.0 and 0.16.0 were never hosted. On 0.17.0,
+in the stub host, script 1.104.1's syncs placed as many objects as on 0.14.0, an .ai opened from the card gave the
+same results, and the first save was answered by the clicks, ready after 10.9 s as on 0.14.0. One label of the
+Maskin template, *To offset*, which the .ai keeps as text, outlined letters and text, now opens as one text. Since
+0.15 VectorCraft moves the last frame while a drag, pan or zoom goes on, and renders once the view is still.
+
+**Watch in later releases:** upstream has asked for an opened SVG or PDF to take its name from its own title
+metadata, or from its file stem, instead of its file name. This script waits for VectorCraft's window title to be
+the file's name (`titled`), so such a release needs the script changed before it is hosted.
 
 The ArtCraft name and marks belong to the ArtCraft team and are not open source. Their brand
 terms ask a published modified build to carry none of them, so the hosted build has them taken
