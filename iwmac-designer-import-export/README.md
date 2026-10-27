@@ -531,6 +531,27 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### The bridge's Oversikt planner as Copilot's: names off a wall's runs, an arrangement's size and clusters (v1.105.0)
+
+Copilot's `oversikt.py` changed how it places an Oversikt (the kit's change log, Parts 173 and 174); the bridge's
+planner (`iwdieOvPlace`, `iwdieOvFinish`) now does the same, so a drawing made through Claude and one Copilot builds
+come out alike:
+
+- **A name keeps off a wall's runs, not off the box round the wall.** A wall drawn in Bakgrunn is taken as its runs, 1 px
+  either side (`iwdieOvWallSegs`; the scene keeps them as `segs`). Before, its whole box counted as a room: the store's
+  outer wall counted for nothing (its box was too big), and a walled room's box kept every name out of the room. A name
+  goes to the first spot that crosses no wall; only where every spot crosses one is a wall let be. A bell and the
+  states may stand on a wall, as on his panels. A case named inside its own box is no longer kept off by that box.
+- **An arrangement's size and clusters**, as `oversikt.py`'s groups: `scale` (0.25 to 4) times its own size, or `module`
+  [w, h], the size its plain case module comes out at, so every island of a panel has the same disks. `clusters`:
+  `"each"` (the default), `"first"` or a list of the cases' places, and a case `{cluster: false}`, are each that
+  case's box only. The case boxes stay, counted for how the others stand.
+- The bridge's `iwmac_edit` description names them (server 1.7.1).
+- Checked with the kit's comparison with `oversikt.py` (`test_oversikt_bridge`). A new case there has walls and both
+  arrangement options. 1.104.1 made 40 objects where `oversikt.py` makes 28: it gave clusters to the cases left
+  without, and placed the island at its own size. It also put K1's name across the outer wall. 1.105.0 places all 28
+  as `oversikt.py` does. Also checked with the bridge tests. Not run in the live Designer.
+
 ### A container without its type no longer stops Insert (v1.104.1)
 
 A panel file Copilot made (a damper list) carried an objects container without `type`, `header_footer` and `title`.

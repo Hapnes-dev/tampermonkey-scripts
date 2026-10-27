@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.104.1
+// @version      1.105.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.104.1';
+var IWDIE_VERSION = '1.105.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -13020,6 +13020,67 @@ function iwdieOvNameSpots(box, st, nw, caption, nameAt) {
   return first.concat(auto);
 }
 
+/** (v1.105.0) A drawing's subpaths of straight runs, each its points: M, L, H, V and Z, absolute or relative. null for a
+ *  path with a curve (a door's swing is no wall). -> [[[x, y], ...], ...] | null */
+function iwdieOvRuns(d) {
+  var t = String(d || '').match(/[A-Za-z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) || [], i = 0, c = null, x = 0, y = 0, sx = 0, sy = 0, runs = [];
+  var num = function () { return parseFloat(t[i++]); };
+  while (i < t.length) {
+    if (/[A-Za-z]/.test(t[i])) c = t[i++];
+    if (!c || !/[MmLlHhVvZz]/.test(c)) return null;
+    if (c === 'Z' || c === 'z') { x = sx; y = sy; if (runs.length) runs[runs.length - 1].push([x, y]); continue; }
+    if (c === 'M' || c === 'm' || c === 'L' || c === 'l') {
+      var nx = num(), ny = num();
+      if (!isFinite(nx) || !isFinite(ny)) return null;
+      if (c === 'm' || c === 'l') { nx += x; ny += y; }
+      x = nx; y = ny;
+      if (c === 'M' || c === 'm') { sx = x; sy = y; runs.push([[x, y]]); c = c === 'M' ? 'L' : 'l'; continue; }
+    } else if (c === 'H' || c === 'h') { var h = num(); if (!isFinite(h)) return null; x = c === 'h' ? x + h : h; }
+    else { var v = num(); if (!isFinite(v)) return null; y = c === 'v' ? y + v : v; }
+    if (!runs.length) return null;
+    runs[runs.length - 1].push([x, y]);
+  }
+  return runs;
+}
+
+/** (v1.105.0) The runs of a wall drawn in Bakgrunn, as oversikt.py keeps its walls: each segment [x0, y0, x1, y1] on the
+ *  drawing, from the element and the paths, lines and polylines in it. `ctm` (el) -> the element's matrix where the page
+ *  can say (getCTM); without it the runs are taken as written when they fill the element's measured `box` to 1.5 px,
+ *  else none - a wall a transform moves keeps its box, as before. A curve, or more than 400 pieces, gives none. */
+function iwdieOvWallSegs(el, box, ctm) {
+  var parts = /^(path|line|polyline)$/i.test(el.localName || '') ? [el] : Array.prototype.slice.call(el.querySelectorAll ? el.querySelectorAll('path, line, polyline') : []);
+  if (!parts.length || parts.length > 400) return null;
+  var segs = [], check = !ctm;
+  for (var i = 0; i < parts.length; i++) {
+    var e = parts[i], n = e.localName, runs = null;
+    if (n === 'path') runs = iwdieOvRuns(e.getAttribute('d'));
+    else if (n === 'line') runs = [[[+e.getAttribute('x1'), +e.getAttribute('y1')], [+e.getAttribute('x2'), +e.getAttribute('y2')]]];
+    else {
+      var v = String(e.getAttribute('points') || '').trim().split(/[\s,]+/).map(Number), pts = [];
+      for (var k = 0; k + 1 < v.length; k += 2) pts.push([v[k], v[k + 1]]);
+      runs = [pts];
+    }
+    if (!runs) return null;
+    var m = ctm ? ctm(e) : null;
+    if (!m) check = true;           // a piece the page gives no matrix for: its runs are checked against the box
+    var map = m ? function (p) { return [m.a * p[0] + m.c * p[1] + m.e, m.b * p[0] + m.d * p[1] + m.f]; } : function (p) { return p; };
+    runs.forEach(function (r) {
+      for (var j = 1; j < r.length; j++) {
+        var a = map(r[j - 1]), b = map(r[j]);
+        if (isFinite(a[0] + a[1] + b[0] + b[1]) && (a[0] !== b[0] || a[1] !== b[1])) segs.push([a[0], a[1], b[0], b[1]]);
+      }
+    });
+  }
+  if (!segs.length) return null;
+  if (check && box) {
+    var xs = [], ys = [];
+    segs.forEach(function (q) { xs.push(q[0], q[2]); ys.push(q[1], q[3]); });
+    var x0 = Math.min.apply(null, xs), y0 = Math.min.apply(null, ys), x1 = Math.max.apply(null, xs), y1 = Math.max.apply(null, ys);
+    if (Math.abs(x0 - box.x) > 1.5 || Math.abs(y0 - box.y) > 1.5 || Math.abs(x1 - box.x - box.w) > 1.5 || Math.abs(y1 - box.y - box.h) > 1.5) return null;
+  }
+  return segs;
+}
+
 /** What is taken on an Oversikt, as oversikt.py's Layout keeps it: boxes [x0, y0, x1, y1, tag], tag `case:key`,
  *  `value:key`, `member:key`, `room`, `label`, `plug`, `obj` ... A box is free inside the drawing area - 2 px in, to 3 px
  *  short of `right` (the legend's left edge) - and off every taken box but those `ignore` names (a tag, or its part
@@ -13079,7 +13140,7 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
         if (role === 'defrost' && stateAt) { px = stateAt[0]; py = stateAt[1]; }
         else {
           var hitAt = null;
-          [mine.concat(['room']), mine.concat(['case', 'room'])].some(function (ignore) {
+          [mine.concat(['room', 'wall']), mine.concat(['case', 'room', 'wall'])].some(function (ignore) {
             hitAt = null;
             spots[role].some(function (d) {
               var b = [p.vx + d[0], p.vy + d[1], p.vx + d[0] + ow, p.vy + d[1] + oh];
@@ -13107,7 +13168,9 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
   plan.forEach(function (p) {
     var c = p.c, text = c.label || c.key;
     if (reserved[c.key]) { todo.push({ key: c.key, text: text, spots: [reserved[c.key]], kind: 'taken' }); return; }
-    todo.push({ key: c.key, text: text, spots: iwdieOvNameSpots(c.box, p.st, iwdieOvNameWidth(text), c.caption, c.nameAt), kind: p.st === 'room' ? 'room' : 'case' });
+    // (v1.105.0) a case named inside its own box: its own box does not keep the name off (oversikt.py, 2026-10-27)
+    todo.push({ key: c.key, text: text, spots: iwdieOvNameSpots(c.box, p.st, iwdieOvNameWidth(text), c.caption, c.nameAt),
+      kind: p.st === 'room' ? 'room' : c.caption === 'inside' ? 'inside:case:' + c.key : 'case' });
   });
   // a name of no single case: above the cases it is over - centred, then a line higher, up to five, then over their left
   // end - or at its point
@@ -13123,11 +13186,16 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
   });
   todo.forEach(function (t) {
     if (!t.spots.length || !String(t.text || '').trim()) return;
-    var nw = iwdieOvNameWidth(t.text), ignore = t.kind === 'room' || t.kind === 'inside' ? ['room'] : [], at = null;
-    t.spots.some(function (s) {
-      var b = [iwdieOvRhu(s[0]), iwdieOvRhu(s[1]), iwdieOvRhu(s[0]) + nw, iwdieOvRhu(s[1]) + 14];
-      if (t.kind === 'taken' || lay.free(b, ignore)) { at = s; return true; }
-      return false;
+    var nw = iwdieOvNameWidth(t.text), at = null;
+    var ignore = t.kind === 'room' || t.kind === 'inside' ? ['room'] : /^inside:/.test(t.kind) ? ['room', t.kind.slice(7)] : [];
+    // (v1.105.0) clear of the walls first, as oversikt.py places a name; only where every spot crosses one, the first spot
+    // clear of the rest
+    [ignore, ignore.concat(['wall'])].some(function (ig) {
+      return t.spots.some(function (s) {
+        var b = [iwdieOvRhu(s[0]), iwdieOvRhu(s[1]), iwdieOvRhu(s[0]) + nw, iwdieOvRhu(s[1]) + 14];
+        if (t.kind === 'taken' || lay.free(b, ig)) { at = s; return true; }
+        return false;
+      });
     });
     if (!at) { at = t.spots[0]; gaps.push('the name ' + JSON.stringify(t.text) + ': no free spot; placed at its first'); }
     var nb = { x: iwdieOvRhu(at[0]), y: iwdieOvRhu(at[1]), w: nw, h: 14 };
@@ -13193,6 +13261,36 @@ function iwdieOvRolesOf(roles, key, fail, i) {
   return out;
 }
 
+/** (v1.105.0) An arrangement's size factor from its op, as oversikt.py's group_scale: its own size (1), "scale" times it
+ *  (0.25 to 4), or the factor that gives its plain case module (the template's Disk, else its first plain piece) the size
+ *  "module" [w, h] asks, in panel pixels. -> number | the reason it cannot be (a string) */
+function iwdieOvGroupScale(grp, o) {
+  if (o.scale !== undefined && o.module !== undefined) return 'scale or module, not both';
+  if (o.scale !== undefined) {
+    var sc = +o.scale;
+    return isFinite(sc) && sc >= 0.25 && sc <= 4 ? sc : 'scale is a number from 0.25 to 4';
+  }
+  var mod = o.module;
+  if (!(Array.isArray(mod) && mod.length === 2 && mod.every(function (v) { return isFinite(v) && +v > 0; }))) {
+    return 'module is [w, h], the size of its plain case module in panel pixels';
+  }
+  var plain = grp.pieces.filter(function (p) { return IWDIE_OV_RECT_PIECES.indexOf(p.f) >= 0; });
+  var disk = plain.filter(function (p) { return /Disk$/.test(p.f); })[0] || plain[0];
+  if (!disk) return grp.name + ' has no plain case module to size: give scale';
+  return Math.max(+mod[0], +mod[1]) / Math.max(disk.w, disk.h);
+}
+
+/** (v1.105.0) Which of an arrangement's n named cases carry a cluster, as oversikt.py's group_clusters: "each" (or true,
+ *  or none given), "first", or a list of their places 0 to n - 1. -> [places] | the reason (a string) */
+function iwdieOvGroupCarry(want, n) {
+  var all = [];
+  for (var j = 0; j < n; j++) all.push(j);
+  if (want === undefined || want === null || want === true || want === 'each') return all;
+  if (want === 'first') return n ? [0] : [];
+  if (Array.isArray(want) && want.every(function (v) { return v === Math.floor(v) && v >= 0 && v < n; })) return want.slice();
+  return 'clusters is "each", "first" or a list of places 0-' + (n - 1);
+}
+
 /** The clusters and names of an edit's cases (v1.84.0), worked out as oversikt.py does once every case is known: what the
  *  drawing has - its objects and names, its cases, its rooms, the legend's column - and what this edit placed before
  *  taken first, then iwdieOvPlace, then a step for each object and name. */
@@ -13202,6 +13300,12 @@ function iwdieOvFinish(ov, items, steps, boxes, size, notes) {
   var tb = function (b) { return [b.x, b.y, b.x + b.w, b.y + b.h]; };
   items.forEach(function (it) {
     if (!it.box || it.kind === 'pipe' || it.kind === 'image' || it.box.x >= right - 1) return;
+    // (v1.105.0) a wall drawn in Bakgrunn: each of its runs, 1 px either side, as oversikt.py takes a wall - a name never
+    // lies across it, a cluster may - not the box round the whole wall, which kept names off a room's whole middle
+    if (it.segs && /^(bakgrunn|background|backround)$/i.test(it.layer || '')) {
+      it.segs.forEach(function (q) { lay.take([Math.min(q[0], q[2]) - 1, Math.min(q[1], q[3]) - 1, Math.max(q[0], q[2]) + 1, Math.max(q[1], q[3]) + 1], 'wall'); });
+      return;
+    }
     if (it.box.w >= 0.6 * size.w || it.box.h >= 0.8 * size.h) return;
     var kind = iwdieOvCaseKind(it);
     if (kind) { lay.take(tb(it.box), 'case:' + it.cid); all.push([it.cid, [it.box.x, it.box.y, it.box.w, it.box.h]]); return; }
@@ -13349,7 +13453,15 @@ function iwdieCbPlan(ops, scene, ctx) {
       colour: (ctx.facts && ctx.facts.text && ctx.facts.text.colour) || '#425664', op: i });
   };
   var symbolStep = function (o, i, at, ref, label) {
-    var k = iwdieCbTurn(o.turn, o.flip), sz = iwdieCbSymbolBox(ctx.sizes, o.name, k, { w: o.w, h: o.h }), grp = iwdieSymGroup(o.name);
+    var k = iwdieCbTurn(o.turn, o.flip), grp = iwdieSymGroup(o.name), want = { w: o.w, h: o.h };
+    // (v1.105.0) an arrangement at "scale" times its own size, or with its plain case module at "module" [w, h] - every
+    // island of a panel with the same disks - as oversikt.py's groups take them
+    if (grp && (o.scale !== undefined || o.module !== undefined) && !(+o.w > 0) && !(+o.h > 0)) {
+      var gsc = iwdieOvGroupScale(grp, o);
+      if (typeof gsc === 'string') { fail(i, gsc); return null; }
+      want = (k & 1) ? { w: grp.h * gsc, h: grp.w * gsc } : { w: grp.w * gsc, h: grp.h * gsc };
+    }
+    var sz = iwdieCbSymbolBox(ctx.sizes, o.name, k, want);
     if (!sz) {
       // not in the kept library: placed all the same, at the size asked or a guess, and drawn as a box until it is
       var st = iwdieSymTable(), fam = st.families[st.byKey[iwdieSymKey(o.name)]];
@@ -13371,8 +13483,12 @@ function iwdieCbPlan(ops, scene, ctx) {
     // (v1.84.0) an arrangement's cases with their clusters: `cases` in the order of its names, each a name or {label,
     // roles, caption} (null leaves one out), or `clusters: true` under the template's names - their names and clusters
     // placed with every other case's, the names where the template writes them first
-    if (grp && (Array.isArray(o.cases) || o.clusters === true)) {
+    if (grp && (Array.isArray(o.cases) || o.clusters === true || o.clusters === 'each' || o.clusters === 'first' || Array.isArray(o.clusters))) {
       var gp = iwdieSymGroupPlace(grp, box, k), named = {}, boxed = [];
+      // (v1.105.0) which of its cases carry a cluster and a name: each (the default), the first, or a list of their places
+      // in "cases" (0 the first); the others, and a case with "cluster": false, are their case boxes only (oversikt.py)
+      var carry = iwdieOvGroupCarry(o.clusters, gp.names.length);
+      if (typeof carry === 'string') { fail(i, carry); return null; }
       gp.names.forEach(function (n, j) {
         var e = Array.isArray(o.cases) ? o.cases[j] : grp.text, pc = gp.pieces[n.slot];
         if (e === null || e === undefined || e === false || !pc) return;
@@ -13391,6 +13507,13 @@ function iwdieCbPlan(ops, scene, ctx) {
           steps.push({ 'do': 'add', kind: 'object', obj_id: nat, box: nb, bind: '', text: ' ', ovCase: true, op: i });
           boxes.push(nb);
           boxed.push(n.slot);
+        }
+        if (carry.indexOf(j) < 0 || ce.cluster === false) {
+          // its box only: in the way of the others' clusters and names, and counted for how they stand
+          ov.plugs.push([pb[0], pb[1], pb[0] + pb[2], pb[1] + pb[3], 'case:' + ck]);
+          ov.all.push([ck, pb]);
+          named[n.slot] = 1;
+          return;
         }
         ov.cases.push({ key: ck, box: pb, roles: cro, label: ce.label || grp.text, caption: ce.caption, wall: ce.wall,
           nameAt: { x: n.x, y: n.y, just: n.just }, op: i, ref: ce.ref });
@@ -13711,6 +13834,8 @@ function iwdieSvgProp(rules, get, name) {
  *  symbol; a stroked path without fill in Rør a pipe; a rounded 40 x 20 box in Former a pill. -> item */
 function iwdieCbClassify(d) {
   var a = d.attrs || {}, it = { cid: d.cid, layer: d.layer, kind: 'shape', name: d.name || '', box: d.box };
+  // (v1.105.0) a wall drawn in Bakgrunn: its runs, which an Oversikt's names keep off as oversikt.py keeps them off
+  if (d.segs && d.segs.length) it.segs = d.segs;
   var pn = d.tag === 'g' ? iwdieVcPlaceholderName(d.name, a['data-iwdie-obj']) : null;
   if (pn) {
     var known = iwdieVcObjectIndex()[pn.id];
@@ -19713,8 +19838,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var text = c.el.localName === 'text' ? c.el.textContent : '';
         var pts = null;
         if (c.el.localName === 'line') pts = [[+c.el.getAttribute('x1'), +c.el.getAttribute('y1')], [+c.el.getAttribute('x2'), +c.el.getAttribute('y2')]];
+        var bx = { x: x0, y: y0, w: Math.max.apply(null, xs) - x0, h: Math.max.apply(null, ys) - y0 };
+        var segs = /^(bakgrunn|background|backround)$/i.test(c.layer || '') && /^(g|path|line|polyline)$/.test(c.el.localName) ?
+          iwdieOvWallSegs(c.el, bx, function (e) { try { return e.getCTM(); } catch (x) { return null; } }) : null;
         out.push(iwdieCbClassify({ cid: 'd' + i, layer: c.layer, tag: c.el.localName, name: nameOf(c.el), attrs: at, text: String(text || '').replace(/\s+/g, ' ').trim(),
-          box: { x: x0, y: y0, w: Math.max.apply(null, xs) - x0, h: Math.max.apply(null, ys) - y0 }, circuit: c.circuit, pts: pts }));
+          box: bx, circuit: c.circuit, pts: pts, segs: segs }));
       });
       return out;
     }
@@ -23771,8 +23899,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           var pts = null;
           if (c.el.localName === 'line') pts = [[+c.el.getAttribute('x1'), +c.el.getAttribute('y1')], [+c.el.getAttribute('x2'), +c.el.getAttribute('y2')]];
           else if (c.el.localName === 'polyline') pts = String(c.el.getAttribute('points') || '').trim().split(/[\s]+/).map(function (p) { return p.split(',').map(Number); });
+          var segs = /^(bakgrunn|background|backround)$/i.test(c.layer || '') && /^(g|path|line|polyline)$/.test(c.el.localName) ?
+            iwdieOvWallSegs(c.el, { x: b.x, y: b.y, w: b.w, h: b.h }, null) : null;
           items.push(iwdieCbClassify({ cid: c.el.getAttribute('data-iwdie-cid'), layer: c.layer, tag: c.el.localName, name: nameOf(c.el), attrs: at,
-            text: String(text || '').replace(/\s+/g, ' ').trim(), box: { x: b.x, y: b.y, w: b.w, h: b.h }, circuit: c.circuit, pts: pts }));
+            text: String(text || '').replace(/\s+/g, ' ').trim(), box: { x: b.x, y: b.y, w: b.w, h: b.h }, circuit: c.circuit, pts: pts, segs: segs }));
         });
         var out = new XMLSerializer().serializeToString(doc);
         if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
@@ -29967,6 +30097,10 @@ if (typeof module !== 'undefined' && module.exports) {
     cbTurn: iwdieCbTurn,
     cbPlan: iwdieCbPlan,
     ovPlace: iwdieOvPlace,
+    ovRuns: iwdieOvRuns,
+    ovWallSegs: iwdieOvWallSegs,
+    ovGroupScale: iwdieOvGroupScale,
+    ovGroupCarry: iwdieOvGroupCarry,
     ovStance: iwdieOvStance,
     ovOffsets: iwdieOvOffsets,
     ovNameWidth: iwdieOvNameWidth,
