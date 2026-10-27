@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.166
+// @version      4.167
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -2191,7 +2191,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.166';
+    const SCRIPT_VERSION   = '4.167';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2296,6 +2296,48 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // NOTHING and Search/Full scan come up empty. Probe for an origin that actually works for
     // GM_xmlhttpRequest (try http first — reliable, serves identical data); cached per page session.
     let _apiOriginP = null;
+    // IWMAC's change service through the page's own fetch where Chrome ALREADY lets this page reach the local
+    // network (v4.167). Measured 2026-10-27 in his Chrome: get_tables_patch took ~24–30 s through
+    // GM_xmlhttpRequest — a fully cached Book day still spent 189 s on seven of them — and 0.4–1.7 s by fetch at
+    // the same moment; the server answers Node in 0.35 s even uncached, so the wait is in Tampermonkey's request
+    // path, not the plant. The page may reach http://tools.iwmac.local only with the local-network-access
+    // permission granted, and that state is READ, never requested: no prompt for anyone, and without it every
+    // call goes by GM as before. Only services/changes/* (commits, tables, data — all three checked to answer
+    // this origin); a fetch that is blocked hands that call, and the rest of the session, back to GM.
+    let _iwPageFetch = null; // null: not known yet (GM meanwhile) · true · false
+    let _iwPageFetchCheck = null;
+    function iwPageFetchCheck() {
+        if (_iwPageFetch !== null || _iwPageFetchCheck) return _iwPageFetchCheck || Promise.resolve();
+        _iwPageFetchCheck = (async () => {
+            try {
+                if (typeof fetch !== 'function' || typeof AbortController !== 'function' || typeof navigator === 'undefined' || !navigator.permissions) { _iwPageFetch = false; return; }
+                let state = 'unsupported';
+                for (const name of ['local-network-access', 'local-network']) {
+                    try { state = (await navigator.permissions.query({ name })).state; break; } catch (e) { /* not this name */ }
+                }
+                _iwPageFetch = state === 'granted';
+                LOG('iwmac: change service by', _iwPageFetch ? 'page fetch (local network access granted)' : `GM_xmlhttpRequest (local network access: ${state})`);
+            } catch (e) { _iwPageFetch = false; }
+        })();
+        return _iwPageFetchCheck;
+    }
+    const IW_PAGE_FETCH_RE = /^https?:\/\/tools\.iwmac\.local\/services\/changes\/[a-z_]+\.php$/;
+    // GM_xmlhttpRequest's details, served by fetch when allowed: onload({ status, responseText }), onerror, ontimeout.
+    function iwRequest(d) {
+        if (_iwPageFetch === null) iwPageFetchCheck();
+        if (!(_iwPageFetch === true && d.method === 'POST' && IW_PAGE_FETCH_RE.test(String(d.url)))) return GM_xmlhttpRequest(d);
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), d.timeout || 60000);
+        fetch(d.url, { method: 'POST', headers: d.headers || {}, body: d.data, credentials: 'omit', signal: ac.signal })
+            .then(r => r.text().then(t => ({ status: r.status, responseText: t })))
+            .then(res => { clearTimeout(timer); if (d.onload) d.onload(res); }, err => {
+                clearTimeout(timer);
+                if (err && err.name === 'AbortError') { if (d.ontimeout) d.ontimeout(); return; }
+                _iwPageFetch = false;
+                LOG('iwmac: page fetch blocked — GM_xmlhttpRequest from now on:', String(err && err.message || err));
+                GM_xmlhttpRequest(d); // this call again, the old way
+            });
+    }
     function gmProbeOrigin(origin) {
         return new Promise(resolve => {
             try {
@@ -3096,7 +3138,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const COMMITS_CACHE_TTL_MS = 10 * 60 * 1000;
     function gmFetchCommitsOne(base, pid) {
         return new Promise(resolve => {
-            GM_xmlhttpRequest({
+            iwRequest({
                 method: 'POST',
                 url: base + '/services/changes/commits.php',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -3176,7 +3218,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         const base = await apiOrigin();
         return new Promise(resolve => {
             const reqs = commitIds.map((cid, i) => ({ jsonrpc: '2.0', method: 'get_tables_patch', params: { commit: String(cid) }, id: i }));
-            GM_xmlhttpRequest({
+            iwRequest({
                 method: 'POST', url: base + '/services/changes/tables.php',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: JSON.stringify(reqs), timeout: 60000,
                 onload: r => {
@@ -3213,7 +3255,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         if (!missIdx.length) return out;
         await new Promise(resolve => {
             const reqs = missIdx.map((mi, i) => ({ jsonrpc: '2.0', method: 'get_two_versions', params: { table_name: jobs[mi].table_name, commit: String(jobs[mi].commit) }, id: i }));
-            GM_xmlhttpRequest({
+            iwRequest({
                 method: 'POST', url: base + '/services/changes/data.php',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, data: JSON.stringify(reqs), timeout: 60000,
                 onload: r => {
@@ -7314,6 +7356,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         quiet(() => rlTaskPrior());
         quiet(() => rlEntriesOn(iso));
         quiet(() => zdWeekActivity(mondayOfISO(iso)));
+        quiet(() => iwPageFetchCheck()); // v4.167
     }
     function openBookingFlow(container, visits, iso) {
         warmBookingReads(iso);
@@ -7777,7 +7820,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     await pMap(tickets, async t => {
                         const c = await zdGet(`/tickets/${t.id}/comments.json?sort_order=desc&per_page=100`);
                         if (c.status === 200 && c.json) items.push(...zdMyDays(t, c.json.comments || [], meId, fieldId, mondayIso, sunday, zdOsloDate));
-                    }, 8); // v4.166: 8 at a time (was 4) — each is a GM round trip
+                    }, 4); // 4 at a time — 8 (v4.166) made the week read SLOWER through GM: 106 s against 33 s
                     res = { ok: true, items };
                 }
             }
