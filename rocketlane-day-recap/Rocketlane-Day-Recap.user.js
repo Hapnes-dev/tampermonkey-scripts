@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.164
+// @version      4.165
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -1505,7 +1505,7 @@ var RL_RECAP_MATCH = (function () {
     // plan when the other is a shell → the one last booked (only between projects that both look real)
     // → list order. Task counts and the pin are inputs, so this stays pure.
     const SHELL_TASKS_MAX = 3; // a seeded-but-unplanned Rocketlane project carries 2 default tasks
-    function findProjectForPlant(list, plantId, lastBooked, opts) {
+    function findProjectByNumber(list, plantId, lastBooked, opts) {
         const id = String(plantId == null ? '' : plantId).trim();
         const none = { project: null, tier: 0, candidates: [], reason: '' };
         if (!id) return none;
@@ -1550,6 +1550,35 @@ var RL_RECAP_MATCH = (function () {
             return { project: pick, tier: t + 1, candidates: cands, reason };
         }
         return none;
+    }
+    // The project the user chose for a plant number wins over every rule (v4.165): between twins that is the
+    // v4.134 pin, and since the review's project search it may be ANY project — one whose name does not carry
+    // the number at all (a plant with no project of its own, a build project named after the building). A
+    // linked project that no longer exists (archived) is ignored and the number decides again.
+    function findProjectForPlant(list, plantId, lastBooked, opts) {
+        const found = findProjectByNumber(list, plantId, lastBooked, opts);
+        const pin = opts && opts.pinned;
+        if (pin != null && String(plantId == null ? '' : plantId).trim() && !(found.project && String(found.project.id) === String(pin))) {
+            const linked = (list || []).find(p => p && String(p.id) === String(pin));
+            if (linked) return { project: linked, tier: 0, candidates: [linked], reason: 'linked' };
+        }
+        return found;
+    }
+
+    // The review's pick lists (v4.165): every word typed must occur in the item's label or its `sub` text —
+    // case-blind, accent-blind, ø as o and æ as ae, so "svom" finds "Svømmehall". The list's order is kept.
+    function pickFold(t) {
+        return String(t == null ? '' : t).toLowerCase().replace(/ø/g, 'o').replace(/æ/g, 'ae')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    }
+    function filterPickItems(items, query) {
+        const words = pickFold(query).split(/\s+/).filter(Boolean);
+        if (!words.length) return (items || []).slice();
+        return (items || []).filter(it => {
+            if (!it) return false;
+            const hay = pickFold((it.label || '') + ' ' + (it.sub || ''));
+            return words.every(w => hay.includes(w));
+        });
     }
 
     // What a project's task list amounts to for booking (v4.135, Thomas: "5590 did have any tasks. so
@@ -2101,6 +2130,7 @@ var RL_RECAP_MATCH = (function () {
     return {
         TASK_DISCIPLINES, BOOK_QTY_TASK_RE, BOOK_CHECKLIST_RE,
         bookNorm, bookDiscOf, bookDiscWeights, bookNameHits, bookPickWeighted, pickTask, findProjectForPlant, SHELL_TASKS_MAX, taskPoolSummary, projectIsBillable,
+        pickFold, filterPickItems,
         SPLIT_C, segmentWeights, splitCategory,
         THING_C, saveKind, splitThings,
         SCREEN_C, drawPartWeight, screenFamily, splitScreens,
@@ -2144,6 +2174,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const { pickTask, bookDiscWeights, findProjectForPlant, taskPoolSummary, projectIsBillable, splitCategory } = RL_RECAP_MATCH;
     const { saveKind, splitThings } = RL_RECAP_MATCH; // v4.158
     const { drawPartWeight, splitScreens } = RL_RECAP_MATCH; // v4.159
+    const { filterPickItems } = RL_RECAP_MATCH; // v4.165
 
     const KEY_KNOWN_PLANTS = 'known_plants';   // [plant_id, ...]
     const KEY_PLANT_NAMES  = 'plant_names';    // { plant_id: name }
@@ -2160,7 +2191,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.164';
+    const SCRIPT_VERSION   = '4.165';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -2628,7 +2659,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // picks once in the review UI — remembered here, exactly like the team-bucket fallback.
     const KEY_CAL_PROJECT      = 'cal_project';
     const KEY_CAL_PROJECT_NAME = 'cal_project_name';
-    const KEY_PROJECT_PICK     = 'project_pick';     // { '<plant number>': projectId } — the user's choice between twin projects (v4.134)
+    const KEY_PROJECT_PICK     = 'project_pick';     // { '<plant number>': projectId } — the user's project for a plant: between twins (v4.134), any project since v4.165
 
     // Find a live Outlook access token in the SPA's MSAL cache. Entries are JSON blobs keyed by
     // account/scope (plain JSON in this tenant's Outlook, MSAL 5 — checked 2026-09-25); which one counts
@@ -4189,6 +4220,25 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-late { color: #b45309; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-proj { font-size: 11px; max-width: 190px; padding: 1px 2px; border: 1px solid #c6c6c6; border-radius: 4px; background: #fff; color: #21272a; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-txt { flex: 1; line-height: 1.35; }
+        /* The review's task and project pickers (v4.165): a button on the row, a searchable list on <body>. */
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-pick { font: inherit; font-size: 11px; line-height: 1.35; max-width: 100%; padding: 0 5px; margin: 0 1px; border: 1px solid #c6c6c6; border-radius: 4px; background: #fff; color: #161616; cursor: pointer; text-align: left; vertical-align: baseline; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-pick:hover:not([disabled]) { border-color: #0f62fe; color: #0f62fe; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-pick[disabled] { cursor: default; opacity: .7; }
+        .rl-recap-pick { position: fixed; z-index: 2147483647; /* above the Day panel (…641) and its date picker (…646) */ box-sizing: border-box; padding: 6px; background: #fff; color: #21272a; border: 1px solid #8d8d8d; border-radius: 6px; box-shadow: 0 6px 24px rgba(0,0,0,.18); font: 12px/1.35 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; text-align: left; }
+        .rl-recap-pick .rl-pick-title { font-size: 11px; color: #525252; margin: 0 2px 5px; }
+        .rl-recap-pick .rl-pick-q { display: block; width: 100%; box-sizing: border-box; font: inherit; padding: 4px 6px; border: 1px solid #c6c6c6; border-radius: 4px; outline: none; background: #fff; color: #161616; }
+        .rl-recap-pick .rl-pick-q:focus { border-color: #0f62fe; box-shadow: 0 0 0 1px #0f62fe; }
+        .rl-recap-pick .rl-pick-list { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; margin-top: 5px; }
+        .rl-recap-pick .rl-pick-grp { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: #6f6f6f; padding: 6px 6px 2px; }
+        .rl-recap-pick .rl-pick-opt { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+        .rl-recap-pick .rl-pick-opt.rl-pick-on { background: #e5f0ff; }
+        .rl-recap-pick .rl-pick-opt.rl-pick-cur .rl-pick-lbl { font-weight: 600; }
+        .rl-recap-pick .rl-pick-lbl { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .rl-recap-pick .rl-pick-mark { flex: none; font-size: 10px; color: #6f6f6f; }
+        .rl-recap-pick .rl-pick-done .rl-pick-lbl { color: #6f6f6f; }
+        .rl-recap-pick .rl-pick-act .rl-pick-lbl { color: #0f62fe; }
+        .rl-recap-pick .rl-pick-new .rl-pick-lbl { color: #198038; font-weight: 600; }
+        .rl-recap-pick .rl-pick-more, .rl-recap-pick .rl-pick-none { font-size: 11px; color: #6f6f6f; padding: 4px 6px; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-txt small { color: #6f6f6f; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-warn { font-size: 11px; color: #b1520a; background: #fff4e5; border: 1px solid #f0d6b0; border-radius: 6px; padding: 5px 8px; margin: 4px 0 6px; }
         :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-nb-warn { color: #b1520a; border-color: #f0d6b0; background: #fff4e5; }
@@ -6071,6 +6121,39 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         _bucketSubtaskMemo.set(memoKey, out); // a failed create memoises null → this run falls back to the activity style
         return out;
     }
+    // A task the user named in the review (v4.165, "➕ New task"): made when Book is pressed, never while
+    // reviewing — once per project and name, and a task of that name already in the project is used instead
+    // (so a re-run, or two rows naming the same task, never make two). Top level of the project, no phase; the
+    // create shape is the one the bucket subtasks prove (v4.105), without the parent. Resolves to
+    // { taskId, taskName }, or null when Rocketlane refuses — a failure is not remembered, so the next Book
+    // tries again.
+    const _namedTaskMemo = new Map(); // `${projectId}|${name lower-cased}` -> Promise<{ taskId, taskName } | null>
+    function ensureNamedTask(projectId, taskName) {
+        const name = String(taskName || '').replace(/\s+/g, ' ').trim();
+        if (!projectId || !name) return Promise.resolve(null);
+        const key = projectId + '|' + name.toLowerCase();
+        if (_namedTaskMemo.has(key)) return _namedTaskMemo.get(key);
+        const p = (async () => {
+            try {
+                const tasks = await rlTasks(projectId);
+                const same = tasks.find(t => String(t.taskName).replace(/\s+/g, ' ').trim().toLowerCase() === name.toLowerCase());
+                if (same) { LOG('book: new task already in the project —', name, '→', same.taskId); return { taskId: same.taskId, taskName: same.taskName }; }
+                let r = await rlFetch('POST', '/tasks', { taskName: name, project: { projectId } });
+                if (!(r.status === 200 || r.status === 201)) r = await rlFetch('POST', '/tasks', { taskName: name, projectId });
+                const t = r.json && (r.json.taskId ? r.json : (r.json.data && r.json.data.taskId ? r.json.data : null));
+                if ((r.status === 200 || r.status === 201) && t && t.taskId) {
+                    (_rlTasksCache[projectId] = _rlTasksCache[projectId] || []).push({ taskId: t.taskId, taskName: name, done: false, phase: '', parentTask: null });
+                    LOG('book: created task', name, '→', t.taskId, 'in project', projectId);
+                    return { taskId: t.taskId, taskName: name };
+                }
+                LOG('book: task create failed', r.status, String(r.raw || r.error || '').slice(0, 160));
+            } catch (err) { LOG('book: task create failed', String(err)); }
+            return null;
+        })();
+        _namedTaskMemo.set(key, p);
+        p.then(v => { if (!v) _namedTaskMemo.delete(key); });
+        return p;
+    }
     // Read a freshly created subtask back and report whether the parent actually attached (v4.108).
     // A 201 proves only that the row exists; see the field-name note above. Never throws and never
     // affects the booking — the task is usable either way, it just sits in the wrong place.
@@ -6457,6 +6540,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // Team bucket projects ("Team Kulde Oppgaver", …) — offered as a fallback home for plants that
         // have no Rocketlane project of their own.
         plan._teamProjects = projects.filter(p => /^\s*team\s/i.test(p.name));
+        plan._projects = projects;   // the review's project search (v4.165)
+        applyReviewState(plan, iso); // the user's task picks, and the ticks handed across a rebuild (v4.165)
 
         // ---- Land the day on the workday total (v4.130) -------------------------------------------
         // Until now the plant distribution filled a whole 7,5 h regardless of what the sheet already
@@ -6573,6 +6658,270 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         pins[String(plantNo)] = +projectId;
         GM_setValue(KEY_PROJECT_PICK, pins);
         LOG('book: pinned project', projectId, 'for plant', plantNo);
+    }
+    function unpinProject(plantNo) { // v4.165: "✕ Remove the link" — the number decides again
+        const pins = GM_getValue(KEY_PROJECT_PICK, {}) || {};
+        delete pins[String(plantNo)];
+        GM_setValue(KEY_PROJECT_PICK, pins);
+        LOG('book: unlinked project for plant', plantNo);
+    }
+
+    // ---- The review's task and project pickers (v4.165) ------------------------------------------------
+    // A colleague's ask, passed on by Thomas (2026-10-27): "alle oppgavene på det prosjektet som en dropdown
+    // (gjerne søkbar)" so an entry can be put on the right job, "legge til ny oppgave fra samme side" for
+    // extra work with no task, and for a plant with no own project "søkt opp prosjekter manuelt og koblet de
+    // mot i stedet for at alt havner på Team Øystein" — the build projects' templates are odd, so the match
+    // is not always right. The matcher still picks first; these only override it. Nothing is written while
+    // reviewing: a picked task is booked at Book, a new task is made at Book, and a project link is a
+    // setting in this browser (KEY_PROJECT_PICK) that rebuilds the plan, as the v4.134 twin pin does.
+
+    // A row's identity across rebuilds of the same day — date, project, plant, category and its place among
+    // that plant-category's rows — so a pick survives a twin or link change elsewhere in the review.
+    const _taskPicks = new Map(); // row key -> { kind: 'task', taskId, taskName } | { kind: 'new', name } | { kind: 'none' }
+    const _rowTicks = new Map();  // row key -> { selected, fallbackProjectId } — handed across ONE rebuild
+    function applyReviewState(plan, iso) {
+        const seen = new Map();
+        for (const e of plan || []) {
+            if (!e) continue;
+            const base = e.calendar ? `${iso}|cal|${e.calKey || e.activityName}` : `${iso}|${e.projectId || '-'}|${e.plant_id}|${e.category}`;
+            const ord = (seen.get(base) || 0) + 1;
+            seen.set(base, ord);
+            e._key = base + '|' + ord;
+            const pick = !e.calendar && e.projectId ? _taskPicks.get(e._key) : null;
+            if (pick) applyTaskPick(e, pick);
+            const tick = _rowTicks.get(e._key);
+            if (tick) {
+                _rowTicks.delete(e._key);
+                if (typeof tick.selected === 'boolean' && ['ready', 'over-budget', 'no-project'].includes(e.status)) e.selected = tick.selected;
+                if (tick.fallbackProjectId && e.status === 'no-project') e.fallbackProjectId = tick.fallbackProjectId;
+            }
+        }
+    }
+    function rememberRowTicks(rows) {
+        for (const e of rows || []) if (e && e._key) _rowTicks.set(e._key, { selected: e.selected, fallbackProjectId: e.fallbackProjectId || null });
+    }
+    function applyTaskPick(e, p) {
+        if (!e._auto) e._auto = { taskId: e.taskId, taskName: e.taskName, taskGuess: e.taskGuess }; // what the matcher said
+        e.newTaskName = null;
+        if (p.kind === 'task') { e.taskId = p.taskId; e.taskName = p.taskName; }
+        else if (p.kind === 'new') { e.taskId = null; e.taskName = null; e.newTaskName = p.name; }
+        else { e.taskId = null; e.taskName = null; } // 'none': an activity line
+        e.taskGuess = false; e.taskPicked = true;
+    }
+    function clearTaskPick(e) {
+        if (e._key) _taskPicks.delete(e._key);
+        if (e._auto) { e.taskId = e._auto.taskId; e.taskName = e._auto.taskName; e.taskGuess = e._auto.taskGuess; }
+        e.newTaskName = null; e.taskPicked = false;
+    }
+    function setTaskPick(e, p) {
+        if (p.kind === 'new') p = { kind: 'new', name: String(p.name || '').replace(/\s+/g, ' ').trim().slice(0, 250) };
+        if (p.kind === 'new' && !p.name) return false;
+        if (e._key) _taskPicks.set(e._key, p);
+        applyTaskPick(e, p);
+        return true;
+    }
+
+    // The task half of a row's line: what Book will write, as a button that opens the task list. Only a row
+    // that will book onto a project gets the button; a ⏭, a no-category or a calendar row just says what it is.
+    function rowTaskPickable(e) { return !!(e && !e.calendar && e.projectId && (e.status === 'ready' || e.status === 'over-budget')); }
+    function taskPartHtml(e, withNote) {
+        const can = rowTaskPickable(e);
+        const tip = "Choose the task — search all of this project's tasks, or name a new one";
+        const btn = inner => can ? `<button type="button" class="bookplan-pick" data-pick="task" title="${escapeHtml(tip)}">${inner} ▾</button>` : inner;
+        let html;
+        if (e.newTaskName) html = '➕ new task: ' + btn(`<b>${escapeHtml(e.newTaskName)}</b>`) + ' <i>— made in Rocketlane when you book</i>';
+        else if (e.taskName) html = '📌 task' + (e.taskPicked ? ' <i>(your pick)</i>' : e.taskGuess ? ' <i>(best guess)</i>' : '') + ': '
+            + btn(`<b>${escapeHtml(e.taskName)}</b>`) + (withNote ? ' · note: ' + escapeHtml(e.activityName) : '');
+        else html = activityLabelHtml(e) + (can ? ' ' + btn('choose a task') : '');
+        return `<span class="bookplan-task">${html}</span>`;
+    }
+    // The project half: the row's project as a button that opens the project search.
+    function projectPartHtml(e) {
+        if (!e) return '';
+        if (e.calendar || !e.projectId) return e.calendar && e.projectName ? ' → ' + escapeHtml(e.projectName) : '';
+        const linked = e.projMatch && e.projMatch.reason === 'linked';
+        return ` → <button type="button" class="bookplan-pick" data-pick="project" title="Change the project for ${escapeHtml(String(e.plant_id))} — remembered for this plant from now on">${escapeHtml(e.projectName || '')} ▾</button>`
+            + (linked ? ' <span class="bookplan-nb" title="You linked this plant to this project in the review">🔗 linked by you</span>' : '');
+    }
+    function findProjectBtnHtml(e) {
+        return `<button type="button" class="bookplan-pick" data-pick="project" title="Search all Rocketlane projects and link ${escapeHtml(String(e.plant_id))} to the right one — remembered from now on">🔎 find its project ▾</button>`;
+    }
+
+    // The pick list: opens under its button, filters as you type (RL_RECAP_MATCH.filterPickItems), takes
+    // ↑ ↓ Enter Esc, and lives on <body> with a fixed position so the review's own scroll box cannot clip it.
+    // A click elsewhere, a scroll outside it or a resize closes it. `head` items show while nothing is typed,
+    // `foot(text)` items always; an item's `pick()` runs after the list has closed.
+    let _pickClose = null, _pickAnchor = null;
+    function openPickList(anchor, o) {
+        if (_pickClose) _pickClose();
+        const doc = anchor.ownerDocument || document;
+        const root = doc.createElement('div');
+        root.className = 'rl-recap-pick';
+        root.setAttribute('role', 'dialog');
+        root.innerHTML = (o.title ? `<div class="rl-pick-title">${o.title}</div>` : '')
+            + `<input type="search" class="rl-pick-q" placeholder="${escapeHtml(o.placeholder || 'Search…')}" autocomplete="off" spellcheck="false" aria-label="${escapeHtml(o.placeholder || 'Search')}">`
+            + '<div class="rl-pick-list" role="listbox"></div><div class="rl-pick-more" style="display:none"></div>';
+        doc.body.appendChild(root);
+        const q = root.querySelector('.rl-pick-q'), list = root.querySelector('.rl-pick-list'), more = root.querySelector('.rl-pick-more');
+        const limit = o.limit || 150;
+        let shown = [], active = -1;
+        const place = () => {
+            const r = anchor.getBoundingClientRect();
+            const vw = doc.documentElement.clientWidth, vh = doc.documentElement.clientHeight;
+            const w = Math.min(460, vw - 16);
+            root.style.width = w + 'px';
+            root.style.left = Math.max(8, Math.min(r.left, vw - w - 8)) + 'px';
+            const h = root.offsetHeight, below = r.bottom + 4, above = r.top - 4 - h;
+            root.style.top = (below + h <= vh - 8 || above < 8 ? Math.max(8, Math.min(below, vh - h - 8)) : above) + 'px';
+        };
+        // The active option is kept in view by scrolling the LIST only — scrollIntoView could scroll the page,
+        // and any page scroll closes the list.
+        const mark = () => {
+            list.querySelectorAll('.rl-pick-opt').forEach(el => el.classList.toggle('rl-pick-on', +el.dataset.n === active));
+            const on = list.querySelector('.rl-pick-on');
+            if (!on) return;
+            const top = on.offsetTop - list.offsetTop, bottom = top + on.offsetHeight;
+            if (top < list.scrollTop) list.scrollTop = top;
+            else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+        };
+        const paint = () => {
+            const text = q.value.trim();
+            const hits = filterPickItems(o.items || [], text);
+            shown = (text ? [] : (o.head || [])).concat(hits.slice(0, limit), o.foot ? o.foot(text) : []);
+            let html = '', grp = null;
+            shown.forEach((it, n) => {
+                const g = it.group || null;
+                if (g && g !== grp) html += `<div class="rl-pick-grp">${escapeHtml(g)}</div>`;
+                grp = g;
+                html += `<div class="rl-pick-opt${it.cls ? ' ' + it.cls : ''}${it.done ? ' rl-pick-done' : ''}${it.current ? ' rl-pick-cur' : ''}" role="option" data-n="${n}">`
+                    + `<span class="rl-pick-lbl">${escapeHtml(it.label)}</span>${it.mark ? `<span class="rl-pick-mark">${escapeHtml(it.mark)}</span>` : ''}</div>`;
+            });
+            list.innerHTML = html || '<div class="rl-pick-none">Nothing matches.</div>';
+            more.style.display = hits.length > limit ? '' : 'none';
+            more.textContent = hits.length > limit ? `${hits.length - limit} more — keep typing to narrow it down` : '';
+            const cur = text ? -1 : shown.findIndex(it => it.current);
+            active = shown.length ? Math.max(0, cur) : -1;
+            place();
+            mark();
+        };
+        const pick = n => { const it = shown[n]; if (!it) return; close(); if (it.pick) it.pick(); };
+        const onDown = ev => { if (!root.contains(ev.target) && ev.target !== anchor && !(anchor.contains && anchor.contains(ev.target))) close(); };
+        const onScroll = ev => { if (!(ev.target && ev.target.nodeType === 1 && root.contains(ev.target))) close(); };
+        const onResize = () => close();
+        function close() {
+            doc.removeEventListener('mousedown', onDown, true);
+            doc.defaultView && doc.defaultView.removeEventListener('scroll', onScroll, true);
+            doc.defaultView && doc.defaultView.removeEventListener('resize', onResize);
+            root.remove();
+            if (_pickClose === close) { _pickClose = null; _pickAnchor = null; }
+        }
+        q.addEventListener('input', paint);
+        q.addEventListener('keydown', ev => {
+            if (ev.key === 'ArrowDown') { ev.preventDefault(); if (shown.length) { active = Math.min(shown.length - 1, active + 1); mark(); } }
+            else if (ev.key === 'ArrowUp') { ev.preventDefault(); if (shown.length) { active = Math.max(0, active - 1); mark(); } }
+            else if (ev.key === 'Enter') { ev.preventDefault(); if (active >= 0) pick(active); }
+            else if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); if (anchor.isConnected) anchor.focus(); }
+            else if (ev.key === 'Tab') close();
+        });
+        list.addEventListener('mousedown', ev => {
+            ev.preventDefault(); // keep the focus in the search box
+            const el = ev.target.closest && ev.target.closest('.rl-pick-opt');
+            if (el) pick(+el.dataset.n);
+        });
+        list.addEventListener('mousemove', ev => {
+            const el = ev.target.closest && ev.target.closest('.rl-pick-opt');
+            if (el && +el.dataset.n !== active) { active = +el.dataset.n; mark(); }
+        });
+        doc.addEventListener('mousedown', onDown, true);
+        doc.defaultView && doc.defaultView.addEventListener('scroll', onScroll, true);
+        doc.defaultView && doc.defaultView.addEventListener('resize', onResize);
+        _pickClose = close; _pickAnchor = anchor;
+        paint();
+        q.focus({ preventScroll: true });
+        return close;
+    }
+
+    // The task list of a row: every task of its project, grouped by phase in plan order, subtasks shown under
+    // their parent's name; the matcher's pick and done tasks marked.
+    function openTaskPick(btn, rowEl, e, ctx) {
+        const tasks = _rlTasksCache[e.projectId] || [];
+        const byId = new Map(tasks.map(t => [String(t.taskId), t]));
+        const auto = e._auto || { taskId: e.taskId, taskName: e.taskName };
+        const phaseAt = new Map();
+        tasks.forEach(t => { if (!phaseAt.has(t.phase || '')) phaseAt.set(t.phase || '', phaseAt.size); });
+        const ordered = tasks.map((t, i) => ({ t, i })).sort((a, b) => phaseAt.get(a.t.phase || '') - phaseAt.get(b.t.phase || '') || a.i - b.i).map(x => x.t);
+        const repaint = () => { const span = rowEl.querySelector('.bookplan-task'); if (span) span.outerHTML = taskPartHtml(e, !!ctx.withNote); };
+        const choose = p => { if (setTaskPick(e, p)) repaint(); };
+        const items = ordered.map(t => {
+            const parent = t.parentTask ? byId.get(String(t.parentTask)) : null;
+            const isAuto = auto.taskId != null && String(t.taskId) === String(auto.taskId);
+            return {
+                label: (parent ? parent.taskName + ' › ' : '') + t.taskName, sub: t.phase || '',
+                group: t.phase || 'No phase', done: !!t.done,
+                current: !e.newTaskName && e.taskId != null && String(t.taskId) === String(e.taskId),
+                mark: [isAuto ? "tool's pick" : '', t.done ? '✓ done' : ''].filter(Boolean).join(' · '),
+                pick: () => choose({ kind: 'task', taskId: t.taskId, taskName: t.taskName }),
+            };
+        });
+        const head = [];
+        if (e.taskPicked) head.push({ label: "↺ Back to the tool's pick: " + (auto.taskName || 'an activity line'), cls: 'rl-pick-act', pick: () => { clearTaskPick(e); repaint(); } });
+        head.push({ label: '✳ No task — book it as an activity line', cls: 'rl-pick-act', current: !e.taskId && !e.newTaskName, pick: () => choose({ kind: 'none' }) });
+        const foot = text => {
+            if (!text) return [];
+            const same = tasks.some(t => String(t.taskName).trim().toLowerCase() === text.toLowerCase());
+            return same ? [] : [{ label: `➕ New task: “${text}”`, cls: 'rl-pick-new', mark: 'made when you book', pick: () => choose({ kind: 'new', name: text }) }];
+        };
+        openPickList(btn, {
+            title: `Task in <b>${escapeHtml(e.projectName || '')}</b> — ${tasks.length} task${tasks.length === 1 ? '' : 's'}`,
+            placeholder: tasks.length ? `Search ${tasks.length} tasks, or type a new task's name` : "Type a new task's name",
+            items, head, foot, limit: 300,
+        });
+    }
+    // The project search of a row: every project except the Team buckets (those have their own list) — the
+    // row's current project first, then the ones carrying the plant's number, then the rest A–Z. Choosing one
+    // links the plant to it for good and rebuilds.
+    function openProjectPick(btn, e, ctx) {
+        const num = String(e.plant_id == null ? '' : e.plant_id);
+        const all = (ctx.projects() || []).filter(p => p && p.id && p.name && !/^\s*team\s/i.test(p.name));
+        const numRe = num ? new RegExp('(^|[^0-9])' + num.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^0-9]|$)') : null;
+        const isCur = p => e.projectId != null && String(p.id) === String(e.projectId);
+        const mine = numRe ? all.filter(p => numRe.test(p.name)) : [];
+        const mineIds = new Set(mine.map(p => String(p.id)));
+        const curP = mineIds.size && mine.some(isCur) ? null : all.find(isCur) || null; // shown on top, never lost past the limit
+        const rest = all.filter(p => !mineIds.has(String(p.id)) && p !== curP).sort((a, b) => a.name.localeCompare(b.name, 'nb'));
+        const linked = (GM_getValue(KEY_PROJECT_PICK, {}) || {})[num] != null;
+        const items = (curP ? [curP] : []).concat(mine, rest).map(p => {
+            const cur = isCur(p);
+            return {
+                label: p.name, group: p === curP ? 'Current' : mineIds.has(String(p.id)) ? `Carries ${num}` : 'All projects', current: cur, mark: cur ? 'current' : '',
+                pick: () => { if (cur) return; ctx.before && ctx.before(); pinTwin(num, p.id); ctx.relink(); },
+            };
+        });
+        const head = linked ? [{ label: '✕ Remove the link — let the tool find the project again', cls: 'rl-pick-act', pick: () => { ctx.before && ctx.before(); unpinProject(num); ctx.relink(); } }] : [];
+        openPickList(btn, {
+            title: `Project for <b>${escapeHtml(num)}</b> ${escapeHtml(e.plant && e.plant !== num ? e.plant : '')} — remembered for this plant from now on`,
+            placeholder: `Search ${all.length} projects`, items, head, limit: 150,
+        });
+    }
+    // One click handler per review box, reading the box's CURRENT context: each render replaces `box._pick`,
+    // so the handler never acts on a stale plan.
+    function wireReviewPickers(box, ctx) {
+        box._pick = ctx;
+        if (box._pickWired) return;
+        box._pickWired = true;
+        box.addEventListener('click', ev => {
+            const btn = ev.target && ev.target.closest && ev.target.closest('.bookplan-pick');
+            if (!btn || !box.contains(btn) || btn.disabled) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (_pickAnchor === btn && _pickClose) { _pickClose(); return; }
+            const c = box._pick;
+            const rowEl = btn.closest('.bookplan-row');
+            const e = c && rowEl ? c.rowOf(rowEl) : null;
+            if (!e) return;
+            if (btn.dataset.pick === 'task') openTaskPick(btn, rowEl, e, c);
+            else openProjectPick(btn, e, c);
+        });
     }
 
     // Projects in this plan that refuse billable hours (v4.138): one banner, each with a link, because
@@ -6767,6 +7116,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // A plant row the budget left nothing for books nothing (v4.143) — the day is already full.
             if (!e.calendar && !(e.minutes > 0)) { e.status = 'over-budget'; onProgress && onProgress(e); continue; }
             let projectId = e.projectId, taskId = e.taskId, act = e.activityName;
+            // A task the user named in the review (v4.165): made now, then booked onto. Refused ⇒ the hours are
+            // still written (v4.140), as an activity line under that name, and the row says so.
+            if (!isFallback && !e.calendar && e.newTaskName && projectId) {
+                const made = await ensureNamedTask(projectId, e.newTaskName);
+                if (made) { taskId = made.taskId; e.taskId = made.taskId; e.taskName = made.taskName; }
+                else { taskId = null; act = e.newTaskName; e.bookNote = 'the new task could not be made in Rocketlane — booked as an activity line'; }
+            }
             if (isFallback) {
                 projectId = e.fallbackProjectId; taskId = null;
                 act = `${e.plant_id} ${e.plant} - ${e.activityName}`; // "<plant id> <plant name> - <activity>"
@@ -6938,10 +7294,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             const lines = plan.map((e, i) =>
                 `<div class="bookplan-row" data-i="${i}">
                     <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb"' + (e.selected === false ? '' : ' checked') + ' title="' + (e.afterHours ? 'After working hours — tick to book it anyway (on top of the day)' : e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
-                        : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected project">`
+                        : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.fallbackProjectId || (e.calendar ? rememberedCal : rememberedFallback)) ? '' : ' disabled'}${e.selected === true && e.fallbackProjectId ? ' checked' : ''} title="Tick to book into the selected project">`
                         : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                     <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b class="bookplan-min">${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
-                    <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b> · note: ' + esc(e.activityName) : activityLabelHtml(e)}${splitHtml(e)}${lateRowHtml(e)}${e.projectName ? ' → ' + esc(e.projectName) : ''}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                    <small>${taskPartHtml(e, true)}${splitHtml(e)}${lateRowHtml(e)}${projectPartHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked (skipped)' : e.status === 'no-category' ? ' — category missing in Rocketlane' : e.status === 'over-budget' ? ' — no room left in the workday (skipped)' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose ${e.calendar ? '' : 'team '}project…</option>${optsFor(e.fallbackProjectId || (e.calendar ? rememberedCal : rememberedFallback))}</select>${e.calendar ? '' : ' or ' + findProjectBtnHtml(e)}</small>` : (e.calendar ? '<br><small>— no matching project, book manually</small>' : '<br><small>— no matching project: ' + findProjectBtnHtml(e) + '</small>')) : ''}</span>
                 </div>`).join('');
             const warn = calLateWarnHtml(plan) // v4.160: the big one first
                 + (plan._dedupeOk === false ? '<div class="bookplan-warn">⚠ Couldn\'t check what\'s already booked on this date — entries may duplicate. Check the sheet before booking.</div>' : '')
@@ -6969,7 +7325,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         if (cb) { e.selected = cb.checked; if (lock) cb.disabled = true; }
                         const sel = row.querySelector('.bookplan-proj:not(.bookplan-twin)');
                         if (sel) { e.fallbackProjectId = +sel.value || null; e.fallbackProjectName = sel.value ? sel.options[sel.selectedIndex].text : null; }
-                        if (lock) row.querySelectorAll('.bookplan-proj').forEach(s => { s.disabled = true; });
+                        if (lock) row.querySelectorAll('.bookplan-proj, .bookplan-pick').forEach(s => { s.disabled = true; });
                     });
                 };
                 // Every tick and every picker choice re-applies the workday budget, so the minutes on the
@@ -6984,6 +7340,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 // Team-bucket picker: choosing a project arms + ticks the row; clearing it disarms.
                 box.querySelectorAll('.bookplan-twin').forEach(sel => sel.addEventListener('change', (ev) => {
                     pinTwin(ev.target.dataset.n, ev.target.value);
+                    readChoices(false); rememberRowTicks(plan); // v4.165: what was ticked stays ticked
                     openBookingFlow(container, visits, iso); // rebuild: task pick, dupes and budget all follow the project
                 }));
                 box.querySelectorAll('.bookplan-proj:not(.bookplan-twin)').forEach(sel => sel.addEventListener('change', (ev) => {
@@ -7000,9 +7357,16 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     }
                     refreshBudget();
                 }));
-                box.querySelector('[data-b=cancel]')?.addEventListener('click', () => { container.innerHTML = saved; rewire(container, visits, iso); });
+                // The task and project pickers (v4.165). A project link rebuilds like a twin pin.
+                wireReviewPickers(box, {
+                    rowOf: el => plan[+el.dataset.i], projects: () => plan._projects || [], withNote: true,
+                    before: () => { readChoices(false); rememberRowTicks(plan); },
+                    relink: () => openBookingFlow(container, visits, iso),
+                });
+                box.querySelector('[data-b=cancel]')?.addEventListener('click', () => { if (_pickClose) _pickClose(); container.innerHTML = saved; rewire(container, visits, iso); });
                 box.querySelector('[data-b=go]')?.addEventListener('click', async (ev) => {
                     ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Booking…';
+                    if (_pickClose) _pickClose();
                     // Freeze the selection: unticked rows are skipped (and their boxes locked).
                     readChoices(true);
                     const targets = bookProgressTargets(plan);
@@ -7013,7 +7377,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                         const st = box.querySelector(`.bookplan-row[data-i="${i}"] .bookplan-st`);
                         if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : e.status === 'over-budget' ? '⚠' : '❌';
                         paintRowMinutes(box.querySelector(`.bookplan-row[data-i="${i}"]`), e);
-                        if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; }
+                        if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; } if (e.bookNote && e.status === 'booked') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.bookNote; }
                         done++;
                         setBookProgress(box, done, Math.max(1, targets.length), `Booking ${done} of ${targets.length}…`);
                     });
@@ -7680,10 +8044,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     rows.push({ e, day });
                     html += `<div class="bookplan-row" data-i="${i}">
                         <span class="bookplan-st">${e.status === 'ready' ? '<input type="checkbox" class="bookplan-cb"' + (e.selected === false ? '' : ' checked') + ' title="' + (e.afterHours ? 'After working hours — tick to book it anyway (on top of the day)' : e.projectBillable === false ? 'Books as NON-billable: this project\'s contract is non-billable in Rocketlane' : 'Untick to skip this entry') + '">'
-                            : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.calendar ? rememberedCal : rememberedFallback) ? '' : ' disabled'} title="Tick to book into the selected team project">`
+                            : (e.status === 'no-project' && teamOpts) ? `<input type="checkbox" class="bookplan-cb" data-fallback="1"${(e.fallbackProjectId || (e.calendar ? rememberedCal : rememberedFallback)) ? '' : ' disabled'}${e.selected === true && e.fallbackProjectId ? ' checked' : ''} title="Tick to book into the selected team project">`
                             : e.status === 'already-booked' ? '⏭' : '⚠'}</span>
                         <span class="bookplan-txt" ${e.notes ? `title="Notes:\n${esc(e.notes)}"` : ''}><b>${e.calendar ? '🗓' : esc(String(e.plant_id))}</b> ${esc(e.plant)} · ${esc(CAT_SHORT[e.category] || e.category)} <b class="bookplan-min">${fmtMinutes(e.minutes)}</b>${e.calendar ? ' <span class="bookplan-nb">non-billable</span>' : e.projectBillable === false ? ' <span class="bookplan-nb bookplan-nb-warn">non-billable — project contract</span>' : ''}<br>
-                        <small>${e.taskName ? '📌 task' + (e.taskGuess ? ' <i>(best guess)</i>' : '') + ': <b>' + esc(e.taskName) + '</b>' : activityLabelHtml(e)}${splitHtml(e)}${lateRowHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${e.calendar ? optsFor(rememberedCal) : teamOpts}</select></small>` : '<br><small>— no matching project, book manually</small>') : ''}</span>
+                        <small>${taskPartHtml(e, false)}${splitHtml(e)}${lateRowHtml(e)}${projectPartHtml(e)}${e.projMatch && e.projMatch.tier > 1 ? ' · 📎 matched by number' : ''}${twinHtml(e)}${e.status === 'already-booked' ? ' — already booked' : e.status === 'over-budget' ? ' — no room left in the workday' : ''}</small>${e.status === 'no-project' ? (teamOpts ? `<br><small>${e.calendar ? 'meetings need a project — book into' : 'no own project — book into'}: <select class="bookplan-proj"><option value="">choose team project…</option>${optsFor(e.fallbackProjectId || (e.calendar ? rememberedCal : rememberedFallback))}</select>${e.calendar ? '' : ' or ' + findProjectBtnHtml(e)}</small>` : (e.calendar ? '<br><small>— no matching project, book manually</small>' : '<br><small>— no matching project: ' + findProjectBtnHtml(e) + '</small>')) : ''}</span>
                     </div>`;
                 }
             }
@@ -7715,7 +8079,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     if (cb) { r.e.selected = cb.checked; if (lock) cb.disabled = true; }
                     const sel = rowEl.querySelector('.bookplan-proj:not(.bookplan-twin)');
                     if (sel) { r.e.fallbackProjectId = +sel.value || null; r.e.fallbackProjectName = sel.value ? sel.options[sel.selectedIndex].text : null; }
-                    if (lock) rowEl.querySelectorAll('.bookplan-proj').forEach(s => { s.disabled = true; });
+                    if (lock) rowEl.querySelectorAll('.bookplan-proj, .bookplan-pick').forEach(s => { s.disabled = true; });
                 });
             };
             // Every tick and every picker choice re-applies each day's workday budget (v4.143).
@@ -7731,6 +8095,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             // Team-bucket picker: choosing a project arms + ticks the row; clearing it disarms (as in Book day).
             box.querySelectorAll('.bookplan-twin').forEach(sel => sel.addEventListener('change', (ev) => {
                 pinTwin(ev.target.dataset.n, ev.target.value);
+                readChoices(false); rememberRowTicks(rows.map(r => r.e)); // v4.165: what was ticked stays ticked
                 build(); // rebuild the week: task pick, dupes and budget all follow the project
             }));
             box.querySelectorAll('.bookplan-proj:not(.bookplan-twin)').forEach(sel => sel.addEventListener('change', (ev) => {
@@ -7747,8 +8112,17 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                 }
                 refreshBudget();
             }));
+            // The task and project pickers (v4.165). A project link rebuilds the week like a twin pin.
+            wireReviewPickers(box, {
+                rowOf: el => (rows[+el.dataset.i] || {}).e,
+                projects: () => ((days.find(d => d.plan && d.plan._projects) || { plan: {} }).plan._projects) || [],
+                withNote: false,
+                before: () => { readChoices(false); rememberRowTicks(rows.map(r => r.e)); },
+                relink: () => build(),
+            });
             box.querySelector('[data-b=go]')?.addEventListener('click', async (ev) => {
                 ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Booking…';
+                if (_pickClose) _pickClose();
                 box.querySelector('[data-b=prev]')?.setAttribute('disabled', '');
                 box.querySelector('[data-b=next]')?.setAttribute('disabled', '');
                 // Freeze the selection, then book day by day.
@@ -7763,7 +8137,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     const st = box.querySelector(`.bookplan-row[data-i="${i}"] .bookplan-st`);
                     if (st) st.textContent = e.status === 'booked' ? '✅' : e.status === 'already-booked' ? '⏭' : e.status === 'over-budget' ? '⚠' : '❌';
                     paintRowMinutes(box.querySelector(`.bookplan-row[data-i="${i}"]`), e);
-                    if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; }
+                    if (e.status === 'failed') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.error; } if (e.bookNote && e.status === 'booked') { const tx = box.querySelector(`.bookplan-row[data-i="${i}"] small`); if (tx) tx.textContent += ' — ' + e.bookNote; }
                     done++;
                     setBookProgress(box, done, Math.max(1, targets.length), `Booking ${done} of ${targets.length}…`);
                 };
