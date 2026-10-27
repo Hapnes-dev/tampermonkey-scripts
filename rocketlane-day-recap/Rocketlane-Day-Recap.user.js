@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Rocketlane Day Recap
-// @version      4.167
+// @version      4.168
 // @description  On Rocketlane My Timesheet, pick a date and see all IWMAC plants you visited that day, plus a 🔧 badge when the plant's config changed during your visit, and a 📋 "Day by category" timesheet roll-up. Reads IWMAC All logs (one query per day, incl. notes and operations-log entries) with pang's get_history as the fallback, plus the changes/commits APIs.
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
 // @updateURL    https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-day-recap/Rocketlane-Day-Recap.user.js
 // @downloadURL  https://raw.githubusercontent.com/hapnes-dev/tampermonkey-scripts/main/rocketlane-day-recap/Rocketlane-Day-Recap.user.js
-// @match        https://kiona.rocketlane.com/timesheets/*
+// @match        https://kiona.rocketlane.com/*
 // @match        http://*.plants.iwmac.local:8080/*
 // @match        https://*.plants.iwmac.local:8080/*
 // @match        http://tools.iwmac.local/pang.qxs*
@@ -2189,9 +2189,11 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     const KEY_USER_OVERRIDE = 'user_override'; // manual username pick (overrides auto-detected) — set via the "pick your name" chooser
     const KEY_USER_PLANTS  = 'user_plants';    // { username: [plant_id...] } — plants this user has been found on; grows the fast Search scope
     const KEY_PANEL_POS    = 'panel_pos';      // { left, top } — where the user dragged the panel; null = default bottom-right
+    const KEY_PANEL_SIZE   = 'panel_size';     // v4.168: { w, h } — the size the user dragged the panel to (h null = fit the content)
+    const KEY_WEEK_GEOM    = 'week_geom';      // v4.168: { left, top, w, h } — where and how big Book week was left; null = top-right default
     const KEY_LAST_FULL_SCAN  = 'last_full_scan_date';      // 'YYYY-MM-DD' (Oslo) of the last COMPLETED full scan — drives the once-a-day recommendation
     const KEY_FULLSCAN_NUDGE  = 'fullscan_nudge_dismissed'; // 'YYYY-MM-DD' the recommendation was dismissed on
-    const SCRIPT_VERSION   = '4.167';
+    const SCRIPT_VERSION   = '4.168';
     const KEY_WORKDAY_HOURS    = 'workday_hours';
     const DEFAULT_WORKDAY_HOURS = 7.5;
     const ROUND_TO_MIN         = 5; // round each plant's normalized minutes to nearest 5 min
@@ -4377,6 +4379,36 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         #${WEEK_ID} .rl-week-calask input { margin: 0; cursor: pointer; }
         #${WEEK_ID} .rl-week-nav button { font-size: 13px; line-height: 1.4; padding: 0 8px; border: 1px solid #c6c6c6; background: #fff; border-radius: 5px; cursor: pointer; }
         #${WEEK_BTN_ID} { white-space: nowrap; }
+        /* v4.168: windows you can resize (edges + corner grip) and move; the panel's settings in one row; a focus
+           layout while Book day is reviewed; rows that light up under the pointer. */
+        .rl-rs { position: absolute; z-index: 6; touch-action: none; }
+        .rl-rs-e { top: 12px; bottom: 18px; right: 0; width: 7px; cursor: ew-resize; }
+        .rl-rs-w { top: 12px; bottom: 18px; left: 0; width: 7px; cursor: ew-resize; }
+        .rl-rs-s { left: 12px; right: 18px; bottom: 0; height: 7px; cursor: ns-resize; }
+        .rl-rs-se { right: 1px; bottom: 1px; width: 16px; height: 16px; cursor: nwse-resize; border-radius: 0 0 9px 0;
+            background: linear-gradient(135deg, transparent 0 50%, #a8a8a8 50% 56%, transparent 56% 66%, #a8a8a8 66% 72%, transparent 72% 82%, #a8a8a8 82% 88%, transparent 88%); }
+        .rl-rs:hover { background-color: rgba(15, 98, 254, .14); }
+        .rl-resizing, .rl-resizing * { user-select: none !important; }
+        #${PANEL_ID}.rl-sized, #${WEEK_ID}.rl-sized { max-height: none; }
+        #${PANEL_ID} { max-width: calc(100vw - 16px); }
+        #${PANEL_ID} .controls + .controls { padding-top: 8px; }
+        #${PANEL_ID} .controls .ctl-scan { background: #fff; color: #0f62fe; border: 1px solid #0f62fe; white-space: nowrap; }
+        #${PANEL_ID} .controls .ctl-scan:hover { background: #edf5ff; }
+        #${PANEL_ID} .controls .ctl-scan:disabled { background: #f4f4f4; color: #8d8d8d; border-color: #c6c6c6; }
+        #${PANEL_ID} .ctl-opts { flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: #525252; }
+        #${PANEL_ID} .ctl-opt { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; cursor: pointer; }
+        #${PANEL_ID} .ctl-opt input[type=number] { width: 56px; padding: 3px 6px; border: 1px solid #c6c6c6; border-radius: 4px; font-size: 13px; }
+        #${PANEL_ID} .ctl-opt input[type=checkbox] { margin: 0; accent-color: #0f62fe; cursor: pointer; }
+        #${PANEL_ID}.is-booking .controls, #${PANEL_ID}.is-booking .results, #${PANEL_ID}.is-booking .fsnudge, #${PANEL_ID}.is-booking .pagenote { display: none !important; }
+        #${PANEL_ID}.is-booking .catsum { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding-bottom: 4px; }
+        #${PANEL_ID}.is-booking .catsum .bookplan { flex: 1 1 auto; min-height: 0; max-height: none; }
+        #${WEEK_ID} { display: flex; flex-direction: column; box-sizing: border-box; max-height: calc(100vh - 16px); }
+        #${WEEK_ID} .bookplan { flex: 1 1 auto; min-height: 0; }
+        #${WEEK_ID}.rl-sized .bookplan { max-height: none; }
+        #${WEEK_ID} .bookplan-head { cursor: move; }
+        #${WEEK_ID} .bookplan-head :is(button, input, label, select) { cursor: pointer; }
+        :is(#${PANEL_ID}, #${WEEK_ID}) .bookplan-row:hover { background: #f4f8ff; }
+        #${PANEL_ID} .results .row:hover { background: #fafcff; }
         #${PANEL_ID} .catsum-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; color: #21272a; }
         #${PANEL_ID} .catsum-name { display: inline-flex; align-items: center; gap: 6px; width: 160px; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #${PANEL_ID} .catsum-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
@@ -4430,7 +4462,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         panel.innerHTML = `
             <header>
                 <strong>Plants visited</strong>
-                <button data-action="close">×</button>
+                <button data-action="expand" title="Bigger window — click again for the size before">⤢</button>
+                <button data-action="close" title="Close">×</button>
             </header>
             <div class="controls">
                 <div class="datewrap">
@@ -4439,31 +4472,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
                     <div class="datecal" hidden></div>
                 </div>
                 <button data-action="search" title="Re-scan the selected date (your recent + previously-visited plants) and refresh its cache">Refresh</button>
+                <button data-action="fullscan" class="ctl-scan" title="Finds visits made via plant-admin/designer too: IWMAC All logs names every plant with your activity in the last 400 days and pang is read for those (seconds). Only when All logs cannot answer are all ~7,600 plants read (~1 min). Briefly opens pang when the inventory is needed; the result is cached per date.">🔍 Full scan</button>
             </div>
-            <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
-                <button data-action="fullscan" title="Finds visits made via plant-admin/designer too: IWMAC All logs names every plant with your activity in the last 400 days and pang is read for those (seconds). Only when All logs cannot answer are all ~7,600 plants read (~1 min). Briefly opens pang when the inventory is needed; the result is cached per date.">🔍 Full scan</button>
-                <span style="font-size: 11px; color: #6f6f6f; flex: 1; line-height: 1.3;">Refresh = your recent + previously-visited plants (fast). Full scan = every plant IWMAC All logs names for you (seconds, cached; all ~7,600 plants only when All logs cannot answer).</span>
-            </div>
-            <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
-                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #525252; flex: 1;">
-                    Workday total
-                    <input type="number" data-field="workday" step="0.5" min="0" max="24" value="${(GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || 0)}" style="width: 60px; padding: 4px 6px; border: 1px solid #c6c6c6; border-radius: 4px; font-size: 13px;">
-                    h
-                </label>
-                <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #525252;" title="When on, minutes per plant are scaled so they sum to your workday total.">
-                    <input type="checkbox" data-field="normalize" ${GM_getValue('workday_normalize', true) ? 'checked' : ''}>
-                    Distribute to total
-                </label>
-            </div>
-            <div class="controls" style="border-top: 1px solid #f0f0f0; padding-top: 6px;">
-                <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #525252; flex: 1;" title="Reads your Outlook calendar for the selected date and offers meetings, planning and training as timesheet entries. Meetings are booked at their real length FIRST; the plant distribution then splits whatever the workday has left. If you already have Outlook open in a tab, it is read there and nothing is opened; otherwise a background tab opens at the end of the tab strip for a few seconds and closes itself. The access token stays inside Outlook and is never stored.">
-                    <input type="checkbox" data-field="calendar" ${GM_getValue(KEY_CAL_ENABLED, false) ? 'checked' : ''}>
-                    🗓 Include calendar (meetings &amp; admin)
-                </label>
-                <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #525252;" title="Reads the Zendesk cases you commented on that day (with your own Zendesk login) and puts their numbers and subjects in the notes. A plant you only worked on in Zendesk becomes a small Support entry you can untick.">
-                    <input type="checkbox" data-field="zendesk" ${GM_getValue(KEY_ZD_ENABLED, true) ? 'checked' : ''}>
-                    ✉ Zendesk
-                </label>
+            <div class="controls ctl-opts">
+                <label class="ctl-opt" title="Your working day — the hours the plant time is shared out over when Distribute is on.">Workday <input type="number" data-field="workday" step="0.5" min="0" max="24" value="${(GM_getValue(KEY_WORKDAY_HOURS, DEFAULT_WORKDAY_HOURS) || 0)}"> h</label>
+                <label class="ctl-opt" title="When on, minutes per plant are scaled so they sum to your workday total."><input type="checkbox" data-field="normalize" ${GM_getValue('workday_normalize', true) ? 'checked' : ''}> Distribute to total</label>
+                <label class="ctl-opt" title="Reads your Outlook calendar for the selected date and offers meetings, planning and training as timesheet entries. Meetings are booked at their real length FIRST; the plant distribution then splits whatever the workday has left. If you already have Outlook open in a tab, it is read there and nothing is opened; otherwise a background tab opens at the end of the tab strip for a few seconds and closes itself. The access token stays inside Outlook and is never stored."><input type="checkbox" data-field="calendar" ${GM_getValue(KEY_CAL_ENABLED, false) ? 'checked' : ''}> 🗓 Calendar</label>
+                <label class="ctl-opt" title="Reads the Zendesk cases you commented on that day (with your own Zendesk login) and puts their numbers and subjects in the notes. A plant you only worked on in Zendesk becomes a small Support entry you can untick."><input type="checkbox" data-field="zendesk" ${GM_getValue(KEY_ZD_ENABLED, true) ? 'checked' : ''}> ✉ Zendesk</label>
             </div>
             <div class="pagenote" hidden></div>
             <div class="fsnudge" hidden></div>
@@ -5043,6 +5058,61 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
             e.preventDefault();
         });
 
+        // ---- Resizable panel (v4.168, Thomas: "click and drag the right edge or bottom-right corner to resize and
+        // expand it"). The left, right and bottom edges and the corner grip resize; the size sticks
+        // (KEY_PANEL_SIZE) like the position does, and stays inside the browser window; double-click an edge or
+        // the grip for the default size. ⤢ in the header jumps to a big window and back.
+        const PANEL_MIN_W = 380, PANEL_MIN_H = 300;
+        const applySize = (w, h) => {
+            const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+            if (w) panel.style.width = Math.round(Math.min(Math.max(PANEL_MIN_W, w), vw - 16)) + 'px';
+            if (h) { panel.style.height = Math.round(Math.min(Math.max(PANEL_MIN_H, h), vh - 16)) + 'px'; panel.classList.add('rl-sized'); }
+        };
+        const keepOnScreen = () => {
+            if (!panel.isConnected) return;
+            const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+            if (panel.style.width && panel.offsetWidth > vw - 16) panel.style.width = Math.max(PANEL_MIN_W, vw - 16) + 'px';
+            if (panel.style.height && panel.offsetHeight > vh - 16) panel.style.height = Math.max(PANEL_MIN_H, vh - 16) + 'px';
+            let r = panel.getBoundingClientRect();
+            // A pinned panel slides back inside first (up, if its bottom is past the window) — shrinking is the last resort.
+            if (panel.style.left) { applyPos(r.left, r.bottom > vh - 4 ? vh - 4 - r.height : r.top); r = panel.getBoundingClientRect(); }
+            if (panel.style.height && r.bottom > vh - 4) panel.style.height = Math.max(PANEL_MIN_H, vh - 4 - Math.max(0, r.top)) + 'px';
+            r = panel.getBoundingClientRect();
+            if (panel.style.height && r.top < 0) panel.style.height = Math.max(PANEL_MIN_H, r.bottom - 8) + 'px';
+        };
+        const savedSize = GM_getValue(KEY_PANEL_SIZE, null);
+        if (savedSize && (savedSize.w || savedSize.h)) { applySize(savedSize.w, savedSize.h); keepOnScreen(); }
+        const savePanelGeom = () => {
+            const r = panel.getBoundingClientRect();
+            GM_setValue(KEY_PANEL_SIZE, (panel.style.width || panel.style.height) ? { w: Math.round(r.width), h: panel.style.height ? Math.round(r.height) : null } : null);
+            if (panel.style.left) GM_setValue(KEY_PANEL_POS, { left: Math.round(r.left), top: Math.round(r.top) });
+        };
+        addResizeHandles(panel, {
+            minW: PANEL_MIN_W, minH: PANEL_MIN_H,
+            onDone: savePanelGeom,
+            onReset: () => { panel.style.width = panel.style.height = ''; panel.classList.remove('rl-sized'); GM_setValue(KEY_PANEL_SIZE, null); keepOnScreen(); },
+        });
+        headerEl.addEventListener('dblclick', () => setTimeout(keepOnScreen, 0)); // back on the dock, still on screen
+        let preExpand = null;
+        panel.querySelector('[data-action=expand]').addEventListener('click', () => {
+            const r = panel.getBoundingClientRect();
+            const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+            if (preExpand) {
+                const p = preExpand; preExpand = null;
+                panel.style.width = p.w; panel.style.height = p.h; panel.classList.toggle('rl-sized', !!p.h);
+                if (p.docked) { panel.style.left = panel.style.top = panel.style.right = panel.style.bottom = ''; } else applyPos(p.left, p.top);
+            } else {
+                preExpand = { w: panel.style.width, h: panel.style.height, left: r.left, top: r.top, docked: !panel.style.left };
+                const W = Math.min(1100, vw - 40), H = vh - 60;
+                applySize(W, H);
+                applyPos(Math.round((vw - Math.min(W, vw - 16)) / 2), 30);
+            }
+            keepOnScreen();
+            savePanelGeom();
+        });
+        const onWinResize = () => { if (!panel.isConnected) { window.removeEventListener('resize', onWinResize); return; } keepOnScreen(); };
+        window.addEventListener('resize', onWinResize);
+
         renderFullScanNudge();
         // v4.151: the date follows the timesheet on screen. A day-header click asks for one date; otherwise
         // the week Rocketlane shows decides — today inside it, else its first weekday that is not yet full —
@@ -5264,6 +5334,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     // Render the category roll-up into its container (called from applyAndRender; refines once commit
     // classes arrive). Includes a Copy button that yields paste-ready "Category: H h" lines for Rocketlane.
     function renderCategorySummary(container, visits, isoDate) {
+        const panelEl = container.closest && container.closest('#' + PANEL_ID);
+        if (panelEl) panelEl.classList.remove('is-booking'); // v4.168: the review's focus layout ends here
         container.innerHTML = '';
         if (!visits || !visits.length) return;
         const { rows, grand } = dayCategoryTotals(visits);
@@ -6796,6 +6868,53 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         LOG('book: unlinked project for plant', plantNo);
     }
 
+    // ---- Resizable, movable windows (v4.168) ------------------------------------------------------------
+    // Edges to drag (left, right, bottom) and a corner grip, for the panel and Book week. A drag first pins the
+    // window by its left/top corner — the panel docks by right/bottom — so the side being dragged is the side
+    // that moves. Pointer capture keeps the drag alive over Rocketlane's iframes. Width never leaves the browser
+    // window; a height is only set by the bottom edge or the grip (otherwise the window fits its content).
+    function pinWindowTopLeft(win) {
+        const r = win.getBoundingClientRect();
+        win.style.left = Math.round(r.left) + 'px'; win.style.top = Math.round(r.top) + 'px';
+        win.style.right = 'auto'; win.style.bottom = 'auto';
+        return r;
+    }
+    function addResizeHandles(win, o) {
+        const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+        for (const edge of ['e', 'w', 's', 'se']) {
+            const h = document.createElement('div');
+            h.className = 'rl-rs rl-rs-' + edge;
+            h.title = 'Drag to resize · double-click for the default size';
+            h.addEventListener('pointerdown', ev => {
+                if (ev.button !== 0) return;
+                ev.preventDefault(); ev.stopPropagation();
+                const r0 = pinWindowTopLeft(win), x0 = ev.clientX, y0 = ev.clientY;
+                try { h.setPointerCapture(ev.pointerId); } catch (e) { /* capture is a nicety */ }
+                win.classList.add('rl-resizing');
+                const move = e => {
+                    const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+                    if (edge === 'e' || edge === 'se') win.style.width = Math.round(clamp(r0.width + e.clientX - x0, o.minW, vw - r0.left - 8)) + 'px';
+                    if (edge === 'w') {
+                        const w = Math.round(clamp(r0.width - (e.clientX - x0), o.minW, r0.right - 8));
+                        win.style.width = w + 'px'; win.style.left = Math.round(r0.right - w) + 'px';
+                    }
+                    if (edge === 's' || edge === 'se') {
+                        win.style.height = Math.round(clamp(r0.height + e.clientY - y0, o.minH, vh - r0.top - 8)) + 'px';
+                        win.classList.add('rl-sized');
+                    }
+                };
+                const up = () => {
+                    h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up);
+                    win.classList.remove('rl-resizing');
+                    if (o.onDone) o.onDone();
+                };
+                h.addEventListener('pointermove', move); h.addEventListener('pointerup', up); h.addEventListener('pointercancel', up);
+            });
+            h.addEventListener('dblclick', ev => { ev.preventDefault(); ev.stopPropagation(); if (o.onReset) o.onReset(); });
+            win.appendChild(h);
+        }
+    }
+
     // ---- The review's task and project pickers (v4.165) ------------------------------------------------
     // A colleague's ask, passed on by Thomas (2026-10-27): "alle oppgavene på det prosjektet som en dropdown
     // (gjerne søkbar)" so an entry can be put on the right job, "legge til ny oppgave fra samme side" for
@@ -7360,6 +7479,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
     }
     function openBookingFlow(container, visits, iso) {
         warmBookingReads(iso);
+        // v4.168: the review gets the whole panel — the settings and the plant list step aside until it closes
+        // (every way out redraws the summary, which turns this off again).
+        const panelEl = container.closest && container.closest('#' + PANEL_ID);
+        if (panelEl) panelEl.classList.add('is-booking');
         const saved = container.innerHTML;
         container.innerHTML = `<div class="bookplan"><div class="bookplan-head">⤴ Book to timesheet — building plan…</div>${bookProgressMarkup()}</div>`;
         const box = container.querySelector('.bookplan');
@@ -7974,6 +8097,53 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         wrap.innerHTML = '<div class="bookplan"></div>';
         document.body.appendChild(wrap);
         const box = wrap.querySelector('.bookplan');
+        // v4.168: the window moves (drag its title row) and resizes (edges and corner grip), and keeps both
+        // (KEY_WEEK_GEOM); double-click the title row for the default place and size, an edge for the default size.
+        const WEEK_MIN_W = 400, WEEK_MIN_H = 260;
+        const placeWeek = g => {
+            if (!g) { wrap.style.left = wrap.style.top = wrap.style.right = wrap.style.bottom = wrap.style.width = wrap.style.height = ''; wrap.classList.remove('rl-sized'); return; }
+            const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+            if (g.w) wrap.style.width = Math.round(Math.min(Math.max(WEEK_MIN_W, g.w), vw - 16)) + 'px';
+            if (g.h) { wrap.style.height = Math.round(Math.min(Math.max(WEEK_MIN_H, g.h), vh - 16)) + 'px'; wrap.classList.add('rl-sized'); }
+            if (typeof g.left === 'number' && typeof g.top === 'number') {
+                const w = wrap.offsetWidth, h = wrap.offsetHeight;
+                wrap.style.left = Math.round(Math.min(Math.max(8, g.left), Math.max(8, vw - w - 8))) + 'px';
+                wrap.style.top = Math.round(Math.min(Math.max(8, g.top), Math.max(8, vh - 8 - h))) + 'px';
+                wrap.style.right = 'auto'; wrap.style.bottom = 'auto';
+            }
+            const r = wrap.getBoundingClientRect();
+            if (wrap.style.height && r.bottom > vh - 8) wrap.style.height = Math.max(WEEK_MIN_H, vh - 8 - Math.max(0, r.top)) + 'px';
+        };
+        const saveWeek = () => {
+            const r = wrap.getBoundingClientRect();
+            GM_setValue(KEY_WEEK_GEOM, { left: Math.round(r.left), top: Math.round(r.top), w: wrap.style.width ? Math.round(r.width) : null, h: wrap.style.height ? Math.round(r.height) : null });
+        };
+        placeWeek(GM_getValue(KEY_WEEK_GEOM, null));
+        addResizeHandles(wrap, {
+            minW: WEEK_MIN_W, minH: WEEK_MIN_H, onDone: saveWeek,
+            onReset: () => { wrap.style.width = wrap.style.height = ''; wrap.classList.remove('rl-sized'); saveWeek(); },
+        });
+        const onHead = ev => ev.target && ev.target.closest && ev.target.closest('.bookplan-head') && !ev.target.closest('button, input, label, select, a');
+        wrap.addEventListener('pointerdown', ev => {
+            if (ev.button !== 0 || !onHead(ev)) return;
+            const r = pinWindowTopLeft(wrap), dx = ev.clientX - r.left, dy = ev.clientY - r.top;
+            const head = ev.target.closest('.bookplan-head');
+            try { head.setPointerCapture(ev.pointerId); } catch (e) { /* capture is a nicety */ }
+            const move = e => {
+                const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+                wrap.style.left = Math.round(Math.max(0, Math.min(vw - r.width, e.clientX - dx))) + 'px';
+                wrap.style.top = Math.round(Math.max(0, Math.min(vh - 44, e.clientY - dy))) + 'px';
+            };
+            const up = () => { head.removeEventListener('pointermove', move); head.removeEventListener('pointerup', up); head.removeEventListener('pointercancel', up); saveWeek(); };
+            head.addEventListener('pointermove', move); head.addEventListener('pointerup', up); head.addEventListener('pointercancel', up);
+            ev.preventDefault();
+        });
+        wrap.addEventListener('dblclick', ev => { if (onHead(ev)) { GM_setValue(KEY_WEEK_GEOM, null); placeWeek(null); } });
+        const onWeekWinResize = () => {
+            if (!wrap.isConnected) { window.removeEventListener('resize', onWeekWinResize); return; }
+            if (wrap.style.left || wrap.style.width || wrap.style.height) { const r = wrap.getBoundingClientRect(); placeWeek({ left: r.left, top: r.top, w: wrap.style.width ? r.width : null, h: wrap.style.height ? r.height : null }); }
+        };
+        window.addEventListener('resize', onWeekWinResize);
         const esc = escapeHtml;
         const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
         let seq = 0;
@@ -8005,7 +8175,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = Object.ass
         // button, so unless he happened to have ticked that box in the other panel, the week silently
         // booked no meetings and offered no way to notice or change it. Same key, so the two stay in step.
         const headHtml = () => `<div class="bookplan-head">⤴ Book week ${isoToNorwegianDate(monday)} – ${isoToNorwegianDate(addDaysISO(monday, 4))}
-            <span class="rl-week-nav"><label class="rl-week-cal" title="Read your Outlook calendar for every weekday in this week and offer meetings, planning and training as timesheet entries. Meetings book at their real length FIRST; each day's plant distribution then splits whatever the workday has left. Same setting as the panel's 🗓 Include calendar."><input type="checkbox" data-b="cal"${GM_getValue(KEY_CAL_ENABLED, false) ? ' checked' : ''}> 🗓</label><button type="button" data-b="opts" title="Options — calendar, Zendesk, fill to the workday or actual time, full scan">⚙</button><button type="button" data-b="refresh" title="Refresh — run a new full scan for this week (~1 min) and rebuild, ignoring cached data">↻</button><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
+            <span class="rl-week-nav"><label class="rl-week-cal" title="Read your Outlook calendar for every weekday in this week and offer meetings, planning and training as timesheet entries. Meetings book at their real length FIRST; each day's plant distribution then splits whatever the workday has left. Same setting as the panel's 🗓 Calendar."><input type="checkbox" data-b="cal"${GM_getValue(KEY_CAL_ENABLED, false) ? ' checked' : ''}> 🗓</label><button type="button" data-b="opts" title="Options — calendar, Zendesk, fill to the workday or actual time, full scan">⚙</button><button type="button" data-b="refresh" title="Refresh — run a new full scan for this week (~1 min) and rebuild, ignoring cached data">↻</button><button type="button" data-b="prev" title="Previous week">‹</button><button type="button" data-b="next" title="Next week">›</button><button type="button" data-b="cancel" title="Close">✕</button></span></div>`;
         const wireNav = () => {
             // ↻ rebuilds this week from scratch: forget the session answers, then force the same sweep
             // the pre-build check-up offers — available in every state (check-up, building, results),
