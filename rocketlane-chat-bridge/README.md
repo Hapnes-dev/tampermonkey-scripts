@@ -44,13 +44,18 @@ Pops a desktop notification (`GM_notification`) for **new Rocketlane** chat/ment
 Links a project's General Chat in Rocketlane to one Zendesk ticket, so the conversation with the customer can be
 followed and answered from the chat.
 
-- **Turn it on** in the Tampermonkey menu on a Rocketlane page: "Zendesk ⇄ General Chat-synk". It is off by default.
-  Only the browser where it is on does the syncing. The rest of the team sees the messages in the chat without
-  installing anything.
-- **Link a chat.** On a chat page (`/projects/<id>/chat/<id>`), click the **Zendesk ⇄ Koble sak** button at the
-  bottom right. It lists the active tickets (new, open, pending, on hold) in the team's queue. The queue is a Zendesk
-  view, "IWMAC Leveranse - Kulde" by default, and can be changed in the Tampermonkey menu. Tickets with the project's
-  plant number come first. Linking posts a note in the chat saying so. Nothing from before the link is copied.
+- **Turn it on.** The button at the bottom right of a chat page (`/projects/<id>/chat/<id>`) says **Zendesk ⇄ av**
+  while the sync is off in this browser. Its panel has a button to turn it on, and so does the Tampermonkey menu
+  ("Zendesk ⇄ General Chat-synk"). Only the browser where it is on does the syncing. The rest of the team sees the
+  messages in the chat without installing anything.
+- **Link a chat.** The button lists the active tickets in the team's queue. The queue is a Zendesk view, "IWMAC
+  Leveranse - Kulde" by default (new and open tickets of the Delivery and Aftermarket Cooling groups), and can be
+  changed in the Tampermonkey menu.
+  - The ticket whose **Plant ID** is the project's plant number (the number its name starts with, "8222 - Obs
+    Harstad") comes first. After it come tickets with that number in the subject, then in the text, then with words
+    of the project's name in the subject.
+  - When one matches, the button says so: **Zendesk #207248 funnet · Koble**.
+  - Linking posts a note in the chat saying so. Nothing from before the link is copied.
 - **From Zendesk to the chat.** Every new message on the ticket is posted in the chat as a private message, so
   customers in the project do not see it. It starts with "Zendesk #<ticket> · <name>" and a label: "(kunde)" for the
   customer, "internt notat" for an internal note, "svar til kunden" for an agent's public reply. Attachments are links
@@ -59,8 +64,9 @@ followed and answered from the chat.
   starts with **/kunde** goes as a public reply, emailed to the customer. Messages are written with your Zendesk
   session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
   "— Name" after a public reply.
-- **Only active tickets in the queue.** If the ticket is solved or leaves the queue, the link pauses. When it is back,
-  the link catches up on everything that came in meanwhile.
+- **Only active tickets.** A linked ticket syncs while it is new, open, pending or on hold, also after it has left the
+  queue's view. Solved or closed, the link pauses. Opened again, the link catches up on everything that came in
+  meanwhile.
 - **When it runs:** once a minute, in one Rocketlane tab, while a Rocketlane tab is open. **Synk nå** in the panel runs
   it at once. With the browser closed it does not run, and it catches up the next time.
 - **Needs:** a Rocketlane page loaded (for the api-key) and Zendesk opened once while logged in (for the session and

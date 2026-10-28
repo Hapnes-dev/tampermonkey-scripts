@@ -26,9 +26,9 @@ const W = window.__world = {
   chat: [{ id: 12, messageType: 'USER_MESSAGE', content: '<p>Gammel melding</p>', createdAt: Date.now() - 60000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } }],
   zd: [{ id: 4001, author_id: 700, public: true, plain_body: 'Gammel kundemelding', created_at: '2026-10-27T08:00:00Z', attachments: [] }],
   queue: [
-    { id: 53125, subject: 'Laksvollen ny bruker', status: 'new', updated_at: '2026-10-27T08:00:00Z' },
-    { id: 53123, subject: '10263 Extra Laksvollen - alarm', status: 'open', updated_at: '2026-10-28T09:00:00Z' },
-    { id: 53130, subject: 'Annen butikk', status: 'pending', updated_at: '2026-10-28T09:30:00Z' },
+    { id: 53125, subject: 'Laksvollen ny bruker', status: 'new', updated_at: '2026-10-27T08:00:00Z', custom_fields: [{ id: 27741611, value: 0 }] },
+    { id: 53123, subject: 'SV: 41584 Extra Laksvollen - alarm', status: 'open', updated_at: '2026-10-28T09:00:00Z', custom_fields: [{ id: 27741611, value: 10263 }] },
+    { id: 53130, subject: 'Annen butikk', status: 'pending', updated_at: '2026-10-28T09:30:00Z', custom_fields: [{ id: 27741611, value: 4836 }] },
     { id: 53126, subject: '10263 gammel sak', status: 'solved', updated_at: '2026-10-20T08:00:00Z' },
   ],
   puts: [], posts: [], nextRl: 100, nextZd: 5000,
@@ -49,6 +49,8 @@ window.GM_xmlhttpRequest = (o) => {
     if (o.method !== 'GET' && o.headers['X-CSRF-Token'] !== 'csrf-1') return setTimeout(() => o.onload({ status: 403, responseText: '' }), 10);
     if (p === '/api/v2/views.json') return ok({ views: [{ id: 9, title: 'Annen kø' }, { id: 77, title: 'IWMAC Leveranse - Kulde' }], next_page: null });
     if (p === '/api/v2/views/77/tickets.json') return ok({ tickets: W.queue, next_page: null });
+    if (p === '/api/v2/ticket_fields.json') return ok({ ticket_fields: [{ id: 1, title: 'Subject' }, { id: 27741611, title: 'Plant ID' }], next_page: null });
+    if (p === '/api/v2/tickets/show_many.json') { const ids = u.searchParams.get('ids').split(','); return ok({ tickets: W.queue.filter((t) => ids.includes(String(t.id))) }); }
     if (p === '/api/v2/tickets/53123/comments.json') return ok({ comments: W.zd.slice().reverse(), users: [{ id: 700, name: 'Kari Kunde', role: 'end-user' }, { id: 900, name: 'Thomas', role: 'agent' }], next_page: null });
     if (p === '/api/v2/tickets/53123.json' && o.method === 'PUT') {
       const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [] };
@@ -57,7 +59,7 @@ window.GM_xmlhttpRequest = (o) => {
   }
   setTimeout(() => o.onload({ status: 404, responseText: '{}' }), 10);
 };
-GM_setValue('rlApiKey', 'rl-key'); GM_setValue('rlUserId', 1); GM_setValue('zdCsrfToken', 'csrf-1'); GM_setValue('zdsync_enabled_v1', true);
+GM_setValue('rlApiKey', 'rl-key'); GM_setValue('rlUserId', 1); GM_setValue('zdCsrfToken', 'csrf-1'); GM_setValue('zdsync_enabled_v1', false);
 `;
 
 const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General chat</title></head>' +
@@ -78,20 +80,33 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.goto(base + '/projects/1481787/chat/12896932');
     await page.addScriptTag({ content: '(function(){' + SYNC + '\nstartZendeskChatSync();})();' });
     const pill = page.locator('#zendesk-chat-sync >> .pill');
+    const pillText = () => page.evaluate(() => document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent.trim());
     await pill.waitFor();
-    assert.strictEqual((await pill.textContent()).trim(), 'Zendesk ⇄ Koble sak');
-
-    // the panel: the queue's active tickets, the project's first
+    // off in this browser: the button says so, and its panel turns it on
+    assert.strictEqual(await pillText(), 'Zendesk ⇄ av');
     await pill.click();
+    await page.locator('#zendesk-chat-sync >> text=Zendesk-synken er av').waitFor();
+    await page.screenshot({ path: path.join(OUT, '0-off.png') });
+    await page.locator('#zendesk-chat-sync >> text=Slå på i denne nettleseren').click();
+
+    // the panel: the queue's active tickets, the one whose Plant ID is the project's number first
     await page.locator('#zendesk-chat-sync >> .row').first().waitFor();
     const rows = await page.locator('#zendesk-chat-sync >> .row .s').allTextContents();
-    assert.deepStrictEqual(rows, ['#53123 10263 Extra Laksvollen - alarmpasser', '#53125 Laksvollen ny bruker', '#53130 Annen butikk'], 'active only, best match first');
+    assert.deepStrictEqual(rows, ['#53123 SV: 41584 Extra Laksvollen - alarmPlant ID 10263', '#53125 Laksvollen ny bruker', '#53130 Annen butikk'], 'active only, best match first');
     await page.screenshot({ path: path.join(OUT, '1-queue.png') });
+    // closed, the button names the ticket it found
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => /funnet/.test(document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
+    assert.strictEqual(await pillText(), 'Zendesk #53123 funnet · Koble');
+    await page.screenshot({ path: path.join(OUT, '1b-found.png') });
+    await pill.click();
+    await page.locator('#zendesk-chat-sync >> .row').first().waitFor();
     await page.locator('#zendesk-chat-sync >> .row').first().locator('button').click();
-    await page.waitForFunction(() => /Zendesk #53123/.test(document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
+    // linked: the button turns from "funnet" to the link's state
+    await page.waitForFunction(() => /#53123 ⇄/.test(document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
     let w = await page.evaluate(() => window.__world);
     assert.strictEqual(w.posts.length, 1);
-    assert.match(w.posts[0].content, /^<p>Zendesk #53123 «10263 Extra Laksvollen - alarm» er koblet til denne chatten\./);
+    assert.match(w.posts[0].content, /^<p>Zendesk #53123 «SV: 41584 Extra Laksvollen - alarm» er koblet til denne chatten\./);
     assert.strictEqual(w.posts[0].private, true);
 
     // a customer's reply in Zendesk, a /kunde message and an internal one in the chat; then "Synk nå"
@@ -121,10 +136,10 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
 
     // off in the menu: the button goes
     const menu = await page.evaluate(() => window.__menu.map((m) => m.name));
-    assert.deepStrictEqual(menu, ['✅ Zendesk ⇄ General Chat-synk', 'Zendesk-kø for synken: IWMAC Leveranse - Kulde…']);
+    assert.deepStrictEqual(menu, ['❌ Zendesk ⇄ General Chat-synk', 'Zendesk-kø for synken: IWMAC Leveranse - Kulde…'], 'registered while it was off');
     await page.evaluate(() => window.__menu[0].fn());
     await page.waitForTimeout(1200);
-    assert.strictEqual(await page.evaluate(() => document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill').hidden), true);
+    assert.strictEqual(await pillText(), 'Zendesk ⇄ av', 'turned off: the button stays, greyed');
 
     assert.deepStrictEqual(errors, [], 'no errors or warnings in the page');
     console.log('chat sync e2e passed; screenshots in ' + path.relative(process.cwd(), OUT));

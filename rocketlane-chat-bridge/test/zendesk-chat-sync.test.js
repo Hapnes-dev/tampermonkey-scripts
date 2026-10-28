@@ -22,12 +22,15 @@ function world(opts = {}) {
     { id: 12, messageType: 'USER_MESSAGE', content: '<p>Gammel melding</p>', createdAt: clock - 40000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } },
   ];
   let nextRl = 100, nextZd = 5000;
+  const PLANT = 27741611;   // the ticket field "Plant ID"
   const queue = [
-    { id: 53123, subject: '10263 Extra Laksvollen - alarm', status: 'open', description: '', updated_at: '2026-10-28T09:00:00Z' },
-    { id: 53124, subject: 'Faktura', status: 'pending', description: 'Gjelder anlegg 10263', updated_at: '2026-10-28T08:00:00Z' },
-    { id: 53125, subject: 'Laksvollen ny bruker', status: 'new', description: '', updated_at: '2026-10-27T08:00:00Z' },
+    { id: 53123, subject: '10263 Extra Laksvollen - alarm', status: 'open', description: '', updated_at: '2026-10-28T09:00:00Z', custom_fields: [{ id: PLANT, value: null }] },
+    { id: 53124, subject: 'Faktura', status: 'pending', description: 'Gjelder anlegg 10263', updated_at: '2026-10-28T08:00:00Z', custom_fields: [{ id: PLANT, value: '10263' }] },
+    { id: 53125, subject: 'Laksvollen ny bruker', status: 'new', description: '', updated_at: '2026-10-27T08:00:00Z', custom_fields: [{ id: PLANT, value: '0000' }] },
     { id: 53126, subject: '10263 gammel sak', status: 'solved', description: '', updated_at: '2026-10-20T08:00:00Z' },
   ];
+  // tickets that have left the queue's view keep their status here
+  const elsewhere = new Map();
   const zdComments = new Map([[53123, [
     { id: 4001, author_id: 700, public: true, plain_body: 'Gammel kundemelding', created_at: '2026-10-27T08:00:00Z', attachments: [] },
   ]]]);
@@ -51,6 +54,11 @@ function world(opts = {}) {
     },
     zd: {
       async queueTickets() { return JSON.parse(JSON.stringify(queue)); },
+      async statuses(ids) {
+        const out = {};
+        for (const id of ids) { const t = queue.find((x) => String(x.id) === String(id)) || elsewhere.get(String(id)); if (t) out[String(id)] = t.status; }
+        return out;
+      },
       async getComments(ticketId) { return { comments: JSON.parse(JSON.stringify(zdComments.get(Number(ticketId)) || [])), users: zdUsers }; },
       async addComment(ticketId, body, isPublic) {
         if (fail.zdAdd > 0) { fail.zdAdd--; throw new Error('Zendesk svarte HTTP 500'); }
@@ -64,15 +72,23 @@ function world(opts = {}) {
   const sync = createZendeskChatSync(deps);
   const say = (userId, html, first, last) => { const c = { id: nextRl++, messageType: 'USER_MESSAGE', content: html, private: false, createdAt: tick(), user: { userId, firstName: first, lastName: last } }; chat.push(c); return c; };
   const reply = (authorId, text, isPublic = true) => { const c = { id: nextZd++, author_id: authorId, public: isPublic, plain_body: text, created_at: new Date(tick()).toISOString(), attachments: [] }; zdComments.get(53123).push(c); return c; };
-  return { sync, chat, queue, zdComments, posted, state, fail, say, reply, tick, deps };
+  return { sync, chat, queue, elsewhere, zdComments, posted, state, fail, say, reply, tick, deps, PLANT };
 }
 
-test('the queue: active tickets only, the project\'s best match first', async () => {
+test('the queue: active tickets only, the project\'s best match first - its Plant ID before all', async () => {
   const w = world();
   const q = await w.sync.queue();
   assert.deepStrictEqual(q.map((t) => t.id), [53123, 53124, 53125], 'solved is not active');
-  const ranked = w.sync.rankTickets(q, '10263 - Extra Laksvollen: New store');
-  assert.deepStrictEqual(ranked.map((r) => [r.ticket.id, r.score]), [[53123, 14], [53124, 5], [53125, 2]], 'number in the subject, then in the text, then a word of the name');
+  assert.deepStrictEqual(w.sync.rankTickets(q, '10263 - Extra Laksvollen: New store', w.PLANT).map((r) => [r.ticket.id, r.score]),
+    [[53124, 25], [53123, 14], [53125, 2]], 'Plant ID, then the number in the subject, then in the text, then a word of the name');
+  assert.deepStrictEqual(w.sync.rankTickets(q, '10263 - Extra Laksvollen: New store').map((r) => [r.ticket.id, r.score]),
+    [[53123, 14], [53124, 5], [53125, 2]], 'without the field known, the text alone');
+  assert.deepStrictEqual(q.map((t) => w.sync.plantOf(t, w.PLANT)), ['', '10263', ''], 'none, a number, or only zeros');
+  // a project whose ticket says another number in its subject: the Plant ID decides (8222 - Obs Harstad, "SV: 41584 OBS Harstad")
+  const harstad = [{ id: 207248, subject: 'SV: 41584 OBS Harstad - Plug In på Iwmac', status: 'open', custom_fields: [{ id: w.PLANT, value: 8222 }] },
+    { id: 210175, subject: 'INC000002790331 : 209753 - Joker Bjordal - 10250 -', status: 'open', custom_fields: [{ id: w.PLANT, value: 10250 }] }];
+  const best = w.sync.rankTickets(harstad, '8222 - Obs Harstad: Ombygging', w.PLANT)[0];
+  assert.deepStrictEqual([best.ticket.id, best.score], [207248, 22]);
 });
 
 test('linking: only an active ticket of the queue; nothing old goes across; the chat is told', async () => {
@@ -140,7 +156,7 @@ test('without ids from the APIs the sync still knows its own messages', async ()
   assert.deepStrictEqual([r.mirrored, r.forwarded], [0, 0]);
 });
 
-test('a ticket solved or out of the queue pauses the link; back in the queue, it catches up', async () => {
+test('a solved ticket pauses the link; opened again, it catches up', async () => {
   const w = world();
   await w.sync.link(1481787, 12896932, 53123);
   w.queue[0].status = 'solved';
@@ -148,11 +164,25 @@ test('a ticket solved or out of the queue pauses the link; back in the queue, it
   w.say(2, '<p>Notat mens saken er løst.</p>', 'Andreas', 'Sandnes');
   let r = await w.sync.runOnce();
   assert.deepStrictEqual(r, { mirrored: 0, forwarded: 0, paused: 1, errors: 0 });
-  assert.match(w.sync.linkOf(1481787, 12896932).note, /ikke aktiv i køen/);
+  assert.match(w.sync.linkOf(1481787, 12896932).note, /Saken er løst/);
   w.queue[0].status = 'open';
   r = await w.sync.runOnce();
   assert.deepStrictEqual(r, { mirrored: 1, forwarded: 1, paused: 0, errors: 0 });
   assert.strictEqual(w.sync.linkOf(1481787, 12896932).status, 'active');
+});
+
+test('a linked ticket that waits for the customer has left the view, but keeps syncing', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const t = w.queue.shift();
+  w.elsewhere.set('53123', Object.assign(t, { status: 'pending' }));
+  w.say(2, '<p>Venter på kunden.</p>', 'Andreas', 'Sandnes');
+  w.reply(700, 'Svar fra kunden.');
+  assert.deepStrictEqual(await w.sync.runOnce(), { mirrored: 1, forwarded: 1, paused: 0, errors: 0 });
+  w.elsewhere.delete('53123');
+  const r = await w.sync.runOnce();
+  assert.strictEqual(r.paused, 1);
+  assert.match(w.sync.linkOf(1481787, 12896932).note, /Fant ikke saken/);
 });
 
 test('a failure part way: the next round goes on from there, nothing twice', async () => {

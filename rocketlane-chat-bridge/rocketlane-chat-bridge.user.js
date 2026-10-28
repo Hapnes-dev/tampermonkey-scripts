@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.16.0
-// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.16.0: Zendesk ⇄ General Chat — link a project's General Chat in Rocketlane to an active ticket in your Zendesk queue; the ticket's new messages appear in the chat, and what is written in the chat goes to the ticket as an internal note, or as a public reply when it starts with /kunde. Off until turned on in the Tampermonkey menu. v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
+// @version      1.17.0
+// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.17.0: the Zendesk sync finds a project's ticket by its Plant ID and offers it on the chat's button; the button shows when the sync is off, with a way to turn it on; a linked ticket keeps syncing while it is pending or on hold. v1.16.0: Zendesk ⇄ General Chat — link a project's General Chat in Rocketlane to an active ticket in your Zendesk queue; the ticket's new messages appear in the chat, and what is written in the chat goes to the ticket as an internal note, or as a public reply when it starts with /kunde. Off until turned on in the Tampermonkey menu. v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -92,6 +92,7 @@
   // @@ZDSYNC-ENGINE-START (rocketlane-chat-bridge/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
     const ACTIVE = { new: 1, open: 1, pending: 1, hold: 1 };
+    const STATUS_NO = { solved: "løst", closed: "lukket", deleted: "slettet" };
     const KEEP = 300; // message ids remembered per link
     const now = deps.now || (() => Date.now());
     const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -140,9 +141,17 @@
         (files.length ? "<p>Vedlegg: " + files.join(", ") + "</p>" : "");
     }
 
-    /** The queue's tickets for a project, best match first: its plant number in the subject, then in the ticket's
-     *  text, then words of its name. -> [{ticket, score}] */
-    function rankTickets(tickets, projectName) {
+    /** A ticket's Plant ID (the custom field `plantFieldId`) without leading zeros; "" when it has none, or only zeros. */
+    function plantOf(ticket, plantFieldId) {
+      if (!plantFieldId || !ticket) return "";
+      const f = (ticket.custom_fields || []).find((x) => String(x.id) === String(plantFieldId));
+      const v = f && f.value != null ? String(f.value).trim() : "";
+      return /^\d+$/.test(v) && Number(v) > 0 ? String(Number(v)) : "";
+    }
+
+    /** The queue's tickets for a project, best match first: the project's plant number as the ticket's Plant ID, then
+     *  in its subject, then in its text, then words of the project's name. -> [{ticket, score}] */
+    function rankTickets(tickets, projectName, plantFieldId) {
       const name = String(projectName || "");
       const num = (/^\s*(\d{3,6})\b/.exec(name) || [])[1] || "";
       const numRe = num ? new RegExp("(^|\\D)" + num + "(\\D|$)") : null;
@@ -150,6 +159,7 @@
       return (tickets || []).map((t) => {
         const subj = String(t.subject || ""), desc = String(t.description || "");
         let score = 0;
+        if (num && plantOf(t, plantFieldId) === String(Number(num))) score += 20;
         if (numRe && numRe.test(subj)) score += 10;
         if (numRe && numRe.test(desc)) score += 5;
         for (const w of words) if (subj.toLowerCase().includes(w)) score += 2;
@@ -209,14 +219,17 @@
       const keys = Object.keys(st.links);
       const out = { mirrored: 0, forwarded: 0, paused: 0, errors: 0 };
       if (!keys.length) return out;
-      const activeIds = new Set((await queue()).map((t) => String(t.id)));
+      // a linked ticket syncs while it is new, open, pending or on hold - also when it has left the queue's view, which
+      // shows only new and open ones
+      const statuses = (await deps.zd.statuses(keys.map((k) => st.links[k].ticketId))) || {};
       const runner = Number(deps.rl.userId()) || 0;
       for (const key of keys) {
         const e = st.links[key];
         e.lastRun = now();
-        if (!activeIds.has(e.ticketId)) {
+        const status = String(statuses[e.ticketId] || "").toLowerCase();
+        if (ACTIVE[status] !== 1) {
           e.status = "paused";
-          e.note = "Saken er ikke aktiv i køen: synken venter til den er det igjen.";
+          e.note = status ? "Saken er " + (STATUS_NO[status] || status) + ": synken venter til den åpnes igjen." : "Fant ikke saken i Zendesk.";
           out.paused++;
           deps.store.save(st);
           continue;
@@ -265,7 +278,7 @@
       return out;
     }
 
-    return { link, unlink, linkOf, runOnce, queue, rankTickets, chatHtmlOf, textOfHtml, htmlOfText, parseChatMessage, isActive };
+    return { link, unlink, linkOf, runOnce, queue, rankTickets, plantOf, chatHtmlOf, textOfHtml, htmlOfText, parseChatMessage, isActive };
   }
   // @@ZDSYNC-ENGINE-END
 
@@ -275,7 +288,7 @@
     if (window.top !== window.self || window.__zendeskChatSync) return;
     window.__zendeskChatSync = true;
     const EN_KEY = "zdsync_enabled_v1", STATE_KEY = "zdsync_state_v1", VIEW_KEY = "zdsync_view_title_v1";
-    const VIEWID_KEY = "zdsync_view_id_v1", LOCK_KEY = "zdsync_lock_v1";
+    const VIEWID_KEY = "zdsync_view_id_v1", LOCK_KEY = "zdsync_lock_v1", PLANT_KEY = "zdsync_plant_field_v1";
     const DEFAULT_VIEW = "IWMAC Leveranse - Kulde";
     const POLL_MS = 60 * 1000;
     const RL_API = "https://kiona.api.rocketlane.com/api/v1";
@@ -403,6 +416,28 @@
           }
           return { comments, users };
         },
+        async statuses(ids) {
+          const list = [...new Set((ids || []).map(String).filter((x) => /^\d+$/.test(x)))];
+          const out = {};
+          for (let i = 0; i < list.length; i += 100) {
+            const j = await zd("GET", "/tickets/show_many.json?ids=" + list.slice(i, i + 100).join(","));
+            for (const t of (j && j.tickets) || []) out[String(t.id)] = t.status;
+          }
+          return out;
+        },
+        // the ticket field titled "Plant ID": the project's plant number is found there
+        async plantFieldId() {
+          const cached = get(PLANT_KEY, null);
+          if (cached && cached.id) return cached.id;
+          let path = "/ticket_fields.json?per_page=100", found = null;
+          for (let i = 0; path && i < 10 && !found; i++) {
+            const j = await zd("GET", path);
+            found = ((j && j.ticket_fields) || []).find((f) => /^plant\s*id$/i.test(String(f.title || "").trim())) || null;
+            path = nextPath(j);
+          }
+          if (found) set(PLANT_KEY, { id: found.id });
+          return found ? found.id : null;
+        },
         async addComment(ticketId, body, isPublic) {
           const j = await zd("PUT", "/tickets/" + encodeURIComponent(ticketId) + ".json", { ticket: { comment: { body, public: isPublic === true } } });
           const ev = ((j && j.audit && j.audit.events) || []).find((x) => x && x.type === "Comment");
@@ -447,7 +482,9 @@
       ":host{all:initial}",
       ".pill{position:fixed;right:24px;bottom:132px;z-index:2147483000;display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:16px;border:1px solid #d0d5dd;background:#fff;color:#344054;font:500 12.5px/1.3 Inter,'Segoe UI',Roboto,Arial,sans-serif;box-shadow:0 2px 8px rgba(16,24,40,.12);cursor:pointer}",
       ".pill.on{border-color:#2f6fed;color:#1849a9}.pill.paused{border-color:#f0cf7a;color:#93370d}.pill.error{border-color:#fda29b;color:#b42318}",
-      ".dot{width:8px;height:8px;border-radius:50%;background:#98a2b3}.on .dot{background:#12b76a}.paused .dot{background:#f79009}.error .dot{background:#f04438}",
+      ".pill.off{color:#98a2b3;border-color:#e4e7ec;box-shadow:none}.pill.found{border-color:#2f6fed;background:#eef4ff;color:#1849a9}",
+      ".dot{width:8px;height:8px;border-radius:50%;background:#98a2b3}.on .dot{background:#12b76a}.paused .dot{background:#f79009}.error .dot{background:#f04438}.found .dot{background:#2f6fed}",
+      ".off .dot{background:#d0d5dd}",
       ".panel{position:fixed;right:24px;bottom:172px;z-index:2147483000;width:380px;max-height:60vh;overflow:auto;padding:12px;border:1px solid #d0d5dd;border-radius:10px;background:#fff;color:#1f2328;font:13px/1.45 Inter,'Segoe UI',Roboto,Arial,sans-serif;box-shadow:0 8px 24px rgba(16,24,40,.18)}",
       ".panel h3{margin:0 0 6px;font-size:13.5px}.muted{color:#667085;font-size:12px}.err{color:#b42318;font-size:12px;margin:6px 0}",
       ".row{display:flex;align-items:center;gap:8px;padding:7px 6px;border-radius:6px}.row:hover{background:#f6f7f9}.row .t{flex:1;min-width:0}",
@@ -471,16 +508,61 @@
     }
     const hhmm = (t) => (t ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
 
+    // the project's tickets in the queue, best match first, kept two minutes per project
+    const ranked = new Map();
+    let ranking = null;
+    async function rankedFor(projectId, fresh) {
+      const hit = ranked.get(projectId);
+      if (!fresh && hit && Date.now() - hit.at < 120000) return hit;
+      try {
+        const [tickets, name, fieldId] = await Promise.all([sync.queue(), api.rl.projectName(projectId).catch(() => ""), api.zd.plantFieldId().catch(() => null)]);
+        const got = { at: Date.now(), list: sync.rankTickets(tickets, name, fieldId), name, fieldId, error: "" };
+        ranked.set(projectId, got);
+        return got;
+      } catch (err) {
+        const got = { at: Date.now(), list: [], error: String((err && err.message) || err) };
+        ranked.set(projectId, got);
+        return got;
+      }
+    }
+    /** The ticket the project's plant number points at (its Plant ID, or the number in its subject), if it is known. */
+    function foundFor(projectId) {
+      const hit = ranked.get(projectId);
+      if ((!hit || Date.now() - hit.at > 120000) && !ranking) {
+        ranking = rankedFor(projectId).then(() => { ranking = null; paint(); });
+      }
+      const best = hit && hit.list[0];
+      return best && best.score >= 10 ? best : null;
+    }
+
     function paint() {
-      const ids = enabled() ? chatIds() : null;
+      const ids = chatIds();
       if (!ids) { pill.hidden = true; panel.hidden = true; return; }
       pill.hidden = false;
-      const e = sync.linkOf(ids.projectId, ids.conversationId);
       pill.textContent = "";
       pill.append(el("span", "dot"));
-      if (!e) { pill.className = "pill"; pill.append("Zendesk ⇄ Koble sak"); pill.title = "Koble denne chatten til en aktiv sak i køen " + viewTitle(); return; }
+      if (!enabled()) {
+        pill.className = "pill off";
+        pill.append("Zendesk ⇄ av");
+        pill.title = "Zendesk-synken er av i denne nettleseren";
+        return;
+      }
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      if (!e) {
+        const best = foundFor(ids.projectId);
+        if (best) {
+          pill.className = "pill found";
+          pill.append("Zendesk #" + best.ticket.id + " funnet · Koble");
+          pill.title = String(best.ticket.subject || "");
+        } else {
+          pill.className = "pill";
+          pill.append("Zendesk ⇄ Koble sak");
+          pill.title = "Koble denne chatten til en aktiv sak i køen " + viewTitle();
+        }
+        return;
+      }
       pill.className = "pill " + (e.status === "active" ? "on" : e.status);
-      pill.append("Zendesk #" + e.ticketId + (e.status === "active" ? " ⇄ " + (e.lastRun ? "synket " + hhmm(e.lastRun) : "kobl.") : e.status === "paused" ? " · pause" : " · feil"));
+      pill.append("Zendesk #" + e.ticketId + (e.status === "active" ? " ⇄ " + (e.lastRun ? "synket " + hhmm(e.lastRun) : "koblet") : e.status === "paused" ? " · pause" : " · feil"));
       pill.title = e.note || ("Synkes med Zendesk #" + e.ticketId + " «" + e.subject + "»");
     }
 
@@ -489,6 +571,18 @@
       if (!ids) return;
       panel.hidden = false;
       panel.textContent = "";
+      if (!enabled()) {
+        panel.append(el("h3", null, "Zendesk-synken er av"));
+        panel.append(el("div", "muted", "Slått på kan denne chatten kobles til en aktiv sak i køen «" + viewTitle() + "». Nye meldinger på saken " +
+          "kommer da hit, og det som skrives her går til saken som internt notat (/kunde for svar til kunden). Synken kjører i denne nettleseren: " +
+          "slå den på bare hos én person."));
+        const acts = el("div", "acts");
+        const on = el("button", "b", "Slå på i denne nettleseren");
+        on.onclick = () => { set(EN_KEY, true); paint(); void openPanel(); };
+        acts.append(on);
+        panel.append(acts);
+        return;
+      }
       const e = sync.linkOf(ids.projectId, ids.conversationId);
       if (e) {
         panel.append(el("h3", null, "Zendesk #" + e.ticketId + " «" + e.subject + "»"));
@@ -508,34 +602,33 @@
         return;
       }
       panel.append(el("h3", null, "Koble chatten til en sak i køen"));
-      panel.append(el("div", "muted", "Aktive saker i «" + viewTitle() + "». Saker med prosjektets anleggsnummer står øverst."));
+      panel.append(el("div", "muted", "Aktive saker i «" + viewTitle() + "». Saker med prosjektets anleggsnummer (Plant ID eller i emnet) står øverst."));
       const list = el("div");
       list.append(el("div", "muted", "Henter køen…"));
       panel.append(list);
-      try {
-        const [tickets, name] = await Promise.all([sync.queue(), api.rl.projectName(ids.projectId).catch(() => "")]);
-        list.textContent = "";
-        const ranked = sync.rankTickets(tickets, name);
-        if (!ranked.length) list.append(el("div", "muted", "Ingen aktive saker i køen."));
-        for (const { ticket: t, score } of ranked.slice(0, 25)) {
-          const row = el("div", "row");
-          const txt = el("div", "t");
-          const top = el("span", "s");
-          top.append(el("b", null, "#" + t.id + " "), document.createTextNode(String(t.subject || "(uten emne)")));
-          if (score >= 10) top.append(el("span", "match", "passer"));
-          txt.append(top, el("span", "muted", String(t.status || "") + (t.updated_at ? " · " + new Date(t.updated_at).toLocaleDateString() : "")));
-          const go = el("button", "b", "Koble");
-          go.onclick = async () => {
-            go.disabled = true;
-            try { await sync.link(ids.projectId, ids.conversationId, t.id); panel.hidden = true; paint(); }
-            catch (err) { go.disabled = false; list.prepend(el("div", "err", String((err && err.message) || err))); }
-          };
-          row.append(txt, go);
-          list.append(row);
-        }
-      } catch (err) {
-        list.textContent = "";
-        list.append(el("div", "err", String((err && err.message) || err)));
+      const got = await rankedFor(ids.projectId, true);
+      paint();
+      list.textContent = "";
+      if (got.error) { list.append(el("div", "err", got.error)); return; }
+      if (!got.list.length) list.append(el("div", "muted", "Ingen aktive saker i køen."));
+      const num = (/^\s*(\d{3,6})\b/.exec(got.name || "") || [])[1] || "";
+      for (const { ticket: t, score } of got.list.slice(0, 25)) {
+        const row = el("div", "row");
+        const txt = el("div", "t");
+        const top = el("span", "s");
+        top.append(el("b", null, "#" + t.id + " "), document.createTextNode(String(t.subject || "(uten emne)")));
+        if (score >= 20) top.append(el("span", "match", "Plant ID " + num));
+        else if (score >= 10) top.append(el("span", "match", "passer"));
+        const plant = sync.plantOf(t, got.fieldId);
+        txt.append(top, el("span", "muted", String(t.status || "") + (plant ? " · anlegg " + plant : "") + (t.updated_at ? " · " + new Date(t.updated_at).toLocaleDateString() : "")));
+        const go = el("button", "b", "Koble");
+        go.onclick = async () => {
+          go.disabled = true;
+          try { await sync.link(ids.projectId, ids.conversationId, t.id); panel.hidden = true; paint(); }
+          catch (err) { go.disabled = false; list.prepend(el("div", "err", String((err && err.message) || err))); }
+        };
+        row.append(txt, go);
+        list.append(row);
       }
     }
 
