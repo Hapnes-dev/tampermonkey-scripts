@@ -13,6 +13,7 @@ One Tampermonkey userscript with eight independent improvements for `kiona.rocke
 10. **Project notes → Personal tasks** (v1.18.0) — every open project you own or are a member of that has a **Project notes** value gets one entry in the home page's Personal tasks widget (`<project>: <first line>`), renamed or removed as the note or the project changes. Runs a few seconds after load and every few minutes. Completed projects are never synced.
 11. **Project note panel** (v1.19.0) — a **Project note** card on the project plan, directly above the Categories overview, that edits the project's own **Project notes** field — the same column the Projects list view shows. It loads the current note, saves 800 ms after you stop typing (blur and **Ctrl+Enter** save at once) and shows *Saving… / Saved* beside the box. Because Rocketlane offers no version check, every save re-reads the field first: if someone else changed it in the meantime nothing is overwritten and you are offered **Load server** or **Overwrite**; after the write the field is read back and compared, and a failed save keeps your text with a **Retry** button. A verified save immediately updates that project's entry in the Personal tasks widget.
 8. **Home panels** — **v1.15.0:** *Project Owner* lists every open project in the tenant grouped by owner (an owner's count is their real count), *In progress* lists every project with status In progress grouped by owner (you included); each panel has its own pin and pins your own group first by default; **v1.15.1:** a **Delivery Cooling** toggle in both headers shows only the team's owners (Thomas Kvalvåg Håpnes, Andreas Sandnes, ivarhaga haga, Matthias Criel, Svein Olav Wahlberg — remembered), plus **Collapse all** / **Expand all** per panel (single groups still toggle by clicking their header); **v1.15.2:** a **search box** in both headers filters both panels by plant name, id, owner or status (every word must match; groups open while searching); **Ctrl+F** on the home page focuses it, **Esc** clears it; data is one server-filtered `lightV1` fetch (`status isNot Completed`, ~400 rows, two pages). Earlier: (v1.12.1) — on `https://kiona.rocketlane.com/` (`pathname === "/"`), PPT-style dark panel of **In progress** projects mounted **under the native Overdue** task section (Incomplete widgets stay). Cards show %, status/due pills, progress bar; owner groups with pin + Due/Progress sort. Data from `POST /projects/lightV1` filtered to Status=In progress (owner/member; exclude `[Tracker] Workload Sync`). (the `+ RL Project` button was removed in v1.15.3). **v1.14.2:** the result is cached in Tampermonkey storage, so the panels paint instantly from the last result and, since v1.14.4, refresh in the background on every visit (status line shows *updated HH:MM* or *refreshing…*); the fetch starts at document-start and pages lightV1 in one parallel round; **Refresh** forces a new fetch. **v1.14.3:** lightV1 is filtered server-side to the projects you own or are a member of (the same `filter` body the Rocketlane Projects grid sends), so one ~1.4 MB page replaces the five 3.7 MB pages of the full scan; the panels also wait for the Overdue card (up to 10 s) instead of mounting at the top and jumping down once it renders. **v1.14.6:** cards show the project **start date** (Starts / Started) instead of the overdue pill — the due date moved to the card tooltip — and the status chips are quiet outlined pills with a coloured dot rather than tinted buttons. **v1.14.21:** click a card's status chip to **change the project status** from the overview — the menu lists the tenant's Status options (Proposed, In Planning, To be Staffed, In progress, On Hold, Blocked, Completed, Cancelled), the pick is written with `PUT /projects/{id}` on the Status field, the card updates at once and the lists revalidate a moment later (a Completed project drops out).
+12. **Zendesk ⇄ General Chat** (v1.73.0; in *Rocketlane Chat Bridge* 1.16.0–1.18.0 before) — a project's General Chat linked to its ticket in the team's Zendesk queue: the ticket's messages come into the chat as private messages, and what is written in the chat goes to the ticket as an internal note, or as a public reply to the customer when it starts with `/reply`. Off until turned on in the browser that runs it. See section 7 below.
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 
@@ -27,6 +28,7 @@ Requires the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
 - Notes: the column width and a custom SQL API URL start from their defaults after the merge (the old script's settings are in its own Tampermonkey storage). The notes themselves are read back from the toolbox SQL table.
 - For the Oneflow status: be logged in to `https://app.oneflow.com` in the same browser — the script uses your Oneflow session cookie, read-only.
 - For Delivery to service: **open `https://iwmac.zendesk.com` once while logged in**, so the script can capture the CSRF token it needs to create the handover ticket. Copy-to-clipboard works without it.
+- For the Zendesk ⇄ General Chat sync: the same Zendesk visit, then **Turn on in this browser** on the button at the bottom right of a project's chat page. Update *Rocketlane Chat Bridge* to 1.19.0 or later as well: before that it runs the sync itself.
 
 ---
 
@@ -301,6 +303,76 @@ On a project **plan** page:
 2. Dialog preset order: **From order info / HubSpot line items** (default) → **Choose a project template…** → Custom → PPT discipline presets.
 3. Order-info create reads the HubSpot delivery-status field, builds categories/tasks/subtasks (same promotion/license rules as the Project Progress Tracker), and writes phases/tasks through the Rocketlane API. Re-runs backfill only missing items (no duplicates).
 4. **Choose a project template…** / empty-plan **Choose a template** opens Rocketlane’s native chooser; **From order info / HubSpot line items** is injected as the **first** option in that dropdown (above `#2A IWMAC…`). Empty plans also get a blue order-info button above **Choose a template**.
+
+---
+
+## 7. Zendesk ⇄ General Chat (v1.73.0)
+
+Links a project's General Chat in Rocketlane to one Zendesk ticket, so the conversation with the customer can be
+followed and answered from the chat. It lived in *Rocketlane Chat Bridge* from its 1.16.0 to 1.18.0 and moved here in
+v1.73.0.
+
+- **Turn it on.** The button at the bottom right of a chat page (`/projects/<id>/chat/<id>`) says **Zendesk ⇄ off**
+  while the sync is off in this browser. Its panel has a button to turn it on, and so does the Tampermonkey menu
+  ("✅/❌ Zendesk ⇄ General Chat sync"). Only the browser where it is on does the syncing. The rest of the team sees the
+  messages in the chat without installing anything.
+- **Link a chat.** The button lists the active tickets in the team's queue. The queue is set by a Zendesk view,
+  "IWMAC Leveranse - Kulde" by default, which can be changed in the Tampermonkey menu.
+  - The view shows only new and open tickets. So the sync reads the view's groups (Delivery and Aftermarket Cooling)
+    and its tag and assignee exclusions, and searches them at every active status. That brings in tickets waiting for
+    the customer ("Waiting for Customer") and on hold ("On Hold – Internal"), but never solved, closed or archived
+    ones.
+  - The ticket whose **Plant ID** is the project's plant number (the number its name starts with, "8222 - Obs
+    Harstad") comes first. After it come tickets with that number in the subject, then in the text, then with words
+    of the project's name in the subject.
+  - When one matches, opening the chat asks whether to link it: **Link**, **Not now** (not asked again in that
+    chat for that ticket) or **Choose another ticket**. Meanwhile the button says **Zendesk #207248 found · Link**.
+  - **Link** in the list asks once more, with "Yes, link #…".
+  - Linking posts a note in the chat, then the ticket's earlier messages once, oldest first: who, what kind, when,
+    and the text. They go in one message, or in a few for a long ticket. A chat linked before this existed (the
+    Chat Bridge's 1.17.4) can get them with **Post earlier messages** in its panel. **Post earlier messages again** posts them once more, after the
+    old copies have been deleted from the chat. What was in the chat before the link stays in the chat.
+- **From Zendesk to the chat.** Every new message on the ticket is posted in the chat as a private message, so
+  customers in the project do not see it. It starts with "Zendesk #<ticket> · <name>" and a label: "(customer)" for the
+  customer, "internal note" for an internal note, "reply to the customer" for an agent's public reply. Attachments are links
+  to Zendesk.
+- **Tidied text.** Email replies are cleaned for the chat. Entities such as `&nbsp;` are decoded, and runs of blank
+  lines become one. A quoted earlier email ("Fra: …" / "Sendt: …", "-----Original Message-----", "On … wrote:") is
+  cut, and a signature is cut to its sign-off and the name under it. Each line is a paragraph, as Rocketlane writes
+  its own messages.
+- **From the chat to Zendesk.** Every message written in the chat goes to the ticket as an internal note. One that
+  starts with **/reply** goes as a public reply, emailed to the customer. Messages are written with your Zendesk
+  session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
+  "— Name" after a public reply.
+- **Only active tickets.** A linked ticket syncs while it is new, open, pending or on hold, also after it has left the
+  queue's view. Solved or closed, the link pauses. Opened again, the link catches up on everything that came in
+  meanwhile.
+- **When it runs:** by itself, in one Rocketlane tab of the browser where it is on. It runs every 15 seconds while that
+  tab is in front, and every minute in the background. A tab in front takes over from one in the background.
+  - A ticket's messages are fetched only when the ticket has changed.
+  - A new message in a linked chat starts a round at once, through Rocketlane's own push events.
+  - **Sync now** in the panel runs one at once.
+  - With the browser closed it does not run, and it catches up the next time.
+- **The chat on screen.** Rocketlane shows new messages through its push events. If a message the sync posted does not
+  show up in the chat you have open, the chat view is reloaded in place: its route is left and entered again, so
+  Rocketlane fetches the chat's messages, without a page reload and without a new history entry. This never happens
+  while something is typed in the message box.
+- **Needs:** a Rocketlane page loaded (for the api-key) and Zendesk opened once while logged in (for the session and
+  the CSRF token), as Delivery to service does. A lapsed Zendesk session is renewed once before the sync gives up on a
+  round. The button shows what is missing.
+- **How:** Rocketlane has no public API for chat, so this uses the same tenant API as the tracker's chat. A change on
+  Rocketlane's side can break it. Each message is recorded as soon as it has crossed, and the sync remembers the
+  messages it posted itself, so nothing goes back where it came from or crosses twice.
+- **From the Chat Bridge.** Up to its 1.18.0 the sync ran in *Rocketlane Chat Bridge*, which keeps its own storage.
+  Its 1.19.0 hands over the links, whether the sync was on, the queue and the "Not now" answers by itself. On the
+  first Rocketlane page after the update it turns its own sync off, so a tab still on 1.18.0 stops at its next round,
+  and waits until such a tab's round is over. Then it leaves them once in the page's localStorage, where this script
+  takes them and removes them. A linked chat carries on where it was, without the notice or the ticket's earlier
+  messages posted again, and nothing crosses twice. While a tab still shows the old script's button, this script's
+  button and rounds keep away from it.
+- **Tests:** `node --test "rocketlane-younium-status/test/*.test.js"` runs the engine against an in-memory chat and
+  Zendesk. `node rocketlane-younium-status/test/chat-sync-e2e.js` runs the button and panel in headless Chrome,
+  including the Chat Bridge's hand-over.
 
 ---
 

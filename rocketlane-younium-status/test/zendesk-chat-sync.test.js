@@ -1,12 +1,13 @@
 'use strict';
-/* Zendesk ⇄ General Chat (v1.16.0): the sync's engine, taken from the userscript as it stands, run against an
- * in-memory Rocketlane chat and an in-memory Zendesk.   node --test rocketlane-chat-bridge/test/ */
+/* Zendesk ⇄ General Chat (Rocketlane improvements 1.73.0; Rocketlane Chat Bridge 1.16.0-1.18.0 before): the sync's
+ * engine, taken from the userscript as it stands, run against an in-memory Rocketlane chat and an in-memory Zendesk.
+ *   node --test rocketlane-younium-status/test/ */
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'rocketlane-chat-bridge.user.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '..', 'rocketlane-younium-status.user.js'), 'utf8');
 const a = src.indexOf('// @@ZDSYNC-ENGINE-START'), b = src.indexOf('// @@ZDSYNC-ENGINE-END');
 assert.ok(a > 0 && b > a, 'the engine markers are in the userscript');
 const createZendeskChatSync = new Function(src.slice(a, b) + '\nreturn createZendeskChatSync;')();

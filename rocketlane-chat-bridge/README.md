@@ -39,63 +39,18 @@ Pops a desktop notification (`GM_notification`) for **new Rocketlane** chat/ment
 - **Limitation:** can't fire when the browser is fully closed (a static page + userscript can't run with no tab). True always-on push would need a backend server + Web Push.
 - The tracker's own in-page notifier **defers** to this bridge at v1.10.0+, so the same item is never popped twice.
 
-## Zendesk ⇄ General Chat (v1.16.0)
+## Zendesk ⇄ General Chat (1.16.0–1.18.0): moved to Rocketlane improvements
 
-Links a project's General Chat in Rocketlane to one Zendesk ticket, so the conversation with the customer can be
-followed and answered from the chat.
+The sync between a project's General Chat and its Zendesk ticket moved to
+[Rocketlane improvements](../rocketlane-younium-status/README.md) 1.73.0 in v1.19.0, and is described there.
 
-- **Turn it on.** The button at the bottom right of a chat page (`/projects/<id>/chat/<id>`) says **Zendesk ⇄ off**
-  while the sync is off in this browser. Its panel has a button to turn it on, and so does the Tampermonkey menu
-  ("Zendesk ⇄ General Chat sync"). Only the browser where it is on does the syncing. The rest of the team sees the
-  messages in the chat without installing anything.
-- **Link a chat.** The button lists the active tickets in the team's queue. The queue is set by a Zendesk view,
-  "IWMAC Leveranse - Kulde" by default, which can be changed in the Tampermonkey menu.
-  - The view shows only new and open tickets. So the sync reads the view's groups (Delivery and Aftermarket Cooling)
-    and its tag and assignee exclusions, and searches them at every active status. That brings in tickets waiting for
-    the customer ("Waiting for Customer") and on hold ("On Hold – Internal"), but never solved, closed or archived
-    ones.
-  - The ticket whose **Plant ID** is the project's plant number (the number its name starts with, "8222 - Obs
-    Harstad") comes first. After it come tickets with that number in the subject, then in the text, then with words
-    of the project's name in the subject.
-  - When one matches, opening the chat asks whether to link it: **Link**, **Not now** (not asked again in that
-    chat for that ticket) or **Choose another ticket**. Meanwhile the button says **Zendesk #207248 found · Link**.
-  - **Link** in the list asks once more, with "Yes, link #…".
-  - Linking posts a note in the chat, then the ticket's earlier messages once, oldest first: who, what kind, when,
-    and the text. They go in one message, or in a few for a long ticket. A chat linked before 1.17.4 can get them
-    with **Post earlier messages** in its panel. **Post earlier messages again** posts them once more, after the
-    old copies have been deleted from the chat. What was in the chat before the link stays in the chat.
-- **From Zendesk to the chat.** Every new message on the ticket is posted in the chat as a private message, so
-  customers in the project do not see it. It starts with "Zendesk #<ticket> · <name>" and a label: "(customer)" for the
-  customer, "internal note" for an internal note, "reply to the customer" for an agent's public reply. Attachments are links
-  to Zendesk.
-- **Tidied text.** Email replies are cleaned for the chat. Entities such as `&nbsp;` are decoded, and runs of blank
-  lines become one. A quoted earlier email ("Fra: …" / "Sendt: …", "-----Original Message-----", "On … wrote:") is
-  cut, and a signature is cut to its sign-off and the name under it. Each line is a paragraph, as Rocketlane writes
-  its own messages.
-- **From the chat to Zendesk.** Every message written in the chat goes to the ticket as an internal note. One that
-  starts with **/reply** goes as a public reply, emailed to the customer (since 1.18.0; `/kunde` is plain text
-  again). Messages are written with your Zendesk session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
-  "— Name" after a public reply.
-- **Only active tickets.** A linked ticket syncs while it is new, open, pending or on hold, also after it has left the
-  queue's view. Solved or closed, the link pauses. Opened again, the link catches up on everything that came in
-  meanwhile.
-- **When it runs:** by itself, in one Rocketlane tab of the browser where it is on. It runs every 15 seconds while that
-  tab is in front, and every minute in the background. A tab in front takes over from one in the background.
-  - A ticket's messages are fetched only when the ticket has changed.
-  - A new message in a linked chat starts a round at once, through Rocketlane's own push events.
-  - **Sync now** in the panel runs one at once.
-  - With the browser closed it does not run, and it catches up the next time.
-- **The chat on screen.** Rocketlane shows new messages through its push events. If a message the sync posted does not
-  show up in the chat you have open, the chat view is reloaded in place: its route is left and entered again, so
-  Rocketlane fetches the chat's messages, without a page reload and without a new history entry. This never happens
-  while something is typed in the message box.
-- **Needs:** a Rocketlane page loaded (for the api-key) and Zendesk opened once while logged in (for the session and
-  the CSRF token). The button shows what is missing.
-- **How:** Rocketlane has no public API for chat, so this uses the same tenant API as the tracker's chat. A change on
-  Rocketlane's side can break it. Each message is recorded as soon as it has crossed, and the sync remembers the
-  messages it posted itself, so nothing goes back where it came from or crosses twice.
-- **Tests:** `node --test rocketlane-chat-bridge/test/` runs the engine against an in-memory chat and Zendesk.
-  `node rocketlane-chat-bridge/test/chat-sync-e2e.js` runs the button and panel in headless Chrome.
+What this script kept for it goes over by itself: the links, whether the sync was on, the queue and the "Not now"
+answers. On the first Rocketlane page after the update, this script turns its own sync off, so a tab still on 1.18.0
+stops at its next round, and waits until such a tab's round is over. Then it leaves them once in the page's
+localStorage, which both scripts can read on `kiona.rocketlane.com`; Rocketlane improvements takes them from there and
+removes them. A linked chat carries on where it was, without posting the ticket's earlier messages again.
+
+`node --test "rocketlane-chat-bridge/test/*.test.js"` tests the hand-over.
 
 ## Permissions
 

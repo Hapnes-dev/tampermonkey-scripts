@@ -1,8 +1,9 @@
 'use strict';
-/* Zendesk ⇄ General Chat (v1.16.0) in a real browser: the userscript's sync - engine, button and panel - on a page
- * at a Rocketlane chat path, its GM_* calls answered in the page by an in-memory Rocketlane and Zendesk. Link a ticket
- * from the queue, a customer's reply into the chat, a /kunde message out to the ticket.
- *   node rocketlane-chat-bridge/test/chat-sync-e2e.js   (screenshots in rocketlane-chat-bridge/test/out/) */
+/* Zendesk ⇄ General Chat (Rocketlane improvements 1.73.0) in a real browser: the userscript's sync - engine, button
+ * and panel - on a page at a Rocketlane chat path, its transports answered in the page by an in-memory Rocketlane and
+ * Zendesk. Link a ticket from the queue, a customer's reply into the chat, a /reply message out to the ticket; an older
+ * Chat Bridge's button keeps this one away, and the Chat Bridge's links come over through its own hand-over.
+ *   node rocketlane-younium-status/test/chat-sync-e2e.js   (screenshots in rocketlane-younium-status/test/out/) */
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -11,10 +12,26 @@ const assert = require('assert');
 const PW = process.env.PLAYWRIGHT_CORE || 'C:/Users/Thomas/AppData/Roaming/npm/node_modules/@playwright/cli/node_modules/playwright-core';
 const { chromium } = require(PW);
 const OUT = path.join(__dirname, 'out');
-const src = fs.readFileSync(path.join(__dirname, '..', 'rocketlane-chat-bridge.user.js'), 'utf8').replace(/\r\n/g, '\n');
-const from = src.indexOf('  // @@ZDSYNC-ENGINE-START'), to = src.indexOf('  // Side A');
-assert.ok(from > 0 && to > from, 'the sync is in the userscript, before Side A');
-const SYNC = src.slice(from, src.lastIndexOf('\n  // ──', to));
+const src = fs.readFileSync(path.join(__dirname, '..', 'rocketlane-younium-status.user.js'), 'utf8').replace(/\r\n/g, '\n');
+const from = src.indexOf('  // @@ZDSYNC-ENGINE-START'), to = src.indexOf('  // @@ZDSYNC-END');
+assert.ok(from > 0 && to > from, 'the sync is in the userscript, between its markers');
+const SYNC = src.slice(from, to);
+// the Chat Bridge's hand-over (its 1.19.0), to see its links come over
+const bridge = fs.readFileSync(path.join(__dirname, '..', '..', 'rocketlane-chat-bridge', 'rocketlane-chat-bridge.user.js'), 'utf8').replace(/\r\n/g, '\n');
+const HANDOVER = bridge.slice(bridge.indexOf('  // @@ZDSYNC-HANDOVER-START'), bridge.indexOf('  // @@ZDSYNC-HANDOVER-END'));
+assert.ok(HANDOVER.includes('function handOverZendeskChatSync'), 'the hand-over is in the Chat Bridge');
+// the script's transports (sections 5b and 8) as the sync is given them, here over the page's GM_xmlhttpRequest
+const NET = `{
+  zdHost: 'https://iwmac.zendesk.com',
+  zdRequest: (method, p, body) => window.__send(method, /^https:/.test(p) ? p : 'https://iwmac.zendesk.com/api/v2' + p,
+    method === 'GET' ? {} : { 'X-CSRF-Token': GM_getValue('zdCsrfToken', '') }, body),
+  rlRequest: (method, p, query, body) => window.__send(method, 'https://kiona.api.rocketlane.com/api/v1' + p, { 'api-key': 'rl-key' }, body),
+  userId: () => '1',
+  plantFieldId: async () => ((await window.__send('GET', 'https://iwmac.zendesk.com/api/v2/ticket_fields.json', {}, null)).ticket_fields
+    .find((f) => f.title === 'Plant ID') || {}).id || 0,
+  pusher: () => null,
+}`;
+const START = '(function(){' + SYNC + '\nstartZendeskChatSync(' + NET + ');})();';
 
 // the page's stand-ins: Tampermonkey's storage and menu, and GM_xmlhttpRequest answered by a fake Rocketlane + Zendesk
 const SHIM = `
@@ -70,7 +87,13 @@ window.GM_xmlhttpRequest = (o) => {
   }
   setTimeout(() => o.onload({ status: 404, responseText: '{}' }), 10);
 };
-GM_setValue('rlApiKey', 'rl-key'); GM_setValue('rlUserId', 1); GM_setValue('zdCsrfToken', 'csrf-1'); GM_setValue('zdsync_enabled_v1', false);
+// what the script's transports do with an answer: its JSON, or an error that starts with the HTTP status
+window.__send = (method, url, headers, body) => new Promise((resolve, reject) => GM_xmlhttpRequest({
+  method, url, headers: Object.assign({ accept: 'application/json' }, headers), data: body == null ? undefined : JSON.stringify(body),
+  onload: (r) => (r.status >= 200 && r.status < 300 ? resolve(r.responseText ? JSON.parse(r.responseText) : null)
+    : reject(new Error('HTTP ' + r.status + ': ' + String(r.responseText || '').slice(0, 300)))),
+}));
+GM_setValue('zdCsrfToken', 'csrf-1'); GM_setValue('zdsync_enabled_v1', false);
 `;
 
 const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General chat</title></head>' +
@@ -89,38 +112,44 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(m.text()); });
     await page.addInitScript(SHIM);
     await page.goto(base + '/projects/1481787/chat/12896932');
-    await page.addScriptTag({ content: '(function(){' + SYNC + '\nstartZendeskChatSync();})();' });
-    const pill = page.locator('#zendesk-chat-sync >> .pill');
-    const pillText = () => page.evaluate(() => document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent.trim());
+    // an older Chat Bridge's button in the page (up to 1.18.0 it ran the sync itself): this one keeps away
+    await page.evaluate(() => { const d = document.createElement('div'); d.id = 'zendesk-chat-sync'; document.body.appendChild(d); });
+    await page.addScriptTag({ content: START });
+    const pill = page.locator('#rl-zendesk-chat-sync >> .pill');
+    const pillText = () => page.evaluate(() => document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent.trim());
+    await page.waitForTimeout(1500);
+    assert.strictEqual(await pill.isVisible(), false, 'no second button while the Chat Bridge shows its own');
+    // the Chat Bridge updated (its button gone): this one shows
+    await page.evaluate(() => document.getElementById('zendesk-chat-sync').remove());
     await pill.waitFor();
     // off in this browser: the button says so, and its panel turns it on
     assert.strictEqual(await pillText(), 'Zendesk ⇄ off');
     await pill.click();
-    await page.locator('#zendesk-chat-sync >> text=The Zendesk sync is off').waitFor();
+    await page.locator('#rl-zendesk-chat-sync >> text=The Zendesk sync is off').waitFor();
     await page.screenshot({ path: path.join(OUT, '0-off.png') });
-    await page.locator('#zendesk-chat-sync >> text=Turn on in this browser').click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Turn on in this browser').click();
 
     // turned on: the ticket whose Plant ID is the project's number is found, and the user is asked whether to link it
-    await page.locator('#zendesk-chat-sync >> text=Found a ticket for this project').waitFor();
-    assert.strictEqual(await page.locator('#zendesk-chat-sync >> .row .s').first().textContent(), '#53123 SV: 41584 Extra Laksvollen - alarm');
-    assert.match(await page.locator('#zendesk-chat-sync >> .row .muted').first().textContent(), /^open · Plant ID 10263 · /);
+    await page.locator('#rl-zendesk-chat-sync >> text=Found a ticket for this project').waitFor();
+    assert.strictEqual(await page.locator('#rl-zendesk-chat-sync >> .row .s').first().textContent(), '#53123 SV: 41584 Extra Laksvollen - alarm');
+    assert.match(await page.locator('#rl-zendesk-chat-sync >> .row .muted').first().textContent(), /^open · Plant ID 10263 · /);
     await page.screenshot({ path: path.join(OUT, '1-asked.png') });
 
     // "Not now": the question goes, the button still names the ticket, and this chat is not asked about it again
-    await page.locator('#zendesk-chat-sync >> text=Not now').click();
-    await page.waitForFunction(() => /found/.test(document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
+    await page.locator('#rl-zendesk-chat-sync >> text=Not now').click();
+    await page.waitForFunction(() => /found/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
     assert.strictEqual(await pillText(), 'Zendesk #53123 found · Link');
     await page.waitForTimeout(1500);
-    assert.strictEqual(await page.locator('#zendesk-chat-sync >> .panel').isVisible(), false, 'not asked again');
+    assert.strictEqual(await page.locator('#rl-zendesk-chat-sync >> .panel').isVisible(), false, 'not asked again');
     assert.deepStrictEqual(await page.evaluate(() => GM_getValue('zdsync_not_now_v1', {})), { '1481787:12896932': '53123' });
     await page.screenshot({ path: path.join(OUT, '1b-found.png') });
 
     // the button asks again; "Choose another ticket" lists the queue, best match first
     await pill.click();
-    await page.locator('#zendesk-chat-sync >> text=Choose another ticket').click();
-    await page.locator('#zendesk-chat-sync >> text=Link the chat to a ticket in the queue').waitFor();
-    await page.locator('#zendesk-chat-sync >> .row').first().waitFor();
-    const rows = await page.locator('#zendesk-chat-sync >> .row .s').allTextContents();
+    await page.locator('#rl-zendesk-chat-sync >> text=Choose another ticket').click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Link the chat to a ticket in the queue').waitFor();
+    await page.locator('#rl-zendesk-chat-sync >> .row').first().waitFor();
+    const rows = await page.locator('#rl-zendesk-chat-sync >> .row .s').allTextContents();
     assert.deepStrictEqual(rows, ['#53123 SV: 41584 Extra Laksvollen - alarmPlant ID 10263', '#53125 Laksvollen ny bruker', '#53130 Annen butikk', '#53131 Service på vent'],
       'every active status - waiting for the customer and on hold too, never solved - best match first');
     assert.deepStrictEqual([...new Set((await page.evaluate(() => window.__world)).queries)],
@@ -128,14 +157,14 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.screenshot({ path: path.join(OUT, '1c-queue.png') });
 
     // "Link" in the list asks once more: "Cancel" takes it back, "Yes, link" links
-    await page.locator('#zendesk-chat-sync >> .row').first().locator('button').click();
-    await page.locator('#zendesk-chat-sync >> text=Cancel').click();
-    assert.strictEqual(await page.locator('#zendesk-chat-sync >> .row').first().locator('button').textContent(), 'Link');
+    await page.locator('#rl-zendesk-chat-sync >> .row').first().locator('button').click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Cancel').click();
+    assert.strictEqual(await page.locator('#rl-zendesk-chat-sync >> .row').first().locator('button').textContent(), 'Link');
     assert.strictEqual((await page.evaluate(() => window.__world)).posts.length, 0, 'nothing linked yet');
-    await page.locator('#zendesk-chat-sync >> .row').first().locator('button').click();
-    await page.locator('#zendesk-chat-sync >> text=Yes, link #53123').click();
+    await page.locator('#rl-zendesk-chat-sync >> .row').first().locator('button').click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Yes, link #53123').click();
     // linked: the button turns from "found" to the link's state
-    await page.waitForFunction(() => /#53123 ⇄/.test(document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
+    await page.waitForFunction(() => /#53123 ⇄/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
     let w = await page.evaluate(() => window.__world);
     assert.strictEqual(w.posts.length, 2, 'the notice, then the ticket\'s earlier messages');
     assert.match(w.posts[0].content, /^<p>Zendesk #53123 “SV: 41584 Extra Laksvollen - alarm” is now linked to this chat\./);
@@ -150,7 +179,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
       W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>Sjekk kompressor 2.</p>', createdAt: Date.now() + 2000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } });
     });
     await pill.click();
-    await page.locator('#zendesk-chat-sync >> text=Sync now').click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
     await page.waitForFunction(() => window.__world.puts.length === 2, null, { timeout: 15000 });
     w = await page.evaluate(() => window.__world);
     assert.deepStrictEqual(w.posts.slice(2).map((p) => [p.content, p.private]), [['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Alarmen kom tilbake i natt.</p>', true]]);
@@ -158,16 +187,16 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
       { body: 'Hei Kari, vi sender en tekniker.', public: true },
       { body: 'Andreas Sandnes (Rocketlane):\nSjekk kompressor 2.', public: false },
     ]);
-    await page.waitForFunction(() => /synced/.test(document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
+    await page.waitForFunction(() => /synced/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
     await page.screenshot({ path: path.join(OUT, '2-linked.png') });
 
     // another round brings nothing back
-    await page.locator('#zendesk-chat-sync >> text=Sync now').click().catch(() => {});
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click().catch(() => {});
     await page.waitForTimeout(1500);
     w = await page.evaluate(() => window.__world);
     assert.deepStrictEqual([w.posts.length, w.puts.length], [3, 2], 'nothing twice, nothing echoed');
-    assert.strictEqual(await page.locator('#zendesk-chat-sync >> text="Post earlier messages"').count(), 0, 'a new link has its history already');
-    assert.strictEqual(await page.locator('#zendesk-chat-sync >> text="Post earlier messages again"').count(), 1, 'it can be posted again, after the old copies are deleted');
+    assert.strictEqual(await page.locator('#rl-zendesk-chat-sync >> text="Post earlier messages"').count(), 0, 'a new link has its history already');
+    assert.strictEqual(await page.locator('#rl-zendesk-chat-sync >> text="Post earlier messages again"').count(), 1, 'it can be posted again, after the old copies are deleted');
 
     // a message the open chat does not show: the chat view is reloaded in place, its route left and entered again
     await page.evaluate(() => {
@@ -177,7 +206,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
       W.renderPosts = false;
       W.addZd({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Enda en melding.', created_at: new Date().toISOString(), attachments: [] });
     });
-    await page.locator('#zendesk-chat-sync >> text=Sync now').click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
     await page.waitForFunction(() => window.__pops.length >= 2, null, { timeout: 15000 });
     assert.deepStrictEqual(await page.evaluate(() => window.__pops), ['/projects/1481787/chat', '/projects/1481787/chat/12896932']);
     assert.strictEqual(await page.evaluate(() => location.pathname), '/projects/1481787/chat/12896932', 'back on the chat');
@@ -194,8 +223,8 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     });
     // the route change closed the panel (or is about to): open it again for Sync now
     await page.waitForTimeout(1300);
-    if (!(await page.locator('#zendesk-chat-sync >> .panel').isVisible())) await pill.click();
-    await page.locator('#zendesk-chat-sync >> text=Sync now').click();
+    if (!(await page.locator('#rl-zendesk-chat-sync >> .panel').isVisible())) await pill.click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
     await page.waitForFunction(() => window.__world.posts.some((p) => /Og en til/.test(p.content)), null, { timeout: 15000 });
     await page.waitForTimeout(3500);
     assert.deepStrictEqual(await page.evaluate(() => window.__pops), [], 'not reloaded under a draft');
@@ -213,11 +242,53 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.evaluate(() => history.pushState({}, '', '/projects/1481787/tasks'));
     await page.waitForTimeout(1300);
     assert.strictEqual(await pill.isVisible(), false, 'hidden off chat pages (its own display:flex once beat [hidden])');
-    assert.strictEqual(await page.evaluate(() => getComputedStyle(document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill')).display), 'none');
+    assert.strictEqual(await page.evaluate(() => getComputedStyle(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill')).display), 'none');
     await page.screenshot({ path: path.join(OUT, '3-away.png') });
     await page.evaluate(() => history.pushState({}, '', '/projects/1481787/chat/12896932'));
     await page.waitForTimeout(1300);
     assert.strictEqual(await pill.isVisible(), true, 'shown again on the chat page');
+
+    // ---- the Chat Bridge's links come over: its 1.19.0 hands them over, this sync takes them, nothing is posted again ----
+    const page2 = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    page2.on('pageerror', (e) => errors.push(String(e)));
+    page2.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(m.text()); });
+    await page2.addInitScript(SHIM);
+    await page2.goto(base + '/projects/1481787/chat/12896932');
+    await page2.evaluate((hand) => {
+      const W = window.__world;
+      // the Chat Bridge's own storage as 1.18.0 left it: on, this chat linked to #53123, its history posted, all crossed
+      const store = {};
+      const get = (k, d) => (k in store ? store[k] : d), set = (k, v) => { store[k] = v; };
+      set('zdsync_enabled_v1', true);
+      set('zdsync_state_v1', JSON.stringify({ links: { '1481787:12896932': {
+        projectId: '1481787', conversationId: '12896932', ticketId: '53123', subject: 'SV: 41584 Extra Laksvollen - alarm',
+        linkedAt: Date.now() - 86400000, zdMax: 4001, rlSince: Math.max(...W.chat.map((c) => c.createdAt)),
+        rlSeen: W.chat.map((c) => String(c.commentId)), ownRl: [], ownZd: [], status: 'active', note: '', lastRun: Date.now() - 60000,
+        historyPosted: true, zdUpdatedAt: '2026-10-28T09:00:00Z' } } }));
+      set('zdsync_not_now_v1', { '1481787:99': '53125' });
+      new Function('GM_getValue', 'GM_setValue', hand + '\nreturn handOverZendeskChatSync;')(get, set)();
+      window.__bridgeStore = store;
+      localStorage.removeItem('gm:zdsync_enabled_v1');   // this script: never turned on or off
+    }, HANDOVER);
+    assert.ok(await page2.evaluate(() => !!localStorage.getItem('rlimp_zdsync_handover_v1')), 'handed over through the page\'s localStorage');
+    await page2.addScriptTag({ content: START });
+    await page2.waitForFunction(() => /^Zendesk #53123 ⇄ /.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
+    assert.deepStrictEqual(await page2.evaluate(() => ({
+      posts: window.__world.posts.length, puts: window.__world.puts.length, left: localStorage.getItem('rlimp_zdsync_handover_v1'),
+      on: GM_getValue('zdsync_enabled_v1', null), notNow: GM_getValue('zdsync_not_now_v1', {}), adopted: GM_getValue('zdsync_adopted_v1', 0) > 0,
+      bridgeOn: window.__bridgeStore.zdsync_enabled_v1, bridgeDone: window.__bridgeStore.zdsync_handed_over_v1 > 0 })),
+    { posts: 0, puts: 0, left: null, on: true, notNow: { '1481787:99': '53125' }, adopted: true, bridgeOn: false, bridgeDone: true },
+    'linked here as it was there, on, nothing posted; the Chat Bridge\'s sync off');
+    // a new message on the ticket: only that one comes in - no notice, no earlier messages again, nothing sent twice
+    await page2.evaluate(() => { const W = window.__world; W.addZd({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Etter flyttingen.', created_at: new Date().toISOString(), attachments: [] }); });
+    await page2.locator('#rl-zendesk-chat-sync >> .pill').click();
+    await page2.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
+    await page2.waitForFunction(() => window.__world.posts.length >= 1, null, { timeout: 15000 });
+    await page2.waitForTimeout(1500);
+    w = await page2.evaluate(() => window.__world);
+    assert.deepStrictEqual(w.posts.map((p) => p.content), ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Etter flyttingen.</p>']);
+    assert.strictEqual(w.puts.length, 0, 'the chat\'s old messages stay where they are');
+    await page2.screenshot({ path: path.join(OUT, '4-handed-over.png') });
 
     assert.deepStrictEqual(errors, [], 'no errors or warnings in the page');
     console.log('chat sync e2e passed; screenshots in ' + path.relative(process.cwd(), OUT));
