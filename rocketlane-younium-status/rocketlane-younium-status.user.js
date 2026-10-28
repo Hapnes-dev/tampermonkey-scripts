@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.75.0
+// @version      1.76.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -98,8 +98,10 @@
  *     the ticket as an internal note, or as a public reply after /reply.
  *     The ticket's pictures and attachments come along as the message's own
  *     Rocketlane attachments (v1.74.0), and files attached in the chat go to
- *     the ticket with their message (v1.75.0). Off until turned on in this
- *     browser (button on chat pages, Tampermonkey menu); one tab runs it.
+ *     the ticket with their message (v1.75.0). The message box shows what a
+ *     message will be: an orange frame and bar for /reply (v1.76.0). Off
+ *     until turned on in this browser (button on chat pages, Tampermonkey
+ *     menu); one tab runs it.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -17117,6 +17119,8 @@
   //     out, as the text does. A file that cannot go stays a link to Zendesk.
   //     v1.75.0: files attached to a chat message go to the ticket with it, uploaded to Zendesk first: in the internal
   //     note, or in the public reply after /reply. One that cannot go is named instead.
+  //     v1.76.0: the message box shows what the message will be on the ticket - /reply gets an orange frame and a bar
+  //     saying who is emailed; a near miss ("/replay", the old "/kunde") a warning that it is only a note.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17154,6 +17158,27 @@
     function parseChatMessage(text) {
       const m = /^\s*\/reply\b[ \t:]*/i.exec(String(text || ""));
       return m ? { isPublic: true, body: String(text).slice(m[0].length).trim() } : { isPublic: false, body: String(text || "").trim() };
+    }
+
+    /** What a message being written will be on the ticket: "reply" when it starts with /reply (read as parseChatMessage
+     *  reads it), "typo" when it starts with a word close to it ("/replay") or the old /kunde - an internal note then,
+     *  which the writer should know - else "note". A word counts once it is finished (a space or ":" after it). */
+    function composeModeOf(text) {
+      const t = String(text || "").replace(/[\u200B\u2060\uFEFF]/g, "");
+      if (parseChatMessage(t).isPublic) return { mode: "reply", word: "/reply" };
+      const m = /^\s*\/([a-zæøå_]+)[\s:]/i.exec(t);
+      const w = m ? m[1].toLowerCase() : "";
+      if (w === "kunde" || w === "customer" || (w.length >= 3 && w[0] === "r" && editDistance(w, "reply") <= 2)) return { mode: "typo", word: "/" + m[1] };
+      return { mode: "note", word: "" };
+    }
+    function editDistance(a, b) {
+      let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+      for (let i = 1; i <= a.length; i++) {
+        const cur = [i];
+        for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        prev = cur;
+      }
+      return prev[b.length];
     }
 
     function authorName(user) {
@@ -17542,7 +17567,7 @@
 
     function links() { return load().links; }
 
-    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, isActive };
+    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, isActive };
   }
   // @@ZDSYNC-ENGINE-END
 
@@ -17907,6 +17932,11 @@
       "button.b{padding:4px 10px;border:1px solid #2f6fed;border-radius:6px;background:#2f6fed;color:#fff;font:inherit;cursor:pointer}",
       "button.g{padding:4px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#344054;font:inherit;cursor:pointer}",
       ".acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}a{color:#2f6fed}",
+      // what the message being written will be: on the message box, never in the way of a click
+      ".frame{position:fixed;z-index:2147482999;pointer-events:none;border:2px solid #e8590c;border-radius:10px;box-shadow:0 0 0 4px rgba(232,89,12,.16)}",
+      ".mode{position:fixed;z-index:2147482999;pointer-events:none;max-width:72vw;padding:5px 12px;border-radius:7px;font:600 13px/1.4 Inter,'Segoe UI',Roboto,Arial,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+      ".mode.reply{background:#c2410c;color:#fff;box-shadow:0 2px 8px rgba(194,65,12,.35)}.mode.stop{background:#b42318;color:#fff}",
+      ".mode.typo{background:#fffaeb;color:#93370d;border:1px solid #fdb022}.mode.note{background:#f2f4f7;color:#475467;font-weight:500;font-size:12px;padding:3px 10px}",
     ].join("\n");
     const pill = document.createElement("button");
     pill.className = "pill";
@@ -17914,7 +17944,13 @@
     const panel = document.createElement("div");
     panel.className = "panel";
     panel.hidden = true;
-    root.append(style, pill, panel);
+    const frame = document.createElement("div");
+    frame.className = "frame";
+    frame.hidden = true;
+    const bar = document.createElement("div");
+    bar.className = "mode";
+    bar.hidden = true;
+    root.append(style, pill, panel, frame, bar);
 
     const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
     function chatIds() {
@@ -18154,6 +18190,95 @@
       }
     }
 
+    // ---- what the message being written will be on the ticket, shown on the message box ----
+    // /reply: an orange frame round the box and a bar above it - a reply to the customer, emailed to the requester (and
+    // whoever is in copy). A near miss ("/replay", the old "/kunde"): a warning that it goes as a note. Anything else,
+    // while the box is in use: a quiet label. Only in a chat linked to a ticket - this browser's link, or for someone
+    // whose browser does not run the sync, the sync's own messages in the chat - and only while one is written.
+    const RTE = '[data-cy="messages-comment-rte"]';
+    function composer() {
+      const eds = [...document.querySelectorAll(RTE + " .ck-editor__editable")];
+      const ed = eds.find((x) => x.contains(document.activeElement)) || eds[0] || null;
+      if (!ed) return null;
+      const rte = ed.closest(RTE);
+      // the box with its border, the send row included; the editor itself if that is not it
+      const box = rte && rte.parentElement && rte.parentElement.getBoundingClientRect().height < 400 ? rte.parentElement : ed;
+      return { ed, box, focused: ed.contains(document.activeElement) };
+    }
+    const seenInChat = new Map();   // conversation -> {id, at}: the ticket the sync's messages in the chat name
+    function ticketInChat(conversationId) {
+      const hit = seenInChat.get(conversationId);
+      if (hit && Date.now() - hit.at < 20000) return hit.id;
+      const all = ((document.body && document.body.innerText) || "").match(/Zendesk #\d+/g) || [];
+      const id = all.length ? all[all.length - 1].replace(/\D/g, "") : "";
+      seenInChat.set(conversationId, { id, at: Date.now() });
+      return id;
+    }
+    const requesters = new Map();   // ticket -> {name, copies} once known, "asked" meanwhile
+    function requesterOf(ticketId) {
+      const hit = requesters.get(ticketId);
+      if (hit) return hit === "asked" ? null : hit;
+      requesters.set(ticketId, "asked");
+      zd("GET", "/tickets/" + encodeURIComponent(ticketId) + ".json?include=users").then((j) => {
+        const t = (j && j.ticket) || {};
+        const u = ((j && j.users) || []).find((x) => String(x.id) === String(t.requester_id));
+        requesters.set(ticketId, { name: String((u && u.name) || ""), copies: (t.email_cc_ids || t.collaborator_ids || []).length });
+        showMode();
+      }).catch(() => requesters.set(ticketId, { name: "", copies: 0 }));
+      return null;
+    }
+    function hideMode() { bar.hidden = true; frame.hidden = true; }
+    function showMode() {
+      const ids = chatIds();
+      const c = ids && !legacy() ? composer() : null;
+      if (!c) return hideMode();
+      const text = String(c.ed.innerText || c.ed.textContent || "");
+      const mode = sync.composeModeOf(text);
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      // a quiet label only for this browser's own link, and only while the box is in use
+      if (mode.mode === "note" && (!e || !(c.focused || text.trim()))) return hideMode();
+      const ticketId = e ? e.ticketId : mode.mode !== "note" ? ticketInChat(ids.conversationId) : "";
+      if (!ticketId) return hideMode();
+      let cls = mode.mode, say = "";
+      if (mode.mode === "reply") {
+        const who = requesterOf(ticketId);
+        const to = who && who.name ? "emailed to " + who.name + (who.copies ? " and " + who.copies + " in copy" : "") : "emailed to the customer";
+        say = "↩ Reply to the customer · Zendesk #" + ticketId + " · " + to;
+        if (e && !enabled()) { cls = "stop"; say = "↩ Reply to the customer · the Zendesk sync is off in this browser: nothing is sent"; }
+        else if (e && e.status === "paused") { cls = "stop"; say = "↩ Reply to the customer · Zendesk #" + ticketId + " is not open: nothing is sent until it is"; }
+      } else if (mode.mode === "typo") {
+        say = "“" + mode.word + "” is not /reply: this goes to Zendesk #" + ticketId + " as an internal note";
+      } else {
+        say = "Internal note to Zendesk #" + ticketId + " · start with /reply to answer the customer";
+      }
+      const r = c.box.getBoundingClientRect();
+      if (!r.width || !r.height || r.bottom < 0 || r.top > window.innerHeight) return hideMode();
+      bar.className = "mode " + cls;
+      bar.textContent = say;
+      bar.hidden = false;
+      bar.style.left = Math.round(r.left) + "px";
+      bar.style.maxWidth = Math.round(Math.max(240, r.width)) + "px";
+      bar.style.top = Math.round(Math.max(4, r.top - bar.offsetHeight - 6)) + "px";
+      frame.hidden = !(cls === "reply" || cls === "stop");
+      if (!frame.hidden) {
+        frame.style.borderColor = cls === "stop" ? "#b42318" : "";
+        Object.assign(frame.style, { left: Math.round(r.left - 3) + "px", top: Math.round(r.top - 3) + "px", width: Math.round(r.width + 6) + "px", height: Math.round(r.height + 6) + "px" });
+      }
+    }
+    let modeQueued = false;
+    function updateMode() {
+      if (modeQueued) return;
+      modeQueued = true;
+      // a timer, not requestAnimationFrame: frames pause in a tab Chrome counts as hidden
+      setTimeout(() => { modeQueued = false; try { showMode(); } catch (_) { hideMode(); } }, 0);
+    }
+    const inBox = (ev) => !!(ev.target && ev.target.closest && ev.target.closest(RTE));
+    // CKEditor writes the box itself, so typing is followed by its keys and selection, as the chat macros do
+    document.addEventListener("selectionchange", updateMode);
+    for (const t of ["keyup", "focusin", "focusout", "paste", "cut", "drop"]) document.addEventListener(t, (ev) => { if (inBox(ev)) updateMode(); }, true);
+    document.addEventListener("scroll", () => { if (!bar.hidden) updateMode(); }, true);
+    window.addEventListener("resize", () => { if (!bar.hidden) updateMode(); });
+
     pill.addEventListener("click", () => { if (!panel.hidden) { panel.hidden = true; return; } void openFor(); });
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") panel.hidden = true; });
 
@@ -18166,6 +18291,8 @@
       if (!running) adoptHandover();
       if (location.pathname !== lastPath) { lastPath = location.pathname; panel.hidden = true; }
       paint();
+      // after a message is sent the box empties without a key: the label follows within a second
+      if (!bar.hidden) updateMode();
     }, 1000);
     // the rounds: every 15 s in front, every minute behind, and at once when the tab comes to the front
     let loopTimer = 0;

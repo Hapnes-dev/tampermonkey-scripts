@@ -351,6 +351,16 @@ v1.73.0.
   starts with **/reply** goes as a public reply, emailed to the customer. Messages are written with your Zendesk
   session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
   "— Name" after a public reply.
+- **What a message will be** (v1.76.0). While you write in a linked chat, the message box shows what the message
+  will be on the ticket.
+  - A message that starts with `/reply` gets an orange frame round the box and a bar above it: "↩ Reply to the
+    customer · Zendesk #… · emailed to <requester> and N in copy".
+  - A word close to it, such as `/replay` or the old `/kunde`, gets a yellow warning that the message goes as an
+    internal note.
+  - Any other message gets a quiet "Internal note to Zendesk #…" label while the box is in use.
+  - The bar turns red and says nothing will be sent when the sync is off in this browser or the ticket is not open.
+  - For someone whose browser does not run the sync, the reply bar and the warning show when the chat holds the
+    sync's messages.
 - **Files from the chat** (v1.75.0). Files attached to a chat message go to the ticket with it. They are uploaded to
   Zendesk first and then carried by the internal note, or by the reply to the customer after `/reply`. A message with
   only files says their names. A file over 25 MB, or one that could not be read or that Zendesk refused, is named

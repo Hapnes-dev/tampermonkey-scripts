@@ -450,3 +450,25 @@ test('a chat file goes again with its message when Zendesk refused the comment',
   assert.strictEqual(r2.forwarded, 1);
   assert.deepStrictEqual(w.posted.zd.map((p) => p.uploads), [['tok-81-2']], 'uploaded again, sent once');
 });
+
+test('what a message being written will be: a reply to the customer, a near miss of /reply, or a note', () => {
+  const w = world();
+  const m = (t) => w.sync.composeModeOf(t);
+  const NOTE = { mode: 'note', word: '' };
+  assert.deepStrictEqual(m('/reply Hei Kari'), { mode: 'reply', word: '/reply' });
+  assert.deepStrictEqual(m('\n  /REPLY: hei'), { mode: 'reply', word: '/reply' });
+  assert.deepStrictEqual(m('\u200b/reply'), { mode: 'reply', word: '/reply' }, 'as soon as it is typed');
+  assert.deepStrictEqual(m('/replay hei'), { mode: 'typo', word: '/replay' });
+  assert.deepStrictEqual(m('/Repyl: hei'), { mode: 'typo', word: '/Repyl' });
+  assert.deepStrictEqual(m('/rep hei'), { mode: 'typo', word: '/rep' });
+  assert.deepStrictEqual(m('/kunde hei'), { mode: 'typo', word: '/kunde' }, 'the old command');
+  assert.deepStrictEqual(m('/repl'), NOTE, 'a word still being typed');
+  assert.deepStrictEqual(m('/re hei'), NOTE);
+  assert.deepStrictEqual(m('/Request_Feedback'), NOTE);
+  assert.deepStrictEqual(m('/replyall hei'), NOTE);
+  assert.deepStrictEqual(m('hei /reply'), NOTE);
+  assert.deepStrictEqual(m(''), NOTE);
+  // the box says "reply" exactly when the message will go as one
+  for (const t of ['/reply x', '/Reply', ' /reply: x', '/replyx', '/replay x', 'x /reply', '/kunde x', ''])
+    assert.strictEqual(m(t).mode === 'reply', w.sync.parseChatMessage(t).isPublic, t);
+});

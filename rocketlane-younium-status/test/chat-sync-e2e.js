@@ -103,6 +103,7 @@ window.GM_xmlhttpRequest = (o) => {
     if (p === '/api/v2/ticket_fields.json') return ok({ ticket_fields: [{ id: 1, title: 'Subject' }, { id: 27741611, title: 'Plant ID' }], next_page: null });
     if (p === '/api/v2/tickets/show_many.json') { const ids = u.searchParams.get('ids').split(','); return ok({ tickets: W.queue.filter((t) => ids.includes(String(t.id))) }); }
     if (p === '/api/v2/tickets/53123/comments.json') return ok({ comments: W.zd.slice().reverse(), users: [{ id: 700, name: 'Kari Kunde', role: 'end-user' }, { id: 900, name: 'Thomas', role: 'agent' }], next_page: null });
+    if (p === '/api/v2/tickets/53123.json' && o.method === 'GET') return ok({ ticket: { id: 53123, requester_id: 700, email_cc_ids: [901, 902] }, users: [{ id: 700, name: 'Kari Kunde' }] });
     if (p === '/api/v2/tickets/53123.json' && o.method === 'PUT') {
       const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [] };
       W.addZd(c); W.puts.push(body.ticket.comment); return ok({ ticket: { id: 53123 }, audit: { events: [{ type: 'Comment', id: c.id }] } });
@@ -287,6 +288,54 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     w = await page.evaluate(() => window.__world);
     assert.deepStrictEqual(w.zdUploads, [{ name: 'tegning-v2.pdf', size: 8, type: 'application/pdf' }], 'fetched from Rocketlane, uploaded to Zendesk');
     assert.deepStrictEqual(w.puts[w.puts.length - 1], { body: 'Andreas Sandnes (Rocketlane):\nOppdatert tegning vedlagt.', public: false, uploads: ['zd-tok-1'] });
+
+    // the message box says what the message will be on the ticket: a quiet label for a note, an orange frame and bar for
+    // /reply with who gets the email, a warning for a near miss
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => {
+      const box = document.createElement('div');
+      box.id = 'composer';
+      box.style.cssText = 'position:fixed;left:40px;right:40px;bottom:20px;height:110px;border:1px solid #e0e0e0;border-radius:8px;background:#fff';
+      box.innerHTML = '<span data-cy="messages-comment-rte"><div class="ck-editor__editable" contenteditable="true" style="min-height:50px;padding:10px;outline:none"><p></p></div></span>';
+      document.body.appendChild(box);
+    });
+    const mode = () => page.evaluate(() => {
+      const r = document.querySelector('#rl-zendesk-chat-sync').shadowRoot, b = r.querySelector('.mode'), f = r.querySelector('.frame');
+      return { bar: b.hidden ? null : b.className.replace('mode ', '') + ': ' + b.textContent, frame: !f.hidden };
+    });
+    const barIs = (re) => page.waitForFunction((src) => {
+      const b = document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.mode');
+      return !b.hidden && new RegExp(src).test(b.className.replace('mode ', '') + ': ' + b.textContent);
+    }, re.source, { timeout: 5000 });
+    await page.locator('#composer .ck-editor__editable').click();
+    await barIs(/^note: /);
+    assert.deepStrictEqual(await mode(), { bar: 'note: Internal note to Zendesk #53123 · start with /reply to answer the customer', frame: false });
+    await page.keyboard.type('/repl');
+    await page.waitForTimeout(200);
+    assert.strictEqual((await mode()).bar.slice(0, 5), 'note:', 'not yet, while it is typed');
+    await page.keyboard.type('y Hei Kari');
+    await barIs(/Kari Kunde/);
+    assert.deepStrictEqual(await mode(), { bar: 'reply: ↩ Reply to the customer · Zendesk #53123 · emailed to Kari Kunde and 2 in copy', frame: true });
+    const [fr, bx] = await page.evaluate(() => [document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.frame').getBoundingClientRect().toJSON(),
+      document.getElementById('composer').getBoundingClientRect().toJSON()]);
+    assert.ok(fr.left < bx.left && fr.right > bx.right && fr.top < bx.top && fr.bottom > bx.bottom, 'the frame goes round the box');
+    await page.screenshot({ path: path.join(OUT, '5-reply-mode.png') });
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('/replay Hei');
+    await barIs(/^typo: /);
+    assert.deepStrictEqual(await mode(), { bar: 'typo: “/replay” is not /reply: this goes to Zendesk #53123 as an internal note', frame: false });
+    await page.screenshot({ path: path.join(OUT, '5b-near-miss.png') });
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('/kunde hei');
+    await barIs(/“\/kunde”/);
+    // emptied, as after sending: quiet again; out of the box: nothing
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await barIs(/^note: /);
+    await page.mouse.click(5, 5);
+    await page.waitForTimeout(300);
+    assert.deepStrictEqual(await mode(), { bar: null, frame: false });
+    await page.evaluate(() => document.getElementById('composer').remove());
 
     // off in the menu: the button stays on the chat page, greyed
     const menu = await page.evaluate(() => window.__menu.map((m) => m.name));
