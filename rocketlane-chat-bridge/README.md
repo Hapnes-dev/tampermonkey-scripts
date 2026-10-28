@@ -39,6 +39,38 @@ Pops a desktop notification (`GM_notification`) for **new Rocketlane** chat/ment
 - **Limitation:** can't fire when the browser is fully closed (a static page + userscript can't run with no tab). True always-on push would need a backend server + Web Push.
 - The tracker's own in-page notifier **defers** to this bridge at v1.10.0+, so the same item is never popped twice.
 
+## Zendesk ⇄ General Chat (v1.16.0)
+
+Links a project's General Chat in Rocketlane to one Zendesk ticket, so the conversation with the customer can be
+followed and answered from the chat.
+
+- **Turn it on** in the Tampermonkey menu on a Rocketlane page: "Zendesk ⇄ General Chat-synk". It is off by default.
+  Only the browser where it is on does the syncing. The rest of the team sees the messages in the chat without
+  installing anything.
+- **Link a chat.** On a chat page (`/projects/<id>/chat/<id>`), click the **Zendesk ⇄ Koble sak** button at the
+  bottom right. It lists the active tickets (new, open, pending, on hold) in the team's queue. The queue is a Zendesk
+  view, "IWMAC Leveranse - Kulde" by default, and can be changed in the Tampermonkey menu. Tickets with the project's
+  plant number come first. Linking posts a note in the chat saying so. Nothing from before the link is copied.
+- **From Zendesk to the chat.** Every new message on the ticket is posted in the chat as a private message, so
+  customers in the project do not see it. It starts with "Zendesk #<ticket> · <name>" and a label: "(kunde)" for the
+  customer, "internt notat" for an internal note, "svar til kunden" for an agent's public reply. Attachments are links
+  to Zendesk.
+- **From the chat to Zendesk.** Every message written in the chat goes to the ticket as an internal note. One that
+  starts with **/kunde** goes as a public reply, emailed to the customer. Messages are written with your Zendesk
+  session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
+  "— Name" after a public reply.
+- **Only active tickets in the queue.** If the ticket is solved or leaves the queue, the link pauses. When it is back,
+  the link catches up on everything that came in meanwhile.
+- **When it runs:** once a minute, in one Rocketlane tab, while a Rocketlane tab is open. **Synk nå** in the panel runs
+  it at once. With the browser closed it does not run, and it catches up the next time.
+- **Needs:** a Rocketlane page loaded (for the api-key) and Zendesk opened once while logged in (for the session and
+  the CSRF token). The button shows what is missing.
+- **How:** Rocketlane has no public API for chat, so this uses the same tenant API as the tracker's chat. A change on
+  Rocketlane's side can break it. Each message is recorded as soon as it has crossed, and the sync remembers the
+  messages it posted itself, so nothing goes back where it came from or crosses twice.
+- **Tests:** `node --test rocketlane-chat-bridge/test/` runs the engine against an in-memory chat and Zendesk.
+  `node rocketlane-chat-bridge/test/chat-sync-e2e.js` runs the button and panel in headless Chrome.
+
 ## Permissions
 
 The script requests `@connect` access to:

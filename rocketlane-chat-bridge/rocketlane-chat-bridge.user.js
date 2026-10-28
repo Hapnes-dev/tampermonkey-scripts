@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.15.0
-// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
+// @version      1.16.0
+// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.16.0: Zendesk ⇄ General Chat — link a project's General Chat in Rocketlane to an active ticket in your Zendesk queue; the ticket's new messages appear in the chat, and what is written in the chat goes to the ticket as an internal note, or as a public reply when it starts with /kunde. Off until turned on in the Tampermonkey menu. v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -78,6 +78,494 @@
   const YOUNIUM_API = "https://api.younium.com";
 
   // ──────────────────────────────────────────────────────────────────────────
+  // Zendesk ⇄ General Chat (v1.16.0)
+  // A project's General Chat in Rocketlane linked to one Zendesk ticket from the team's queue. Every new message on
+  // the ticket is posted in the chat as a private message (the team sees it, customers in the project do not), and
+  // every message written in the chat goes to the ticket: an internal note, or a public reply to the customer when
+  // it starts with /kunde. Only tickets that are active in the queue (a Zendesk view, "IWMAC Leveranse - Kulde"
+  // unless set otherwise in the Tampermonkey menu) can be linked or are synced; a ticket that is solved or leaves
+  // the queue pauses until it is back. It runs on kiona.rocketlane.com in the browser of whoever turns it on
+  // (Tampermonkey menu), in one tab at a time, once a minute. Rocketlane has no public API for chat: this uses the
+  // same tenant API the tracker's chat does, with the api-key and the Zendesk session this script already captures.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // @@ZDSYNC-ENGINE-START (rocketlane-chat-bridge/test/zendesk-chat-sync.test.js runs this part in Node)
+  function createZendeskChatSync(deps) {
+    const ACTIVE = { new: 1, open: 1, pending: 1, hold: 1 };
+    const KEEP = 300; // message ids remembered per link
+    const now = deps.now || (() => Date.now());
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const tail = (list) => (list.length > KEEP ? list.slice(-KEEP) : list);
+    const ms = (v) => { if (typeof v === "number") return v; const t = Date.parse(String(v || "")); return isNaN(t) ? 0 : t; };
+    const keyOf = (projectId, conversationId) => String(projectId) + ":" + String(conversationId);
+    // the sync's own messages in the chat, when Rocketlane did not hand back their id
+    const OWN_RE = /^\s*<p>\s*(?:<(?:b|strong)>\s*)?Zendesk #\d+/i;
+
+    /** A chat message's HTML as plain text: paragraphs and line breaks kept, @mentions as their names. */
+    function textOfHtml(html) {
+      return String(html || "")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/(?:p|div|li|h[1-6])>/gi, "\n")
+        .replace(/<li[^>]*>/gi, "• ")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#39;/g, "'").replace(/&amp;/g, "&")
+        .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+
+    function htmlOfText(text) {
+      return String(text).split(/\n{2,}/).map((p) => "<p>" + esc(p).replace(/\n/g, "<br>") + "</p>").join("");
+    }
+
+    /** A chat message: a public reply to the customer when it starts with /kunde, else an internal note. */
+    function parseChatMessage(text) {
+      const m = /^\s*\/kunde\b[ \t:]*/i.exec(String(text || ""));
+      return m ? { isPublic: true, body: String(text).slice(m[0].length).trim() } : { isPublic: false, body: String(text || "").trim() };
+    }
+
+    function authorName(user) {
+      if (!user || typeof user !== "object") return "";
+      return [user.firstName, user.lastName].map((s) => String(s || "").trim()).filter(Boolean).join(" ") ||
+        String(user.userName || user.name || "").trim();
+    }
+
+    /** A Zendesk comment as the chat shows it: the ticket, who and what kind on the first line, its text and files. */
+    function chatHtmlOf(comment, user, ticketId) {
+      const who = (user && user.name) || "Ukjent";
+      const kind = comment.public === false ? " · internt notat" : user && user.role === "end-user" ? " (kunde)" : " · svar til kunden";
+      let text = String(comment.plain_body != null ? comment.plain_body : textOfHtml(comment.html_body || comment.body || "")).replace(/\r\n?/g, "\n").trim();
+      if (text.length > 8000) text = text.slice(0, 8000) + "\n… (forkortet: les resten i Zendesk)";
+      const files = (comment.attachments || []).filter((a) => /^https:\/\//.test(String(a.content_url || "")))
+        .map((a) => "<a href=\"" + esc(a.content_url) + "\">" + esc(a.file_name || "vedlegg") + "</a>");
+      return "<p><b>Zendesk #" + esc(ticketId) + "</b> · " + esc(who) + kind + "</p>" + (text ? htmlOfText(text) : "") +
+        (files.length ? "<p>Vedlegg: " + files.join(", ") + "</p>" : "");
+    }
+
+    /** The queue's tickets for a project, best match first: its plant number in the subject, then in the ticket's
+     *  text, then words of its name. -> [{ticket, score}] */
+    function rankTickets(tickets, projectName) {
+      const name = String(projectName || "");
+      const num = (/^\s*(\d{3,6})\b/.exec(name) || [])[1] || "";
+      const numRe = num ? new RegExp("(^|\\D)" + num + "(\\D|$)") : null;
+      const words = name.replace(/^\s*\d+\s*-\s*/, "").split(":")[0].toLowerCase().split(/[^a-z0-9æøå]+/i).filter((w) => w.length >= 4);
+      return (tickets || []).map((t) => {
+        const subj = String(t.subject || ""), desc = String(t.description || "");
+        let score = 0;
+        if (numRe && numRe.test(subj)) score += 10;
+        if (numRe && numRe.test(desc)) score += 5;
+        for (const w of words) if (subj.toLowerCase().includes(w)) score += 2;
+        return { ticket: t, score };
+      }).sort((a, b) => b.score - a.score || ms(b.ticket.updated_at) - ms(a.ticket.updated_at));
+    }
+
+    const isActive = (t) => !!t && ACTIVE[String(t.status || "").toLowerCase()] === 1;
+
+    /** The queue's active tickets. */
+    async function queue() {
+      return ((await deps.zd.queueTickets()) || []).filter(isActive);
+    }
+
+    function load() { const s = deps.store.load() || {}; s.links = s.links || {}; return s; }
+
+    function linkOf(projectId, conversationId) { return load().links[keyOf(projectId, conversationId)] || null; }
+
+    /** Links the chat to an active ticket of the queue. What is on either side already stays where it is; from now on
+     *  both go across. The chat gets a message saying so. */
+    async function link(projectId, conversationId, ticketId) {
+      const ticket = (await queue()).find((t) => String(t.id) === String(ticketId));
+      if (!ticket) throw new Error("Ticket #" + ticketId + " er ikke en aktiv sak i køen.");
+      const zd = await deps.zd.getComments(ticket.id, 0);
+      const rl = await deps.rl.getComments(projectId, conversationId);
+      const st = load();
+      const entry = {
+        projectId: String(projectId), conversationId: String(conversationId), ticketId: String(ticket.id),
+        subject: String(ticket.subject || ""), linkedAt: now(),
+        zdMax: Math.max(0, ...zd.comments.map((c) => Number(c.id) || 0)),
+        rlSince: Math.max(0, ...rl.map((c) => ms(c.createdAt))),
+        rlSeen: tail(rl.map((c) => String(c.id))), ownRl: [], ownZd: [],
+        status: "active", note: "", lastRun: 0,
+      };
+      st.links[keyOf(projectId, conversationId)] = entry;
+      deps.store.save(st);
+      const said = await deps.rl.postComment(projectId, conversationId, "<p>" + esc("Zendesk #" + ticket.id + " «" + entry.subject + "»") +
+        " er koblet til denne chatten. Nye meldinger på saken kommer hit, og det som skrives her går til saken som internt notat." +
+        " Start en melding med /kunde for å svare kunden.</p>", true);
+      if (said && said.id != null) {
+        const s2 = load(), e = s2.links[keyOf(projectId, conversationId)];
+        if (e) { e.ownRl = tail(e.ownRl.concat(String(said.id))); e.rlSeen = tail(e.rlSeen.concat(String(said.id))); deps.store.save(s2); }
+      }
+      return entry;
+    }
+
+    function unlink(projectId, conversationId) {
+      const st = load();
+      delete st.links[keyOf(projectId, conversationId)];
+      deps.store.save(st);
+    }
+
+    /** One round for every link: the ticket's new messages into the chat, then the chat's new messages to the ticket.
+     *  Each message moved is saved at once, so a round that fails part way goes on from there the next time. */
+    async function runOnce() {
+      const st = load();
+      const keys = Object.keys(st.links);
+      const out = { mirrored: 0, forwarded: 0, paused: 0, errors: 0 };
+      if (!keys.length) return out;
+      const activeIds = new Set((await queue()).map((t) => String(t.id)));
+      const runner = Number(deps.rl.userId()) || 0;
+      for (const key of keys) {
+        const e = st.links[key];
+        e.lastRun = now();
+        if (!activeIds.has(e.ticketId)) {
+          e.status = "paused";
+          e.note = "Saken er ikke aktiv i køen: synken venter til den er det igjen.";
+          out.paused++;
+          deps.store.save(st);
+          continue;
+        }
+        try {
+          // the ticket -> the chat
+          const zd = await deps.zd.getComments(e.ticketId, e.zdMax);
+          const users = new Map((zd.users || []).map((u) => [u.id, u]));
+          for (const c of zd.comments.slice().sort((a, b) => Number(a.id) - Number(b.id))) {
+            if (!(Number(c.id) > e.zdMax)) continue;
+            if (e.ownZd.includes(String(c.id))) { e.zdMax = Number(c.id); continue; }
+            const made = await deps.rl.postComment(e.projectId, e.conversationId, chatHtmlOf(c, users.get(c.author_id), e.ticketId), true);
+            if (made && made.id != null) { e.ownRl = tail(e.ownRl.concat(String(made.id))); e.rlSeen = tail(e.rlSeen.concat(String(made.id))); }
+            e.zdMax = Number(c.id);
+            out.mirrored++;
+            deps.store.save(st);
+          }
+          // the chat -> the ticket
+          const rl = ((await deps.rl.getComments(e.projectId, e.conversationId)) || [])
+            .filter((c) => c && c.messageType === "USER_MESSAGE")
+            .sort((a, b) => ms(a.createdAt) - ms(b.createdAt) || Number(a.id) - Number(b.id));
+          for (const c of rl) {
+            const id = String(c.id);
+            if (e.rlSeen.includes(id) || e.ownRl.includes(id)) continue;
+            const mine = runner > 0 && Number((c.user && c.user.userId) || c.createdBy) === runner;
+            if (ms(c.createdAt) < e.rlSince || (mine && OWN_RE.test(String(c.content || "")))) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
+            const msg = parseChatMessage(textOfHtml(c.content));
+            if (!msg.body) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
+            const who = authorName(c.user);
+            const body = mine || !who ? msg.body : msg.isPublic ? msg.body + "\n\n— " + who : who + " (Rocketlane):\n" + msg.body;
+            const res = await deps.zd.addComment(e.ticketId, body, msg.isPublic);
+            if (res && res.commentId != null) e.ownZd = tail(e.ownZd.concat(String(res.commentId)));
+            e.rlSeen = tail(e.rlSeen.concat(id));
+            out.forwarded++;
+            deps.store.save(st);
+          }
+          e.status = "active";
+          e.note = "";
+        } catch (err) {
+          e.status = "error";
+          e.note = String((err && err.message) || err).slice(0, 300);
+          out.errors++;
+        }
+        deps.store.save(st);
+      }
+      return out;
+    }
+
+    return { link, unlink, linkOf, runOnce, queue, rankTickets, chatHtmlOf, textOfHtml, htmlOfText, parseChatMessage, isActive };
+  }
+  // @@ZDSYNC-ENGINE-END
+
+  /** The sync in the page: its Rocketlane and Zendesk calls, its state in Tampermonkey's storage, the button on chat
+   *  pages, and the minute timer. Off until turned on in the Tampermonkey menu. */
+  function startZendeskChatSync() {
+    if (window.top !== window.self || window.__zendeskChatSync) return;
+    window.__zendeskChatSync = true;
+    const EN_KEY = "zdsync_enabled_v1", STATE_KEY = "zdsync_state_v1", VIEW_KEY = "zdsync_view_title_v1";
+    const VIEWID_KEY = "zdsync_view_id_v1", LOCK_KEY = "zdsync_lock_v1";
+    const DEFAULT_VIEW = "IWMAC Leveranse - Kulde";
+    const POLL_MS = 60 * 1000;
+    const RL_API = "https://kiona.api.rocketlane.com/api/v1";
+    const ZD_HOST = "https://iwmac.zendesk.com", ZD_API = ZD_HOST + "/api/v2";
+    const tabId = Math.random().toString(36).slice(2);
+    const get = (k, d) => { try { const v = GM_getValue(k, d); return v === undefined ? d : v; } catch (_) { return d; } };
+    const set = (k, v) => { try { GM_setValue(k, v); } catch (_) {} };
+    const enabled = () => get(EN_KEY, false) === true;
+    const viewTitle = () => String(get(VIEW_KEY, DEFAULT_VIEW) || DEFAULT_VIEW).trim();
+
+    function http(method, url, headers, body) {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method, url, headers, timeout: 25000, anonymous: false,
+          data: body == null ? undefined : JSON.stringify(body),
+          onload: resolve,
+          onerror: () => reject(new Error("Nettverksfeil mot " + new URL(url).host)),
+          ontimeout: () => reject(new Error(new URL(url).host + " svarte ikke")),
+        });
+      });
+    }
+    const parse = (r) => { try { return r.responseText ? JSON.parse(r.responseText) : null; } catch (_) { return null; } };
+
+    function rlKey() {
+      let k = String(get("rlApiKey", "") || "");
+      if (!k) {
+        try {
+          const p = JSON.parse(window.localStorage.getItem("__api_key") || "null");
+          k = (Array.isArray(p) && p.find((v) => typeof v === "string" && v.length >= 20)) || "";
+        } catch (_) {}
+      }
+      return k;
+    }
+
+    async function rl(method, path, body) {
+      const key = rlKey();
+      if (!key) throw new Error("Rocketlane-nøkkelen er ikke fanget ennå: last siden på nytt.");
+      const headers = { "api-key": key, accept: "application/json" };
+      if (body) headers["content-type"] = "application/json";
+      const r = await http(method, RL_API + path, headers, body);
+      if (r.status < 200 || r.status >= 300) { const err = new Error("Rocketlane svarte HTTP " + r.status); err.status = r.status; throw err; }
+      return parse(r);
+    }
+
+    async function zd(method, path, body) {
+      const headers = { accept: "application/json" };
+      if (method !== "GET") {
+        const csrf = String(get("zdCsrfToken", "") || "");
+        if (!csrf) throw new Error("Åpne Zendesk i en fane én gang (innlogget), så synken kan skrive dit.");
+        headers["X-CSRF-Token"] = csrf;
+        headers["content-type"] = "application/json";
+      }
+      const r = await http(method, /^https:/.test(path) ? path : ZD_API + path, headers, body);
+      if (r.status === 401 || r.status === 403) throw new Error("Zendesk-innloggingen har gått ut: åpne Zendesk i en fane og logg inn.");
+      if (r.status < 200 || r.status >= 300) throw new Error("Zendesk svarte HTTP " + r.status + (r.responseText ? ": " + String(r.responseText).slice(0, 160) : ""));
+      return parse(r);
+    }
+    const nextPath = (j) => (j && j.next_page && String(j.next_page).indexOf(ZD_API) === 0 ? String(j.next_page) : null);
+
+    async function viewId() {
+      const title = viewTitle();
+      const cached = get(VIEWID_KEY, null);
+      if (cached && cached.title === title && cached.id) return cached.id;
+      let path = "/views.json?active=true&per_page=100", found = null;
+      for (let i = 0; path && i < 10 && !found; i++) {
+        const j = await zd("GET", path);
+        found = ((j && j.views) || []).find((v) => String(v.title || "").trim().toLowerCase() === title.toLowerCase()) || null;
+        path = nextPath(j);
+      }
+      if (!found) throw new Error("Fant ikke Zendesk-visningen «" + title + "» (Tampermonkey-menyen: velg kø).");
+      set(VIEWID_KEY, { title, id: found.id });
+      return found.id;
+    }
+
+    const api = {
+      rl: {
+        userId: () => Number(get("rlUserId", 0)) || 0,
+        async getComments(projectId, conversationId) {
+          const j = await rl("GET", "/projects/" + encodeURIComponent(projectId) + "/project-conversations/" + encodeURIComponent(conversationId) + "/conversations");
+          return Array.isArray(j && j.comments) ? j.comments : [];
+        },
+        async postComment(projectId, conversationId, html, isPrivate) {
+          const userId = Number(get("rlUserId", 0)) || 0;
+          if (!userId) throw new Error("Rocketlane-brukeren er ikke fanget ennå: last siden på nytt.");
+          const path = "/projects/" + encodeURIComponent(projectId) + "/project-conversations/" + encodeURIComponent(conversationId) + "/comments";
+          const send = (priv) => rl("POST", path, { comment: { messageType: "USER_MESSAGE", content: html, private: priv, commentMeta: {}, user: { userId, userType: "NATIVE" } } });
+          let j;
+          try {
+            j = await send(!!isPrivate);
+          } catch (err) {
+            // a chat only the team sees anyway may not take private messages: there an ordinary one is as private
+            if (!isPrivate || (err.status !== 400 && err.status !== 422)) throw err;
+            const convs = await rl("GET", "/projects/" + encodeURIComponent(projectId) + "/project-conversations?pageSize=50");
+            const list = Array.isArray(convs) ? convs : Object.values(convs || {});
+            const conv = list.find((c) => c && String(c.conversationId != null ? c.conversationId : c.id) === String(conversationId));
+            if (!conv || conv.private !== true) throw err;
+            j = await send(false);
+          }
+          const c = j && (j.comment || j);
+          const id = c && (c.id != null ? c.id : c.commentId);
+          return id != null ? { id } : null;
+        },
+        async projectName(projectId) {
+          const p = await rl("GET", "/projects/" + encodeURIComponent(projectId));
+          return String((p && (p.projectName || p.name)) || "");
+        },
+      },
+      zd: {
+        async queueTickets() {
+          const id = await viewId();
+          let path = "/views/" + id + "/tickets.json?per_page=100", out = [];
+          for (let i = 0; path && i < 5; i++) { const j = await zd("GET", path); out = out.concat((j && j.tickets) || []); path = nextPath(j); }
+          return out;
+        },
+        async getComments(ticketId, sinceId) {
+          let path = "/tickets/" + encodeURIComponent(ticketId) + "/comments.json?include=users&sort_order=desc&per_page=100";
+          let comments = [], users = [];
+          for (let i = 0; path && i < 5; i++) {
+            const j = await zd("GET", path);
+            const page = (j && j.comments) || [];
+            comments = comments.concat(page);
+            users = users.concat((j && j.users) || []);
+            if (!sinceId || page.some((c) => Number(c.id) <= sinceId)) break;
+            path = nextPath(j);
+          }
+          return { comments, users };
+        },
+        async addComment(ticketId, body, isPublic) {
+          const j = await zd("PUT", "/tickets/" + encodeURIComponent(ticketId) + ".json", { ticket: { comment: { body, public: isPublic === true } } });
+          const ev = ((j && j.audit && j.audit.events) || []).find((x) => x && x.type === "Comment");
+          return { commentId: ev ? ev.id : null };
+        },
+      },
+    };
+
+    const sync = createZendeskChatSync({
+      rl: api.rl, zd: api.zd,
+      store: { load: () => { try { return JSON.parse(get(STATE_KEY, "{}")) || {}; } catch (_) { return {}; } }, save: (s) => set(STATE_KEY, JSON.stringify(s)) },
+    });
+
+    // one tab runs the rounds: it holds the lock while it is open. Two tabs can read a free lock at the same moment,
+    // so the lock is read again a moment after it is taken, and only the tab still holding it goes on.
+    async function claim() {
+      const l = get(LOCK_KEY, null), t = Date.now();
+      if (l && l.tab !== tabId && l.until > t) return false;
+      set(LOCK_KEY, { tab: tabId, until: t + POLL_MS + 20000 });
+      await new Promise((r) => setTimeout(r, 400 + Math.floor(Math.random() * 400)));
+      const again = get(LOCK_KEY, null);
+      return !!again && again.tab === tabId;
+    }
+    window.addEventListener("beforeunload", () => { const l = get(LOCK_KEY, null); if (l && l.tab === tabId) set(LOCK_KEY, null); });
+
+    let running = false;
+    async function round() {
+      if (!enabled() || running || !(await claim())) return false;
+      running = true;
+      try { await sync.runOnce(); } catch (e) { try { console.warn("[zendesk-chat] round failed:", (e && e.message) || e); } catch (_) {} }
+      running = false;
+      paint();
+      return true;
+    }
+
+    // ---- the button on a chat page, and its panel (in a shadow root: Rocketlane's styles stay out) ----
+    const host = document.createElement("div");
+    host.id = "zendesk-chat-sync";
+    const root = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = [
+      ":host{all:initial}",
+      ".pill{position:fixed;right:24px;bottom:132px;z-index:2147483000;display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:16px;border:1px solid #d0d5dd;background:#fff;color:#344054;font:500 12.5px/1.3 Inter,'Segoe UI',Roboto,Arial,sans-serif;box-shadow:0 2px 8px rgba(16,24,40,.12);cursor:pointer}",
+      ".pill.on{border-color:#2f6fed;color:#1849a9}.pill.paused{border-color:#f0cf7a;color:#93370d}.pill.error{border-color:#fda29b;color:#b42318}",
+      ".dot{width:8px;height:8px;border-radius:50%;background:#98a2b3}.on .dot{background:#12b76a}.paused .dot{background:#f79009}.error .dot{background:#f04438}",
+      ".panel{position:fixed;right:24px;bottom:172px;z-index:2147483000;width:380px;max-height:60vh;overflow:auto;padding:12px;border:1px solid #d0d5dd;border-radius:10px;background:#fff;color:#1f2328;font:13px/1.45 Inter,'Segoe UI',Roboto,Arial,sans-serif;box-shadow:0 8px 24px rgba(16,24,40,.18)}",
+      ".panel h3{margin:0 0 6px;font-size:13.5px}.muted{color:#667085;font-size:12px}.err{color:#b42318;font-size:12px;margin:6px 0}",
+      ".row{display:flex;align-items:center;gap:8px;padding:7px 6px;border-radius:6px}.row:hover{background:#f6f7f9}.row .t{flex:1;min-width:0}",
+      ".row .s{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.match{font-size:11px;padding:0 6px;border-radius:9px;background:#ecfdf3;color:#067647;margin-left:4px}",
+      "button.b{padding:4px 10px;border:1px solid #2f6fed;border-radius:6px;background:#2f6fed;color:#fff;font:inherit;cursor:pointer}",
+      "button.g{padding:4px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#344054;font:inherit;cursor:pointer}",
+      ".acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}a{color:#2f6fed}",
+    ].join("\n");
+    const pill = document.createElement("button");
+    pill.className = "pill";
+    pill.type = "button";
+    const panel = document.createElement("div");
+    panel.className = "panel";
+    panel.hidden = true;
+    root.append(style, pill, panel);
+
+    const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    function chatIds() {
+      const m = /^\/projects\/(\d+)\/chat\/(\d+)/.exec(location.pathname);
+      return m ? { projectId: m[1], conversationId: m[2] } : null;
+    }
+    const hhmm = (t) => (t ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+
+    function paint() {
+      const ids = enabled() ? chatIds() : null;
+      if (!ids) { pill.hidden = true; panel.hidden = true; return; }
+      pill.hidden = false;
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      pill.textContent = "";
+      pill.append(el("span", "dot"));
+      if (!e) { pill.className = "pill"; pill.append("Zendesk ⇄ Koble sak"); pill.title = "Koble denne chatten til en aktiv sak i køen " + viewTitle(); return; }
+      pill.className = "pill " + (e.status === "active" ? "on" : e.status);
+      pill.append("Zendesk #" + e.ticketId + (e.status === "active" ? " ⇄ " + (e.lastRun ? "synket " + hhmm(e.lastRun) : "kobl.") : e.status === "paused" ? " · pause" : " · feil"));
+      pill.title = e.note || ("Synkes med Zendesk #" + e.ticketId + " «" + e.subject + "»");
+    }
+
+    async function openPanel() {
+      const ids = chatIds();
+      if (!ids) return;
+      panel.hidden = false;
+      panel.textContent = "";
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      if (e) {
+        panel.append(el("h3", null, "Zendesk #" + e.ticketId + " «" + e.subject + "»"));
+        panel.append(el("div", "muted", "Nye meldinger på saken kommer hit som private meldinger. Det som skrives i chatten går til saken som internt notat; start med /kunde for å svare kunden."));
+        if (e.note) panel.append(el("div", "err", e.note));
+        const acts = el("div", "acts");
+        const now = el("button", "b", "Synk nå");
+        now.onclick = () => { now.disabled = true; round().then((ran) => { if (!ran) now.textContent = "Synken går i en annen fane"; else openPanel(); }); };
+        const open = el("a", null, "Åpne i Zendesk");
+        open.href = ZD_HOST + "/agent/tickets/" + encodeURIComponent(e.ticketId);
+        open.target = "_blank";
+        open.rel = "noopener noreferrer";
+        const off = el("button", "g", "Koble fra");
+        off.onclick = () => { sync.unlink(ids.projectId, ids.conversationId); panel.hidden = true; paint(); };
+        acts.append(now, off, open);
+        panel.append(acts);
+        return;
+      }
+      panel.append(el("h3", null, "Koble chatten til en sak i køen"));
+      panel.append(el("div", "muted", "Aktive saker i «" + viewTitle() + "». Saker med prosjektets anleggsnummer står øverst."));
+      const list = el("div");
+      list.append(el("div", "muted", "Henter køen…"));
+      panel.append(list);
+      try {
+        const [tickets, name] = await Promise.all([sync.queue(), api.rl.projectName(ids.projectId).catch(() => "")]);
+        list.textContent = "";
+        const ranked = sync.rankTickets(tickets, name);
+        if (!ranked.length) list.append(el("div", "muted", "Ingen aktive saker i køen."));
+        for (const { ticket: t, score } of ranked.slice(0, 25)) {
+          const row = el("div", "row");
+          const txt = el("div", "t");
+          const top = el("span", "s");
+          top.append(el("b", null, "#" + t.id + " "), document.createTextNode(String(t.subject || "(uten emne)")));
+          if (score >= 10) top.append(el("span", "match", "passer"));
+          txt.append(top, el("span", "muted", String(t.status || "") + (t.updated_at ? " · " + new Date(t.updated_at).toLocaleDateString() : "")));
+          const go = el("button", "b", "Koble");
+          go.onclick = async () => {
+            go.disabled = true;
+            try { await sync.link(ids.projectId, ids.conversationId, t.id); panel.hidden = true; paint(); }
+            catch (err) { go.disabled = false; list.prepend(el("div", "err", String((err && err.message) || err))); }
+          };
+          row.append(txt, go);
+          list.append(row);
+        }
+      } catch (err) {
+        list.textContent = "";
+        list.append(el("div", "err", String((err && err.message) || err)));
+      }
+    }
+
+    pill.addEventListener("click", () => { if (!panel.hidden) { panel.hidden = true; return; } void openPanel(); });
+    document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") panel.hidden = true; });
+
+    function mount() { if (!document.body) { setTimeout(mount, 400); return; } document.body.appendChild(host); paint(); }
+    mount();
+    // Rocketlane is a single-page app: follow its route
+    let lastPath = location.pathname;
+    setInterval(() => { if (location.pathname !== lastPath) { lastPath = location.pathname; panel.hidden = true; } paint(); }, 1000);
+    setTimeout(() => { void round(); }, 10000);
+    setInterval(() => { void round(); }, POLL_MS);
+
+    try {
+      if (typeof GM_registerMenuCommand === "function") {
+        GM_registerMenuCommand((enabled() ? "✅" : "❌") + " Zendesk ⇄ General Chat-synk", () => {
+          set(EN_KEY, !enabled());
+          paint();
+          if (enabled()) void round();
+        });
+        GM_registerMenuCommand("Zendesk-kø for synken: " + viewTitle() + "…", () => {
+          const t = window.prompt("Zendesk-visningen (køen) synken ser i:", viewTitle());
+          if (t && t.trim()) { set(VIEW_KEY, t.trim()); set(VIEWID_KEY, null); }
+        });
+      }
+    } catch (_) {}
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
   // Side A — On Rocketlane: capture the api-key from localStorage.
   // ──────────────────────────────────────────────────────────────────────────
   if (location.hostname.endsWith("kiona.rocketlane.com")) {
@@ -113,6 +601,8 @@
 
     // Refresh every 5 minutes in case the api-key rotates while the tab is open.
     setInterval(captureNow, 5 * 60 * 1000);
+    // Zendesk ⇄ General Chat (v1.16.0): runs here, on Rocketlane's own pages
+    try { startZendeskChatSync(); } catch (e) { try { console.warn("[zendesk-chat] could not start:", e); } catch (_) {} }
     return; // don't run the bridge side
   }
 
