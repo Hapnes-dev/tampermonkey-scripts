@@ -93,12 +93,12 @@ test('the queue: active tickets only, the project\'s best match first - its Plan
 
 test('linking: only an active ticket of the queue; nothing old goes across; the chat is told', async () => {
   const w = world();
-  await assert.rejects(w.sync.link(1481787, 12896932, 53126), /ikke en aktiv sak/);
-  await assert.rejects(w.sync.link(1481787, 12896932, 99999), /ikke en aktiv sak/);
+  await assert.rejects(w.sync.link(1481787, 12896932, 53126), /not an active ticket/);
+  await assert.rejects(w.sync.link(1481787, 12896932, 99999), /not an active ticket/);
   const e = await w.sync.link(1481787, 12896932, 53123);
   assert.strictEqual(e.ticketId, '53123');
   assert.strictEqual(w.posted.rl.length, 1);
-  assert.match(w.posted.rl[0].html, /^<p>Zendesk #53123 «10263 Extra Laksvollen - alarm» er koblet til denne chatten\./);
+  assert.match(w.posted.rl[0].html, /^<p>Zendesk #53123 “10263 Extra Laksvollen - alarm” is now linked to this chat\./);
   assert.strictEqual(w.posted.rl[0].isPrivate, true);
   const r = await w.sync.runOnce();
   assert.deepStrictEqual(r, { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'the old message on either side, and the announcement, stay where they are');
@@ -113,9 +113,9 @@ test('the ticket\'s new messages come into the chat as private messages, each ki
   const r = await w.sync.runOnce();
   assert.strictEqual(r.mirrored, 3);
   assert.deepStrictEqual(w.posted.rl.slice(1).map((p) => [p.html, p.isPrivate]), [
-    ['<p><b>Zendesk #53123</b> · Kari Kunde (kunde)</p><p>Anlegget går i alarm igjen.<br>Se vedlegg.</p>', true],
-    ['<p><b>Zendesk #53123</b> · Ola Agent · internt notat</p><p>Sjekker fjernstyring.</p>', true],
-    ['<p><b>Zendesk #53123</b> · Ola Agent · svar til kunden</p><p>Hei Kari, vi ser på det.</p>', true],
+    ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Anlegget går i alarm igjen.<br>Se vedlegg.</p>', true],
+    ['<p><b>Zendesk #53123</b> · Ola Agent · internal note</p><p>Sjekker fjernstyring.</p>', true],
+    ['<p><b>Zendesk #53123</b> · Ola Agent · reply to the customer</p><p>Hei Kari, vi ser på det.</p>', true],
   ]);
   assert.strictEqual((await w.sync.runOnce()).mirrored, 0, 'once each');
   assert.strictEqual(w.posted.zd.length, 0, 'what came from Zendesk does not go back');
@@ -164,7 +164,7 @@ test('a solved ticket pauses the link; opened again, it catches up', async () =>
   w.say(2, '<p>Notat mens saken er løst.</p>', 'Andreas', 'Sandnes');
   let r = await w.sync.runOnce();
   assert.deepStrictEqual(r, { mirrored: 0, forwarded: 0, paused: 1, errors: 0 });
-  assert.match(w.sync.linkOf(1481787, 12896932).note, /Saken er løst/);
+  assert.match(w.sync.linkOf(1481787, 12896932).note, /The ticket is solved/);
   w.queue[0].status = 'open';
   r = await w.sync.runOnce();
   assert.deepStrictEqual(r, { mirrored: 1, forwarded: 1, paused: 0, errors: 0 });
@@ -182,7 +182,7 @@ test('a linked ticket that waits for the customer has left the view, but keeps s
   w.elsewhere.delete('53123');
   const r = await w.sync.runOnce();
   assert.strictEqual(r.paused, 1);
-  assert.match(w.sync.linkOf(1481787, 12896932).note, /Fant ikke saken/);
+  assert.match(w.sync.linkOf(1481787, 12896932).note, /was not found in Zendesk/);
 });
 
 test('a failure part way: the next round goes on from there, nothing twice', async () => {
@@ -210,9 +210,9 @@ test('unlinking stops it; files and long texts', async () => {
   const html = w.sync.chatHtmlOf({ id: 1, public: true, plain_body: 'x'.repeat(8100), attachments: [
     { file_name: 'logg <1>.txt', content_url: 'https://iwmac.zendesk.com/attachments/token/a/?name=logg.txt' },
     { file_name: 'skummel', content_url: 'javascript:alert(1)' }] }, { name: 'Kari <Kunde>', role: 'end-user' }, '53123');
-  assert.match(html, /^<p><b>Zendesk #53123<\/b> · Kari &lt;Kunde&gt; \(kunde\)<\/p>/);
-  assert.match(html, /… \(forkortet: les resten i Zendesk\)/);
-  assert.match(html, /<p>Vedlegg: <a href="https:\/\/iwmac\.zendesk\.com\/attachments\/token\/a\/\?name=logg\.txt">logg &lt;1&gt;\.txt<\/a><\/p>$/);
+  assert.match(html, /^<p><b>Zendesk #53123<\/b> · Kari &lt;Kunde&gt; \(customer\)<\/p>/);
+  assert.match(html, /… \(shortened: read the rest in Zendesk\)/);
+  assert.match(html, /<p>Attachments: <a href="https:\/\/iwmac\.zendesk\.com\/attachments\/token\/a\/\?name=logg\.txt">logg &lt;1&gt;\.txt<\/a><\/p>$/);
   assert.ok(!/javascript:/.test(html), 'only https links');
   w.sync.unlink(1481787, 12896932);
   assert.strictEqual(w.sync.linkOf(1481787, 12896932), null);
@@ -224,6 +224,7 @@ test('the text of a chat message', () => {
   const w = world();
   assert.strictEqual(w.sync.textOfHtml('<p>A &amp; B</p><p>C<br>D</p><ul><li>én</li><li>to</li></ul>'), 'A & B\nC\nD\n• én\n• to');
   assert.deepStrictEqual(w.sync.parseChatMessage('/kunde hei'), { isPublic: true, body: 'hei' });
+  assert.deepStrictEqual(w.sync.parseChatMessage('/Customer: hi'), { isPublic: true, body: 'hi' });
   assert.deepStrictEqual(w.sync.parseChatMessage('kunde /kunde hei'), { isPublic: false, body: 'kunde /kunde hei' });
   assert.deepStrictEqual(w.sync.parseChatMessage('/kundeservice'), { isPublic: false, body: '/kundeservice' });
 });
