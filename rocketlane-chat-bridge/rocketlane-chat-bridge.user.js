@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.17.5
-// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.17.5: the Zendesk text going into the chat is cleaned - no &nbsp;, no runs of blank lines, quoted emails cut, signatures to sign-off and name; earlier messages can be posted again. v1.17.4: linking a chat to a Zendesk ticket posts the ticket's earlier messages in the chat too, once; a chat linked before gets Post earlier messages. v1.17.3: the Zendesk sync speaks English and asks before it links - opening a chat whose ticket it found, it asks whether to link it; linking from the list asks once more. Tickets waiting for the customer or on hold in the queue's groups can be linked too, never solved or closed ones. v1.17.2: the Zendesk button shows on chat pages only - off them it stayed as an empty button. v1.17.1: the Zendesk sync reads a chat message's id from commentId, as Rocketlane gives it - before, every message looked seen and none went to Zendesk. v1.17.0: the Zendesk sync finds a project's ticket by its Plant ID and offers it on the chat's button; the button shows when the sync is off, with a way to turn it on; a linked ticket keeps syncing while it is pending or on hold. v1.16.0: Zendesk ⇄ General Chat — link a project's General Chat in Rocketlane to an active ticket in your Zendesk queue; the ticket's new messages appear in the chat, and what is written in the chat goes to the ticket as an internal note, or as a public reply when it starts with /kunde. Off until turned on in the Tampermonkey menu. v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
+// @version      1.18.0
+// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.18.0: /reply makes a public reply to the customer (no more /kunde); the Zendesk sync runs every 15 s while Rocketlane is in front and at once on a new chat message, and the open chat shows what it posted without a reload. v1.17.5: the Zendesk text going into the chat is cleaned - no &nbsp;, no runs of blank lines, quoted emails cut, signatures to sign-off and name; earlier messages can be posted again. v1.17.4: linking a chat to a Zendesk ticket posts the ticket's earlier messages in the chat too, once; a chat linked before gets Post earlier messages. v1.17.3: the Zendesk sync speaks English and asks before it links - opening a chat whose ticket it found, it asks whether to link it; linking from the list asks once more. Tickets waiting for the customer or on hold in the queue's groups can be linked too, never solved or closed ones. v1.17.2: the Zendesk button shows on chat pages only - off them it stayed as an empty button. v1.17.1: the Zendesk sync reads a chat message's id from commentId, as Rocketlane gives it - before, every message looked seen and none went to Zendesk. v1.17.0: the Zendesk sync finds a project's ticket by its Plant ID and offers it on the chat's button; the button shows when the sync is off, with a way to turn it on; a linked ticket keeps syncing while it is pending or on hold. v1.16.0: Zendesk ⇄ General Chat — link a project's General Chat in Rocketlane to an active ticket in your Zendesk queue; the ticket's new messages appear in the chat, and what is written in the chat goes to the ticket as an internal note, or as a public reply when it starts with /kunde. Off until turned on in the Tampermonkey menu. v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -82,7 +82,7 @@
   // A project's General Chat in Rocketlane linked to one Zendesk ticket from the team's queue. Every new message on
   // the ticket is posted in the chat as a private message (the team sees it, customers in the project do not), and
   // every message written in the chat goes to the ticket: an internal note, or a public reply to the customer when
-  // it starts with /kunde. Only tickets that are active in the queue (a Zendesk view, "IWMAC Leveranse - Kulde"
+  // it starts with /reply. Only tickets that are active in the queue (a Zendesk view, "IWMAC Leveranse - Kulde"
   // unless set otherwise in the Tampermonkey menu) can be linked or are synced; a ticket that is solved or leaves
   // the queue pauses until it is back. It runs on kiona.rocketlane.com in the browser of whoever turns it on
   // (Tampermonkey menu), in one tab at a time, once a minute. Rocketlane has no public API for chat: this uses the
@@ -121,9 +121,9 @@
       return String(text).replace(/\n{3,}/g, "\n\n").split("\n").map((l) => (l.trim() ? "<p>" + esc(l) + "</p>" : "<p><br></p>")).join("");
     }
 
-    /** A chat message: a public reply to the customer when it starts with /kunde (or /customer), else an internal note. */
+    /** A chat message: a public reply to the customer when it starts with /reply, else an internal note. */
     function parseChatMessage(text) {
-      const m = /^\s*\/(?:kunde|customer)\b[ \t:]*/i.exec(String(text || ""));
+      const m = /^\s*\/reply\b[ \t:]*/i.exec(String(text || ""));
       return m ? { isPublic: true, body: String(text).slice(m[0].length).trim() } : { isPublic: false, body: String(text || "").trim() };
     }
 
@@ -279,7 +279,7 @@
       deps.store.save(st);
       await postOwn(projectId, conversationId, "<p>" + esc("Zendesk #" + ticket.id + " “" + entry.subject + "”") +
         " is now linked to this chat. Its earlier messages follow, and new ones on the ticket will appear here. What is written" +
-        " here goes to the ticket as an internal note. Start a message with /kunde to reply to the customer.</p>");
+        " here goes to the ticket as an internal note. Start a message with /reply to reply to the customer.</p>");
       await postHistoryOf(projectId, conversationId, zd, Infinity);
       return linkOf(projectId, conversationId);
     }
@@ -321,7 +321,7 @@
     async function runOnce() {
       const st = load();
       const keys = Object.keys(st.links);
-      const out = { mirrored: 0, forwarded: 0, paused: 0, errors: 0 };
+      const out = { mirrored: 0, forwarded: 0, paused: 0, errors: 0, posted: [] };
       if (!keys.length) return out;
       // a linked ticket syncs while it is new, open, pending or on hold - also when it has left the queue's view, which
       // shows only new and open ones
@@ -330,7 +330,10 @@
       for (const key of keys) {
         const e = st.links[key];
         e.lastRun = now();
-        const status = String(statuses[e.ticketId] || "").toLowerCase();
+        // its status, and when it last changed: its comments are fetched only when that moved
+        const info = statuses[e.ticketId];
+        const status = String((info && typeof info === "object" ? info.status : info) || "").toLowerCase();
+        const updatedAt = info && typeof info === "object" ? String(info.updatedAt || "") : "";
         if (ACTIVE[status] !== 1) {
           e.status = "paused";
           e.note = status ? "The ticket is " + (STATUS_WORD[status] || status) + ": the sync waits until it is opened again." : "The ticket was not found in Zendesk.";
@@ -340,7 +343,9 @@
         }
         try {
           // the ticket -> the chat
-          const zd = await deps.zd.getComments(e.ticketId, e.zdMax);
+          const moved = !updatedAt || e.zdUpdatedAt !== updatedAt;
+          const zd = moved ? await deps.zd.getComments(e.ticketId, e.zdMax) : { comments: [], users: [] };
+          let posted = 0;
           const users = new Map((zd.users || []).map((u) => [u.id, u]));
           for (const c of zd.comments.slice().sort((a, b) => Number(a.id) - Number(b.id))) {
             if (!(Number(c.id) > e.zdMax)) continue;
@@ -349,8 +354,11 @@
             if (made && made.id != null) { e.ownRl = tail(e.ownRl.concat(String(made.id))); e.rlSeen = tail(e.rlSeen.concat(String(made.id))); }
             e.zdMax = Number(c.id);
             out.mirrored++;
+            posted++;
             deps.store.save(st);
           }
+          if (updatedAt) e.zdUpdatedAt = updatedAt;
+          if (posted) out.posted.push({ projectId: e.projectId, conversationId: e.conversationId, ticketId: e.ticketId, count: posted });
           // the chat -> the ticket
           const rl = ((await deps.rl.getComments(e.projectId, e.conversationId)) || [])
             .filter((c) => c && c.messageType === "USER_MESSAGE")
@@ -382,7 +390,9 @@
       return out;
     }
 
-    return { link, unlink, linkOf, postHistory, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, tidyText, textOfHtml, htmlOfText, parseChatMessage, isActive };
+    function links() { return load().links; }
+
+    return { link, unlink, linkOf, links, postHistory, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, tidyText, textOfHtml, htmlOfText, parseChatMessage, isActive };
   }
   // @@ZDSYNC-ENGINE-END
 
@@ -395,7 +405,9 @@
     const VIEWID_KEY = "zdsync_view_id_v1", LOCK_KEY = "zdsync_lock_v1", PLANT_KEY = "zdsync_plant_field_v1";
     const DISMISS_KEY = "zdsync_not_now_v1";   // {"<project>:<chat>": ticket id the user said "Not now" to}
     const DEFAULT_VIEW = "IWMAC Leveranse - Kulde";
-    const POLL_MS = 60 * 1000;
+    // a round every 15 s while a Rocketlane tab is in front, every minute behind (Chrome slows background timers anyway)
+    const FAST_MS = 15 * 1000, SLOW_MS = 60 * 1000;
+    const visible = () => document.visibilityState === "visible";
     const RL_API = "https://kiona.api.rocketlane.com/api/v1";
     const ZD_HOST = "https://iwmac.zendesk.com", ZD_API = ZD_HOST + "/api/v2";
     const tabId = Math.random().toString(36).slice(2);
@@ -560,7 +572,7 @@
           const out = {};
           for (let i = 0; i < list.length; i += 100) {
             const j = await zd("GET", "/tickets/show_many.json?ids=" + list.slice(i, i + 100).join(","));
-            for (const t of (j && j.tickets) || []) out[String(t.id)] = t.status;
+            for (const t of (j && j.tickets) || []) out[String(t.id)] = { status: t.status, updatedAt: t.updated_at };
           }
           return out;
         },
@@ -594,22 +606,74 @@
     // so the lock is read again a moment after it is taken, and only the tab still holding it goes on.
     async function claim() {
       const l = get(LOCK_KEY, null), t = Date.now();
-      if (l && l.tab !== tabId && l.until > t) return false;
-      set(LOCK_KEY, { tab: tabId, until: t + POLL_MS + 20000 });
+      // held by another tab: left to it, unless it is in the background and this one is in front
+      if (l && l.tab !== tabId && l.until > t && !(visible() && !l.visible)) return false;
+      set(LOCK_KEY, { tab: tabId, until: t + (visible() ? FAST_MS : SLOW_MS) + 20000, visible: visible() });
       await new Promise((r) => setTimeout(r, 400 + Math.floor(Math.random() * 400)));
       const again = get(LOCK_KEY, null);
       return !!again && again.tab === tabId;
     }
     window.addEventListener("beforeunload", () => { const l = get(LOCK_KEY, null); if (l && l.tab === tabId) set(LOCK_KEY, null); });
 
-    let running = false;
+    // a round asked for while one runs (Sync now, a push event) runs right after it, so nothing new waits a whole interval
+    let running = false, rerun = false;
     async function round() {
-      if (!enabled() || running || !(await claim())) return false;
+      if (!enabled()) return false;
+      if (running) { rerun = true; return true; }
+      if (!(await claim())) return false;
       running = true;
-      try { await sync.runOnce(); } catch (e) { try { console.warn("[zendesk-chat] round failed:", (e && e.message) || e); } catch (_) {} }
+      const viewing = chatIds(), shownBefore = viewing ? zendeskShown() : 0;
+      let res = null;
+      try { res = await sync.runOnce(); } catch (e) { try { console.warn("[zendesk-chat] round failed:", (e && e.message) || e); } catch (_) {} }
       running = false;
       paint();
+      if (res && viewing) checkShown(viewing, res, shownBefore);
+      if (rerun) { rerun = false; void round(); }
       return true;
+    }
+
+    // ---- the chat on screen shows what the sync posted ----
+    // Rocketlane adds a new message to an open chat when its push event comes; when the message came through its API in
+    // the name of the user looking at the chat, it may not. Then the chat view is reloaded in place: its route left and
+    // entered again, which makes Rocketlane fetch the chat's messages - never while something is being typed.
+    const zendeskShown = () => ((document.body && document.body.innerText.match(/Zendesk #\d+/g)) || []).length;
+    function checkShown(viewing, res, before) {
+      const n = (res.posted || []).filter((p) => p.projectId === viewing.projectId && p.conversationId === viewing.conversationId)
+        .reduce((a, p) => a + p.count, 0);
+      if (!n) return;
+      setTimeout(() => {
+        const ids = chatIds();
+        if (!ids || ids.conversationId !== viewing.conversationId || zendeskShown() >= before + n) return;
+        reloadChat();
+      }, 2500);
+    }
+    function reloadChat() {
+      const ed = document.querySelector("[contenteditable='true'], textarea");
+      const draft = ed ? String(ed.value != null ? ed.value : ed.textContent || "").trim() : "";
+      if (draft || (ed && (document.activeElement === ed || ed.contains(document.activeElement)))) return;
+      const here = location.pathname + location.search;
+      const go = (path) => { history.replaceState(history.state, "", path); window.dispatchEvent(new PopStateEvent("popstate", { state: history.state })); };
+      go(location.pathname.replace(/\/chat\/\d+$/, "/chat"));
+      setTimeout(() => go(here), 600);
+    }
+
+    // ---- a new chat message on a linked project starts a round at once (Rocketlane's own push events) ----
+    let soonTimer = 0;
+    function soon() { clearTimeout(soonTimer); soonTimer = setTimeout(() => { void round(); }, 1500); }
+    const hooked = new Set();
+    function hookPusher() {
+      try {
+        const W = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+        const p = W.Pusher && W.Pusher.instances && W.Pusher.instances[0];
+        if (!enabled() || !p || typeof p.allChannels !== "function") return;
+        const projects = new Set(Object.values(sync.links()).map((e) => String(e.projectId)));
+        for (const ch of p.allChannels()) {
+          const m = /projectId@(\d+)/.exec(String((ch && ch.name) || ""));
+          if (!m || !projects.has(m[1]) || hooked.has(ch.name) || typeof ch.bind !== "function") continue;
+          hooked.add(ch.name);
+          ch.bind("CREATE", () => soon());
+        }
+      } catch (_) {}
     }
 
     // ---- the button on a chat page, and its panel (in a shadow root: Rocketlane's styles stay out) ----
@@ -735,7 +799,7 @@
       card.append(txt);
       panel.append(card);
       panel.append(el("div", "muted", "Link this chat to the ticket? Its messages so far are posted here once, and new ones then appear as they " +
-        "come. What is written here goes to the ticket as an internal note (/kunde for a reply to the customer)."));
+        "come. What is written here goes to the ticket as an internal note (/reply for a reply to the customer)."));
       const acts = el("div", "acts");
       const yes = el("button", "b", "Link");
       const later = el("button", "g", "Not now");
@@ -779,7 +843,7 @@
       if (!enabled()) {
         panel.append(el("h3", null, "The Zendesk sync is off"));
         panel.append(el("div", "muted", "When it is on, this chat can be linked to an active ticket in the queue “" + viewTitle() + "”. New messages " +
-          "on the ticket then appear here, and what is written here goes to the ticket as an internal note (/kunde for a reply to the customer). " +
+          "on the ticket then appear here, and what is written here goes to the ticket as an internal note (/reply for a reply to the customer). " +
           "The sync runs in this browser: turn it on for one person only."));
         const acts = el("div", "acts");
         const on = el("button", "b", "Turn on in this browser");
@@ -791,7 +855,7 @@
       const e = sync.linkOf(ids.projectId, ids.conversationId);
       if (e) {
         panel.append(el("h3", null, "Zendesk #" + e.ticketId + " “" + e.subject + "”"));
-        panel.append(el("div", "muted", "New messages on the ticket appear here as private messages. What is written in the chat goes to the ticket as an internal note; start with /kunde to reply to the customer."));
+        panel.append(el("div", "muted", "New messages on the ticket appear here as private messages. What is written in the chat goes to the ticket as an internal note; start with /reply to reply to the customer."));
         if (e.note) panel.append(el("div", "err", e.note));
         const acts = el("div", "acts");
         // a chat linked before 1.17.4 has only the messages since its link: the ticket's earlier ones, once
@@ -876,8 +940,15 @@
     // Rocketlane is a single-page app: follow its route
     let lastPath = location.pathname;
     setInterval(() => { if (location.pathname !== lastPath) { lastPath = location.pathname; panel.hidden = true; } paint(); }, 1000);
-    setTimeout(() => { void round(); }, 10000);
-    setInterval(() => { void round(); }, POLL_MS);
+    // the rounds: every 15 s in front, every minute behind, and at once when the tab comes to the front
+    let loopTimer = 0;
+    function loop() {
+      clearTimeout(loopTimer);
+      loopTimer = setTimeout(async () => { await round(); loop(); }, visible() ? FAST_MS : SLOW_MS);
+    }
+    document.addEventListener("visibilitychange", () => { if (visible()) soon(); });
+    setTimeout(() => { void round().then(loop); }, 4000);
+    setInterval(hookPusher, 5000);
 
     try {
       if (typeof GM_registerMenuCommand === "function") {

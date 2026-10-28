@@ -73,14 +73,22 @@ followed and answered from the chat.
   cut, and a signature is cut to its sign-off and the name under it. Each line is a paragraph, as Rocketlane writes
   its own messages.
 - **From the chat to Zendesk.** Every message written in the chat goes to the ticket as an internal note. One that
-  starts with **/kunde** (or **/customer**) goes as a public reply, emailed to the customer. Messages are written with your Zendesk
-  session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
+  starts with **/reply** goes as a public reply, emailed to the customer (since 1.18.0; `/kunde` is plain text
+  again). Messages are written with your Zendesk session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
   "— Name" after a public reply.
 - **Only active tickets.** A linked ticket syncs while it is new, open, pending or on hold, also after it has left the
   queue's view. Solved or closed, the link pauses. Opened again, the link catches up on everything that came in
   meanwhile.
-- **When it runs:** once a minute, in one Rocketlane tab, while a Rocketlane tab is open. **Sync now** in the panel runs
-  it at once. With the browser closed it does not run, and it catches up the next time.
+- **When it runs:** by itself, in one Rocketlane tab of the browser where it is on. It runs every 15 seconds while that
+  tab is in front, and every minute in the background. A tab in front takes over from one in the background.
+  - A ticket's messages are fetched only when the ticket has changed.
+  - A new message in a linked chat starts a round at once, through Rocketlane's own push events.
+  - **Sync now** in the panel runs one at once.
+  - With the browser closed it does not run, and it catches up the next time.
+- **The chat on screen.** Rocketlane shows new messages through its push events. If a message the sync posted does not
+  show up in the chat you have open, the chat view is reloaded in place: its route is left and entered again, so
+  Rocketlane fetches the chat's messages, without a page reload and without a new history entry. This never happens
+  while something is typed in the message box.
 - **Needs:** a Rocketlane page loaded (for the api-key) and Zendesk opened once while logged in (for the session and
   the CSRF token). The button shows what is missing.
 - **How:** Rocketlane has no public API for chat, so this uses the same tenant API as the tracker's chat. A change on

@@ -33,6 +33,7 @@ const W = window.__world = {
     { id: 53131, subject: 'Service på vent', status: 'hold', updated_at: '2026-10-26T08:00:00Z', custom_fields: [{ id: 27741611, value: 2792 }] },
   ],
   queries: [],
+  addZd(c) { W.zd.push(c); const t = W.queue.find((x) => x.id === 53123); if (t) t.updated_at = new Date(Date.now() + W.zd.length).toISOString(); },
   puts: [], posts: [], nextRl: 100, nextZd: 5000,
 };
 window.GM_xmlhttpRequest = (o) => {
@@ -44,7 +45,10 @@ window.GM_xmlhttpRequest = (o) => {
     if (p.endsWith('/project-conversations/12896932/conversations')) return ok({ comments: W.chat });
     if (p.endsWith('/project-conversations/12896932/comments') && o.method === 'POST') {
       const c = Object.assign({ commentId: W.nextRl++, createdAt: Date.now() }, body.comment);
-      W.chat.push(c); W.posts.push(body.comment); return ok({ comment: c });
+      W.chat.push(c); W.posts.push(body.comment);
+      // the open chat shows it, as Rocketlane's push event would - unless a test says it does not
+      if (W.renderPosts !== false) { const d = document.createElement('div'); d.className = 'msg'; d.innerHTML = body.comment.content; document.body.appendChild(d); }
+      return ok({ comment: c });
     }
   }
   if (u.host === 'iwmac.zendesk.com') {
@@ -61,7 +65,7 @@ window.GM_xmlhttpRequest = (o) => {
     if (p === '/api/v2/tickets/53123/comments.json') return ok({ comments: W.zd.slice().reverse(), users: [{ id: 700, name: 'Kari Kunde', role: 'end-user' }, { id: 900, name: 'Thomas', role: 'agent' }], next_page: null });
     if (p === '/api/v2/tickets/53123.json' && o.method === 'PUT') {
       const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [] };
-      W.zd.push(c); W.puts.push(body.ticket.comment); return ok({ ticket: { id: 53123 }, audit: { events: [{ type: 'Comment', id: c.id }] } });
+      W.addZd(c); W.puts.push(body.ticket.comment); return ok({ ticket: { id: 53123 }, audit: { events: [{ type: 'Comment', id: c.id }] } });
     }
   }
   setTimeout(() => o.onload({ status: 404, responseText: '{}' }), 10);
@@ -138,11 +142,11 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.match(w.posts[1].content, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><br><\/p><p><b>Kari Kunde<\/b> \(customer\) · .*<p>Gammel kundemelding<\/p>$/);
     assert.deepStrictEqual(w.posts.map((p) => p.private), [true, true]);
 
-    // a customer's reply in Zendesk, a /kunde message and an internal one in the chat; then "Sync now"
+    // a customer's reply in Zendesk, a /reply message and an internal one in the chat; then "Sync now"
     await page.evaluate(() => {
       const W = window.__world;
-      W.zd.push({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Alarmen kom tilbake i natt.', created_at: new Date().toISOString(), attachments: [] });
-      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>/kunde Hei Kari, vi sender en tekniker.</p>', createdAt: Date.now() + 1000, user: { userId: 1, firstName: 'Thomas' } });
+      W.addZd({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Alarmen kom tilbake i natt.', created_at: new Date().toISOString(), attachments: [] });
+      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>/reply Hei Kari, vi sender en tekniker.</p>', createdAt: Date.now() + 1000, user: { userId: 1, firstName: 'Thomas' } });
       W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>Sjekk kompressor 2.</p>', createdAt: Date.now() + 2000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } });
     });
     await pill.click();
@@ -164,6 +168,38 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.deepStrictEqual([w.posts.length, w.puts.length], [3, 2], 'nothing twice, nothing echoed');
     assert.strictEqual(await page.locator('#zendesk-chat-sync >> text="Post earlier messages"').count(), 0, 'a new link has its history already');
     assert.strictEqual(await page.locator('#zendesk-chat-sync >> text="Post earlier messages again"').count(), 1, 'it can be posted again, after the old copies are deleted');
+
+    // a message the open chat does not show: the chat view is reloaded in place, its route left and entered again
+    await page.evaluate(() => {
+      window.__pops = [];
+      addEventListener('popstate', () => window.__pops.push(location.pathname));
+      const W = window.__world;
+      W.renderPosts = false;
+      W.addZd({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Enda en melding.', created_at: new Date().toISOString(), attachments: [] });
+    });
+    await page.locator('#zendesk-chat-sync >> text=Sync now').click();
+    await page.waitForFunction(() => window.__pops.length >= 2, null, { timeout: 15000 });
+    assert.deepStrictEqual(await page.evaluate(() => window.__pops), ['/projects/1481787/chat', '/projects/1481787/chat/12896932']);
+    assert.strictEqual(await page.evaluate(() => location.pathname), '/projects/1481787/chat/12896932', 'back on the chat');
+    // never while something is typed in the message box
+    await page.evaluate(() => {
+      window.__pops = [];
+      const ed = document.createElement('div');
+      ed.setAttribute('contenteditable', 'true');
+      ed.id = 'draft';
+      ed.textContent = 'Halvskrevet svar';
+      document.body.appendChild(ed);
+      const W = window.__world;
+      W.addZd({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Og en til.', created_at: new Date().toISOString(), attachments: [] });
+    });
+    // the route change closed the panel (or is about to): open it again for Sync now
+    await page.waitForTimeout(1300);
+    if (!(await page.locator('#zendesk-chat-sync >> .panel').isVisible())) await pill.click();
+    await page.locator('#zendesk-chat-sync >> text=Sync now').click();
+    await page.waitForFunction(() => window.__world.posts.some((p) => /Og en til/.test(p.content)), null, { timeout: 15000 });
+    await page.waitForTimeout(3500);
+    assert.deepStrictEqual(await page.evaluate(() => window.__pops), [], 'not reloaded under a draft');
+    await page.evaluate(() => { document.getElementById('draft').remove(); window.__world.renderPosts = true; });
 
     // off in the menu: the button stays on the chat page, greyed
     const menu = await page.evaluate(() => window.__menu.map((m) => m.name));

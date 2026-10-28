@@ -11,6 +11,9 @@ const a = src.indexOf('// @@ZDSYNC-ENGINE-START'), b = src.indexOf('// @@ZDSYNC-
 assert.ok(a > 0 && b > a, 'the engine markers are in the userscript');
 const createZendeskChatSync = new Function(src.slice(a, b) + '\nreturn createZendeskChatSync;')();
 
+// a round's four counts (its `posted` list aside)
+const counts = (r) => ({ mirrored: r.mirrored, forwarded: r.forwarded, paused: r.paused, errors: r.errors });
+
 const RUNNER = 1;        // the Rocketlane user whose browser runs the sync
 const ZD_RUNNER = 900;   // the same person in Zendesk
 
@@ -103,7 +106,7 @@ test('linking: only an active ticket of the queue; the chat is told, then gets t
   assert.match(w.posted.rl[1].html, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><br><\/p><p><b>Kari Kunde<\/b> \(customer\) · 27 Oct 2026 \d\d:\d\d<\/p><p>Gammel kundemelding<\/p>$/);
   assert.deepStrictEqual(w.posted.rl.map((p) => p.isPrivate), [true, true]);
   const r = await w.sync.runOnce();
-  assert.deepStrictEqual(r, { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'the history is not posted twice, and nothing the sync posted, nor the chat\'s old message, goes to Zendesk');
+  assert.deepStrictEqual(counts(r), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'the history is not posted twice, and nothing the sync posted, nor the chat\'s old message, goes to Zendesk');
   assert.strictEqual(await w.sync.postHistory(1481787, 12896932), 0, 'once');
 });
 
@@ -115,6 +118,7 @@ test('the ticket\'s new messages come into the chat as private messages, each ki
   w.reply(800, 'Hei Kari, vi ser på det.');
   const r = await w.sync.runOnce();
   assert.strictEqual(r.mirrored, 3);
+  assert.deepStrictEqual(r.posted, [{ projectId: '1481787', conversationId: '12896932', ticketId: '53123', count: 3 }], 'what went where');
   assert.deepStrictEqual(w.posted.rl.slice(2).map((p) => [p.html, p.isPrivate]), [
     // a line a paragraph, as Rocketlane writes a message
     ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Anlegget går i alarm igjen.</p><p>Se vedlegg.</p>', true],
@@ -125,24 +129,26 @@ test('the ticket\'s new messages come into the chat as private messages, each ki
   assert.strictEqual(w.posted.zd.length, 0, 'what came from Zendesk does not go back');
 });
 
-test('the chat\'s new messages go to the ticket: an internal note, or a public reply after /kunde', async () => {
+test('the chat\'s new messages go to the ticket: an internal note, or a public reply after /reply', async () => {
   const w = world();
   await w.sync.link(1481787, 12896932, 53123);
   w.say(RUNNER, '<p>Ringer kunden i morgen.</p>', 'Thomas');
   w.say(2, '<p>Jeg tar <a class="rl__mention" data-rocketlane-mention-object-id="1">@Thomas</a> sin vakt.</p>', 'Andreas', 'Sandnes');
-  w.say(RUNNER, '<p>/kunde Hei Kari,</p><p>tekniker kommer &amp; ser på det i dag.</p>', 'Thomas');
-  w.say(2, '<p>/KUNDE: Vi beklager ventetiden.</p>', 'Andreas', 'Sandnes');
+  w.say(RUNNER, '<p>/reply Hei Kari,</p><p>tekniker kommer &amp; ser på det i dag.</p>', 'Thomas');
+  w.say(2, '<p>/REPLY: Vi beklager ventetiden.</p>', 'Andreas', 'Sandnes');
+  w.say(2, '<p>/kunde dette er bare et notat nå</p>', 'Andreas', 'Sandnes');
   const r = await w.sync.runOnce();
-  assert.strictEqual(r.forwarded, 4);
+  assert.strictEqual(r.forwarded, 5);
   assert.deepStrictEqual(w.posted.zd, [
     { ticketId: '53123', body: 'Ringer kunden i morgen.', isPublic: false },
     { ticketId: '53123', body: 'Andreas Sandnes (Rocketlane):\nJeg tar @Thomas sin vakt.', isPublic: false },
     // Rocketlane writes each line of a message as a paragraph: one line each in Zendesk
     { ticketId: '53123', body: 'Hei Kari,\ntekniker kommer & ser på det i dag.', isPublic: true },
     { ticketId: '53123', body: 'Vi beklager ventetiden.\n\n— Andreas Sandnes', isPublic: true },
+    { ticketId: '53123', body: 'Andreas Sandnes (Rocketlane):\n/kunde dette er bare et notat nå', isPublic: false },
   ]);
   const again = await w.sync.runOnce();
-  assert.deepStrictEqual(again, { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'what went to Zendesk does not come back, and goes once');
+  assert.deepStrictEqual(counts(again), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'what went to Zendesk does not come back, and goes once');
 });
 
 test('without ids from the APIs the sync still knows its own messages', async () => {
@@ -167,11 +173,11 @@ test('a solved ticket pauses the link; opened again, it catches up', async () =>
   w.reply(700, 'Takk, det virker.');
   w.say(2, '<p>Notat mens saken er løst.</p>', 'Andreas', 'Sandnes');
   let r = await w.sync.runOnce();
-  assert.deepStrictEqual(r, { mirrored: 0, forwarded: 0, paused: 1, errors: 0 });
+  assert.deepStrictEqual(counts(r), { mirrored: 0, forwarded: 0, paused: 1, errors: 0 });
   assert.match(w.sync.linkOf(1481787, 12896932).note, /The ticket is solved/);
   w.queue[0].status = 'open';
   r = await w.sync.runOnce();
-  assert.deepStrictEqual(r, { mirrored: 1, forwarded: 1, paused: 0, errors: 0 });
+  assert.deepStrictEqual(counts(r), { mirrored: 1, forwarded: 1, paused: 0, errors: 0 });
   assert.strictEqual(w.sync.linkOf(1481787, 12896932).status, 'active');
 });
 
@@ -182,7 +188,7 @@ test('a linked ticket that waits for the customer has left the view, but keeps s
   w.elsewhere.set('53123', Object.assign(t, { status: 'pending' }));
   w.say(2, '<p>Venter på kunden.</p>', 'Andreas', 'Sandnes');
   w.reply(700, 'Svar fra kunden.');
-  assert.deepStrictEqual(await w.sync.runOnce(), { mirrored: 1, forwarded: 1, paused: 0, errors: 0 });
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 1, forwarded: 1, paused: 0, errors: 0 });
   w.elsewhere.delete('53123');
   const r = await w.sync.runOnce();
   assert.strictEqual(r.paused, 1);
@@ -197,7 +203,7 @@ test('a failure part way: the next round goes on from there, nothing twice', asy
   w.say(2, '<p>Tre</p>', 'Andreas', 'Sandnes');
   w.fail.rlPost = 1;
   let r = await w.sync.runOnce();
-  assert.deepStrictEqual(r, { mirrored: 0, forwarded: 0, paused: 0, errors: 1 });
+  assert.deepStrictEqual(counts(r), { mirrored: 0, forwarded: 0, paused: 0, errors: 1 });
   assert.match(w.sync.linkOf(1481787, 12896932).note, /HTTP 502/);
   w.fail.zdAdd = 1;
   r = await w.sync.runOnce();
@@ -221,16 +227,18 @@ test('unlinking stops it; files and long texts', async () => {
   w.sync.unlink(1481787, 12896932);
   assert.strictEqual(w.sync.linkOf(1481787, 12896932), null);
   w.reply(700, 'Etter frakobling');
-  assert.deepStrictEqual(await w.sync.runOnce(), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 });
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 });
 });
 
 test('the text of a chat message', () => {
   const w = world();
   assert.strictEqual(w.sync.textOfHtml('<p>A &amp; B</p><p>C<br>D</p><ul><li>én</li><li>to</li></ul>'), 'A & B\nC\nD\n• én\n• to');
-  assert.deepStrictEqual(w.sync.parseChatMessage('/kunde hei'), { isPublic: true, body: 'hei' });
-  assert.deepStrictEqual(w.sync.parseChatMessage('/Customer: hi'), { isPublic: true, body: 'hi' });
-  assert.deepStrictEqual(w.sync.parseChatMessage('kunde /kunde hei'), { isPublic: false, body: 'kunde /kunde hei' });
-  assert.deepStrictEqual(w.sync.parseChatMessage('/kundeservice'), { isPublic: false, body: '/kundeservice' });
+  assert.deepStrictEqual(w.sync.parseChatMessage('/reply hei'), { isPublic: true, body: 'hei' });
+  assert.deepStrictEqual(w.sync.parseChatMessage('/Reply: hi'), { isPublic: true, body: 'hi' });
+  assert.deepStrictEqual(w.sync.parseChatMessage('/kunde hei'), { isPublic: false, body: '/kunde hei' }, '/kunde is plain text since 1.18.0');
+  assert.deepStrictEqual(w.sync.parseChatMessage('/customer hi'), { isPublic: false, body: '/customer hi' });
+  assert.deepStrictEqual(w.sync.parseChatMessage('see /reply below'), { isPublic: false, body: 'see /reply below' });
+  assert.deepStrictEqual(w.sync.parseChatMessage('/replyall x'), { isPublic: false, body: '/replyall x' });
 });
 
 test('a chat linked before 1.17.4 gets the ticket\'s messages from before its link, once', async () => {
@@ -248,7 +256,7 @@ test('a chat linked before 1.17.4 gets the ticket\'s messages from before its li
   assert.match(w.posted.rl[1].html, /earlier messages \(1 in all\).*Gammel kundemelding/);
   assert.ok(!/Etter koblingen/.test(w.posted.rl[1].html));
   assert.strictEqual(await w.sync.postHistory(1481787, 12896932), 0);
-  assert.deepStrictEqual(await w.sync.runOnce(), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'and none of it goes to Zendesk');
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'and none of it goes to Zendesk');
   await assert.rejects(w.sync.postHistory(1, 2), /not linked/);
 });
 
@@ -283,4 +291,24 @@ test('an email reply tidied for the chat: no entities, no runs of blank lines, n
   // in the chat: a paragraph per line, one empty paragraph for a blank line
   assert.strictEqual(w.sync.htmlOfText('a\n\n\n\nb\nc'), '<p>a</p><p><br></p><p>b</p><p>c</p>');
   assert.strictEqual(w.sync.textOfHtml(w.sync.htmlOfText('a\n\nb')), 'a\n\nb', 'and back the same, as the chat\'s text goes to Zendesk');
+});
+
+test('a ticket whose updated_at has not moved is not read again', async () => {
+  const w = world();
+  let fetched = 0, stamp = '2026-10-28T09:00:00Z';
+  const getComments = w.deps.zd.getComments;
+  w.deps.zd.getComments = async (...a) => { fetched++; return getComments(...a); };
+  w.deps.zd.statuses = async (ids) => Object.fromEntries(ids.map((id) => [String(id), { status: 'open', updatedAt: stamp }]));
+  await w.sync.link(1481787, 12896932, 53123);
+  fetched = 0;
+  await w.sync.runOnce();
+  assert.strictEqual(fetched, 1, 'the first round reads it');
+  await w.sync.runOnce();
+  await w.sync.runOnce();
+  assert.strictEqual(fetched, 1, 'unchanged since: not read');
+  w.reply(700, 'Ny melding');
+  stamp = '2026-10-28T10:30:00Z';
+  const r = await w.sync.runOnce();
+  assert.deepStrictEqual([fetched, r.mirrored], [2, 1], 'moved: read, and its new message comes in');
+  assert.deepStrictEqual(w.sync.links()['1481787:12896932'].zdUpdatedAt, '2026-10-28T10:30:00Z');
 });
