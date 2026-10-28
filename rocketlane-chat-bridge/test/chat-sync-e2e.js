@@ -135,7 +135,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     let w = await page.evaluate(() => window.__world);
     assert.strictEqual(w.posts.length, 2, 'the notice, then the ticket\'s earlier messages');
     assert.match(w.posts[0].content, /^<p>Zendesk #53123 “SV: 41584 Extra Laksvollen - alarm” is now linked to this chat\./);
-    assert.match(w.posts[1].content, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><b>Kari Kunde<\/b> \(customer\) · .*<p>Gammel kundemelding<\/p>$/);
+    assert.match(w.posts[1].content, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><br><\/p><p><b>Kari Kunde<\/b> \(customer\) · .*<p>Gammel kundemelding<\/p>$/);
     assert.deepStrictEqual(w.posts.map((p) => p.private), [true, true]);
 
     // a customer's reply in Zendesk, a /kunde message and an internal one in the chat; then "Sync now"
@@ -162,7 +162,8 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.waitForTimeout(1500);
     w = await page.evaluate(() => window.__world);
     assert.deepStrictEqual([w.posts.length, w.puts.length], [3, 2], 'nothing twice, nothing echoed');
-    assert.strictEqual(await page.locator('#zendesk-chat-sync >> text=Post earlier messages').count(), 0, 'a new link has its history already');
+    assert.strictEqual(await page.locator('#zendesk-chat-sync >> text="Post earlier messages"').count(), 0, 'a new link has its history already');
+    assert.strictEqual(await page.locator('#zendesk-chat-sync >> text="Post earlier messages again"').count(), 1, 'it can be posted again, after the old copies are deleted');
 
     // off in the menu: the button stays on the chat page, greyed
     const menu = await page.evaluate(() => window.__menu.map((m) => m.name));

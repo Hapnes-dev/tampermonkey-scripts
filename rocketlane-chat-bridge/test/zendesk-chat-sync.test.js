@@ -100,7 +100,7 @@ test('linking: only an active ticket of the queue; the chat is told, then gets t
   assert.strictEqual(e.historyPosted, true);
   assert.strictEqual(w.posted.rl.length, 2, 'the notice, then the history');
   assert.match(w.posted.rl[0].html, /^<p>Zendesk #53123 “10263 Extra Laksvollen - alarm” is now linked to this chat\. Its earlier messages follow/);
-  assert.match(w.posted.rl[1].html, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><b>Kari Kunde<\/b> \(customer\) · 27 Oct 2026 \d\d:\d\d<\/p><p>Gammel kundemelding<\/p>$/);
+  assert.match(w.posted.rl[1].html, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><br><\/p><p><b>Kari Kunde<\/b> \(customer\) · 27 Oct 2026 \d\d:\d\d<\/p><p>Gammel kundemelding<\/p>$/);
   assert.deepStrictEqual(w.posted.rl.map((p) => p.isPrivate), [true, true]);
   const r = await w.sync.runOnce();
   assert.deepStrictEqual(r, { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'the history is not posted twice, and nothing the sync posted, nor the chat\'s old message, goes to Zendesk');
@@ -116,7 +116,8 @@ test('the ticket\'s new messages come into the chat as private messages, each ki
   const r = await w.sync.runOnce();
   assert.strictEqual(r.mirrored, 3);
   assert.deepStrictEqual(w.posted.rl.slice(2).map((p) => [p.html, p.isPrivate]), [
-    ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Anlegget går i alarm igjen.<br>Se vedlegg.</p>', true],
+    // a line a paragraph, as Rocketlane writes a message
+    ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Anlegget går i alarm igjen.</p><p>Se vedlegg.</p>', true],
     ['<p><b>Zendesk #53123</b> · Ola Agent · internal note</p><p>Sjekker fjernstyring.</p>', true],
     ['<p><b>Zendesk #53123</b> · Ola Agent · reply to the customer</p><p>Hei Kari, vi ser på det.</p>', true],
   ]);
@@ -264,4 +265,22 @@ test('a long history comes in parts, each message shortened past 3 000 character
   assert.ok(/… \(shortened: read the rest in Zendesk\)/.test(all));
   assert.ok(parts.every((p) => p.length < 12000 + 3200), 'about 12 000 characters a message at most');
   assert.deepStrictEqual(w.sync.historyHtml([], users, '1'), []);
+});
+
+test('an email reply tidied for the chat: no entities, no runs of blank lines, no quoted email, a short signature', () => {
+  const w = world();
+  const email = 'Hei,  \n \n&nbsp;\n \nFikk dere sett på dette?&nbsp;\n&nbsp;\n \n \nMed vennlig hilsen\n&nbsp;\nOla Kunde\nProsjektleder\n' +
+    'Mobil: +47 900 00 000\nE-post: ola@example.no\n&nbsp;\nKunde AS\nGate 1, 0001 Oslo\n\nFra: Ola Kunde <ola@example.no>\nSendt: mandag 1. september 2026 10:00\n' +
+    'Til: Support <support@example.com>\nEmne: Sak\n\nGammel tekst';
+  assert.strictEqual(w.sync.tidyText(email), 'Hei,\n\nFikk dere sett på dette?\n\nMed vennlig hilsen\nOla Kunde');
+  assert.strictEqual(w.sync.tidyText('Svar her.\n\nFra: Ola <ola@example.no>\nSendt: 1. sep\nTil: oss\n\nGammelt'), 'Svar her.', 'a quoted email without a sign-off');
+  assert.strictEqual(w.sync.tidyText('Takk!\n\nOn Mon, 1 Sep 2026 at 10:00, Ola <ola@example.no> wrote:\n> gammelt'), 'Takk!');
+  assert.strictEqual(w.sync.tidyText('Ok\n-----Original Message-----\nFrom: x'), 'Ok');
+  assert.strictEqual(w.sync.tidyText('Hei\n\nBest regards,\nThomas Kvalvåg\nIWMAC'), 'Hei\n\nBest regards,\nThomas Kvalvåg');
+  assert.strictEqual(w.sync.tidyText('Hei\nMvh\n+47 900 00 000'), 'Hei\nMvh', 'no phone number taken for a name');
+  assert.strictEqual(w.sync.tidyText('A &amp; B &lt;3 &quot;x&quot;'), 'A & B <3 "x"');
+  assert.strictEqual(w.sync.tidyText('Fra: lageret\nNoe annet'), 'Fra: lageret\nNoe annet', 'a line that only looks like a header');
+  // in the chat: a paragraph per line, one empty paragraph for a blank line
+  assert.strictEqual(w.sync.htmlOfText('a\n\n\n\nb\nc'), '<p>a</p><p><br></p><p>b</p><p>c</p>');
+  assert.strictEqual(w.sync.textOfHtml(w.sync.htmlOfText('a\n\nb')), 'a\n\nb', 'and back the same, as the chat\'s text goes to Zendesk');
 });

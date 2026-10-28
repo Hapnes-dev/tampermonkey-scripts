@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.17.4
-// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.17.4: linking a chat to a Zendesk ticket posts the ticket's earlier messages in the chat too, once; a chat linked before gets Post earlier messages. v1.17.3: the Zendesk sync speaks English and asks before it links - opening a chat whose ticket it found, it asks whether to link it; linking from the list asks once more. Tickets waiting for the customer or on hold in the queue's groups can be linked too, never solved or closed ones. v1.17.2: the Zendesk button shows on chat pages only - off them it stayed as an empty button. v1.17.1: the Zendesk sync reads a chat message's id from commentId, as Rocketlane gives it - before, every message looked seen and none went to Zendesk. v1.17.0: the Zendesk sync finds a project's ticket by its Plant ID and offers it on the chat's button; the button shows when the sync is off, with a way to turn it on; a linked ticket keeps syncing while it is pending or on hold. v1.16.0: Zendesk ⇄ General Chat — link a project's General Chat in Rocketlane to an active ticket in your Zendesk queue; the ticket's new messages appear in the chat, and what is written in the chat goes to the ticket as an internal note, or as a public reply when it starts with /kunde. Off until turned on in the Tampermonkey menu. v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
+// @version      1.17.5
+// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.17.5: the Zendesk text going into the chat is cleaned - no &nbsp;, no runs of blank lines, quoted emails cut, signatures to sign-off and name; earlier messages can be posted again. v1.17.4: linking a chat to a Zendesk ticket posts the ticket's earlier messages in the chat too, once; a chat linked before gets Post earlier messages. v1.17.3: the Zendesk sync speaks English and asks before it links - opening a chat whose ticket it found, it asks whether to link it; linking from the list asks once more. Tickets waiting for the customer or on hold in the queue's groups can be linked too, never solved or closed ones. v1.17.2: the Zendesk button shows on chat pages only - off them it stayed as an empty button. v1.17.1: the Zendesk sync reads a chat message's id from commentId, as Rocketlane gives it - before, every message looked seen and none went to Zendesk. v1.17.0: the Zendesk sync finds a project's ticket by its Plant ID and offers it on the chat's button; the button shows when the sync is off, with a way to turn it on; a linked ticket keeps syncing while it is pending or on hold. v1.16.0: Zendesk ⇄ General Chat — link a project's General Chat in Rocketlane to an active ticket in your Zendesk queue; the ticket's new messages appear in the chat, and what is written in the chat goes to the ticket as an internal note, or as a public reply when it starts with /kunde. Off until turned on in the Tampermonkey menu. v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -116,8 +116,9 @@
         .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
     }
 
+    /** Text as Rocketlane's chat writes it: a paragraph per line (they have no margin there), a blank line as an empty one. */
     function htmlOfText(text) {
-      return String(text).split(/\n{2,}/).map((p) => "<p>" + esc(p).replace(/\n/g, "<br>") + "</p>").join("");
+      return String(text).replace(/\n{3,}/g, "\n\n").split("\n").map((l) => (l.trim() ? "<p>" + esc(l) + "</p>" : "<p><br></p>")).join("");
     }
 
     /** A chat message: a public reply to the customer when it starts with /kunde (or /customer), else an internal note. */
@@ -132,9 +133,37 @@
         String(user.userName || user.name || "").trim();
     }
 
-    /** A Zendesk comment's text, its line breaks kept. */
+    // a sign-off line ("Med vennlig hilsen", "Best regards,"): what follows it is a signature
+    const SIGN_OFF = /^(?:med\s+vennlig\s+hilsen|vennlig\s+hilsen|beste\s+hilsen|mvh\.?|hilsen|best\s+regards|kind\s+regards|with\s+kind\s+regards|regards|br)[\s,.!]*$/i;
+    // the header of a quoted earlier email, as Outlook writes it ("Fra: …" then "Sendt: …"), and other reply markers
+    const QUOTE_FROM = /^(?:fra|from)\s*:\s*\S/i, QUOTE_NEXT = /^(?:sendt|sent|dato|date|til|to)\s*:/i;
+    const QUOTE_LINE = /^(?:-{2,}\s*(?:original message|opprinnelig melding|videresendt melding|forwarded message)\s*-{2,}|on .{6,} wrote:|den .{6,} skrev .{0,80}:)$/i;
+
+    /** A Zendesk comment's text made fit for a chat: entities decoded (plain_body keeps "&nbsp;"), lines trimmed, runs
+     *  of blank lines to one, a quoted earlier email cut, and a signature cut to its sign-off and the name under it. */
+    function tidyText(raw) {
+      const lines = String(raw || "")
+        .replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, "\"").replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&")
+        .replace(/\u00a0/g, " ").replace(/\r\n?/g, "\n").split("\n").map((l) => l.replace(/[ \t]+/g, " ").trim());
+      const out = [];
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        if (QUOTE_LINE.test(l)) break;
+        if (QUOTE_FROM.test(l) && lines.slice(i + 1, i + 5).some((x) => QUOTE_NEXT.test(x))) break;
+        if (SIGN_OFF.test(l)) {
+          out.push(l);
+          const name = lines.slice(i + 1).find((x) => x);
+          if (name && name.length <= 60 && !/@|\d{3}|https?:|www\./i.test(name)) out.push(name);
+          break;
+        }
+        out.push(l);
+      }
+      return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+
+    /** A Zendesk comment's text, tidied for the chat. */
     function commentText(comment) {
-      return String(comment.plain_body != null ? comment.plain_body : textOfHtml(comment.html_body || comment.body || "")).replace(/\r\n?/g, "\n").trim();
+      return tidyText(comment.plain_body != null ? comment.plain_body : textOfHtml(comment.html_body || comment.body || ""));
     }
     const kindOf = (comment, user) => (comment.public === false ? " · internal note" : user && user.role === "end-user" ? " (customer)" : " · reply to the customer");
 
@@ -188,7 +217,7 @@
       }
       if (cur.length) parts.push(cur);
       return parts.map((part, i) => "<p><b>Zendesk #" + esc(ticketId) + "</b> · earlier messages" +
-        (parts.length > 1 ? ", part " + (i + 1) + " of " + parts.length : "") + " (" + list.length + " in all)</p>" + part.join(""));
+        (parts.length > 1 ? ", part " + (i + 1) + " of " + parts.length : "") + " (" + list.length + " in all)</p><p><br></p>" + part.join("<p><br></p>"));
     }
 
     /** The queue's tickets for a project, best match first: the project's plant number as the ticket's Plant ID, then
@@ -267,11 +296,17 @@
       return earlier.length;
     }
 
-    /** For a chat linked before 1.17.4: the ticket's messages from before its link, posted once. -> how many */
-    async function postHistory(projectId, conversationId) {
+    /** The ticket's messages from before the link, posted in the chat: once for a chat linked before 1.17.4, or `again`
+     *  (after the earlier copies were deleted from the chat). -> how many */
+    async function postHistory(projectId, conversationId, again) {
       const e = linkOf(projectId, conversationId);
       if (!e) throw new Error("This chat is not linked to a ticket.");
-      if (e.historyPosted) return 0;
+      if (e.historyPosted && !again) return 0;
+      if (again) {
+        const st = load(), x = st.links[keyOf(projectId, conversationId)];
+        x.historyPosted = false;
+        deps.store.save(st);
+      }
       return postHistoryOf(projectId, conversationId, await deps.zd.getComments(e.ticketId, 1), e.linkedAt || Infinity);
     }
 
@@ -347,7 +382,7 @@
       return out;
     }
 
-    return { link, unlink, linkOf, postHistory, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, textOfHtml, htmlOfText, parseChatMessage, isActive };
+    return { link, unlink, linkOf, postHistory, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, tidyText, textOfHtml, htmlOfText, parseChatMessage, isActive };
   }
   // @@ZDSYNC-ENGINE-END
 
@@ -769,6 +804,15 @@
             catch (err) { hist.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
           };
           acts.append(hist);
+        } else {
+          const again = el("button", "g", "Post earlier messages again");
+          again.title = "Delete the old copies in the chat first: this posts the ticket's messages from before the link once more, tidied";
+          again.onclick = async () => {
+            again.disabled = true;
+            try { const n = await sync.postHistory(ids.projectId, ids.conversationId, true); again.textContent = n + " earlier messages posted"; }
+            catch (err) { again.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
+          };
+          acts.append(again);
         }
         const now = el("button", "b", "Sync now");
         now.onclick = () => { now.disabled = true; round().then((ran) => { if (!ran) now.textContent = "The sync runs in another tab"; else openPanel(); }); };

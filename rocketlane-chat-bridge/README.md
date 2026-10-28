@@ -62,11 +62,16 @@ followed and answered from the chat.
   - **Link** in the list asks once more, with "Yes, link #…".
   - Linking posts a note in the chat, then the ticket's earlier messages once, oldest first: who, what kind, when,
     and the text. They go in one message, or in a few for a long ticket. A chat linked before 1.17.4 can get them
-    with **Post earlier messages** in its panel. What was in the chat before the link stays in the chat.
+    with **Post earlier messages** in its panel. **Post earlier messages again** posts them once more, after the
+    old copies have been deleted from the chat. What was in the chat before the link stays in the chat.
 - **From Zendesk to the chat.** Every new message on the ticket is posted in the chat as a private message, so
   customers in the project do not see it. It starts with "Zendesk #<ticket> · <name>" and a label: "(customer)" for the
   customer, "internal note" for an internal note, "reply to the customer" for an agent's public reply. Attachments are links
   to Zendesk.
+- **Tidied text.** Email replies are cleaned for the chat. Entities such as `&nbsp;` are decoded, and runs of blank
+  lines become one. A quoted earlier email ("Fra: …" / "Sendt: …", "-----Original Message-----", "On … wrote:") is
+  cut, and a signature is cut to its sign-off and the name under it. Each line is a paragraph, as Rocketlane writes
+  its own messages.
 - **From the chat to Zendesk.** Every message written in the chat goes to the ticket as an internal note. One that
   starts with **/kunde** (or **/customer**) goes as a public reply, emailed to the customer. Messages are written with your Zendesk
   session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
