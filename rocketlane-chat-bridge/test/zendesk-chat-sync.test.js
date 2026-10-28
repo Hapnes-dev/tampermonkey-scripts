@@ -91,17 +91,20 @@ test('the queue: active tickets only, the project\'s best match first - its Plan
   assert.deepStrictEqual([best.ticket.id, best.score], [207248, 22]);
 });
 
-test('linking: only an active ticket of the queue; nothing old goes across; the chat is told', async () => {
+test('linking: only an active ticket of the queue; the chat is told, then gets the ticket\'s earlier messages; nothing old goes to Zendesk', async () => {
   const w = world();
   await assert.rejects(w.sync.link(1481787, 12896932, 53126), /not an active ticket/);
   await assert.rejects(w.sync.link(1481787, 12896932, 99999), /not an active ticket/);
   const e = await w.sync.link(1481787, 12896932, 53123);
   assert.strictEqual(e.ticketId, '53123');
-  assert.strictEqual(w.posted.rl.length, 1);
-  assert.match(w.posted.rl[0].html, /^<p>Zendesk #53123 “10263 Extra Laksvollen - alarm” is now linked to this chat\./);
-  assert.strictEqual(w.posted.rl[0].isPrivate, true);
+  assert.strictEqual(e.historyPosted, true);
+  assert.strictEqual(w.posted.rl.length, 2, 'the notice, then the history');
+  assert.match(w.posted.rl[0].html, /^<p>Zendesk #53123 “10263 Extra Laksvollen - alarm” is now linked to this chat\. Its earlier messages follow/);
+  assert.match(w.posted.rl[1].html, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><b>Kari Kunde<\/b> \(customer\) · 27 Oct 2026 \d\d:\d\d<\/p><p>Gammel kundemelding<\/p>$/);
+  assert.deepStrictEqual(w.posted.rl.map((p) => p.isPrivate), [true, true]);
   const r = await w.sync.runOnce();
-  assert.deepStrictEqual(r, { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'the old message on either side, and the announcement, stay where they are');
+  assert.deepStrictEqual(r, { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'the history is not posted twice, and nothing the sync posted, nor the chat\'s old message, goes to Zendesk');
+  assert.strictEqual(await w.sync.postHistory(1481787, 12896932), 0, 'once');
 });
 
 test('the ticket\'s new messages come into the chat as private messages, each kind labelled', async () => {
@@ -112,7 +115,7 @@ test('the ticket\'s new messages come into the chat as private messages, each ki
   w.reply(800, 'Hei Kari, vi ser på det.');
   const r = await w.sync.runOnce();
   assert.strictEqual(r.mirrored, 3);
-  assert.deepStrictEqual(w.posted.rl.slice(1).map((p) => [p.html, p.isPrivate]), [
+  assert.deepStrictEqual(w.posted.rl.slice(2).map((p) => [p.html, p.isPrivate]), [
     ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Anlegget går i alarm igjen.<br>Se vedlegg.</p>', true],
     ['<p><b>Zendesk #53123</b> · Ola Agent · internal note</p><p>Sjekker fjernstyring.</p>', true],
     ['<p><b>Zendesk #53123</b> · Ola Agent · reply to the customer</p><p>Hei Kari, vi ser på det.</p>', true],
@@ -200,7 +203,7 @@ test('a failure part way: the next round goes on from there, nothing twice', asy
   assert.deepStrictEqual([r.mirrored, r.forwarded, r.errors], [2, 0, 1]);
   r = await w.sync.runOnce();
   assert.deepStrictEqual([r.mirrored, r.forwarded, r.errors], [0, 1, 0]);
-  assert.deepStrictEqual(w.posted.rl.slice(1).map((p) => /<p>(En|To)<\/p>/.exec(p.html)[1]), ['En', 'To']);
+  assert.deepStrictEqual(w.posted.rl.slice(2).map((p) => /<p>(En|To)<\/p>/.exec(p.html)[1]), ['En', 'To']);
   assert.deepStrictEqual(w.posted.zd.map((p) => p.body), ['Andreas Sandnes (Rocketlane):\nTre']);
 });
 
@@ -227,4 +230,38 @@ test('the text of a chat message', () => {
   assert.deepStrictEqual(w.sync.parseChatMessage('/Customer: hi'), { isPublic: true, body: 'hi' });
   assert.deepStrictEqual(w.sync.parseChatMessage('kunde /kunde hei'), { isPublic: false, body: 'kunde /kunde hei' });
   assert.deepStrictEqual(w.sync.parseChatMessage('/kundeservice'), { isPublic: false, body: '/kundeservice' });
+});
+
+test('a chat linked before 1.17.4 gets the ticket\'s messages from before its link, once', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  // as an older link: no history posted, and messages have come and gone since the link
+  const st = JSON.parse(w.state.value);
+  st.links['1481787:12896932'].historyPosted = undefined;
+  w.state.value = JSON.stringify(st);
+  w.posted.rl.length = 0;
+  w.reply(700, 'Etter koblingen');
+  await w.sync.runOnce();
+  assert.strictEqual(w.posted.rl.length, 1, 'the new one, mirrored');
+  assert.strictEqual(await w.sync.postHistory(1481787, 12896932), 1, 'only what came before the link');
+  assert.match(w.posted.rl[1].html, /earlier messages \(1 in all\).*Gammel kundemelding/);
+  assert.ok(!/Etter koblingen/.test(w.posted.rl[1].html));
+  assert.strictEqual(await w.sync.postHistory(1481787, 12896932), 0);
+  assert.deepStrictEqual(await w.sync.runOnce(), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'and none of it goes to Zendesk');
+  await assert.rejects(w.sync.postHistory(1, 2), /not linked/);
+});
+
+test('a long history comes in parts, each message shortened past 3 000 characters', () => {
+  const w = world();
+  const users = new Map([[700, { id: 700, name: 'Kari Kunde', role: 'end-user' }], [800, { id: 800, name: 'Ola Agent', role: 'agent' }]]);
+  const comments = Array.from({ length: 9 }, (_, i) => ({ id: 100 + i, author_id: i % 2 ? 800 : 700, public: i !== 3, plain_body: String(i).repeat(i === 8 ? 5000 : 2500), created_at: '2026-10-2' + (i % 9) + 'T08:00:00Z' }));
+  const parts = w.sync.historyHtml(comments, users, '53123');
+  assert.ok(parts.length >= 2, parts.length + ' parts');
+  parts.forEach((p, i) => assert.ok(p.startsWith('<p><b>Zendesk #53123</b> · earlier messages, part ' + (i + 1) + ' of ' + parts.length + ' (9 in all)</p>')));
+  const all = parts.join('');
+  assert.deepStrictEqual((all.match(/<p><b>(Kari Kunde|Ola Agent)<\/b>[^<]*/g) || []).length, 9, 'every message, once');
+  assert.ok(/<b>Ola Agent<\/b> · internal note · /.test(all), 'the kind of each');
+  assert.ok(/… \(shortened: read the rest in Zendesk\)/.test(all));
+  assert.ok(parts.every((p) => p.length < 12000 + 3200), 'about 12 000 characters a message at most');
+  assert.deepStrictEqual(w.sync.historyHtml([], users, '1'), []);
 });

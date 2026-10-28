@@ -60,7 +60,9 @@ followed and answered from the chat.
   - When one matches, opening the chat asks whether to link it: **Link**, **Not now** (not asked again in that
     chat for that ticket) or **Choose another ticket**. Meanwhile the button says **Zendesk #207248 found · Link**.
   - **Link** in the list asks once more, with "Yes, link #…".
-  - Linking posts a note in the chat saying so. Nothing from before the link is copied.
+  - Linking posts a note in the chat, then the ticket's earlier messages once, oldest first: who, what kind, when,
+    and the text. They go in one message, or in a few for a long ticket. A chat linked before 1.17.4 can get them
+    with **Post earlier messages** in its panel. What was in the chat before the link stays in the chat.
 - **From Zendesk to the chat.** Every new message on the ticket is posted in the chat as a private message, so
   customers in the project do not see it. It starts with "Zendesk #<ticket> · <name>" and a label: "(customer)" for the
   customer, "internal note" for an internal note, "reply to the customer" for an agent's public reply. Attachments are links
