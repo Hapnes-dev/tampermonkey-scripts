@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.77.0
+// @version      1.78.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -17122,6 +17122,7 @@
   //     v1.76.0: the message box shows what the message will be on the ticket - /reply gets an orange frame and a bar
   //     saying who is emailed; a near miss ("/replay", the old "/kunde") a warning that it is only a note.
   //     v1.77.0: linking says so in two short lines, "Zendesk #N" a link to the ticket.
+  //     v1.78.0: the button goes the moment Rocketlane leaves the chat page (its route change, not a timer).
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -18291,11 +18292,23 @@
     function mount() { if (!document.body) { setTimeout(mount, 400); return; } document.body.appendChild(host); paint(); }
     adoptHandover();
     mount();
-    // Rocketlane is a single-page app: follow its route (and take the Chat Bridge's links over whenever they come)
+    // Rocketlane is a single-page app: the button, its panel and the message box's label follow its route the moment it
+    // changes - the Navigation API's currententrychange, which history.pushState fires as well, and popstate for back
+    // and forward. The timer below is only the net where that API is missing.
     let lastPath = location.pathname;
+    function onRoute() {
+      if (location.pathname === lastPath) return;
+      lastPath = location.pathname;
+      panel.hidden = true;
+      paint();
+      updateMode();
+    }
+    const pageNav = ((typeof unsafeWindow !== "undefined" && unsafeWindow) || window).navigation || window.navigation;
+    if (pageNav && typeof pageNav.addEventListener === "function") pageNav.addEventListener("currententrychange", onRoute);
+    window.addEventListener("popstate", onRoute);
     setInterval(() => {
       if (!running) adoptHandover();
-      if (location.pathname !== lastPath) { lastPath = location.pathname; panel.hidden = true; }
+      onRoute();
       paint();
       // after a message is sent the box empties without a key: the label follows within a second
       if (!bar.hidden) updateMode();

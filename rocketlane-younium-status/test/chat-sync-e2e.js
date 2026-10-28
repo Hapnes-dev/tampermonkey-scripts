@@ -346,14 +346,20 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.strictEqual(await pillText(), 'Zendesk ⇄ off', 'turned off: the button stays, greyed');
     assert.strictEqual(await pill.isVisible(), true);
 
-    // away from the chat (Rocketlane changes page without loading one): no button, not even an empty one; back: there
-    await page.evaluate(() => history.pushState({}, '', '/projects/1481787/tasks'));
-    await page.waitForTimeout(1300);
+    // away from the chat (Rocketlane changes page without loading one): no button, not even an empty one - gone in the
+    // same moment as the route, not at the next tick of a timer; back: there again at once
+    const pillShown = () => getComputedStyle(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill')).display !== 'none';
+    assert.strictEqual(await page.evaluate(`(${pillShown})()`), true);
+    assert.strictEqual(await page.evaluate(`history.pushState({}, '', '/projects/1481787/tasks'); (${pillShown})()`), false, 'gone as the route changes');
     assert.strictEqual(await pill.isVisible(), false, 'hidden off chat pages (its own display:flex once beat [hidden])');
     assert.strictEqual(await page.evaluate(() => getComputedStyle(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill')).display), 'none');
     await page.screenshot({ path: path.join(OUT, '3-away.png') });
-    await page.evaluate(() => history.pushState({}, '', '/projects/1481787/chat/12896932'));
-    await page.waitForTimeout(1300);
+    assert.strictEqual(await page.evaluate(`history.pushState({}, '', '/projects/1481787/chat/12896932'); (${pillShown})()`), true, 'back at once');
+    // back and forward too (popstate)
+    await page.evaluate(() => history.back());
+    await page.waitForFunction((src) => !(new Function('return ' + src)())(), String(pillShown), { timeout: 400 });
+    await page.evaluate(() => history.forward());
+    await page.waitForFunction((src) => (new Function('return ' + src)())(), String(pillShown), { timeout: 400 });
     assert.strictEqual(await pill.isVisible(), true, 'shown again on the chat page');
 
     // ---- the Chat Bridge's links come over: its 1.19.0 hands them over, this sync takes them, nothing is posted again ----

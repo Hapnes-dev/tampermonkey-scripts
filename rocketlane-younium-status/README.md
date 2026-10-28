@@ -316,6 +316,8 @@ v1.73.0.
   while the sync is off in this browser. Its panel has a button to turn it on, and so does the Tampermonkey menu
   ("✅/❌ Zendesk ⇄ General Chat sync"). Only the browser where it is on does the syncing. The rest of the team sees the
   messages in the chat without installing anything.
+- **Only on chat pages.** The button and its panel show on a project's chat page only, and go the moment you leave
+  it (v1.78.0: they follow Rocketlane's route change itself, not a timer).
 - **Link a chat.** The button lists the active tickets in the team's queue. The queue is set by a Zendesk view,
   "IWMAC Leveranse - Kulde" by default, which can be changed in the Tampermonkey menu.
   - The view shows only new and open tickets. So the sync reads the view's groups (Delivery and Aftermarket Cooling)
