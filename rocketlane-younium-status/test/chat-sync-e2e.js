@@ -32,6 +32,8 @@ const NET = `{
   pusher: () => null,
   zdFile: (url) => window.__zdFile(url),
   rlUpload: (projectId, blob, name) => window.__rlUpload(projectId, blob, name),
+  rlFile: (id) => window.__rlFile(id),
+  zdUpload: (blob, name) => window.__zdUpload(blob, name),
 }`;
 const START = '(function(){' + SYNC + '\nstartZendeskChatSync(' + NET + ');})();';
 
@@ -56,7 +58,7 @@ const W = window.__world = {
   puts: [], posts: [], nextRl: 100, nextZd: 5000,
   // Zendesk's files by their token: pictures drawn at their size, a PDF as a few bytes
   files: { shot: { w: 1010, h: 842, type: 'image/png' }, icon: { w: 26, h: 26, type: 'image/png' }, logo: { w: 226, h: 88, type: 'image/png' }, pdf: { type: 'application/pdf' } },
-  uploads: [],
+  uploads: [], zdUploads: [],
 };
 // the script's file transports: a Zendesk file by its token address, and an upload to Rocketlane
 window.__zdFile = async (url) => {
@@ -67,6 +69,9 @@ window.__zdFile = async (url) => {
   c.getContext('2d').fillRect(0, 0, f.w, f.h);
   return c.convertToBlob({ type: 'image/png' });
 };
+// and the other way: a chat file from Rocketlane, an upload to Zendesk
+window.__rlFile = async (id) => ({ blob: new Blob(['file ' + id], { type: 'application/pdf' }), fileName: 'f' + id, mimeType: 'application/pdf' });
+window.__zdUpload = async (blob, name) => { W.zdUploads.push({ name, size: blob.size, type: blob.type }); return 'zd-tok-' + W.zdUploads.length; };
 window.__rlUpload = async (projectId, blob, name) => {
   W.uploads.push({ p: String(projectId), name, type: blob.type, size: blob.size });
   return { attachmentId: 7000 + W.uploads.length, name, sizeInBytes: blob.size, publicVisibility: false, projectId: Number(projectId) };
@@ -270,6 +275,18 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.strictEqual(filed.private, true);
     assert.ok(!/Attachments:/.test(filed.content), 'not linked to Zendesk as well');
     await page.screenshot({ path: path.join(OUT, '2b-files.png') });
+
+    // the other way: a file attached in the chat goes to the ticket with its message, an internal note
+    await page.evaluate(() => {
+      const W = window.__world;
+      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>Oppdatert tegning vedlagt.</p>', createdAt: Date.now() + 5000,
+        user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' }, commentMeta: { linkedAttachments: [{ attachmentId: 555, name: 'tegning-v2.pdf', sizeInBytes: 9 }] } });
+    });
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
+    await page.waitForFunction(() => window.__world.puts.some((p) => /Oppdatert tegning/.test(p.body)), null, { timeout: 15000 });
+    w = await page.evaluate(() => window.__world);
+    assert.deepStrictEqual(w.zdUploads, [{ name: 'tegning-v2.pdf', size: 8, type: 'application/pdf' }], 'fetched from Rocketlane, uploaded to Zendesk');
+    assert.deepStrictEqual(w.puts[w.puts.length - 1], { body: 'Andreas Sandnes (Rocketlane):\nOppdatert tegning vedlagt.', public: false, uploads: ['zd-tok-1'] });
 
     // off in the menu: the button stays on the chat page, greyed
     const menu = await page.evaluate(() => window.__menu.map((m) => m.name));

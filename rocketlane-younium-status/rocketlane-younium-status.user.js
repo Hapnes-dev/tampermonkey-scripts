@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.74.0
+// @version      1.75.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -97,8 +97,9 @@
  *     the chat as private messages, and what is written in the chat goes to
  *     the ticket as an internal note, or as a public reply after /reply.
  *     The ticket's pictures and attachments come along as the message's own
- *     Rocketlane attachments (v1.74.0). Off until turned on in this browser
- *     (button on chat pages, Tampermonkey menu); one tab runs it.
+ *     Rocketlane attachments (v1.74.0), and files attached in the chat go to
+ *     the ticket with their message (v1.75.0). Off until turned on in this
+ *     browser (button on chat pages, Tampermonkey menu); one tab runs it.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -17050,6 +17051,38 @@
     });
   }
 
+  // A file for a Zendesk comment (v1.75.0, the chat sync): Zendesk takes it as an upload first, and the comment then
+  // carries its token. Written with the session and the CSRF token like every other write here; a lapsed session is
+  // renewed once.
+  async function zendeskUploadFile(blob, fileName) {
+    const csrf = GM_getValue("zdCsrfToken", "");
+    if (!csrf) throw new Error("Zendesk CSRF token not captured yet. Open " + ZENDESK_HOST + " once while logged in, then retry.");
+    const url = ZENDESK_API + "/uploads.json?filename=" + encodeURIComponent(String(fileName || "file"));
+    const send = (renew) => new Promise((resolve, reject) => {
+      const headers = { accept: "application/json", "content-type": (blob && blob.type) || "application/binary", "X-CSRF-Token": csrf };
+      if (renew) headers["X-Zendesk-Renew-Session"] = "true";
+      GM_xmlhttpRequest({
+        method: "POST",
+        url,
+        headers,
+        data: blob,
+        timeout: 120000,
+        anonymous: false, // the browser's Zendesk session cookie
+        onload: resolve,
+        onerror: () => reject(new Error("Network error uploading to Zendesk")),
+        ontimeout: () => reject(new Error("Zendesk upload timed out")),
+      });
+    });
+    let res = await send(false);
+    if (res.status === 401 && await zendeskRenewSession()) res = await send(true);
+    if (res.status < 200 || res.status >= 300) throw new Error("Zendesk upload HTTP " + res.status + ": " + String(res.responseText || "").slice(0, 200));
+    let j = null;
+    try { j = JSON.parse(res.responseText || "{}"); } catch (_) {}
+    const token = j && j.upload && j.upload.token;
+    if (!token) throw new Error("Zendesk took the file but gave no token");
+    return token;
+  }
+
   async function zendeskPostTicketReply(ticketId, body, isPublic) {
     const id = String(ticketId ?? "").trim();
     if (!id) throw new Error("Missing Zendesk ticket id.");
@@ -17082,6 +17115,8 @@
   //     v1.74.0: a ticket message's pictures (an email's pasted screenshots) and attachments go with its chat message as
   //     Rocketlane attachments, as Rocketlane's own chat sends files; those in a signature or a quoted earlier email stay
   //     out, as the text does. A file that cannot go stays a link to Zendesk.
+  //     v1.75.0: files attached to a chat message go to the ticket with it, uploaded to Zendesk first: in the internal
+  //     note, or in the public reply after /reply. One that cannot go is named instead.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17220,6 +17255,22 @@
       } catch (_) {
         return { attached: [], links: files };
       }
+    }
+
+    /** A chat message's files: Rocketlane keeps them as the message's linked attachments. -> [{id, name, size}] */
+    function rlFilesOf(c) {
+      const list = (c && c.commentMeta && c.commentMeta.linkedAttachments) || [];
+      return list.filter((a) => a && a.attachmentId != null)
+        .map((a) => ({ id: String(a.attachmentId), name: String(a.name || "file"), size: Number(a.sizeInBytes) || 0 }));
+    }
+
+    /** A chat message's files uploaded to Zendesk (deps.files.toZendesk) for its comment to carry; those that could not
+     *  go, each with why. -> {uploads: [token], failed: [{name, why}]} */
+    async function sendFiles(files) {
+      if (!files.length) return { uploads: [], failed: [] };
+      if (!deps.files || typeof deps.files.toZendesk !== "function") return { uploads: [], failed: files.map((f) => ({ name: f.name, why: "not sent from here" })) };
+      const r = (await deps.files.toZendesk(files)) || {};
+      return { uploads: r.uploads || [], failed: r.failed || [] };
     }
 
     /** A Zendesk comment as the chat shows it: the ticket, who and what kind on the first line, then its text; its files
@@ -17455,14 +17506,27 @@
             const mine = runner > 0 && Number((c.user && c.user.userId) || c.createdBy) === runner;
             if (ms(c.createdAt) < e.rlSince || (mine && OWN_RE.test(String(c.content || "")))) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
             const msg = parseChatMessage(textOfHtml(c.content));
-            if (!msg.body) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
+            const files = rlFilesOf(c);
+            if (!msg.body && !files.length) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
             const who = authorName(c.user);
-            const body = mine || !who ? msg.body : msg.isPublic ? msg.body + "\n\n— " + who : who + " (Rocketlane):\n" + msg.body;
-            const res = await deps.zd.addComment(e.ticketId, body, msg.isPublic);
+            // its files go to Zendesk first and the comment carries them; a message of files alone says their names
+            const sent = await sendFiles(files);
+            const missing = sent.failed.map((f) => f.name + " (" + f.why + ")").join(", ");
+            const text = msg.body || files.map((f) => f.name).join(", ");
+            let body = mine || !who ? text : msg.isPublic ? text + "\n\n— " + who : who + " (Rocketlane):\n" + text;
+            if (missing && !msg.isPublic) body += "\n\nNot attached, see the Rocketlane chat: " + missing;
+            const res = await deps.zd.addComment(e.ticketId, body, msg.isPublic, sent.uploads);
             if (res && res.commentId != null) e.ownZd = tail(e.ownZd.concat(String(res.commentId)));
             e.rlSeen = tail(e.rlSeen.concat(id));
             out.forwarded++;
             deps.store.save(st);
+            if (missing && msg.isPublic) {
+              // the reply went to the customer without them: the team is told in a note (the reply is out, so at most once)
+              try {
+                const note = await deps.zd.addComment(e.ticketId, "Not attached to the reply above, see the Rocketlane chat: " + missing, false, []);
+                if (note && note.commentId != null) { e.ownZd = tail(e.ownZd.concat(String(note.commentId))); deps.store.save(st); }
+              } catch (_) {}
+            }
           }
           e.status = "active";
           e.note = "";
@@ -17635,8 +17699,11 @@
         // the ticket field titled "Plant ID": the project's plant number is found there (looked up once, as the
         // Zendesk cases tab does)
         async plantFieldId() { return (await net.plantFieldId()) || null; },
-        async addComment(ticketId, body, isPublic) {
-          const j = await zd("PUT", "/tickets/" + encodeURIComponent(ticketId) + ".json", { ticket: { comment: { body, public: isPublic === true } } });
+        async addComment(ticketId, body, isPublic, uploads) {
+          const comment = { body, public: isPublic === true };
+          // files uploaded to Zendesk first go with the comment by their tokens
+          if (uploads && uploads.length) comment.uploads = uploads;
+          const j = await zd("PUT", "/tickets/" + encodeURIComponent(ticketId) + ".json", { ticket: { comment } });
           const ev = ((j && j.audit && j.audit.events) || []).find((x) => x && x.type === "Comment");
           return { commentId: ev ? ev.id : null };
         },
@@ -17672,6 +17739,26 @@
           }
         }
         return { attached, failed };
+      },
+      // a chat message's files to the ticket: each fetched from Rocketlane (a fresh download address) and uploaded to
+      // Zendesk, whose comment then carries it. One too big, unreadable or refused is named in the comment instead.
+      async toZendesk(files) {
+        const uploads = [], failed = [];
+        for (const f of files) {
+          if (uploads.length >= FILES_PER_MESSAGE) { failed.push({ name: f.name, why: "too many in one message" }); continue; }
+          if (f.size > FILE_MAX_BYTES) { failed.push({ name: f.name, why: "too big" }); continue; }
+          let blob = null;
+          try { blob = ((await net.rlFile(f.id)) || {}).blob || null; }
+          catch (err) { try { console.warn("[zendesk-chat] " + f.name + " could not be read:", (err && err.message) || err); } catch (_) {} }
+          if (!blob || !blob.size) { failed.push({ name: f.name, why: "could not be read" }); continue; }
+          if (blob.size > FILE_MAX_BYTES) { failed.push({ name: f.name, why: "too big" }); continue; }
+          try { uploads.push(await net.zdUpload(blob, f.name)); }
+          catch (err) {
+            try { console.warn("[zendesk-chat] " + f.name + " was not taken by Zendesk:", (err && err.message) || err); } catch (_) {}
+            failed.push({ name: f.name, why: "Zendesk did not take it" });
+          }
+        }
+        return { uploads, failed };
       },
     };
 
@@ -18112,6 +18199,7 @@
         rlRequest: gmRocketlaneRequest, userId: rlHpReadCurrentUserId,
         plantFieldId: rlZdGetPlantFieldId, pusher: rlCnPusher,
         zdFile: zendeskAttachmentBlob, rlUpload: gmRocketlaneUploadChatFile,
+        rlFile: gmRocketlaneDownloadAttachmentBlob, zdUpload: zendeskUploadFile,
       });
     } catch (e) { console.warn("[Rocketlane improvements] Zendesk chat sync failed to start", e); }
   });

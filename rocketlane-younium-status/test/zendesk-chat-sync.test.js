@@ -64,11 +64,11 @@ function world(opts = {}) {
         return out;
       },
       async getComments(ticketId) { return { comments: JSON.parse(JSON.stringify(zdComments.get(Number(ticketId)) || [])), users: zdUsers }; },
-      async addComment(ticketId, body, isPublic) {
+      async addComment(ticketId, body, isPublic, uploads) {
         if (fail.zdAdd > 0) { fail.zdAdd--; throw new Error('Zendesk svarte HTTP 500'); }
         const c = { id: nextZd++, author_id: ZD_RUNNER, public: isPublic, plain_body: body, created_at: new Date(tick()).toISOString(), attachments: [] };
         zdComments.get(Number(ticketId)).push(c);
-        posted.zd.push({ ticketId, body, isPublic });
+        posted.zd.push(Object.assign({ ticketId, body, isPublic }, uploads && uploads.length ? { uploads } : {}));
         return { commentId: opts.noZdIds ? null : c.id };
       },
     },
@@ -405,4 +405,48 @@ test('a chat linked before files came along gets the earlier ones once, a messag
   const zd = w.posted.zd.length;
   await w.sync.runOnce();
   assert.strictEqual(w.posted.zd.length, zd, 'none of it goes back to Zendesk');
+});
+
+test('the chat\'s files go to the ticket with their message; files alone say their names; one that cannot go is named', async () => {
+  const w = world();
+  const asked = [];
+  w.deps.files = { async toZendesk(files) {
+    asked.push(files.map((f) => [f.id, f.name, f.size]));
+    return { uploads: files.filter((f) => f.name !== 'stor.zip').map((f) => 'tok-' + f.id),
+      failed: files.filter((f) => f.name === 'stor.zip').map((f) => ({ name: f.name, why: 'too big' })) };
+  } };
+  await w.sync.link(1481787, 12896932, 53123);
+  const att = (id, name, size = 100) => ({ attachmentId: id, name, sizeInBytes: size });
+  w.say(2, '<p>Se vedlagt tegning.</p>', 'Andreas', 'Sandnes').commentMeta = { linkedAttachments: [att(71, 'tegning.pdf')] };
+  w.say(RUNNER, '<p></p>', 'Thomas').commentMeta = { linkedAttachments: [att(72, 'image.png')] };
+  w.say(2, '<p>/reply Her er loggen.</p>', 'Andreas', 'Sandnes').commentMeta = { linkedAttachments: [att(73, 'logg.txt'), att(74, 'stor.zip', 9e7)] };
+  w.say(2, '<p>Notat</p><p>med fil</p>', 'Andreas', 'Sandnes').commentMeta = { linkedAttachments: [att(75, 'stor.zip', 9e7)] };
+  const r = await w.sync.runOnce();
+  assert.strictEqual(r.forwarded, 4);
+  assert.deepStrictEqual(asked, [[['71', 'tegning.pdf', 100]], [['72', 'image.png', 100]], [['73', 'logg.txt', 100], ['74', 'stor.zip', 9e7]], [['75', 'stor.zip', 9e7]]]);
+  assert.deepStrictEqual(w.posted.zd, [
+    { ticketId: '53123', body: 'Andreas Sandnes (Rocketlane):\nSe vedlagt tegning.', isPublic: false, uploads: ['tok-71'] },
+    { ticketId: '53123', body: 'image.png', isPublic: false, uploads: ['tok-72'] },
+    { ticketId: '53123', body: 'Her er loggen.\n\n— Andreas Sandnes', isPublic: true, uploads: ['tok-73'] },
+    { ticketId: '53123', body: 'Not attached to the reply above, see the Rocketlane chat: stor.zip (too big)', isPublic: false },
+    { ticketId: '53123', body: 'Andreas Sandnes (Rocketlane):\nNotat\nmed fil\n\nNot attached, see the Rocketlane chat: stor.zip (too big)', isPublic: false },
+  ], 'a note carries its files; a reply to the customer goes without the one that could not go, and the team is told apart');
+  // none of it comes back into the chat, and nothing goes twice
+  const rl = w.posted.rl.length, zd = w.posted.zd.length;
+  await w.sync.runOnce();
+  assert.deepStrictEqual([w.posted.rl.length, w.posted.zd.length], [rl, zd]);
+});
+
+test('a chat file goes again with its message when Zendesk refused the comment', async () => {
+  const w = world();
+  let calls = 0;
+  w.deps.files = { async toZendesk(files) { calls++; return { uploads: files.map((f) => 'tok-' + f.id + '-' + calls), failed: [] }; } };
+  await w.sync.link(1481787, 12896932, 53123);
+  w.say(2, '<p>Bilde</p>', 'Andreas', 'Sandnes').commentMeta = { linkedAttachments: [{ attachmentId: 81, name: 'a.png', sizeInBytes: 5 }] };
+  w.fail.zdAdd = 1;
+  const r1 = await w.sync.runOnce();
+  assert.deepStrictEqual([r1.forwarded, r1.errors, w.posted.zd.length], [0, 1, 0]);
+  const r2 = await w.sync.runOnce();
+  assert.strictEqual(r2.forwarded, 1);
+  assert.deepStrictEqual(w.posted.zd.map((p) => p.uploads), [['tok-81-2']], 'uploaded again, sent once');
 });
