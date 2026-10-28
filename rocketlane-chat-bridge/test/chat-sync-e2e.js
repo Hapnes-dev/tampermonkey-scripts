@@ -23,7 +23,7 @@ window.GM_getValue = (k, d) => { const v = localStorage.getItem('gm:' + k); retu
 window.GM_setValue = (k, v) => localStorage.setItem('gm:' + k, JSON.stringify(v));
 window.GM_registerMenuCommand = (name, fn) => window.__menu.push({ name, fn });
 const W = window.__world = {
-  chat: [{ id: 12, messageType: 'USER_MESSAGE', content: '<p>Gammel melding</p>', createdAt: Date.now() - 60000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } }],
+  chat: [{ commentId: 12, messageType: 'USER_MESSAGE', content: '<p>Gammel melding</p>', createdAt: Date.now() - 60000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } }],
   zd: [{ id: 4001, author_id: 700, public: true, plain_body: 'Gammel kundemelding', created_at: '2026-10-27T08:00:00Z', attachments: [] }],
   queue: [
     { id: 53125, subject: 'Laksvollen ny bruker', status: 'new', updated_at: '2026-10-27T08:00:00Z', custom_fields: [{ id: 27741611, value: 0 }] },
@@ -41,7 +41,7 @@ window.GM_xmlhttpRequest = (o) => {
     if (p === '/api/v1/projects/1481787') return ok({ projectId: 1481787, projectName: '10263 - Extra Laksvollen: New store' });
     if (p.endsWith('/project-conversations/12896932/conversations')) return ok({ comments: W.chat });
     if (p.endsWith('/project-conversations/12896932/comments') && o.method === 'POST') {
-      const c = Object.assign({ id: W.nextRl++, createdAt: Date.now() }, body.comment);
+      const c = Object.assign({ commentId: W.nextRl++, createdAt: Date.now() }, body.comment);
       W.chat.push(c); W.posts.push(body.comment); return ok({ comment: c });
     }
   }
@@ -113,8 +113,8 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.evaluate(() => {
       const W = window.__world;
       W.zd.push({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Alarmen kom tilbake i natt.', created_at: new Date().toISOString(), attachments: [] });
-      W.chat.push({ id: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>/kunde Hei Kari, vi sender en tekniker.</p>', createdAt: Date.now() + 1000, user: { userId: 1, firstName: 'Thomas' } });
-      W.chat.push({ id: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>Sjekk kompressor 2.</p>', createdAt: Date.now() + 2000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } });
+      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>/kunde Hei Kari, vi sender en tekniker.</p>', createdAt: Date.now() + 1000, user: { userId: 1, firstName: 'Thomas' } });
+      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>Sjekk kompressor 2.</p>', createdAt: Date.now() + 2000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } });
     });
     await pill.click();
     await page.locator('#zendesk-chat-sync >> text=Synk nå').click();

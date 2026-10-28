@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rocketlane Chat Bridge
 // @namespace    https://kiona.rocketlane.com/
-// @version      1.17.0
-// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.17.0: the Zendesk sync finds a project's ticket by its Plant ID and offers it on the chat's button; the button shows when the sync is off, with a way to turn it on; a linked ticket keeps syncing while it is pending or on hold. v1.16.0: Zendesk ⇄ General Chat — link a project's General Chat in Rocketlane to an active ticket in your Zendesk queue; the ticket's new messages appear in the chat, and what is written in the chat goes to the ticket as an internal note, or as a public reply when it starts with /kunde. Off until turned on in the Tampermonkey menu. v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
+// @version      1.17.1
+// @description  Bridges Rocketlane + Zendesk + Oneflow + HubSpot + Younium APIs to the local Project Progress Tracker, bypassing CORS. (v1.17.1: the Zendesk sync reads a chat message's id from commentId, as Rocketlane gives it - before, every message looked seen and none went to Zendesk. v1.17.0: the Zendesk sync finds a project's ticket by its Plant ID and offers it on the chat's button; the button shows when the sync is off, with a way to turn it on; a linked ticket keeps syncing while it is pending or on hold. v1.16.0: Zendesk ⇄ General Chat — link a project's General Chat in Rocketlane to an active ticket in your Zendesk queue; the ticket's new messages appear in the chat, and what is written in the chat goes to the ticket as an internal note, or as a public reply when it starts with /kunde. Off until turned on in the Tampermonkey menu. v1.15.0: security hardening — the Zendesk/Oneflow/HubSpot request helpers now pin their target origin before attaching the session CSRF/XSRF token, so a caller-supplied absolute URL can't redirect credentials to another @connect host. Matches the existing Rocketlane/Younium api-key/JWT pins; relative paths unaffected. v1.14.0: no Zendesk popup for a ticket you solved yourself — solved/closed tickets are skipped, so resolving a case no longer pops a notification for the customer's last reply. v1.13.0: clicking a Rocketlane chat notification now opens the correct /projects/<id>/chat/<convId> URL instead of the blank /project-conversations/<id> route. v1.12.0: notifications fire ONLY for actual case responses, never your own task/status updates. Toggle via the Tampermonkey menu.)
 // @author       Thomas
 // @homepageURL  https://github.com/Hapnes-dev/Project-Progress-Tracker
 // @supportURL   https://github.com/Hapnes-dev/Project-Progress-Tracker/issues
@@ -99,6 +99,9 @@
     const tail = (list) => (list.length > KEEP ? list.slice(-KEEP) : list);
     const ms = (v) => { if (typeof v === "number") return v; const t = Date.parse(String(v || "")); return isNaN(t) ? 0 : t; };
     const keyOf = (projectId, conversationId) => String(projectId) + ":" + String(conversationId);
+    // a chat message's id: Rocketlane gives it as commentId (its guid, else its time and length, if neither came back)
+    const cidOf = (c) => String(c.commentId != null ? c.commentId : c.id != null ? c.id : c.commentGuid != null ? c.commentGuid :
+      "at" + ms(c.createdAt) + ":" + String(c.content || "").length);
     // the sync's own messages in the chat, when Rocketlane did not hand back their id
     const OWN_RE = /^\s*<p>\s*(?:<(?:b|strong)>\s*)?Zendesk #\d+/i;
 
@@ -191,7 +194,7 @@
         subject: String(ticket.subject || ""), linkedAt: now(),
         zdMax: Math.max(0, ...zd.comments.map((c) => Number(c.id) || 0)),
         rlSince: Math.max(0, ...rl.map((c) => ms(c.createdAt))),
-        rlSeen: tail(rl.map((c) => String(c.id))), ownRl: [], ownZd: [],
+        rlSeen: tail(rl.map(cidOf)), ownRl: [], ownZd: [],
         status: "active", note: "", lastRun: 0,
       };
       st.links[keyOf(projectId, conversationId)] = entry;
@@ -250,9 +253,9 @@
           // the chat -> the ticket
           const rl = ((await deps.rl.getComments(e.projectId, e.conversationId)) || [])
             .filter((c) => c && c.messageType === "USER_MESSAGE")
-            .sort((a, b) => ms(a.createdAt) - ms(b.createdAt) || Number(a.id) - Number(b.id));
+            .sort((a, b) => ms(a.createdAt) - ms(b.createdAt) || Number(cidOf(a)) - Number(cidOf(b)));
           for (const c of rl) {
-            const id = String(c.id);
+            const id = cidOf(c);
             if (e.rlSeen.includes(id) || e.ownRl.includes(id)) continue;
             const mine = runner > 0 && Number((c.user && c.user.userId) || c.createdBy) === runner;
             if (ms(c.createdAt) < e.rlSince || (mine && OWN_RE.test(String(c.content || "")))) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }

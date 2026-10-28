@@ -18,8 +18,8 @@ function world(opts = {}) {
   let clock = Date.parse('2026-10-28T10:00:00Z');
   const tick = () => (clock += 1000);
   const chat = [
-    { id: 11, messageType: 'CONTROL_MESSAGE', content: 'joined', createdAt: clock - 50000, user: { userId: 2 } },
-    { id: 12, messageType: 'USER_MESSAGE', content: '<p>Gammel melding</p>', createdAt: clock - 40000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } },
+    { commentId: 11, messageType: 'CONTROL_MESSAGE', content: 'joined', createdAt: clock - 50000, user: { userId: 2 } },
+    { commentId: 12, messageType: 'USER_MESSAGE', content: '<p>Gammel melding</p>', createdAt: clock - 40000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } },
   ];
   let nextRl = 100, nextZd = 5000;
   const PLANT = 27741611;   // the ticket field "Plant ID"
@@ -46,10 +46,10 @@ function world(opts = {}) {
       async getComments() { return JSON.parse(JSON.stringify(chat)); },
       async postComment(projectId, conversationId, html, isPrivate) {
         if (fail.rlPost > 0) { fail.rlPost--; throw new Error('Rocketlane svarte HTTP 502'); }
-        const c = { id: nextRl++, messageType: 'USER_MESSAGE', content: html, private: isPrivate, createdAt: tick(), user: { userId: RUNNER, firstName: 'Thomas' } };
+        const c = { commentId: nextRl++, messageType: 'USER_MESSAGE', content: html, private: isPrivate, createdAt: tick(), user: { userId: RUNNER, firstName: 'Thomas' } };
         chat.push(c);
         posted.rl.push({ projectId, conversationId, html, isPrivate });
-        return opts.noRlIds ? null : { id: c.id };
+        return opts.noRlIds ? null : { id: c.commentId };
       },
     },
     zd: {
@@ -70,7 +70,7 @@ function world(opts = {}) {
     },
   };
   const sync = createZendeskChatSync(deps);
-  const say = (userId, html, first, last) => { const c = { id: nextRl++, messageType: 'USER_MESSAGE', content: html, private: false, createdAt: tick(), user: { userId, firstName: first, lastName: last } }; chat.push(c); return c; };
+  const say = (userId, html, first, last) => { const c = { commentId: nextRl++, messageType: 'USER_MESSAGE', content: html, private: false, createdAt: tick(), user: { userId, firstName: first, lastName: last } }; chat.push(c); return c; };
   const reply = (authorId, text, isPublic = true) => { const c = { id: nextZd++, author_id: authorId, public: isPublic, plain_body: text, created_at: new Date(tick()).toISOString(), attachments: [] }; zdComments.get(53123).push(c); return c; };
   return { sync, chat, queue, elsewhere, zdComments, posted, state, fail, say, reply, tick, deps, PLANT };
 }
