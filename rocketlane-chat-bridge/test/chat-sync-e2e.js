@@ -134,12 +134,23 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     w = await page.evaluate(() => window.__world);
     assert.deepStrictEqual([w.posts.length, w.puts.length], [2, 2], 'nothing twice, nothing echoed');
 
-    // off in the menu: the button goes
+    // off in the menu: the button stays on the chat page, greyed
     const menu = await page.evaluate(() => window.__menu.map((m) => m.name));
     assert.deepStrictEqual(menu, ['❌ Zendesk ⇄ General Chat-synk', 'Zendesk-kø for synken: IWMAC Leveranse - Kulde…'], 'registered while it was off');
     await page.evaluate(() => window.__menu[0].fn());
     await page.waitForTimeout(1200);
     assert.strictEqual(await pillText(), 'Zendesk ⇄ av', 'turned off: the button stays, greyed');
+    assert.strictEqual(await pill.isVisible(), true);
+
+    // away from the chat (Rocketlane changes page without loading one): no button, not even an empty one; back: there
+    await page.evaluate(() => history.pushState({}, '', '/projects/1481787/tasks'));
+    await page.waitForTimeout(1300);
+    assert.strictEqual(await pill.isVisible(), false, 'hidden off chat pages (its own display:flex once beat [hidden])');
+    assert.strictEqual(await page.evaluate(() => getComputedStyle(document.querySelector('#zendesk-chat-sync').shadowRoot.querySelector('.pill')).display), 'none');
+    await page.screenshot({ path: path.join(OUT, '3-away.png') });
+    await page.evaluate(() => history.pushState({}, '', '/projects/1481787/chat/12896932'));
+    await page.waitForTimeout(1300);
+    assert.strictEqual(await pill.isVisible(), true, 'shown again on the chat page');
 
     assert.deepStrictEqual(errors, [], 'no errors or warnings in the page');
     console.log('chat sync e2e passed; screenshots in ' + path.relative(process.cwd(), OUT));
