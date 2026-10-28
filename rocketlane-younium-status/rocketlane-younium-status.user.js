@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.73.0
+// @version      1.74.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -18,6 +18,7 @@
 // @connect      app.oneflow.com
 // @connect      kiona.api.rocketlane.com
 // @connect      iwmac.zendesk.com
+// @connect      zdusercontent.com
 // @connect      toolbox.iwmac.local
 // @connect      s3.us-east-1.amazonaws.com
 // @connect      s3.amazonaws.com
@@ -94,9 +95,10 @@
  *     Bridge 1.16.0–1.18.0 before). A project's General Chat linked to its
  *     Zendesk ticket from the team's queue: the ticket's messages come into
  *     the chat as private messages, and what is written in the chat goes to
- *     the ticket as an internal note, or as a public reply after /reply. Off
- *     until turned on in this browser (button on chat pages, Tampermonkey
- *     menu); one tab runs it.
+ *     the ticket as an internal note, or as a public reply after /reply.
+ *     The ticket's pictures and attachments come along as the message's own
+ *     Rocketlane attachments (v1.74.0). Off until turned on in this browser
+ *     (button on chat pages, Tampermonkey menu); one tab runs it.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -2410,6 +2412,36 @@
             onerror: () => reject(new Error("Network error during folder link")),
             ontimeout: () => reject(new Error("Folder link timed out")),
           });
+        },
+        onerror: () => reject(new Error("Network error during attachment upload")),
+        ontimeout: () => reject(new Error("Attachment upload timed out")),
+      });
+    });
+  }
+
+  /** A file for a chat message (v1.74.0, the Zendesk chat sync): uploaded as Rocketlane's own chat uploads one - the
+   *  attachment on its own, not shown to customers - and linked by the message posted right after it. */
+  function gmRocketlaneUploadChatFile(projectId, blob, fileName) {
+    return new Promise((resolve, reject) => {
+      const apiKey = rlReadApiKey();
+      if (!apiKey) { reject(new Error("No Rocketlane api-key in this page yet — reload once logged in.")); return; }
+      const name = String(fileName || "file");
+      const fd = new FormData();
+      fd.append("file", blob, name);
+      fd.append("request", new Blob([JSON.stringify({ attachment: { name, publicVisibility: false, projectId: Number(projectId) } })], { type: "application/json" }));
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: ROCKETLANE_API + "/attachments",
+        // Do NOT set Content-Type — Tampermonkey sets multipart boundary.
+        headers: { "api-key": apiKey, accept: "application/json" },
+        data: fd,
+        timeout: 120000,
+        onload: (res) => {
+          if (res.status < 200 || res.status >= 300) { reject(new Error("Upload failed HTTP " + res.status + ": " + (res.responseText || "").slice(0, 200))); return; }
+          let att = null;
+          try { const j = JSON.parse(res.responseText || "{}"); att = j?.attachment ?? j?.data?.attachment ?? j; } catch (_) {}
+          if (att && att.attachmentId) resolve(att);
+          else reject(new Error("Upload succeeded but no attachmentId in response"));
         },
         onerror: () => reject(new Error("Network error during attachment upload")),
         ontimeout: () => reject(new Error("Attachment upload timed out")),
@@ -16997,6 +17029,27 @@
     return res.json;
   }
 
+  // A file of a Zendesk message (an attachment, or a picture in an email's text) for the chat sync (v1.74.0): Zendesk
+  // hands it out from a token address on this host and sends it on to its file store (zdusercontent.com). Read-only,
+  // and only token addresses on this account's Zendesk.
+  function zendeskAttachmentBlob(url) {
+    return new Promise((resolve, reject) => {
+      let u = null;
+      try { u = new URL(String(url || "")); } catch (_) {}
+      if (!u || u.origin !== ZENDESK_HOST || !/^\/attachments\/token\//.test(u.pathname)) { reject(new Error("Not a Zendesk file address")); return; }
+      GM_xmlhttpRequest({
+        method: "GET",
+        url: u.toString(),
+        responseType: "blob",
+        timeout: 120000,
+        anonymous: false,
+        onload: (res) => (res.status >= 200 && res.status < 300 && res.response ? resolve(res.response) : reject(new Error("Zendesk file HTTP " + res.status))),
+        onerror: () => reject(new Error("Network error fetching a Zendesk file")),
+        ontimeout: () => reject(new Error("Fetching a Zendesk file timed out")),
+      });
+    });
+  }
+
   async function zendeskPostTicketReply(ticketId, body, isPublic) {
     const id = String(ticketId ?? "").trim();
     if (!id) throw new Error("Missing Zendesk ticket id.");
@@ -17026,6 +17079,9 @@
   //     button sits on chat pages only. Rocketlane has no public API for chat: this uses the tenant API the page
   //     itself uses, with the api-key it keeps and the Zendesk session section 8 already relies on. The links made
   //     while it lived in the Chat Bridge come over by themselves (that script's 1.19.0 hands them over).
+  //     v1.74.0: a ticket message's pictures (an email's pasted screenshots) and attachments go with its chat message as
+  //     Rocketlane attachments, as Rocketlane's own chat sends files; those in a signature or a quoted earlier email stay
+  //     out, as the text does. A file that cannot go stays a link to Zendesk.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17105,16 +17161,76 @@
     }
     const kindOf = (comment, user) => (comment.public === false ? " · internal note" : user && user.role === "end-user" ? " (customer)" : " · reply to the customer");
 
-    /** A Zendesk comment as the chat shows it: the ticket, who and what kind on the first line, its text and files. */
-    function chatHtmlOf(comment, user, ticketId) {
+    // a file of a Zendesk message: a token address on the account's Zendesk, which sends it on to its file store
+    const ZD_FILE = /^https:\/\/[a-z0-9-]+\.zendesk\.com\/attachments\/token\/([^/?#]+)/i;
+    const fileToken = (url) => (ZD_FILE.exec(String(url || "")) || [])[1] || "";
+    const nameOfUrl = (url) => { try { return new URL(url).searchParams.get("name") || "image"; } catch (_) { return "image"; } };
+    const attr = (v) => String(v || "").replace(/&quot;/gi, "\"").replace(/&#39;/g, "'").replace(/&amp;/gi, "&");
+
+    /** The pictures in a Zendesk message's text - an email's pasted screenshots - that belong to the message: not those
+     *  in its signature or in a quoted earlier email, which its text in the chat leaves out the same way (tidyText).
+     *  -> [{name, url, size, type, inline}] in their order in the text */
+    function inlineImagesOf(comment) {
+      const html = String((comment && comment.html_body) || "");
+      const found = [];
+      const marked = html.replace(/<img\b[^>]*?\ssrc\s*=\s*(["'])(.*?)\1[^>]*>/gi, (m, q, src) => {
+        const url = attr(src);
+        if (!fileToken(url)) return m;
+        found.push(url);
+        // a line of its own where the picture was; the "@" keeps it from being taken for the name under a sign-off
+        return "<br>@@img" + (found.length - 1) + "@@<br>";
+      });
+      if (!found.length) return [];
+      const kept = tidyText(textOfHtml(marked));
+      const seen = new Set();
+      return found.filter((url, i) => {
+        const tok = fileToken(url);
+        if (seen.has(tok) || !kept.includes("@@img" + i + "@@")) return false;
+        seen.add(tok);
+        return true;
+      }).map((url) => ({ name: nameOfUrl(url), url, size: 0, type: "", inline: true }));
+    }
+
+    /** A Zendesk message's files for the chat: the pictures in its text, then its attachments, each once - none Zendesk
+     *  deleted or found malware in, and no picture of the text that the text left out (a signature's logo). */
+    function filesOf(comment) {
+      const out = inlineImagesOf(comment);
+      const tokens = new Set(out.map((f) => fileToken(f.url)));
+      const html = String((comment && comment.html_body) || "");
+      for (const a of (comment && comment.attachments) || []) {
+        const url = String((a && a.content_url) || "");
+        if (!a || a.deleted || a.malware_scan_result === "malware_found" || !/^https:\/\//.test(url)) continue;
+        const tok = fileToken(url);
+        if (tok && (tokens.has(tok) || (a.inline && html.includes(tok)))) continue;
+        if (tok) tokens.add(tok);
+        out.push({ name: String(a.file_name || "attachment"), url, size: Number(a.size) || 0, type: String(a.content_type || ""), inline: !!a.inline });
+      }
+      return out;
+    }
+    const filesHtml = (files) => (files && files.length ? "<p>Attachments: " + files.map((f) =>
+      "<a href=\"" + esc(f.url) + "\">" + esc(f.name || "attachment") + "</a>").join(", ") + "</p>" : "");
+
+    /** A message's files put into Rocketlane (deps.files) to go with its chat message; those that could not go - too big,
+     *  unreadable, or no file transport at all - stay links to Zendesk. -> {attached, links} */
+    async function carry(projectId, files) {
+      if (!files.length || !deps.files) return { attached: [], links: files };
+      try {
+        const r = (await deps.files.carry(projectId, files)) || {};
+        return { attached: r.attached || [], links: r.failed || [] };
+      } catch (_) {
+        return { attached: [], links: files };
+      }
+    }
+
+    /** A Zendesk comment as the chat shows it: the ticket, who and what kind on the first line, then its text; its files
+     *  `links` (all of them unless given) as links to Zendesk - those carried into Rocketlane go with the message. */
+    function chatHtmlOf(comment, user, ticketId, links) {
       const who = (user && user.name) || "Unknown";
       const kind = kindOf(comment, user);
       let text = commentText(comment);
       if (text.length > 8000) text = text.slice(0, 8000) + "\n… (shortened: read the rest in Zendesk)";
-      const files = (comment.attachments || []).filter((a) => /^https:\/\//.test(String(a.content_url || "")))
-        .map((a) => "<a href=\"" + esc(a.content_url) + "\">" + esc(a.file_name || "attachment") + "</a>");
       return "<p><b>Zendesk #" + esc(ticketId) + "</b> · " + esc(who) + kind + "</p>" + (text ? htmlOfText(text) : "") +
-        (files.length ? "<p>Attachments: " + files.join(", ") + "</p>" : "");
+        filesHtml(links === undefined ? filesOf(comment) : links);
     }
 
     /** A ticket's Plant ID (the custom field `plantFieldId`) without leading zeros; "" when it has none, or only zeros. */
@@ -17135,28 +17251,29 @@
     }
 
     /** A ticket's earlier messages, oldest first, for the chat: each with who, what kind and when, then its text (each
-     *  at most 3 000 characters), in as few chat messages as fit about 12 000 characters each. -> [html] */
-    function historyHtml(comments, users, ticketId) {
+     *  at most 3 000 characters), in as few chat messages as fit about 12 000 characters each. -> [{html, comments}] */
+    function historyParts(comments, users, ticketId) {
       const list = (comments || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
       if (!list.length) return [];
       const blocks = list.map((c) => {
         const u = users.get(c.author_id);
         let text = commentText(c);
         if (text.length > 3000) text = text.slice(0, 3000) + "\n… (shortened: read the rest in Zendesk)";
-        return "<p><b>" + esc((u && u.name) || "Unknown") + "</b>" + kindOf(c, u) + (c.created_at ? " · " + esc(when(c.created_at)) : "") + "</p>" +
-          (text ? htmlOfText(text) : "");
+        return { c, html: "<p><b>" + esc((u && u.name) || "Unknown") + "</b>" + kindOf(c, u) + (c.created_at ? " · " + esc(when(c.created_at)) : "") + "</p>" +
+          (text ? htmlOfText(text) : "") };
       });
       const parts = [];
       let cur = [], size = 0;
       for (const b of blocks) {
-        if (cur.length && size + b.length > 12000) { parts.push(cur); cur = []; size = 0; }
+        if (cur.length && size + b.html.length > 12000) { parts.push(cur); cur = []; size = 0; }
         cur.push(b);
-        size += b.length;
+        size += b.html.length;
       }
       if (cur.length) parts.push(cur);
-      return parts.map((part, i) => "<p><b>Zendesk #" + esc(ticketId) + "</b> · earlier messages" +
-        (parts.length > 1 ? ", part " + (i + 1) + " of " + parts.length : "") + " (" + list.length + " in all)</p><p><br></p>" + part.join("<p><br></p>"));
+      return parts.map((part, i) => ({ comments: part.map((b) => b.c), html: "<p><b>Zendesk #" + esc(ticketId) + "</b> · earlier messages" +
+        (parts.length > 1 ? ", part " + (i + 1) + " of " + parts.length : "") + " (" + list.length + " in all)</p><p><br></p>" + part.map((b) => b.html).join("<p><br></p>") }));
     }
+    const historyHtml = (comments, users, ticketId) => historyParts(comments, users, ticketId).map((p) => p.html);
 
     /** The queue's tickets for a project, best match first: the project's plant number as the ticket's Plant ID, then
      *  in its subject, then in its text, then words of the project's name. -> [{ticket, score}] */
@@ -17188,8 +17305,8 @@
     function linkOf(projectId, conversationId) { return load().links[keyOf(projectId, conversationId)] || null; }
 
     /** Posts chat messages the sync made itself, and keeps their ids so they never go to Zendesk. */
-    async function postOwn(projectId, conversationId, html) {
-      const made = await deps.rl.postComment(projectId, conversationId, html, true);
+    async function postOwn(projectId, conversationId, html, attachments) {
+      const made = await deps.rl.postComment(projectId, conversationId, html, true, attachments || []);
       if (made && made.id != null) {
         const s2 = load(), e = s2.links[keyOf(projectId, conversationId)];
         if (e) { e.ownRl = tail(e.ownRl.concat(String(made.id))); e.rlSeen = tail(e.rlSeen.concat(String(made.id))); deps.store.save(s2); }
@@ -17211,7 +17328,7 @@
         zdMax: Math.max(0, ...zd.comments.map((c) => Number(c.id) || 0)),
         rlSince: Math.max(0, ...rl.map((c) => ms(c.createdAt))),
         rlSeen: tail(rl.map(cidOf)), ownRl: [], ownZd: [],
-        status: "active", note: "", lastRun: 0, historyPosted: false,
+        status: "active", note: "", lastRun: 0, historyPosted: false, filesPosted: false,
       };
       st.links[keyOf(projectId, conversationId)] = entry;
       deps.store.save(st);
@@ -17228,9 +17345,13 @@
       const st = load(), e = st.links[keyOf(projectId, conversationId)];
       if (!e || e.historyPosted) return 0;
       const earlier = zd.comments.filter((c) => Number(c.id) <= e.zdMax && ms(c.created_at) < before && !e.ownZd.includes(String(c.id)));
-      for (const html of historyHtml(earlier, users, e.ticketId)) await postOwn(projectId, conversationId, html);
+      for (const part of historyParts(earlier, users, e.ticketId)) {
+        // the pictures and files of the messages in this part go with it
+        const { attached, links } = await carry(projectId, [].concat(...part.comments.map(filesOf)));
+        await postOwn(projectId, conversationId, part.html + filesHtml(links), attached);
+      }
       const s2 = load(), e2 = s2.links[keyOf(projectId, conversationId)];
-      if (e2) { e2.historyPosted = true; deps.store.save(s2); }
+      if (e2) { e2.historyPosted = true; e2.filesPosted = true; deps.store.save(s2); }
       return earlier.length;
     }
 
@@ -17246,6 +17367,31 @@
         deps.store.save(st);
       }
       return postHistoryOf(projectId, conversationId, await deps.zd.getComments(e.ticketId, 1), e.linkedAt || Infinity);
+    }
+
+    /** The pictures and files of the ticket's messages already in the chat, for a chat linked before they came along
+     *  (1.74.0): a message for each Zendesk message that has any, once. -> how many files */
+    async function postFiles(projectId, conversationId) {
+      const e = linkOf(projectId, conversationId);
+      if (!e) throw new Error("This chat is not linked to a ticket.");
+      if (e.filesPosted) return 0;
+      const zd = await deps.zd.getComments(e.ticketId, 1);
+      const users = new Map((zd.users || []).map((u) => [u.id, u]));
+      let n = 0;
+      for (const c of (zd.comments || []).slice().sort((a, b) => Number(a.id) - Number(b.id))) {
+        if (!(Number(c.id) <= e.zdMax) || e.ownZd.includes(String(c.id))) continue;
+        const files = filesOf(c);
+        if (!files.length) continue;
+        const u = users.get(c.author_id);
+        const { attached, links } = await carry(projectId, files);
+        if (!attached.length && !links.length) continue;
+        await postOwn(projectId, conversationId, "<p><b>Zendesk #" + esc(e.ticketId) + "</b> · " + esc((u && u.name) || "Unknown") + kindOf(c, u) +
+          (c.created_at ? " · " + esc(when(c.created_at)) : "") + " · images and files</p>" + filesHtml(links), attached);
+        n += attached.length + links.length;
+      }
+      const st = load(), x = st.links[keyOf(projectId, conversationId)];
+      if (x) { x.filesPosted = true; deps.store.save(st); }
+      return n;
     }
 
     function unlink(projectId, conversationId) {
@@ -17288,7 +17434,9 @@
           for (const c of zd.comments.slice().sort((a, b) => Number(a.id) - Number(b.id))) {
             if (!(Number(c.id) > e.zdMax)) continue;
             if (e.ownZd.includes(String(c.id))) { e.zdMax = Number(c.id); continue; }
-            const made = await deps.rl.postComment(e.projectId, e.conversationId, chatHtmlOf(c, users.get(c.author_id), e.ticketId), true);
+            // its pictures and files go with it into Rocketlane; those that cannot stay links
+            const { attached, links } = await carry(e.projectId, filesOf(c));
+            const made = await deps.rl.postComment(e.projectId, e.conversationId, chatHtmlOf(c, users.get(c.author_id), e.ticketId, links), true, attached);
             if (made && made.id != null) { e.ownRl = tail(e.ownRl.concat(String(made.id))); e.rlSeen = tail(e.rlSeen.concat(String(made.id))); }
             e.zdMax = Number(c.id);
             out.mirrored++;
@@ -17330,7 +17478,7 @@
 
     function links() { return load().links; }
 
-    return { link, unlink, linkOf, links, postHistory, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, tidyText, textOfHtml, htmlOfText, parseChatMessage, isActive };
+    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, isActive };
   }
   // @@ZDSYNC-ENGINE-END
 
@@ -17412,11 +17560,13 @@
           const j = await rl("GET", "/projects/" + encodeURIComponent(projectId) + "/project-conversations/" + encodeURIComponent(conversationId) + "/conversations");
           return Array.isArray(j && j.comments) ? j.comments : [];
         },
-        async postComment(projectId, conversationId, html, isPrivate) {
+        async postComment(projectId, conversationId, html, isPrivate, attachments) {
           const userId = Number(net.userId()) || 0;
           if (!userId) throw new Error("The Rocketlane user has not been captured yet: reload the page.");
           const path = "/projects/" + encodeURIComponent(projectId) + "/project-conversations/" + encodeURIComponent(conversationId) + "/comments";
-          const send = (priv) => rl("POST", path, { comment: { messageType: "USER_MESSAGE", content: html, private: priv, commentMeta: {}, user: { userId, userType: "NATIVE" } } });
+          // files go with a message as Rocketlane's own chat sends them: uploaded first, then linked by the message
+          const commentMeta = attachments && attachments.length ? { linkedAttachments: attachments } : {};
+          const send = (priv) => rl("POST", path, { comment: { messageType: "USER_MESSAGE", content: html, private: priv, commentMeta, user: { userId, userType: "NATIVE" } } });
           let j;
           try {
             j = await send(!!isPrivate);
@@ -17493,8 +17643,40 @@
       },
     };
 
+    // a Zendesk message's files into the project, to go with its chat message: each fetched from Zendesk and uploaded as
+    // Rocketlane's chat uploads one. A picture no bigger than an icon is left out; a file too big, or one that could not
+    // be fetched or uploaded, stays a link to Zendesk.
+    const FILES_PER_MESSAGE = 20, FILE_MAX_BYTES = 25 * 1024 * 1024, ICON_PX = 64;
+    async function isIcon(blob) {
+      if (typeof createImageBitmap !== "function") return false;
+      try {
+        const bm = await createImageBitmap(blob);
+        const small = Math.max(bm.width, bm.height) < ICON_PX;
+        if (typeof bm.close === "function") bm.close();
+        return small;
+      } catch (_) { return false; }
+    }
+    api.files = {
+      async carry(projectId, files) {
+        const attached = [], failed = [];
+        for (const f of files) {
+          if (attached.length >= FILES_PER_MESSAGE || f.size > FILE_MAX_BYTES) { failed.push(f); continue; }
+          try {
+            const blob = await net.zdFile(f.url);
+            if (!blob || !blob.size || blob.size > FILE_MAX_BYTES) { failed.push(f); continue; }
+            if (/^image\//i.test(String(blob.type || f.type || "")) && (await isIcon(blob))) continue;
+            attached.push(await net.rlUpload(projectId, blob, f.name));
+          } catch (err) {
+            try { console.warn("[zendesk-chat] " + f.name + " stays a link:", (err && err.message) || err); } catch (_) {}
+            failed.push(f);
+          }
+        }
+        return { attached, failed };
+      },
+    };
+
     const sync = createZendeskChatSync({
-      rl: api.rl, zd: api.zd,
+      rl: api.rl, zd: api.zd, files: api.files,
       store: { load: () => { try { return JSON.parse(get(STATE_KEY, "{}")) || {}; } catch (_) { return {}; } }, save: (s) => set(STATE_KEY, JSON.stringify(s)) },
     });
 
@@ -17549,6 +17731,16 @@
 
     // a round asked for while one runs (Sync now, a push event) runs right after it, so nothing new waits a whole interval
     let running = false, rerun = false;
+    // what the panel posts or changes (a link, earlier messages or files, an unlink) waits for a round to end, and a
+    // round waits for it: both save the link, and the one saving last would undo the other
+    async function exclusive(fn) {
+      while (running) await new Promise((r) => setTimeout(r, 300));
+      running = true;
+      try { return await fn(); } finally {
+        running = false;
+        if (rerun) { rerun = false; void round(); }
+      }
+    }
     async function round() {
       if (!enabled() || legacy()) return false;
       if (running) { rerun = true; return true; }
@@ -17741,7 +17933,7 @@
       open.rel = "noopener noreferrer";
       yes.onclick = async () => {
         yes.disabled = true;
-        try { await sync.link(ids.projectId, ids.conversationId, t.id); panel.hidden = true; paint(); }
+        try { await exclusive(() => sync.link(ids.projectId, ids.conversationId, t.id)); panel.hidden = true; paint(); }
         catch (err) { yes.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
       };
       later.onclick = () => {
@@ -17786,7 +17978,7 @@
       const e = sync.linkOf(ids.projectId, ids.conversationId);
       if (e) {
         panel.append(el("h3", null, "Zendesk #" + e.ticketId + " “" + e.subject + "”"));
-        panel.append(el("div", "muted", "New messages on the ticket appear here as private messages. What is written in the chat goes to the ticket as an internal note; start with /reply to reply to the customer."));
+        panel.append(el("div", "muted", "New messages on the ticket appear here as private messages, with their images and files. What is written in the chat goes to the ticket as an internal note; start with /reply to reply to the customer."));
         if (e.note) panel.append(el("div", "err", e.note));
         const acts = el("div", "acts");
         // a chat linked before 1.17.4 has only the messages since its link: the ticket's earlier ones, once
@@ -17795,7 +17987,7 @@
           hist.title = "Posts the ticket's messages from before the link in this chat, once";
           hist.onclick = async () => {
             hist.disabled = true;
-            try { const n = await sync.postHistory(ids.projectId, ids.conversationId); hist.textContent = n ? n + " earlier messages posted" : "No earlier messages"; }
+            try { const n = await exclusive(() => sync.postHistory(ids.projectId, ids.conversationId)); hist.textContent = n ? n + " earlier messages posted" : "No earlier messages"; }
             catch (err) { hist.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
           };
           acts.append(hist);
@@ -17804,10 +17996,22 @@
           again.title = "Delete the old copies in the chat first: this posts the ticket's messages from before the link once more, tidied";
           again.onclick = async () => {
             again.disabled = true;
-            try { const n = await sync.postHistory(ids.projectId, ids.conversationId, true); again.textContent = n + " earlier messages posted"; }
+            try { const n = await exclusive(() => sync.postHistory(ids.projectId, ids.conversationId, true)); again.textContent = n + " earlier messages posted"; }
             catch (err) { again.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
           };
           acts.append(again);
+        }
+        // a chat linked before 1.74.0 has the ticket's messages without their pictures and files: those, once
+        if (e.historyPosted && !e.filesPosted) {
+          const files = el("button", "g", "Post earlier images and files");
+          files.title = "Posts the images and files of the ticket's messages already in this chat, once";
+          files.onclick = async () => {
+            files.disabled = true;
+            files.textContent = "Posting images and files…";
+            try { const n = await exclusive(() => sync.postFiles(ids.projectId, ids.conversationId)); files.textContent = n ? n + (n === 1 ? " file posted" : " images and files posted") : "No earlier images or files"; }
+            catch (err) { files.disabled = false; files.textContent = "Post earlier images and files"; panel.append(el("div", "err", String((err && err.message) || err))); }
+          };
+          acts.append(files);
         }
         const now = el("button", "b", "Sync now");
         now.onclick = () => { now.disabled = true; round().then((ran) => { if (!ran) now.textContent = "The sync runs in another tab"; else openPanel(); }); };
@@ -17816,7 +18020,7 @@
         open.target = "_blank";
         open.rel = "noopener noreferrer";
         const off = el("button", "g", "Unlink");
-        off.onclick = () => { sync.unlink(ids.projectId, ids.conversationId); panel.hidden = true; paint(); };
+        off.onclick = () => { void exclusive(async () => sync.unlink(ids.projectId, ids.conversationId)).then(() => { panel.hidden = true; paint(); }); };
         acts.append(now, off, open);
         panel.append(acts);
         return;
@@ -17851,7 +18055,7 @@
           yes.onclick = async () => {
             yes.disabled = true;
             no.disabled = true;
-            try { await sync.link(ids.projectId, ids.conversationId, t.id); panel.hidden = true; paint(); }
+            try { await exclusive(() => sync.link(ids.projectId, ids.conversationId, t.id)); panel.hidden = true; paint(); }
             catch (err) { yes.disabled = false; no.disabled = false; list.prepend(el("div", "err", String((err && err.message) || err))); }
           };
           no.onclick = () => { ask.replaceWith(go); };
@@ -17907,6 +18111,7 @@
         zdHost: ZENDESK_HOST, zdRequest: zendeskApiRequest,
         rlRequest: gmRocketlaneRequest, userId: rlHpReadCurrentUserId,
         plantFieldId: rlZdGetPlantFieldId, pusher: rlCnPusher,
+        zdFile: zendeskAttachmentBlob, rlUpload: gmRocketlaneUploadChatFile,
       });
     } catch (e) { console.warn("[Rocketlane improvements] Zendesk chat sync failed to start", e); }
   });

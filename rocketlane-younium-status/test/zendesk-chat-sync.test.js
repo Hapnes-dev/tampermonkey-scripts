@@ -48,11 +48,11 @@ function world(opts = {}) {
     rl: {
       userId: () => RUNNER,
       async getComments() { return JSON.parse(JSON.stringify(chat)); },
-      async postComment(projectId, conversationId, html, isPrivate) {
+      async postComment(projectId, conversationId, html, isPrivate, attachments) {
         if (fail.rlPost > 0) { fail.rlPost--; throw new Error('Rocketlane svarte HTTP 502'); }
         const c = { commentId: nextRl++, messageType: 'USER_MESSAGE', content: html, private: isPrivate, createdAt: tick(), user: { userId: RUNNER, firstName: 'Thomas' } };
         chat.push(c);
-        posted.rl.push({ projectId, conversationId, html, isPrivate });
+        posted.rl.push({ projectId, conversationId, html, isPrivate, attachments: attachments || [] });
         return opts.noRlIds ? null : { id: c.commentId };
       },
     },
@@ -312,4 +312,97 @@ test('a ticket whose updated_at has not moved is not read again', async () => {
   const r = await w.sync.runOnce();
   assert.deepStrictEqual([fetched, r.mirrored], [2, 1], 'moved: read, and its new message comes in');
   assert.deepStrictEqual(w.sync.links()['1481787:12896932'].zdUpdatedAt, '2026-10-28T10:30:00Z');
+});
+
+// a file of a Zendesk message, as Zendesk gives its address
+const ZF = (token, name) => 'https://iwmac.zendesk.com/attachments/token/' + token + '/?name=' + name;
+// a file transport that carries every file but those named in `refuse`
+const carrier = (refuse = []) => ({
+  calls: [],
+  async carry(projectId, files) {
+    this.calls.push([projectId, files.map((f) => f.name)]);
+    return { attached: files.filter((f) => !refuse.includes(f.name)).map((f) => ({ attachmentId: 'rl:' + f.name, name: f.name })),
+      failed: files.filter((f) => refuse.includes(f.name)) };
+  },
+});
+
+test('a Zendesk email\'s files for the chat: the screenshots in its text and its attachments, not its signature\'s or a quoted email\'s pictures', () => {
+  const w = world();
+  const html = '<div><p>Hei,</p><p>De skal inn under frysedisk GF24A-D som vist i klipp under.</p>' +
+    '<p><img width="1010" height="842" style="x" src="' + ZF('aaa', 'image001.png') + '"></p><p>Pos K51 må flyttes.</p>' +
+    '<p><img src="' + ZF('bbb', 'image002.png').replace(/&/g, '&amp;') + '"></p>' +
+    '<p>Med vennlig hilsen</p><p>Ola Kunde</p><p><img width="226" height="88" src="' + ZF('logo', 'image004.png') + '"></p>' +
+    '<p><img src="' + ZF('icon', 'image005.png') + '"></p>' +
+    '<p><b>Fra:</b> Support<br><b>Sendt:</b> 1. september<br><b>Til:</b> Ola</p><p><img src="' + ZF('old', 'image009.png') + '"></p></div>';
+  const files = w.sync.filesOf({ id: 1, html_body: html, attachments: [
+    { file_name: 'A0.pdf', content_url: ZF('pdf', 'A0.pdf'), content_type: 'application/pdf', size: 3579097, inline: false },
+    { file_name: 'image002.png', content_url: ZF('bbb', 'image002.png'), inline: true },
+    { file_name: 'image004.png', content_url: ZF('logo', 'image004.png'), inline: true },
+    { file_name: 'virus.exe', content_url: ZF('bad', 'virus.exe'), malware_scan_result: 'malware_found' },
+    { file_name: 'gone.txt', content_url: ZF('gone', 'gone.txt'), deleted: true },
+    { file_name: 'x', content_url: 'javascript:alert(1)' },
+  ] });
+  assert.deepStrictEqual(files.map((f) => [f.name, f.inline]), [['image001.png', true], ['image002.png', true], ['A0.pdf', false]],
+    'in the order of the text, each once; not the signature\'s logo and icon, not the quoted email\'s picture, no malware, nothing deleted');
+  assert.deepStrictEqual([files[0].url, files[2].size], [ZF('aaa', 'image001.png'), 3579097]);
+  assert.deepStrictEqual(w.sync.filesOf({ html_body: '<p>Se bildet</p><img src="' + ZF('c', 'c.png') + '">' }).map((f) => f.name), ['c.png'], 'no sign-off: every picture');
+  assert.deepStrictEqual(w.sync.filesOf({ html_body: '<img src="https://example.com/x.png"><img data-src="' + ZF('d', 'd.png') + '">' }), [], 'only Zendesk\'s own files');
+  assert.deepStrictEqual(w.sync.filesOf({ plain_body: 'x', attachments: [] }), []);
+});
+
+test('a new Zendesk message brings its pictures and files into the chat with it; a file that cannot go stays a link', async () => {
+  const w = world();
+  w.deps.files = carrier(['stor.zip']);
+  await w.sync.link(1481787, 12896932, 53123);
+  const c = w.reply(700, 'Se klipp under.');
+  c.html_body = '<p>Se klipp under.</p><p><img src="' + ZF('aaa', 'image001.png') + '"></p><p>Mvh</p><p>Kari</p><p><img src="' + ZF('logo', 'logo.png') + '"></p>';
+  c.attachments = [{ file_name: 'tegning.pdf', content_url: ZF('pdf', 'tegning.pdf'), size: 1000 }, { file_name: 'stor.zip', content_url: ZF('zip', 'stor.zip'), size: 9e7 }];
+  const r = await w.sync.runOnce();
+  assert.strictEqual(r.mirrored, 1);
+  assert.deepStrictEqual(w.deps.files.calls, [['1481787', ['image001.png', 'tegning.pdf', 'stor.zip']]], 'the signature\'s logo is not even asked for');
+  const p = w.posted.rl[w.posted.rl.length - 1];
+  assert.deepStrictEqual(p.attachments.map((a) => a.attachmentId), ['rl:image001.png', 'rl:tegning.pdf'], 'they go with the message');
+  assert.strictEqual(p.html, '<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Se klipp under.</p><p>Attachments: <a href="' +
+    ZF('zip', 'stor.zip').replace(/&/g, '&amp;') + '">stor.zip</a></p>', 'what could not go stays a link; what went is not linked as well');
+  // without a file transport, every file is a link, as before
+  const w2 = world();
+  await w2.sync.link(1481787, 12896932, 53123);
+  const c2 = w2.reply(700, 'Bilde');
+  c2.html_body = '<p>Bilde</p><img src="' + ZF('aaa', 'image001.png') + '">';
+  await w2.sync.runOnce();
+  assert.match(w2.posted.rl[w2.posted.rl.length - 1].html, /<p>Attachments: <a href="[^"]+">image001\.png<\/a><\/p>$/);
+});
+
+test('linking: the ticket\'s earlier messages bring their pictures and files along', async () => {
+  const w = world();
+  w.deps.files = carrier();
+  w.zdComments.get(53123)[0].attachments = [{ file_name: 'A0.pdf', content_url: ZF('pdf', 'A0.pdf'), size: 10 }];
+  await w.sync.link(1481787, 12896932, 53123);
+  assert.deepStrictEqual(w.posted.rl.map((p) => p.attachments.map((a) => a.attachmentId)), [[], ['rl:A0.pdf']], 'the notice bare, the history with its files');
+  assert.ok(!/Attachments:/.test(w.posted.rl[1].html));
+  assert.strictEqual(w.sync.linkOf(1481787, 12896932).filesPosted, true, 'nothing left for later');
+});
+
+test('a chat linked before files came along gets the earlier ones once, a message for each Zendesk message that has any', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  // as a link from before 1.74.0
+  const st = JSON.parse(w.state.value);
+  delete st.links['1481787:12896932'].filesPosted;
+  w.state.value = JSON.stringify(st);
+  w.zdComments.get(53123)[0].attachments = [{ file_name: 'A0.pdf', content_url: ZF('pdf', 'A0.pdf') }];
+  const c = w.reply(700, 'Bilde');
+  c.html_body = '<p>Bilde</p><img src="' + ZF('img', 'skjerm.png') + '">';
+  w.reply(700, 'Uten filer');
+  await w.sync.runOnce();
+  w.deps.files = carrier();
+  const before = w.posted.rl.length;
+  assert.strictEqual(await w.sync.postFiles(1481787, 12896932), 2);
+  const made = w.posted.rl.slice(before);
+  assert.deepStrictEqual(made.map((p) => p.attachments.map((a) => a.attachmentId)), [['rl:A0.pdf'], ['rl:skjerm.png']]);
+  assert.match(made[0].html, /^<p><b>Zendesk #53123<\/b> · Kari Kunde \(customer\) · 27 Oct 2026 \d\d:\d\d · images and files<\/p>$/);
+  assert.strictEqual(await w.sync.postFiles(1481787, 12896932), 0, 'once');
+  const zd = w.posted.zd.length;
+  await w.sync.runOnce();
+  assert.strictEqual(w.posted.zd.length, zd, 'none of it goes back to Zendesk');
 });

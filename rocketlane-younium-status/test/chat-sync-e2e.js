@@ -30,6 +30,8 @@ const NET = `{
   plantFieldId: async () => ((await window.__send('GET', 'https://iwmac.zendesk.com/api/v2/ticket_fields.json', {}, null)).ticket_fields
     .find((f) => f.title === 'Plant ID') || {}).id || 0,
   pusher: () => null,
+  zdFile: (url) => window.__zdFile(url),
+  rlUpload: (projectId, blob, name) => window.__rlUpload(projectId, blob, name),
 }`;
 const START = '(function(){' + SYNC + '\nstartZendeskChatSync(' + NET + ');})();';
 
@@ -52,6 +54,22 @@ const W = window.__world = {
   queries: [],
   addZd(c) { W.zd.push(c); const t = W.queue.find((x) => x.id === 53123); if (t) t.updated_at = new Date(Date.now() + W.zd.length).toISOString(); },
   puts: [], posts: [], nextRl: 100, nextZd: 5000,
+  // Zendesk's files by their token: pictures drawn at their size, a PDF as a few bytes
+  files: { shot: { w: 1010, h: 842, type: 'image/png' }, icon: { w: 26, h: 26, type: 'image/png' }, logo: { w: 226, h: 88, type: 'image/png' }, pdf: { type: 'application/pdf' } },
+  uploads: [],
+};
+// the script's file transports: a Zendesk file by its token address, and an upload to Rocketlane
+window.__zdFile = async (url) => {
+  const f = W.files[new URL(url).pathname.split('/')[3]];
+  if (!f) throw new Error('HTTP 404');
+  if (f.type !== 'image/png') return new Blob(['%PDF-1.4 test'], { type: f.type });
+  const c = new OffscreenCanvas(f.w, f.h);
+  c.getContext('2d').fillRect(0, 0, f.w, f.h);
+  return c.convertToBlob({ type: 'image/png' });
+};
+window.__rlUpload = async (projectId, blob, name) => {
+  W.uploads.push({ p: String(projectId), name, type: blob.type, size: blob.size });
+  return { attachmentId: 7000 + W.uploads.length, name, sizeInBytes: blob.size, publicVisibility: false, projectId: Number(projectId) };
 };
 window.GM_xmlhttpRequest = (o) => {
   const u = new URL(o.url), p = u.pathname, body = o.data ? JSON.parse(o.data) : null;
@@ -230,6 +248,29 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.deepStrictEqual(await page.evaluate(() => window.__pops), [], 'not reloaded under a draft');
     await page.evaluate(() => { document.getElementById('draft').remove(); window.__world.renderPosts = true; });
 
+    // a Zendesk email with a screenshot in its text, an icon, a signature's logo and an attached drawing: the screenshot and
+    // the drawing go with its chat message as Rocketlane attachments - not the icon (too small), not the logo (signature)
+    await page.evaluate(() => {
+      const W = window.__world, T = (t, n) => 'https://iwmac.zendesk.com/attachments/token/' + t + '/?name=' + n;
+      W.addZd({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Som vist i klipp under.\n\nMvh\nKari', created_at: new Date().toISOString(),
+        html_body: '<p>Som vist i klipp under.</p><p><img src="' + T('shot', 'image001.png') + '"></p><p><img src="' + T('icon', 'image002.png') + '"></p>' +
+          '<p>Mvh</p><p>Kari</p><p><img src="' + T('logo', 'image003.png') + '"></p>',
+        attachments: [{ file_name: 'tegning.pdf', content_url: T('pdf', 'tegning.pdf'), content_type: 'application/pdf', size: 20 }] });
+    });
+    await page.waitForTimeout(1300);
+    if (!(await page.locator('#rl-zendesk-chat-sync >> .panel').isVisible())) await pill.click();
+    assert.strictEqual(await page.locator('#rl-zendesk-chat-sync >> text=Post earlier images and files').count(), 0, 'a link made now has its files already');
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
+    await page.waitForFunction(() => window.__world.posts.some((p) => /Som vist i klipp under/.test(p.content)), null, { timeout: 15000 });
+    w = await page.evaluate(() => window.__world);
+    const filed = w.posts.find((p) => /Som vist i klipp under/.test(p.content));
+    assert.deepStrictEqual(w.uploads.map((u) => [u.p, u.name, u.type]), [['1481787', 'image001.png', 'image/png'], ['1481787', 'tegning.pdf', 'application/pdf']],
+      'the screenshot and the drawing uploaded to the project, not the icon or the logo');
+    assert.deepStrictEqual(filed.commentMeta.linkedAttachments.map((a) => [a.name, a.publicVisibility]), [['image001.png', false], ['tegning.pdf', false]], 'linked by the message');
+    assert.strictEqual(filed.private, true);
+    assert.ok(!/Attachments:/.test(filed.content), 'not linked to Zendesk as well');
+    await page.screenshot({ path: path.join(OUT, '2b-files.png') });
+
     // off in the menu: the button stays on the chat page, greyed
     const menu = await page.evaluate(() => window.__menu.map((m) => m.name));
     assert.deepStrictEqual(menu, ['❌ Zendesk ⇄ General Chat sync', 'Zendesk queue for the sync: IWMAC Leveranse - Kulde…'], 'registered while it was off');
@@ -266,6 +307,8 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
         rlSeen: W.chat.map((c) => String(c.commentId)), ownRl: [], ownZd: [], status: 'active', note: '', lastRun: Date.now() - 60000,
         historyPosted: true, zdUpdatedAt: '2026-10-28T09:00:00Z' } } }));
       set('zdsync_not_now_v1', { '1481787:99': '53125' });
+      // the ticket's first message had a drawing attached, which the chat got as a link only
+      W.zd[0].attachments = [{ file_name: 'A0.pdf', content_url: 'https://iwmac.zendesk.com/attachments/token/pdf/?name=A0.pdf', content_type: 'application/pdf', size: 20 }];
       new Function('GM_getValue', 'GM_setValue', hand + '\nreturn handOverZendeskChatSync;')(get, set)();
       window.__bridgeStore = store;
       localStorage.removeItem('gm:zdsync_enabled_v1');   // this script: never turned on or off
@@ -288,6 +331,13 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     w = await page2.evaluate(() => window.__world);
     assert.deepStrictEqual(w.posts.map((p) => p.content), ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Etter flyttingen.</p>']);
     assert.strictEqual(w.puts.length, 0, 'the chat\'s old messages stay where they are');
+    // linked before files came along: the panel offers the earlier ones, once
+    await page2.locator('#rl-zendesk-chat-sync >> text=Post earlier images and files').click();
+    await page2.locator('#rl-zendesk-chat-sync >> text=1 file posted').waitFor({ timeout: 15000 });
+    w = await page2.evaluate(() => window.__world);
+    assert.match(w.posts[1].content, /^<p><b>Zendesk #53123<\/b> · Kari Kunde \(customer\) · .* · images and files<\/p>$/);
+    assert.deepStrictEqual(w.posts[1].commentMeta.linkedAttachments.map((a) => a.name), ['A0.pdf']);
+    assert.strictEqual(await page2.evaluate(() => JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links['1481787:12896932'].filesPosted), true);
     await page2.screenshot({ path: path.join(OUT, '4-handed-over.png') });
 
     assert.deepStrictEqual(errors, [], 'no errors or warnings in the page');
