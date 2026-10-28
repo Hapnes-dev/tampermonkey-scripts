@@ -191,7 +191,8 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.waitForFunction(() => /#53123 ⇄/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
     let w = await page.evaluate(() => window.__world);
     assert.strictEqual(w.posts.length, 2, 'the notice, then the ticket\'s earlier messages');
-    assert.match(w.posts[0].content, /^<p>Zendesk #53123 “SV: 41584 Extra Laksvollen - alarm” is now linked to this chat\./);
+    assert.strictEqual(w.posts[0].content, '<p><a href="https://iwmac.zendesk.com/agent/tickets/53123" target="_blank" rel="noopener noreferrer">Zendesk #53123</a>' +
+      ' is linked to this chat · SV: 41584 Extra Laksvollen - alarm</p><p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>');
     assert.match(w.posts[1].content, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><br><\/p><p><b>Kari Kunde<\/b> \(customer\) · .*<p>Gammel kundemelding<\/p>$/);
     assert.deepStrictEqual(w.posts.map((p) => p.private), [true, true]);
 

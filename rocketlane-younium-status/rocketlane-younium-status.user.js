@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.76.0
+// @version      1.77.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -17121,6 +17121,7 @@
   //     note, or in the public reply after /reply. One that cannot go is named instead.
   //     v1.76.0: the message box shows what the message will be on the ticket - /reply gets an orange frame and a bar
   //     saying who is emailed; a near miss ("/replay", the old "/kunde") a warning that it is only a note.
+  //     v1.77.0: linking says so in two short lines, "Zendesk #N" a link to the ticket.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17136,7 +17137,7 @@
     const cidOf = (c) => String(c.commentId != null ? c.commentId : c.id != null ? c.id : c.commentGuid != null ? c.commentGuid :
       "at" + ms(c.createdAt) + ":" + String(c.content || "").length);
     // the sync's own messages in the chat, when Rocketlane did not hand back their id
-    const OWN_RE = /^\s*<p>\s*(?:<(?:b|strong)>\s*)?Zendesk #\d+/i;
+    const OWN_RE = /^\s*<p>\s*(?:<(?:b|strong|a)\b[^>]*>\s*)*Zendesk #\d+/i;
 
     /** A chat message's HTML as plain text: paragraphs and line breaks kept, @mentions as their names. */
     function textOfHtml(html) {
@@ -17408,9 +17409,13 @@
       };
       st.links[keyOf(projectId, conversationId)] = entry;
       deps.store.save(st);
-      await postOwn(projectId, conversationId, "<p>" + esc("Zendesk #" + ticket.id + " “" + entry.subject + "”") +
-        " is now linked to this chat. Its earlier messages follow, and new ones on the ticket will appear here. What is written" +
-        " here goes to the ticket as an internal note. Start a message with /reply to reply to the customer.</p>");
+      // two short lines: which ticket (a link to it in Zendesk), and what writing here does
+      const url = typeof deps.zd.ticketUrl === "function" ? String(deps.zd.ticketUrl(ticket.id) || "") : "";
+      const name = esc("Zendesk #" + ticket.id);
+      await postOwn(projectId, conversationId, "<p>" +
+        (/^https:\/\//.test(url) ? "<a href=\"" + esc(url) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + name + "</a>" : name) +
+        " is linked to this chat" + (entry.subject ? " · " + esc(entry.subject) : "") + "</p>" +
+        "<p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>");
       await postHistoryOf(projectId, conversationId, zd, Infinity);
       return linkOf(projectId, conversationId);
     }
@@ -17724,6 +17729,7 @@
         // the ticket field titled "Plant ID": the project's plant number is found there (looked up once, as the
         // Zendesk cases tab does)
         async plantFieldId() { return (await net.plantFieldId()) || null; },
+        ticketUrl: (ticketId) => ZD_HOST + "/agent/tickets/" + encodeURIComponent(ticketId),
         async addComment(ticketId, body, isPublic, uploads) {
           const comment = { body, public: isPublic === true };
           // files uploaded to Zendesk first go with the comment by their tokens

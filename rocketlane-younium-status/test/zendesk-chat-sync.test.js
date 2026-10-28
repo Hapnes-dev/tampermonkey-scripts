@@ -58,6 +58,7 @@ function world(opts = {}) {
     },
     zd: {
       async queueTickets() { return JSON.parse(JSON.stringify(queue)); },
+      ticketUrl: (id) => 'https://iwmac.zendesk.com/agent/tickets/' + id,
       async statuses(ids) {
         const out = {};
         for (const id of ids) { const t = queue.find((x) => String(x.id) === String(id)) || elsewhere.get(String(id)); if (t) out[String(id)] = t.status; }
@@ -103,7 +104,9 @@ test('linking: only an active ticket of the queue; the chat is told, then gets t
   assert.strictEqual(e.ticketId, '53123');
   assert.strictEqual(e.historyPosted, true);
   assert.strictEqual(w.posted.rl.length, 2, 'the notice, then the history');
-  assert.match(w.posted.rl[0].html, /^<p>Zendesk #53123 “10263 Extra Laksvollen - alarm” is now linked to this chat\. Its earlier messages follow/);
+  assert.strictEqual(w.posted.rl[0].html, '<p><a href="https://iwmac.zendesk.com/agent/tickets/53123" target="_blank" rel="noopener noreferrer">Zendesk #53123</a>' +
+    ' is linked to this chat · 10263 Extra Laksvollen - alarm</p><p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>',
+    'two short lines, the ticket a link to it');
   assert.match(w.posted.rl[1].html, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><br><\/p><p><b>Kari Kunde<\/b> \(customer\) · 27 Oct 2026 \d\d:\d\d<\/p><p>Gammel kundemelding<\/p>$/);
   assert.deepStrictEqual(w.posted.rl.map((p) => p.isPrivate), [true, true]);
   const r = await w.sync.runOnce();
