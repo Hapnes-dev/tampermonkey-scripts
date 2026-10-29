@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.78.0
+// @version      1.79.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -17106,7 +17106,8 @@
   //     A project's General Chat linked to one Zendesk ticket from the team's queue. Every new message on the ticket
   //     is posted in the chat as a private message (the team sees it, customers in the project do not), and every
   //     message written in the chat goes to the ticket: an internal note, or a public reply to the customer when it
-  //     starts with /reply. Linking posts the ticket's earlier messages once. Only tickets that are active in the
+  //     starts with /reply. Linking posts no earlier messages (v1.79.0): only new ones come in, and the panel posts
+  //     the earlier ones on request. Only tickets that are active in the
   //     queue (a Zendesk view, "IWMAC Leveranse - Kulde" unless set otherwise in the Tampermonkey menu) can be
   //     linked; a linked ticket syncs while it is new, open, pending or on hold, and pauses when it is solved. It
   //     runs on kiona.rocketlane.com in the browser of whoever turns it on, in one tab at a time: every 15 s in front,
@@ -17123,6 +17124,7 @@
   //     saying who is emailed; a near miss ("/replay", the old "/kunde") a warning that it is only a note.
   //     v1.77.0: linking says so in two short lines, "Zendesk #N" a link to the ticket.
   //     v1.78.0: the button goes the moment Rocketlane leaves the chat page (its route change, not a timer).
+  //     v1.79.0: linking no longer posts the ticket's earlier messages by itself - only new ones come in.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17391,13 +17393,14 @@
       }
     }
 
-    /** Links the chat to an active ticket of the queue. The chat gets a message saying so, then the ticket's earlier
-     *  messages, once; from then on both sides go across. What was in the chat before stays in the chat. */
+    /** Links the chat to an active ticket of the queue. The chat gets a short message saying so; from then on both sides
+     *  go across, new messages only. The ticket's earlier messages come only on request (postHistory), and what was in
+     *  the chat before stays in the chat. */
     async function link(projectId, conversationId, ticketId) {
       const ticket = (await queue()).find((t) => String(t.id) === String(ticketId));
       if (!ticket) throw new Error("Ticket #" + ticketId + " is not an active ticket in the queue.");
-      // every page of the ticket's comments: its whole history goes into the chat
-      const zd = await deps.zd.getComments(ticket.id, 1);
+      // the ticket's newest message: only those after it come into the chat (Thomas: no earlier ones by themselves)
+      const zd = await deps.zd.getComments(ticket.id);
       const rl = await deps.rl.getComments(projectId, conversationId);
       const st = load();
       const entry = {
@@ -17417,7 +17420,6 @@
         (/^https:\/\//.test(url) ? "<a href=\"" + esc(url) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + name + "</a>" : name) +
         " is linked to this chat" + (entry.subject ? " · " + esc(entry.subject) : "") + "</p>" +
         "<p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>");
-      await postHistoryOf(projectId, conversationId, zd, Infinity);
       return linkOf(projectId, conversationId);
     }
 
@@ -18051,8 +18053,8 @@
         (t.updated_at ? " · " + new Date(t.updated_at).toLocaleDateString() : "")));
       card.append(txt);
       panel.append(card);
-      panel.append(el("div", "muted", "Link this chat to the ticket? Its messages so far are posted here once, and new ones then appear as they " +
-        "come. What is written here goes to the ticket as an internal note (/reply for a reply to the customer)."));
+      panel.append(el("div", "muted", "Link this chat to the ticket? Its new messages then appear here as they come (earlier ones only if you ask, " +
+        "in the panel). What is written here goes to the ticket as an internal note (/reply for a reply to the customer)."));
       const acts = el("div", "acts");
       const yes = el("button", "b", "Link");
       const later = el("button", "g", "Not now");
@@ -18111,7 +18113,7 @@
         panel.append(el("div", "muted", "New messages on the ticket appear here as private messages, with their images and files. What is written in the chat goes to the ticket as an internal note; start with /reply to reply to the customer."));
         if (e.note) panel.append(el("div", "err", e.note));
         const acts = el("div", "acts");
-        // a chat linked before 1.17.4 has only the messages since its link: the ticket's earlier ones, once
+        // a link brings only new messages: the ticket's earlier ones on request, once
         if (!e.historyPosted) {
           const hist = el("button", "g", "Post earlier messages");
           hist.title = "Posts the ticket's messages from before the link in this chat, once";

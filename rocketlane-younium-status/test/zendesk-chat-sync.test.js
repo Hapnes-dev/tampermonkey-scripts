@@ -96,22 +96,25 @@ test('the queue: active tickets only, the project\'s best match first - its Plan
   assert.deepStrictEqual([best.ticket.id, best.score], [207248, 22]);
 });
 
-test('linking: only an active ticket of the queue; the chat is told, then gets the ticket\'s earlier messages; nothing old goes to Zendesk', async () => {
+test('linking: only an active ticket of the queue; the chat is told, and gets new messages only - the earlier ones on request; nothing old goes to Zendesk', async () => {
   const w = world();
   await assert.rejects(w.sync.link(1481787, 12896932, 53126), /not an active ticket/);
   await assert.rejects(w.sync.link(1481787, 12896932, 99999), /not an active ticket/);
   const e = await w.sync.link(1481787, 12896932, 53123);
   assert.strictEqual(e.ticketId, '53123');
-  assert.strictEqual(e.historyPosted, true);
-  assert.strictEqual(w.posted.rl.length, 2, 'the notice, then the history');
+  assert.strictEqual(e.historyPosted, false);
+  assert.strictEqual(w.posted.rl.length, 1, 'the notice only: no earlier messages by themselves');
   assert.strictEqual(w.posted.rl[0].html, '<p><a href="https://iwmac.zendesk.com/agent/tickets/53123" target="_blank" rel="noopener noreferrer">Zendesk #53123</a>' +
     ' is linked to this chat · 10263 Extra Laksvollen - alarm</p><p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>',
     'two short lines, the ticket a link to it');
+  const r = await w.sync.runOnce();
+  assert.deepStrictEqual(counts(r), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'the ticket\'s old message does not come in, and nothing the sync posted, nor the chat\'s old message, goes to Zendesk');
+  // on request: the earlier messages, once
+  assert.strictEqual(await w.sync.postHistory(1481787, 12896932), 1);
   assert.match(w.posted.rl[1].html, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><br><\/p><p><b>Kari Kunde<\/b> \(customer\) · 27 Oct 2026 \d\d:\d\d<\/p><p>Gammel kundemelding<\/p>$/);
   assert.deepStrictEqual(w.posted.rl.map((p) => p.isPrivate), [true, true]);
-  const r = await w.sync.runOnce();
-  assert.deepStrictEqual(counts(r), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'the history is not posted twice, and nothing the sync posted, nor the chat\'s old message, goes to Zendesk');
   assert.strictEqual(await w.sync.postHistory(1481787, 12896932), 0, 'once');
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'and none of it goes to Zendesk');
 });
 
 test('the ticket\'s new messages come into the chat as private messages, each kind labelled', async () => {
@@ -123,7 +126,7 @@ test('the ticket\'s new messages come into the chat as private messages, each ki
   const r = await w.sync.runOnce();
   assert.strictEqual(r.mirrored, 3);
   assert.deepStrictEqual(r.posted, [{ projectId: '1481787', conversationId: '12896932', ticketId: '53123', count: 3 }], 'what went where');
-  assert.deepStrictEqual(w.posted.rl.slice(2).map((p) => [p.html, p.isPrivate]), [
+  assert.deepStrictEqual(w.posted.rl.slice(1).map((p) => [p.html, p.isPrivate]), [
     // a line a paragraph, as Rocketlane writes a message
     ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Anlegget går i alarm igjen.</p><p>Se vedlegg.</p>', true],
     ['<p><b>Zendesk #53123</b> · Ola Agent · internal note</p><p>Sjekker fjernstyring.</p>', true],
@@ -214,7 +217,7 @@ test('a failure part way: the next round goes on from there, nothing twice', asy
   assert.deepStrictEqual([r.mirrored, r.forwarded, r.errors], [2, 0, 1]);
   r = await w.sync.runOnce();
   assert.deepStrictEqual([r.mirrored, r.forwarded, r.errors], [0, 1, 0]);
-  assert.deepStrictEqual(w.posted.rl.slice(2).map((p) => /<p>(En|To)<\/p>/.exec(p.html)[1]), ['En', 'To']);
+  assert.deepStrictEqual(w.posted.rl.slice(1).map((p) => /<p>(En|To)<\/p>/.exec(p.html)[1]), ['En', 'To']);
   assert.deepStrictEqual(w.posted.zd.map((p) => p.body), ['Andreas Sandnes (Rocketlane):\nTre']);
 });
 
@@ -245,7 +248,7 @@ test('the text of a chat message', () => {
   assert.deepStrictEqual(w.sync.parseChatMessage('/replyall x'), { isPublic: false, body: '/replyall x' });
 });
 
-test('a chat linked before 1.17.4 gets the ticket\'s messages from before its link, once', async () => {
+test('the ticket\'s messages from before the link come only on request, once, and nothing from after it', async () => {
   const w = world();
   await w.sync.link(1481787, 12896932, 53123);
   // as an older link: no history posted, and messages have come and gone since the link
@@ -376,11 +379,13 @@ test('a new Zendesk message brings its pictures and files into the chat with it;
   assert.match(w2.posted.rl[w2.posted.rl.length - 1].html, /<p>Attachments: <a href="[^"]+">image001\.png<\/a><\/p>$/);
 });
 
-test('linking: the ticket\'s earlier messages bring their pictures and files along', async () => {
+test('the ticket\'s earlier messages, posted on request, bring their pictures and files along', async () => {
   const w = world();
   w.deps.files = carrier();
   w.zdComments.get(53123)[0].attachments = [{ file_name: 'A0.pdf', content_url: ZF('pdf', 'A0.pdf'), size: 10 }];
   await w.sync.link(1481787, 12896932, 53123);
+  assert.deepStrictEqual(w.deps.files.calls, [], 'linking alone carries nothing');
+  await w.sync.postHistory(1481787, 12896932);
   assert.deepStrictEqual(w.posted.rl.map((p) => p.attachments.map((a) => a.attachmentId)), [[], ['rl:A0.pdf']], 'the notice bare, the history with its files');
   assert.ok(!/Attachments:/.test(w.posted.rl[1].html));
   assert.strictEqual(w.sync.linkOf(1481787, 12896932).filesPosted, true, 'nothing left for later');

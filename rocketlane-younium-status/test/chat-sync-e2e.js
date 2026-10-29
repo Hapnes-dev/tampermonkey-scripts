@@ -190,11 +190,10 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     // linked: the button turns from "found" to the link's state
     await page.waitForFunction(() => /#53123 ⇄/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
     let w = await page.evaluate(() => window.__world);
-    assert.strictEqual(w.posts.length, 2, 'the notice, then the ticket\'s earlier messages');
+    assert.strictEqual(w.posts.length, 1, 'the notice only: the ticket\'s earlier messages do not come by themselves');
     assert.strictEqual(w.posts[0].content, '<p><a href="https://iwmac.zendesk.com/agent/tickets/53123" target="_blank" rel="noopener noreferrer">Zendesk #53123</a>' +
       ' is linked to this chat · SV: 41584 Extra Laksvollen - alarm</p><p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>');
-    assert.match(w.posts[1].content, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><br><\/p><p><b>Kari Kunde<\/b> \(customer\) · .*<p>Gammel kundemelding<\/p>$/);
-    assert.deepStrictEqual(w.posts.map((p) => p.private), [true, true]);
+    assert.strictEqual(w.posts[0].private, true);
 
     // a customer's reply in Zendesk, a /reply message and an internal one in the chat; then "Sync now"
     await page.evaluate(() => {
@@ -207,7 +206,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
     await page.waitForFunction(() => window.__world.puts.length === 2, null, { timeout: 15000 });
     w = await page.evaluate(() => window.__world);
-    assert.deepStrictEqual(w.posts.slice(2).map((p) => [p.content, p.private]), [['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Alarmen kom tilbake i natt.</p>', true]]);
+    assert.deepStrictEqual(w.posts.slice(1).map((p) => [p.content, p.private]), [['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Alarmen kom tilbake i natt.</p>', true]], 'only the new one');
     assert.deepStrictEqual(w.puts, [
       { body: 'Hei Kari, vi sender en tekniker.', public: true },
       { body: 'Andreas Sandnes (Rocketlane):\nSjekk kompressor 2.', public: false },
@@ -219,9 +218,13 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click().catch(() => {});
     await page.waitForTimeout(1500);
     w = await page.evaluate(() => window.__world);
-    assert.deepStrictEqual([w.posts.length, w.puts.length], [3, 2], 'nothing twice, nothing echoed');
-    assert.strictEqual(await page.locator('#rl-zendesk-chat-sync >> text="Post earlier messages"').count(), 0, 'a new link has its history already');
-    assert.strictEqual(await page.locator('#rl-zendesk-chat-sync >> text="Post earlier messages again"').count(), 1, 'it can be posted again, after the old copies are deleted');
+    assert.deepStrictEqual([w.posts.length, w.puts.length], [2, 2], 'nothing twice, nothing echoed');
+    // the ticket's earlier messages: only on request, from the panel
+    await page.locator('#rl-zendesk-chat-sync >> text="Post earlier messages"').click();
+    await page.waitForFunction(() => window.__world.posts.some((p) => /earlier messages/.test(p.content)), null, { timeout: 15000 });
+    w = await page.evaluate(() => window.__world);
+    assert.match(w.posts[2].content, /^<p><b>Zendesk #53123<\/b> · earlier messages \(1 in all\)<\/p><p><br><\/p><p><b>Kari Kunde<\/b> \(customer\) · .*<p>Gammel kundemelding<\/p>$/);
+    assert.strictEqual(w.posts[2].private, true);
 
     // a message the open chat does not show: the chat view is reloaded in place, its route left and entered again
     await page.evaluate(() => {

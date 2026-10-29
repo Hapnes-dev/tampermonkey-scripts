@@ -330,9 +330,10 @@ v1.73.0.
   - When one matches, opening the chat asks whether to link it: **Link**, **Not now** (not asked again in that
     chat for that ticket) or **Choose another ticket**. Meanwhile the button says **Zendesk #207248 found · Link**.
   - **Link** in the list asks once more, with "Yes, link #…".
-  - Linking posts a note in the chat, then the ticket's earlier messages once, oldest first: who, what kind, when,
-    and the text. They go in one message, or in a few for a long ticket. A chat linked before this existed (the
-    Chat Bridge's 1.17.4) can get them with **Post earlier messages** in its panel. **Post earlier messages again** posts them once more, after the
+  - Linking posts a short note in the chat. From then on only **new** messages come in (v1.79.0); the ticket's
+    earlier messages are not posted by themselves.
+  - **Post earlier messages** in the panel posts them on request, once, oldest first: who, what kind, when, and the
+    text, in one message or a few for a long ticket. **Post earlier messages again** posts them once more, after the
     old copies have been deleted from the chat. What was in the chat before the link stays in the chat.
 - **From Zendesk to the chat.** Every new message on the ticket is posted in the chat as a private message, so
   customers in the project do not see it. It starts with "Zendesk #<ticket> · <name>" and a label: "(customer)" for the
@@ -342,7 +343,7 @@ v1.73.0.
   go with its chat message as Rocketlane attachments. They are uploaded the way Rocketlane's own chat uploads files,
   and customers do not see them. Pictures in a signature or in a quoted earlier email stay out, as the text does, and
   icons are left out. A file over 25 MB, one that could not be fetched or uploaded, and anything past 20 files in one
-  message stay links to Zendesk. Linking brings the earlier messages' files along too. A chat linked before 1.74.0
+  message stay links to Zendesk. Earlier messages posted on request bring their files along too. A chat linked before 1.74.0
   has a **Post earlier images and files** button in its panel: it posts them once, one message for each Zendesk
   message that has any.
 - **Tidied text.** Email replies are cleaned for the chat. Entities such as `&nbsp;` are decoded, and runs of blank
