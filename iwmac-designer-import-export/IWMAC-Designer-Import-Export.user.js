@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.106.0
+// @version      1.106.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.106.0';
+var IWDIE_VERSION = '1.106.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -10705,10 +10705,21 @@ function iwdieVcElementEnd(s, from, tag) {
   return -1;
 }
 
+/** Whether the Designer draws an object of kind `id` as a picture of its own size (v1.106.1): a pump, an alarm, an LED, a
+ *  valve, an arrow, a value's pill. A smaller box shows such a picture cut off, and a larger one shows it in its corner,
+ *  so a sync keeps that object's size. Labels, headers, the Designer's own boxes (cases, rooms), duct pipes, the
+ *  free-width boxes and the 360 room and rotor stretch, as production stretches them. */
+function iwdieVcOwnSize(id) {
+  var s = String(id || ''), o = iwdieVcObjectIndex()[s];
+  if (o && (o.kind === 'label' || o.kind === 'bar' || o.role === 'header')) return false;
+  return !/label|header|json_obj|R_dummy|_pipe_(?:horisontal|vertical)|^number_360_(?:room|vg_rot)$/i.test(s);
+}
+
 /** What a sync's placeholders ask of the panel. A placeholder that stands for one of its objects
  *  (`ref`: that object's name; else, should the names have changed, the object of its obj_id where
  *  it was, `at`) changes that object when it was moved, resized or given another text (by more than
- *  a pixel); every other placeholder becomes a new object (iwdieVcDesignerObjects). The objects
+ *  a pixel) - one the Designer draws at its own size (iwdieVcOwnSize, v1.106.1) keeps that size, moved by
+ *  its middle to its placeholder's, and is counted (`kept`); every other placeholder becomes a new object (iwdieVcDesignerObjects). The objects
  *  sent as placeholders (`sent`: their names) whose placeholder came back as none are named
  *  (`missing`), for the sync to take off the panel. A placeholder of an object no longer on the panel
  *  (v1.46.1) places nothing. The objects an earlier sync of this edit placed (v1.47.0, `placed`:
@@ -10716,10 +10727,10 @@ function iwdieVcElementEnd(s, from, tag) {
  *  copy of one that does (v1.72.1): that one moves it, and one left without is `dropped`. `existing`:
  *  the panel's objects now.
  *  -> {moves: [{name, obj_id, x, y, w, h, text, was: {x, y, w, h, text}, link}], fresh: [found...], same, missing: [name...], orphans: [found...],
- *  dropped: [name...]} - `link` (v1.63.0) where the placeholder's renamed binding (f.link) is another parameter */
+ *  dropped: [name...], kept} - `link` (v1.63.0) where the placeholder's renamed binding (f.link) is another parameter */
 function iwdieVcObjectChanges(found, existing, sent, placed) {
   var have = (existing || []).filter(function (e) { return e && typeof e === 'object' && e.name; });
-  var taken = {}, claimed = {}, moves = [], fresh = [], same = 0, unmatched = [], orphans = [], news = [];
+  var taken = {}, claimed = {}, moves = [], fresh = [], same = 0, kept = 0, unmatched = [], orphans = [], news = [];
   var near = function (a, b) { var n = parseFloat(a); return isFinite(n) && Math.abs(n - b) <= 1; };
   var known = iwdieVcObjectIndex();
   (found || []).forEach(function (f) {
@@ -10769,11 +10780,18 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
   });
   var missing = (sent || []).filter(function (n) { return !taken[n] && have.some(function (c) { return c.name === n; }); });
   var dropped = mine.filter(function (e) { return !taken[e.name]; }).map(function (e) { return e.name; });
-  return { moves: moves, fresh: fresh, same: same, missing: missing, orphans: orphans, dropped: dropped };
+  return { moves: moves, fresh: fresh, same: same, missing: missing, orphans: orphans, dropped: dropped, kept: kept };
 
   function change(f, e) {
     taken[e.name] = 1;
     var x = Math.round(f.x), y = Math.round(f.y), w = Math.max(1, Math.round(f.w)), h = Math.max(1, Math.round(f.h));
+    // (v1.106.1) a picture of its own size keeps it, to the pixel: never cut off by a smaller box. Resized there, its middle
+    // goes where its placeholder's is
+    var ew = parseFloat(e.posWidth), eh = parseFloat(e.posHeight);
+    if (ew > 0 && eh > 0 && iwdieVcOwnSize(e.obj_id)) {
+      if (!(near(ew, w) && near(eh, h))) { x = Math.round(f.x + f.w / 2 - ew / 2); y = Math.round(f.y + f.h / 2 - eh / 2); kept++; }
+      w = ew; h = eh;
+    }
     var o = known[f.id], was = iwdieVcTagOf(e), text = String(f.text || '').replace(/\s+/g, ' ').trim();
     // a text it cannot have, or the one a placeholder without the object's picture says, is no change - that placeholder
     // says it at the object's own size (v1.78.1: 10214's custom JSON object, 40 x 20, said "Free wi…", and each sync
@@ -27800,6 +27818,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (mv.moved) lines.push(iwdieN(mv.moved, 'IWMAC object', 'IWMAC objects') + ' of the panel moved, resized or relabelled as in VectorCraft' +
           (ch.same ? '; ' + ch.same + ' as they were' : '') + '.');
         if (mv.error) lines.push('Not changed: ' + mv.error + '.');
+        // (v1.106.1) resized there, kept at their own size here
+        if (ch.kept) lines.push(iwdieN(ch.kept, 'object', 'objects') + ' the Designer draws at ' + (ch.kept === 1 ? 'its' : 'their') + ' own size kept it, though ' +
+          (ch.kept === 1 ? 'its placeholder was' : 'their placeholders were') + ' resized in VectorCraft: a smaller box shows such a picture cut off. ' +
+          (ch.kept === 1 ? 'It stands' : 'They stand') + ' with ' + (ch.kept === 1 ? 'its' : 'their') + ' middle where the placeholder’s is.');
         if (rl.relinked) lines.push(iwdieN(rl.relinked, 'IWMAC object', 'IWMAC objects') + ' of the panel linked to the parameter ' +
           (rl.relinked === 1 ? 'its placeholder was renamed to' : 'their placeholders were renamed to') + ' - made again by the Designer, linked.');
         if (rl.error) lines.push('Not linked again: ' + rl.error + '.');
@@ -30031,6 +30053,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcFitMoves: iwdieVcFitMoves,
     vcFitBox: iwdieVcFitBox,
     vcFitDrawing: iwdieVcFitDrawing,
+    vcOwnSize: iwdieVcOwnSize,
     vcObjectChanges: iwdieVcObjectChanges,
     vcKnownResolve: iwdieVcKnownResolve,
     vcDesignerPlan: iwdieVcDesignerPlan,

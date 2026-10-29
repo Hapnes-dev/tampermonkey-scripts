@@ -531,6 +531,28 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A sync never cuts an object off: pictures of their own size keep it (v1.106.1)
+
+Thomas, after 1.106.0: the sync also *cuts IWMAC objects such as pumps, bubbles, alarms and arrows, so that parts of them
+are cut away*. The 1.105.0 sync above made every object 0.914 of its size: a pump 21 × 21 became 19 × 19, an alarm
+34 × 34 became 31 × 31, a value's pill 62 × 23 became 57 × 21. The Designer draws such an object as a picture of its own
+size, so in the smaller box each showed cut off at its right and bottom edges. 1.106.0 removed that cause. Now a sync
+also refuses to resize such an object, whatever resized its placeholder in VectorCraft:
+
+- **The objects the Designer draws at their own size keep it, to the pixel** (`iwdieVcOwnSize`). These are pumps,
+  alarms, LEDs, valves, arrows, fans, sensors, the AK-PC strips, the values with a pill of their own, and the bare
+  values. A placeholder resized by more than a pixel moves its object so that its middle lands where the placeholder's
+  is. The sync's message counts those.
+- **What production stretches still stretches:** labels, headers, the Designer's own boxes (cases and rooms), duct
+  pipes, the free-width boxes, and the 360 room and rotor.
+
+Checked in the stub with the hosted VectorCraft. The save that 1.105.0's VectorCraft had made of the case above was sent
+as the edit's save, with every placeholder 0.914 of its size and up to 169 px lower. None of the 20 objects drawn at
+their own size changed size. Seventeen placeholders resized by more than a pixel moved their objects by the middle,
+three shut-off valves a pixel smaller kept 17 × 13, and the 15 labels took their placeholders' sizes. The three rounds
+then ran again on both kept forms: 0 of 35 moved in every round, and the push changed nothing. Not run in the live
+Designer.
+
 ### A drawing of another size than the panel opens laid out as the Designer shows it (v1.106.0)
 
 Thomas, on a heating panel of 1280 × 1024: a Ctrl+S from the IWMAC Designer to VectorCraft *moves all the objects to
