@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.105.0
+// @version      1.106.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.105.0';
+var IWDIE_VERSION = '1.106.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8778,6 +8778,90 @@ function iwdieVcSized(svg, w, h) {
   return s.slice(0, m.index) + tag + s.slice(m.index + m[0].length);
 }
 
+/** An attribute of an SVG's root, read from its text (v1.106.0): null when the root has none, or there is no root. */
+function iwdieVcRootAttr(svg, name) {
+  var open = /<svg\b[^>]*>/i.exec(String(svg || ''));
+  var m = open && new RegExp('\\s' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\')').exec(open[0]);
+  return m ? (m[1] != null ? m[1] : m[2]) : null;
+}
+
+/** How a drawing's own units lie on the panel (v1.106.0): its root's viewBox drawn into the panel's `size` {w, h} as the
+ *  Designer draws the picture (vcRenderPng) and a sync measures it (vcMeasure) - evenly scaled and centred, or as the
+ *  root's preserveAspectRatio (`par`) says. -> {m: [a, b, c, d, e, f], from: {x, y, w, h}: the viewBox}, or null without
+ *  a usable viewBox: the drawing's units are then the panel's pixels as they are */
+function iwdieVcViewFit(viewBox, par, size) {
+  var W = Math.round(size && size.w || 0), H = Math.round(size && size.h || 0);
+  var vb = String(viewBox == null ? '' : viewBox).trim().split(/[\s,]+/).map(parseFloat);
+  if (!(W > 0) || !(H > 0) || vb.length !== 4 || !vb.every(isFinite) || !(vb[2] > 0) || !(vb[3] > 0)) return null;
+  var p = String(par == null ? '' : par).trim().replace(/^defer\s+/, '').split(/\s+/), sx = W / vb[2], sy = H / vb[3];
+  var from = { x: vb[0], y: vb[1], w: vb[2], h: vb[3] };
+  if (p[0] === 'none') return { m: [sx, 0, 0, sy, -vb[0] * sx, -vb[1] * sy], from: from };
+  var al = /^x(Min|Mid|Max)Y(Min|Mid|Max)$/.exec(p[0] || '') || ['', 'Mid', 'Mid'], at = { Min: 0, Mid: 0.5, Max: 1 };
+  var k = p[1] === 'slice' ? Math.max(sx, sy) : Math.min(sx, sy);
+  return { m: [k, 0, 0, k, (W - vb[2] * k) * at[al[1]] - vb[0] * k, (H - vb[3] * k) * at[al[2]] - vb[1] * k], from: from };
+}
+
+/** Whether a fit (iwdieVcViewFit's m) moves anything (v1.106.0): false where the drawing's units are the panel's pixels. */
+function iwdieVcFitMoves(m) {
+  return !!m && (Math.abs(m[0] - 1) > 1e-9 || Math.abs(m[3] - 1) > 1e-9 || Math.abs(m[1]) > 1e-9 || Math.abs(m[2]) > 1e-9 ||
+    Math.abs(m[4]) > 1e-6 || Math.abs(m[5]) > 1e-6);
+}
+
+/** A box {x, y, w, h} in a drawing's units, on the panel by the drawing's fit `m` (v1.106.0). */
+function iwdieVcFitBox(m, b) {
+  return { x: m[0] * b.x + m[4], y: m[3] * b.y + m[5], w: m[0] * b.w, h: m[3] * b.h };
+}
+
+/** A fit `m` as an SVG transform (v1.106.0). */
+function iwdieVcMatrix(m) {
+  return 'matrix(' + m.map(function (v) { return String(Math.round(v * 1e6) / 1e6); }).join(' ') + ')';
+}
+
+/** A drawing laid out at the panel's size (v1.106.0), as the Designer shows it. The Designer draws a drawing of another
+ *  size into the panel evenly scaled and centred (iwdieVcViewFit) - an agent's 1400 × 750 drawing inserted on a panel of
+ *  1280 × 1024 - and the panel's objects stand on that picture. Opened as it was kept, VectorCraft fitted its viewBox into
+ *  the root's size too, and the objects' placeholders, which stand where the objects are on the panel, went with it: each
+ *  came out smaller and lower than its object, and the first sync moved every one there (plant 8769, 2026-10-29). One kept
+ *  at its own size opened at that size, the placeholders off the drawing, and a sync measured them through its viewBox
+ *  into the panel, moving every one as well. Here the root becomes the panel's - width,
+ *  height, viewBox 0 0 W H - and each thing at its top takes the fit as a transform of its own, which VectorCraft's
+ *  import bakes into its art: a layer stays a layer. VectorCraft's own copy of the document goes, as it no longer matches.
+ *  -> {svg, m: the fit, or null where only the root's size changed, from: {w, h}: the drawing's size}, or null for a
+ *  drawing at the panel's size already, or no SVG */
+function iwdieVcFitDrawing(svg, size) {
+  var s = String(svg || ''), open = /<svg\b[^>]*>/i.exec(s), close = s.lastIndexOf('</svg>');
+  var W = Math.round(size && size.w || 0), H = Math.round(size && size.h || 0);
+  if (!open || close < open.index + open[0].length || !(W > 0) || !(H > 0)) return null;
+  var tag = open[0], fit = iwdieVcViewFit(iwdieVcRootAttr(tag, 'viewBox'), iwdieVcRootAttr(tag, 'preserveAspectRatio'), size);
+  var len = function (a) { var v = iwdieVcRootAttr(tag, a), n = v === null || /%/.test(v) ? NaN : parseFloat(v); return isFinite(n) && n > 0 ? n : null; };
+  var w0 = len('width'), h0 = len('height');
+  // VectorCraft opens a root of another width or height at that size, the viewBox fitted into it: so that too
+  var sized = (w0 === null || Math.abs(w0 - W) < 0.5) && (h0 === null || Math.abs(h0 - H) < 0.5);
+  var m = fit && iwdieVcFitMoves(fit.m) ? fit.m : null;
+  if (!m && sized) return null;
+  var root = tag.replace(/\s(?:width|height|viewBox|preserveAspectRatio)\s*=\s*(?:"[^"]*"|'[^']*')/g, '')
+    .replace(/^<svg\b/i, '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '"');
+  var body = s.slice(open.index + tag.length, close);
+  if (m) {
+    var M = iwdieVcMatrix(m), tops = iwdieXmlTop(body);
+    for (var i = tops.length - 1; i >= 0; i--) {
+      var t = tops[i], nm = (/^<([\w:.-]+)/.exec(t.tag) || ['', ''])[1];
+      if (!/^(g|path|rect|circle|ellipse|line|polyline|polygon|text|image|use|a|switch|svg|foreignObject)$/.test(nm)) continue;
+      // one that cannot take it as an attribute - an <svg>, or one whose style sets a transform - in a group of its own
+      if (nm === 'svg' || /\sstyle\s*=\s*(?:"[^"]*|'[^']*)transform/.test(t.tag)) {
+        body = body.slice(0, t.start) + '<g transform="' + M + '">' + body.slice(t.start, t.end) + '</g>' + body.slice(t.end);
+        continue;
+      }
+      var tr = /\stransform\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(t.tag), own = tr ? (tr[1] != null ? tr[1] : tr[2]) : '';
+      var nt = tr ? t.tag.replace(tr[0], function () { return ' transform="' + M + ' ' + own + '"'; })
+        : t.tag.replace(/^<([\w:.-]+)/, function (all) { return all + ' transform="' + M + '"'; });
+      body = body.slice(0, t.start) + nt + body.slice(t.start + t.tag.length);
+    }
+  }
+  return { svg: iwdieVcStripEditing(s.slice(0, open.index) + root + body + s.slice(close)), m: m,
+    from: fit ? { w: fit.from.w, h: fit.from.h } : { w: w0 || W, h: h0 || H } };
+}
+
 /** An SVG made fit for a browser to draw (v1.58.0). VectorCraft's style sheets give font sizes and letter spacing
  *  as bare numbers (`font-size:12`), which CSS does not take: a browser drew such text at its own size - 16 px in an
  *  image - so a synced panel's labels came out bigger and ran into each other. Those numbers get px; and a family
@@ -10566,8 +10650,10 @@ function iwdieVcTagJob(svg, id) {
  *  as their layer, on top. VectorCraft then reads the art (its own copy no longer matches). The art
  *  an earlier sync kept of the objects (v1.47.0: each piece with its box, data-iwdie-box) goes back
  *  into the placeholder of the object over it; the layer the last placeholders were on goes, or,
- *  holding more, is called IWMAC-rammer. */
-function iwdieVcAddPanelObjects(svg, objects, looks, more) {
+ *  holding more, is called IWMAC-rammer. `fit` (v1.106.0): the drawing was laid out at the panel's size
+ *  (iwdieVcFitDrawing's m), so each piece taken out of it goes into its placeholder with that fit, its box
+ *  on the panel as the drawing is. */
+function iwdieVcAddPanelObjects(svg, objects, looks, more, fit) {
   var s = String(svg || ''), at = s.lastIndexOf('</svg>'), used = {}, unders = {};
   // art cut afresh for some of them (v1.48.1, `more` by name: an older drawing mended)
   Object.keys(more || {}).forEach(function (nm) { unders[nm] = (more[nm] || []).slice(); });
@@ -10576,15 +10662,18 @@ function iwdieVcAddPanelObjects(svg, objects, looks, more) {
   while ((m = re.exec(s))) {
     var end = iwdieVcElementEnd(s, m.index, m[1]), b = m[2].split(' ').map(parseFloat);
     if (end < 0 || b.length !== 4 || !b.every(isFinite)) continue;
-    var box = { x: b[0], y: b[1], w: b[2], h: b[3] }, name = iwdieVcUnderOf(box, objects);
+    var box = { x: b[0], y: b[1], w: b[2], h: b[3] };
+    if (fit) box = iwdieVcFitBox(fit, box);
+    var name = iwdieVcUnderOf(box, objects);
     if (name && iwdieVcPanelPlaceholderSvg((objects || []).filter(function (ob) { return ob && String(ob.name) === name; })[0], null, {})) {
       pieces.push({ from: m.index, to: end, name: name, box: box });
     }
     re.lastIndex = end;
   }
   for (var i = pieces.length - 1; i >= 0; i--) {
-    var p = pieces[i];
-    (unders[p.name] = unders[p.name] || []).splice((more && more[p.name] || []).length, 0, { markup: s.slice(p.from, p.to), box: p.box });
+    var p = pieces[i], art = s.slice(p.from, p.to);
+    if (fit) art = '<g transform="' + iwdieVcMatrix(fit) + '">' + art + '</g>';
+    (unders[p.name] = unders[p.name] || []).splice((more && more[p.name] || []).length, 0, { markup: art, box: p.box });
     s = s.slice(0, p.from) + s.slice(p.to);
   }
   if (pieces.length) {
@@ -23657,7 +23746,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (iwdieSymRefs(svg).length) svg = iwdieSymExpand(svg, kept ? kept.items : []).svg;
         return iwdieVcAuthored(svg, size);
       }) : parsed && parsed.bytes ? vcDocumentOf(parsed.bytes) : Promise.resolve(null)).then(function (svg) {
-        if (svg) return { svg: iwdieVcAddPanelObjects(svg, objects, looks), authored: !!drawn };
+        // laid out at the panel's size, as the Designer shows a drawing of another size (v1.106.0)
+        var fit = svg ? iwdieVcFitDrawing(svg, size) : null;
+        if (svg) return { svg: iwdieVcAddPanelObjects(fit ? fit.svg : svg, objects, looks, null, fit ? fit.m : null), authored: !!drawn };
         return { svg: iwdieVcSvg({ width: size.w, height: size.h, plate: '#e5e7ea', picture: bg || null, objects: objects, looks: looks, title: title }), authored: false };
       }).then(function (got) {
         var sent = [], re = /\sdata-iwdie-ref="([^"]*)"/g, m;
@@ -24391,12 +24482,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return null;
         });
       }).then(function (doc) {
+        // laid out at the panel's size (v1.106.0): a drawing of another size as the Designer shows it, so the panel's objects
+        // stand on it in VectorCraft as they do on the panel, and a sync measures them where they are
+        var fit = doc ? iwdieVcFitDrawing(doc, size) : null;
+        if (fit) { doc = fit.svg; info.fitted = fit.from; }
         // the panel's objects on top, as placeholders that know which object they are (v1.46.0)
         if (doc) {
           vc = true;
           paper = vcPaper(tab, [['build', info.authored ? 'The panel’s drawing, as its SVG' : 'The VectorCraft document behind the background'], ['open', 'Opening VectorCraft']]);
           paper.step('build', nObj ? 'with ' + iwdieN(nObj, 'object', 'objects') + ' of the panel on top' : '', 0.3, 0.9);
-          return iwdieVcAddPanelObjects(shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc, info.objects, info.looks, info.mended ? info.mended.unders : null);
+          return iwdieVcAddPanelObjects(shapes.length ? iwdieVcMergeShapes(doc, shapes) : doc, info.objects, info.looks, info.mended ? info.mended.unders : null,
+            fit ? fit.m : null);
         }
         var lib = base ? libLoad() : null;
         // the plant's own .ai offered first (v1.51.0): before the picture is read for components, the file it was
@@ -24522,6 +24618,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           (nObj ? '. The ' + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter, over the rest' : '');
         if (info.authored) what = 'The panel’s drawing, given as SVG, as the vectors it is: its groups as VectorCraft’s layers, nothing locked, to edit' +
           (nObj ? '; the ' + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter, over the rest' : '');
+        // (v1.106.0) a drawing of another size, laid out as the panel shows it
+        if (info.fitted) what += ' - drawn at ' + Math.round(info.fitted.w) + ' × ' + Math.round(info.fitted.h) + ', laid out at the panel’s ' +
+          Math.round(size.w) + ' × ' + Math.round(size.h) + ', scaled and centred as the Designer shows it';
         outcomeToast({
           tone: 'good', title: 'Opening in VectorCraft',
           lines: (got ? ['Found in the picture in ' + got.seconds + ' s: ' + [got.count ? iwdieN(got.count, 'component', 'components') + ' of your library (' + got.summary + ')' : '',
@@ -27632,6 +27731,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!vcShowing(info)) { vcTake(info.job, val, info); return Promise.resolve(); }
       ack('received');
       var size = exportPanelSize(), ph;
+      // (v1.106.0) saved at another size than the panel - its artboard changed in VectorCraft: fitted in, and said so
+      var drawnAt = iwdieVcViewFit(iwdieVcRootAttr(svg, 'viewBox'), iwdieVcRootAttr(svg, 'preserveAspectRatio'), size);
+      if (drawnAt && !iwdieVcFitMoves(drawnAt.m)) drawnAt = null;
       // the components still around the artboard left out (v1.59.0): they never show on the panel
       try { svg = vcOffBoard(svg, size).svg; } catch (e) {}
       try { ph = vcPlaceholders(svg, size, info.job); } catch (e) {
@@ -27719,6 +27821,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (ph.skipped) lines.push(iwdieN(ph.skipped, 'placeholder', 'placeholders') + ' had no size (hidden?) and became no object.');
         if (ph.stale) lines.push(iwdieN(ph.stale, 'placeholder', 'placeholders') + ' from an older edit left out - the IWMAC objects the plant’s .ai kept ' +
           'from the edit it was saved in. They stood for the objects as they were then; the ones added in this edit are the panel’s.');
+        if (drawnAt) lines.push('VectorCraft saved the drawing at ' + Math.round(drawnAt.from.w) + ' × ' + Math.round(drawnAt.from.h) + ', and the panel is ' +
+          Math.round(size.w) + ' × ' + Math.round(size.h) + ': the picture and the objects are that drawing fitted into the panel, scaled and centred, as the ' +
+          'Designer shows a drawing of another size. With its artboard at the panel’s size (Document Setup), they stay as drawn.');
         // the editor's tab told at once (v1.56.0): the background and the objects are set; the PNG still goes up
         var applied = { placed: objs.placed, already: objs.already, skipped: ph.skipped, stale: ph.stale || 0, objError: objs.error || mv.error || rm.error || rl.error,
           moved: mv.moved + rl.relinked, removed: rm.removed.length, held: (hold ? gone.length : 0) + lost.length,
@@ -29921,6 +30026,11 @@ if (typeof module !== 'undefined' && module.exports) {
     vcPanelSent: iwdieVcPanelSent,
     vcTagJob: iwdieVcTagJob,
     vcAddPanelObjects: iwdieVcAddPanelObjects,
+    vcRootAttr: iwdieVcRootAttr,
+    vcViewFit: iwdieVcViewFit,
+    vcFitMoves: iwdieVcFitMoves,
+    vcFitBox: iwdieVcFitBox,
+    vcFitDrawing: iwdieVcFitDrawing,
     vcObjectChanges: iwdieVcObjectChanges,
     vcKnownResolve: iwdieVcKnownResolve,
     vcDesignerPlan: iwdieVcDesignerPlan,

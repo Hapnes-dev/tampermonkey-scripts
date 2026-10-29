@@ -531,6 +531,43 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A drawing of another size than the panel opens laid out as the Designer shows it (v1.106.0)
+
+Thomas, on a heating panel of 1280 × 1024: a Ctrl+S from the IWMAC Designer to VectorCraft *moves all the objects to
+the wrong place*, so it no longer looks the same. The drawing that panel's picture keeps is an agent's 1400 × 750, made
+the picture with Insert JSON. The Designer shows such a drawing evenly scaled and centred (0.914, 169 px down), and the
+panel's objects stand on that picture. Edit in VectorCraft opened the drawing as it was kept, its root sized to the
+panel and its viewBox the drawing's own. VectorCraft fitted that viewBox into the panel itself, and the objects'
+placeholders went with it, although they stood where the objects are on the panel. So each placeholder came out 9 %
+smaller and up to 169 px lower than its object, and the first sync moved every object there.
+
+- **The drawing is laid out at the panel's size when it opens** (`iwdieVcFitDrawing`). This covers Edit in VectorCraft,
+  the Designer's Ctrl+S when no edit is open, and VectorCraft by itself opening a panel file. Its root becomes the
+  panel's: width, height and viewBox `0 0 W H`. Each thing at its top takes the drawing's fit onto the panel as a
+  transform of its own. VectorCraft's import bakes that into the art, and a layer stays a layer. The placeholders then
+  go on where the objects are, over the drawing as the Designer shows it.
+- **The rest of the drawing follows the same fit.** Art that a placeholder carried (`data-iwdie-box`) goes into its
+  placeholder with the same fit, and its box is matched on the panel. VectorCraft's own copy of the document is left
+  out, as it no longer matches.
+- **The open says so:** *drawn at 1400 × 750, laid out at the panel's 1280 × 1024*.
+- **A save of another size gets a note too.** The sync's message names the drawing's size and the panel's: the case
+  where the artboard was changed in VectorCraft. The picture and the objects are then fitted into the panel, as before.
+
+Checked in the stub with the hosted VectorCraft on a synthetic copy of the case: 35 objects at their places on the
+plant, and a 1400 × 750 drawing kept in a 1280 × 1024 picture. Three rounds ran: open and sync; open again and sync;
+the Designer's Ctrl+S into the open edit, then a sync.
+
+| | 1.105.0 | 1.106.0 |
+|---|---|---|
+| The kept drawing as Insert keeps it, root 1280 × 1024 | the first sync moved all 35 objects | 0 moved in every round; the push changed nothing |
+| The drawing kept at its own size, root 1400 × 750 | every sync moved all 35 again (one object's top went 160, 315, 457, 587) | 0 moved in every round; the push changed nothing |
+
+The layers Bakgrunn, Rør, Former and IWMAC-objekter came back from VectorCraft as layers. Not run in the live
+Designer.
+
+**An edit opened before 1.106.0 keeps the old layout**, its placeholders already shrunk by VectorCraft. Close that tab
+and click Edit in VectorCraft again.
+
 ### The bridge's Oversikt planner as Copilot's: names off a wall's runs, an arrangement's size and clusters (v1.105.0)
 
 Copilot's `oversikt.py` changed how it places an Oversikt (the kit's change log, Parts 173 and 174); the bridge's
