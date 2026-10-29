@@ -531,6 +531,40 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### IWMAC objects of a fixed size cannot be resized in VectorCraft (v1.107.0)
+
+Thomas: *make IWMAC objects that are not designed to be resized non-resizable in VectorCraft*. That applies to every
+object that a resize cuts off or distorts: pumps, alarm indicators, bubbles and arrows. VectorCraft itself has no
+such setting: it can lock an object, but a locked object cannot be moved either. So the hosted VectorCraft gained one
+(iwmac-vector, `build/patches/vectorcraft--iwdie-fixed-size.patch`), and the script marks the objects it is for:
+
+- **The mark.** Every placeholder of a kind the Designer draws at its own size (`iwdieVcOwnSize`, as 1.106.1 keeps
+  in a sync) carries `data-iwdie-fixed="1"` (`iwdieVcFixedAttr`). This covers:
+  - the panel's own objects;
+  - the objects the IWMAC menu drops, whose dropped group holds just the marked one;
+  - those placed from VectorCraft's Libraries;
+  - those Vectorize image finds;
+  - those the Claude bridge places.
+
+  VectorCraft keeps the mark through a save, as it keeps the other `data-*` attributes.
+- **In VectorCraft.** A selection of only such objects shows no handles and no rotate zones, so a press on it moves
+  it. Any transform of a selection that holds one moves it by its centre and leaves its size and turn. That covers
+  a corner handle, the Scale and Rotate tools, and the Transform panel's width. Labels, headers, the Designer's own
+  boxes, duct pipes and the free-width boxes still stretch.
+- **An edit opened before 1.107.0** has no marks. Its objects stay resizable there, and the sync still keeps them at
+  their own size (1.106.1).
+
+Checked in the stub with this build of VectorCraft, on the 8769 case of 1.106.0:
+- A pump selected alone showed its box without handles, and a press on its corner moved it.
+- The pump was then selected with the label JP2 beside it, and the selection's corner handle was dragged out. The
+  label went from 45 × 12 to 69 × 25, and the pump stayed 21 × 21, moved by its centre. This was measured in
+  VectorCraft's own save, before the sync.
+- On the live build the same steps gave the pump eight handles, and it came out 32 × 44.
+- The update test (`vc_update_e2e.py`) passed against the live build: 77, 107 and 77 objects placed, the `.ai` flow
+  alike, and the first save by the clicks alone.
+
+Not run in the live Designer.
+
 ### A sync never cuts an object off: pictures of their own size keep it (v1.106.1)
 
 Thomas, after 1.106.0: the sync also *cuts IWMAC objects such as pumps, bubbles, alarms and arrows, so that parts of them
@@ -4630,6 +4664,10 @@ these ways:
   as its bounding rectangle, and a sync would put that rectangle in the panel's picture. The PDF
   reader's fix was closed upstream without being merged (2026-10-24); the build carries it until a
   release has it.
+- **IWMAC objects of a fixed size cannot be resized** (since 2026-10-29, the repository's
+  `build/patches/vectorcraft--iwdie-fixed-size.patch`, this script 1.107.0). An object marked
+  `data-iwdie-fixed="1"` shows no handles when selected alone. A transform moves it by its centre and leaves its size and
+  turn. Every release keeps this change.
 
 The repository's `build/build.sh` makes it from a release tag. **To move to a newer release, follow
 [UPDATING.md](https://github.com/Hapnes-dev/iwmac-vector/blob/main/UPDATING.md)**:

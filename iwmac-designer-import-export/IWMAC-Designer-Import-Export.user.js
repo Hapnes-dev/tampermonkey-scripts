@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.106.1
+// @version      1.107.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.106.1';
+var IWDIE_VERSION = '1.107.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9102,6 +9102,9 @@ function iwdieVcNativeDoc(item) {
   var ids = { next: 3, images: {} }, name = (item && item.name) || 'Komponent';
   var kids = ((item && item.shapes) || []).map(function (s) { return iwdieVcNode(s, ids); }).filter(Boolean);
   var top = { id: ids.next++, name: name, kind: { type: 'group', children: kids, clip: false } };
+  // (v1.107.0) an IWMAC object the Designer draws at its own size keeps it, placed from Libraries too (iwdieVcFixedAttr)
+  var oid = iwdieVcObjectId(name);
+  if (oid && iwdieVcOwnSize(oid)) top.attrs = { data: [['iwdie-fixed', '1']] };
   var w = Math.max(0, +item.w || 0), h = Math.max(0, +item.h || 0);
   return JSON.stringify({
     format: 'vectorcraft', version: 1, generator: 'IWMAC Designer Import/Export ' + IWDIE_VERSION,
@@ -10179,13 +10182,14 @@ function iwdieVcObjectItems(looks) {
 
 /** One placeholder as an SVG file (v1.41.0), to be dropped on the drawing: VectorCraft places a
  *  dropped SVG centred on the drop point, as one group named after the file. Its text is in
- *  Source Sans 3, a font VectorCraft carries. */
+ *  Source Sans 3, a font VectorCraft carries. One the Designer draws at its own size (v1.107.0) is
+ *  in a group marked so (iwdieVcFixedAttr): the dropped group holding just that keeps its size too. */
 function iwdieVcObjectSvg(o) {
-  var it = iwdieVcObjectItem(o), parts = iwdieVcItemParts(it);
+  var it = iwdieVcObjectItem(o), parts = iwdieVcItemParts(it), fixed = iwdieVcFixedAttr(o.id);
   // the tag text under the box is the file's too, so the SVG reaches to it; the box stays at 0, 0
   var vh = Math.max(it.h, it.shapes.reduce(function (m, s) { return s.t === 'text' ? Math.max(m, Math.ceil(s.y + 2)) : m; }, 0));
   return '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="' + it.w + '" height="' + vh + '" viewBox="0 0 ' + it.w + ' ' + vh + '">' +
-    parts.join('') + '</svg>';
+    (fixed ? '<g' + fixed + '>' : '') + parts.join('') + (fixed ? '</g>' : '') + '</svg>';
 }
 
 /** The catalogue's objects whose id, description or role holds every word of `query`, in the
@@ -10518,7 +10522,8 @@ function iwdieVcKeepUnder(g, box, was, k) {
     }
     m.removeAttribute('data-iwdie-fat');
   });
-  ['data-iwdie-obj', 'data-iwdie-ref', 'data-iwdie-at', 'data-iwdie-bind', 'data-iwdie-label'].forEach(function (a) { g.removeAttribute(a); });
+  // (v1.107.0) and its fixed size: the art is the drawing's, the placeholder's mark is not
+  ['data-iwdie-obj', 'data-iwdie-ref', 'data-iwdie-at', 'data-iwdie-bind', 'data-iwdie-label', 'data-iwdie-fixed'].forEach(function (a) { g.removeAttribute(a); });
   g.setAttribute('id', 'iwdie-ramme-' + k);
   g.setAttribute('data-name', 'Ramme');
   return true;
@@ -10579,7 +10584,7 @@ function iwdieVcPanelPlaceholderSvg(ob, look, used, under) {
   var name = IWDIE_VC_OBJ_PREFIX + id + (bd ? ' ' + bd.label : ''), gid = iwdieVcSvgId(name, used);
   return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-ref="' + esc(String(ob.name || '')) + '" data-iwdie-obj="' + esc(id) +
     '" data-iwdie-at="' + [x, y, w, h].map(f).join(' ') + '"' + (bd ? ' data-iwdie-bind="' + esc(String(bd.driver || '')) + '" data-iwdie-label="' + esc(bd.label) + '"' : '') +
-    ' transform="translate(' + f(x) + ' ' + f(y) + ')">' + art + iwdieVcItemParts(it).join('') + '</g>';
+    ' transform="translate(' + f(x) + ' ' + f(y) + ')"' + iwdieVcFixedAttr(id) + '>' + art + iwdieVcItemParts(it).join('') + '</g>';
 }
 
 /** One of the panel's objects as its placeholder shows it (v1.82.5, out of iwdieVcPanelPlaceholderSvg, so the Illustrator
@@ -10713,6 +10718,14 @@ function iwdieVcOwnSize(id) {
   var s = String(id || ''), o = iwdieVcObjectIndex()[s];
   if (o && (o.kind === 'label' || o.kind === 'bar' || o.role === 'header')) return false;
   return !/label|header|json_obj|R_dummy|_pipe_(?:horisontal|vertical)|^number_360_(?:room|vg_rot)$/i.test(s);
+}
+
+/** The mark that keeps a placeholder at its own size in VectorCraft (v1.107.0): ' data-iwdie-fixed="1"' for a kind the
+ *  Designer draws at its own size (iwdieVcOwnSize), else ''. This site's VectorCraft (iwmac-vector) shows such an object
+ *  no handles, and any transform - a scale of a selection it is in, the Transform panel's width - moves it by its
+ *  centre and leaves its size and turn. VectorCraft keeps the mark through a save, as it keeps the other data-*. */
+function iwdieVcFixedAttr(id) {
+  return iwdieVcOwnSize(id) ? ' data-iwdie-fixed="1"' : '';
 }
 
 /** What a sync's placeholders ask of the panel. A placeholder that stands for one of its objects
@@ -14058,7 +14071,7 @@ function iwdieCbMarkup(s, cid, looks, used) {
     o.w = s.box.w; o.h = s.box.h;
     if (s.text) o.tag = s.text;
     var name = IWDIE_VC_OBJ_PREFIX + s.obj_id + (s.bind ? ' ' + s.bind : ''), gid = iwdieVcSvgId(name, used || {});
-    return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '"' + c + ' transform="translate(' + f(s.box.x) + ' ' + f(s.box.y) + ')">' +
+    return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '"' + c + ' transform="translate(' + f(s.box.x) + ' ' + f(s.box.y) + ')"' + iwdieVcFixedAttr(s.obj_id) + '>' +
       iwdieVcItemParts(iwdieVcObjectItem(o)).join('') + '</g>';
   }
   if (s.kind === 'pill') {
@@ -17211,7 +17224,7 @@ function iwdieVcFoundPlaceholderSvg(f, look, used) {
   var bx = iwdieVzBoxOf(known.id);
   if (bx) { o.bar = /^#[0-9a-f]{6}$/i.test(f.colour || '') ? f.colour : bx.colour; o.round = bx.round; o.bare = true; }
   var name = IWDIE_VC_OBJ_PREFIX + known.id, gid = iwdieVcSvgId(name, used);
-  return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-found="1" transform="translate(' + fmt(f.x) + ' ' + fmt(f.y) + ')">' +
+  return '<g id="' + esc(gid) + '" data-name="' + esc(name) + '" data-iwdie-found="1" transform="translate(' + fmt(f.x) + ' ' + fmt(f.y) + ')"' + iwdieVcFixedAttr(known.id) + '>' +
     iwdieVcItemParts(iwdieVcObjectItem(o)).join('') + '</g>';
 }
 
@@ -30054,6 +30067,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcFitBox: iwdieVcFitBox,
     vcFitDrawing: iwdieVcFitDrawing,
     vcOwnSize: iwdieVcOwnSize,
+    vcFixedAttr: iwdieVcFixedAttr,
     vcObjectChanges: iwdieVcObjectChanges,
     vcKnownResolve: iwdieVcKnownResolve,
     vcDesignerPlan: iwdieVcDesignerPlan,
