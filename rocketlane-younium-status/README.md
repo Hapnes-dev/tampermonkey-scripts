@@ -372,12 +372,26 @@ v1.73.0.
 - **Only active tickets.** A linked ticket syncs while it is new, open, pending or on hold, also after it has left the
   queue's view. Solved or closed, the link pauses. Opened again, the link catches up on everything that came in
   meanwhile.
-- **When it runs:** by itself, in one Rocketlane tab of the browser where it is on. It runs every 15 seconds while that
-  tab is in front, and every minute in the background. A tab in front takes over from one in the background.
-  - A ticket's messages are fetched only when the ticket has changed.
+- **When it runs:** by itself, in one Rocketlane tab of the browser where it is on, on any Rocketlane page.
+  - It checks the linked tickets at a set interval while that tab is in front: 15 seconds unless changed. In the
+    background it checks at most once a minute. Change the interval in the panel ("Checks Zendesk every …") or in the
+    Tampermonkey menu (v1.80.0). The panel also shows when it last checked.
+  - A visit checks at once: a second after a Rocketlane page loads, when the tab or the window comes back to the
+    front, and when you open a linked chat.
   - A new message in a linked chat starts a round at once, through Rocketlane's own push events.
   - **Sync now** in the panel runs one at once.
+  - A ticket's messages are fetched only when the ticket has changed, and then only those after the last one taken.
+  - A tab in front takes over from one in the background, but only once that tab's round is over.
   - With the browser closed it does not run, and it catches up the next time.
+- **Nothing twice** (v1.80.0). Every message the sync brings in from Zendesk carries a mark: its "Zendesk #…" link
+  points at the ticket with the comment's id. Before posting, the sync searches the other side:
+  - A Zendesk comment already in the chat (by its mark, or by its text for messages from before the marks) is not
+    posted again.
+  - A Zendesk comment made from a chat message (through the API, with that message's text) never comes back into the
+    chat.
+  - A chat message already on the ticket is not sent again.
+  - So a second browser running the sync for the same chat, or a browser whose record of the link is out of date,
+    posts nothing twice. Even so, turn the sync on in one browser only.
 - **The chat on screen.** Rocketlane shows new messages through its push events. If a message the sync posted does not
   show up in the chat you have open, the chat view is reloaded in place: its route is left and entered again, so
   Rocketlane fetches the chat's messages, without a page reload and without a new history entry. This never happens

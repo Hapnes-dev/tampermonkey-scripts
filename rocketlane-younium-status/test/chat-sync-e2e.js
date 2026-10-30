@@ -36,6 +36,8 @@ const NET = `{
   zdUpload: (blob, name) => window.__zdUpload(blob, name),
 }`;
 const START = '(function(){' + SYNC + '\nstartZendeskChatSync(' + NET + ');})();';
+// a mirrored message's first line without its mark (the link to the Zendesk comment, since 1.80.0)
+const unmark = (h) => String(h).replace(/<a href="[^"]*#zd-comment-\d+"[^>]*>(Zendesk #\d+)<\/a>/g, '$1');
 
 // the page's stand-ins: Tampermonkey's storage and menu, and GM_xmlhttpRequest answered by a fake Rocketlane + Zendesk
 const SHIM = `
@@ -105,7 +107,7 @@ window.GM_xmlhttpRequest = (o) => {
     if (p === '/api/v2/tickets/53123/comments.json') return ok({ comments: W.zd.slice().reverse(), users: [{ id: 700, name: 'Kari Kunde', role: 'end-user' }, { id: 900, name: 'Thomas', role: 'agent' }], next_page: null });
     if (p === '/api/v2/tickets/53123.json' && o.method === 'GET') return ok({ ticket: { id: 53123, requester_id: 700, email_cc_ids: [901, 902] }, users: [{ id: 700, name: 'Kari Kunde' }] });
     if (p === '/api/v2/tickets/53123.json' && o.method === 'PUT') {
-      const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [] };
+      const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [], via: { channel: 'api' } };
       W.addZd(c); W.puts.push(body.ticket.comment); return ok({ ticket: { id: 53123 }, audit: { events: [{ type: 'Comment', id: c.id }] } });
     }
   }
@@ -206,13 +208,20 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
     await page.waitForFunction(() => window.__world.puts.length === 2, null, { timeout: 15000 });
     w = await page.evaluate(() => window.__world);
-    assert.deepStrictEqual(w.posts.slice(1).map((p) => [p.content, p.private]), [['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Alarmen kom tilbake i natt.</p>', true]], 'only the new one');
+    assert.deepStrictEqual(w.posts.slice(1).map((p) => [unmark(p.content), p.private]), [['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Alarmen kom tilbake i natt.</p>', true]], 'only the new one');
+    assert.match(w.posts[1].content, /href="https:\/\/iwmac\.zendesk\.com\/agent\/tickets\/53123#zd-comment-\d+"/, 'marked with its comment');
     assert.deepStrictEqual(w.puts, [
       { body: 'Hei Kari, vi sender en tekniker.', public: true },
       { body: 'Andreas Sandnes (Rocketlane):\nSjekk kompressor 2.', public: false },
     ]);
     await page.waitForFunction(() => /synced/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
     await page.screenshot({ path: path.join(OUT, '2-linked.png') });
+
+    // how often it checks is set in the panel (and kept), with the last check beside it
+    assert.match(await page.locator('#rl-zendesk-chat-sync >> .every').textContent(), /^Checks Zendesk every .* while Rocketlane is open \(at most once a minute in the background\)\. Last check /);
+    await page.locator('#rl-zendesk-chat-sync >> .every select').selectOption('60');
+    assert.strictEqual(await page.evaluate(() => GM_getValue('zdsync_interval_v1', null)), 60);
+    await page.locator('#rl-zendesk-chat-sync >> .every select').selectOption('15');
 
     // another round brings nothing back
     await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click().catch(() => {});
@@ -343,7 +352,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
 
     // off in the menu: the button stays on the chat page, greyed
     const menu = await page.evaluate(() => window.__menu.map((m) => m.name));
-    assert.deepStrictEqual(menu, ['❌ Zendesk ⇄ General Chat sync', 'Zendesk queue for the sync: IWMAC Leveranse - Kulde…'], 'registered while it was off');
+    assert.deepStrictEqual(menu, ['❌ Zendesk ⇄ General Chat sync', 'Zendesk sync: check every 15 s…', 'Zendesk queue for the sync: IWMAC Leveranse - Kulde…'], 'registered while it was off');
     await page.evaluate(() => window.__menu[0].fn());
     await page.waitForTimeout(1200);
     assert.strictEqual(await pillText(), 'Zendesk ⇄ off', 'turned off: the button stays, greyed');
@@ -405,7 +414,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page2.waitForFunction(() => window.__world.posts.length >= 1, null, { timeout: 15000 });
     await page2.waitForTimeout(1500);
     w = await page2.evaluate(() => window.__world);
-    assert.deepStrictEqual(w.posts.map((p) => p.content), ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Etter flyttingen.</p>']);
+    assert.deepStrictEqual(w.posts.map((p) => unmark(p.content)), ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Etter flyttingen.</p>']);
     assert.strictEqual(w.puts.length, 0, 'the chat\'s old messages stay where they are');
     // linked before files came along: the panel offers the earlier ones, once
     await page2.locator('#rl-zendesk-chat-sync >> text=Post earlier images and files').click();

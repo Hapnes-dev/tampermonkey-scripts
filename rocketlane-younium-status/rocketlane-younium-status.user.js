@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.79.0
+// @version      1.80.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -17125,6 +17125,9 @@
   //     v1.77.0: linking says so in two short lines, "Zendesk #N" a link to the ticket.
   //     v1.78.0: the button goes the moment Rocketlane leaves the chat page (its route change, not a timer).
   //     v1.79.0: linking no longer posts the ticket's earlier messages by itself - only new ones come in.
+  //     v1.80.0: nothing is posted twice, also when two browsers run the sync or a record is old: a mirrored message
+  //     carries its Zendesk comment's id, and each side is searched before anything goes to it. The interval is a
+  //     setting; opening or returning to Rocketlane checks at once.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17302,6 +17305,51 @@
       return { uploads: r.uploads || [], failed: r.failed || [] };
     }
 
+    // ---- nothing twice: before anything is posted, the other side is searched for it ----
+    // Another browser may run the sync for the same chat, or this browser's record of a link may be older than what has
+    // happened since (a page closed between posting and saving, a record from another time). So what a message would be
+    // is looked for first: its mark, or its text.
+    const norm = (v) => String(v || "").replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, "\"")
+      .replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&").replace(/[\s\u00a0]+/g, " ").trim();
+    const viaApi = (z) => !!(z && z.via && z.via.channel === "api");
+    const zdText = (z) => norm(z && (z.plain_body != null ? z.plain_body : textOfHtml(z.html_body || z.body || "")));
+    /** What chat message `m` becomes on the ticket, in each form a browser running the sync gives it: plain from the
+     *  person running it, else with the writer's name before a note or after a reply. None for the sync's own. */
+    function forwardForms(m) {
+      if (!m || OWN_RE.test(String(m.content || ""))) return [];
+      const msg = parseChatMessage(textOfHtml(m.content));
+      if (!msg.body) return [];
+      const who = authorName(m.user);
+      return (who ? [msg.body, who + " (Rocketlane):\n" + msg.body, msg.body + "\n\n— " + who] : [msg.body]).map(norm);
+    }
+    /** Whether Zendesk comment `z` is chat message `m` sent to the ticket, by any browser: made through the API after the
+     *  message was written, with its text - and at most the sync's line on files that could not go. */
+    function isForwardOf(z, m) {
+      if (!viaApi(z)) return false;
+      const t = ms(z.created_at);
+      if (t && t < ms(m.createdAt) - 120000) return false;
+      const text = zdText(z);
+      return !!text && forwardForms(m).some((f) => text === f || text.startsWith(f + " Not attached"));
+    }
+    /** Whether the chat has Zendesk comment `z` already: its mark (the comment's id in the "Zendesk #" link), or - for a
+     *  message from before the marks - the same first line and text. */
+    function inChatAlready(z, user, ticketId, chat) {
+      const mark = "zd-comment-" + z.id + "\"";
+      if (chat.some((m) => String(m.content || "").includes(mark))) return true;
+      if (!commentText(z)) return false;
+      const want = norm(textOfHtml(chatHtmlOf(z, user, ticketId, [])));
+      return chat.some((m) => norm(textOfHtml(m.content).replace(/\n?Attachments: [^\n]*$/, "")) === want);
+    }
+
+    /** "Zendesk #N", a link to the ticket where its address is known; with `commentId` the link also marks which comment
+     *  a message is, so that no browser posts it twice. */
+    function zdRef(ticketId, commentId) {
+      const name = esc("Zendesk #" + ticketId);
+      const url = typeof deps.zd.ticketUrl === "function" ? String(deps.zd.ticketUrl(ticketId) || "") : "";
+      if (!/^https:\/\//.test(url)) return name;
+      return "<a href=\"" + esc(url + (commentId != null ? "#zd-comment-" + commentId : "")) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + name + "</a>";
+    }
+
     /** A Zendesk comment as the chat shows it: the ticket, who and what kind on the first line, then its text; its files
      *  `links` (all of them unless given) as links to Zendesk - those carried into Rocketlane go with the message. */
     function chatHtmlOf(comment, user, ticketId, links) {
@@ -17309,7 +17357,7 @@
       const kind = kindOf(comment, user);
       let text = commentText(comment);
       if (text.length > 8000) text = text.slice(0, 8000) + "\n… (shortened: read the rest in Zendesk)";
-      return "<p><b>Zendesk #" + esc(ticketId) + "</b> · " + esc(who) + kind + "</p>" + (text ? htmlOfText(text) : "") +
+      return "<p><b>" + zdRef(ticketId, comment && comment.id) + "</b> · " + esc(who) + kind + "</p>" + (text ? htmlOfText(text) : "") +
         filesHtml(links === undefined ? filesOf(comment) : links);
     }
 
@@ -17414,11 +17462,7 @@
       st.links[keyOf(projectId, conversationId)] = entry;
       deps.store.save(st);
       // two short lines: which ticket (a link to it in Zendesk), and what writing here does
-      const url = typeof deps.zd.ticketUrl === "function" ? String(deps.zd.ticketUrl(ticket.id) || "") : "";
-      const name = esc("Zendesk #" + ticket.id);
-      await postOwn(projectId, conversationId, "<p>" +
-        (/^https:\/\//.test(url) ? "<a href=\"" + esc(url) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + name + "</a>" : name) +
-        " is linked to this chat" + (entry.subject ? " · " + esc(entry.subject) : "") + "</p>" +
+      await postOwn(projectId, conversationId, "<p>" + zdRef(ticket.id) + " is linked to this chat" + (entry.subject ? " · " + esc(entry.subject) : "") + "</p>" +
         "<p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>");
       return linkOf(projectId, conversationId);
     }
@@ -17510,6 +17554,11 @@
           continue;
         }
         try {
+          // the chat as it stands, read first: what is in it is not posted again, and what came from it does not come back
+          const chat = ((await deps.rl.getComments(e.projectId, e.conversationId)) || [])
+            .filter((c) => c && c.messageType === "USER_MESSAGE")
+            .sort((a, b) => ms(a.createdAt) - ms(b.createdAt) || Number(cidOf(a)) - Number(cidOf(b)));
+          const sinceLink = chat.filter((m) => ms(m.createdAt) >= e.rlSince);
           // the ticket -> the chat
           const moved = !updatedAt || e.zdUpdatedAt !== updatedAt;
           const zd = moved ? await deps.zd.getComments(e.ticketId, e.zdMax) : { comments: [], users: [] };
@@ -17518,9 +17567,24 @@
           for (const c of zd.comments.slice().sort((a, b) => Number(a.id) - Number(b.id))) {
             if (!(Number(c.id) > e.zdMax)) continue;
             if (e.ownZd.includes(String(c.id))) { e.zdMax = Number(c.id); continue; }
+            // made of a chat message - by this browser before its record was saved, or by another browser running the
+            // sync: the chat's own, it never comes back, and that message is on the ticket already (the oldest of the
+            // same words not yet known as sent: the same words written twice are two messages)
+            const sources = sinceLink.filter((m) => isForwardOf(c, m));
+            if (sources.length) {
+              const m = sources.find((x) => !e.rlSeen.includes(cidOf(x)));
+              if (m) e.rlSeen = tail(e.rlSeen.concat(cidOf(m)));
+              e.ownZd = tail(e.ownZd.concat(String(c.id)));
+              e.zdMax = Number(c.id);
+              deps.store.save(st);
+              continue;
+            }
+            const user = users.get(c.author_id);
+            // in the chat already (posted from another browser): not again
+            if (inChatAlready(c, user, e.ticketId, chat)) { e.zdMax = Number(c.id); deps.store.save(st); continue; }
             // its pictures and files go with it into Rocketlane; those that cannot stay links
             const { attached, links } = await carry(e.projectId, filesOf(c));
-            const made = await deps.rl.postComment(e.projectId, e.conversationId, chatHtmlOf(c, users.get(c.author_id), e.ticketId, links), true, attached);
+            const made = await deps.rl.postComment(e.projectId, e.conversationId, chatHtmlOf(c, user, e.ticketId, links), true, attached);
             if (made && made.id != null) { e.ownRl = tail(e.ownRl.concat(String(made.id))); e.rlSeen = tail(e.rlSeen.concat(String(made.id))); }
             e.zdMax = Number(c.id);
             out.mirrored++;
@@ -17530,10 +17594,8 @@
           if (updatedAt) e.zdUpdatedAt = updatedAt;
           if (posted) out.posted.push({ projectId: e.projectId, conversationId: e.conversationId, ticketId: e.ticketId, count: posted });
           // the chat -> the ticket
-          const rl = ((await deps.rl.getComments(e.projectId, e.conversationId)) || [])
-            .filter((c) => c && c.messageType === "USER_MESSAGE")
-            .sort((a, b) => ms(a.createdAt) - ms(b.createdAt) || Number(cidOf(a)) - Number(cidOf(b)));
-          for (const c of rl) {
+          let recent = null;   // the ticket's latest comments, read once when a message is about to go
+          for (const c of chat) {
             const id = cidOf(c);
             if (e.rlSeen.includes(id) || e.ownRl.includes(id)) continue;
             const mine = runner > 0 && Number((c.user && c.user.userId) || c.createdBy) === runner;
@@ -17541,6 +17603,13 @@
             const msg = parseChatMessage(textOfHtml(c.content));
             const files = rlFilesOf(c);
             if (!msg.body && !files.length) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
+            // on the ticket already - sent from another browser, or before this one's record was saved: not again
+            if (msg.body) {
+              if (!recent) recent = ((((await deps.zd.getComments(e.ticketId)) || {}).comments) || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
+              // the oldest such comment not yet known as another message's: the same words written twice go twice
+              const dup = recent.find((z) => !e.ownZd.includes(String(z.id)) && isForwardOf(z, c));
+              if (dup) { e.ownZd = tail(e.ownZd.concat(String(dup.id))); e.rlSeen = tail(e.rlSeen.concat(id)); deps.store.save(st); continue; }
+            }
             const who = authorName(c.user);
             // its files go to Zendesk first and the comment carries them; a message of files alone says their names
             const sent = await sendFiles(files);
@@ -17588,8 +17657,12 @@
     const VIEWID_KEY = "zdsync_view_id_v1", LOCK_KEY = "zdsync_lock_v1";
     const DISMISS_KEY = "zdsync_not_now_v1";   // {"<project>:<chat>": ticket id the user said "Not now" to}
     const DEFAULT_VIEW = "IWMAC Leveranse - Kulde";
-    // a round every 15 s while a Rocketlane tab is in front, every minute behind (Chrome slows background timers anyway)
-    const FAST_MS = 15 * 1000, SLOW_MS = 60 * 1000;
+    // how often the linked tickets are checked while a Rocketlane tab is in front - a setting, in the panel and the
+    // Tampermonkey menu, 15 s unless set; behind, at most once a minute (Chrome slows background timers to that anyway)
+    const INTERVAL_KEY = "zdsync_interval_v1", INTERVALS = [15, 30, 60, 120, 300, 600];
+    const intervalSec = () => { const v = Math.round(Number(get(INTERVAL_KEY, 15))); return v >= 10 && v <= 3600 ? v : 15; };
+    const frontMs = () => intervalSec() * 1000, backMs = () => Math.max(frontMs(), 60 * 1000);
+    const everyText = (sec) => (sec % 60 ? sec + " s" : sec === 60 ? "minute" : sec / 60 + " min");
     const visible = () => document.visibilityState === "visible";
     const ZD_HOST = net.zdHost, ZD_API = ZD_HOST + "/api/v2";
     const tabId = Math.random().toString(36).slice(2);
@@ -17841,9 +17914,10 @@
     // so the lock is read again a moment after it is taken, and only the tab still holding it goes on.
     async function claim() {
       const l = get(LOCK_KEY, null), t = Date.now();
-      // held by another tab: left to it, unless it is in the background and this one is in front
-      if (l && l.tab !== tabId && l.until > t && !(visible() && !l.visible)) return false;
-      set(LOCK_KEY, { tab: tabId, until: t + (visible() ? FAST_MS : SLOW_MS) + 20000, visible: visible() });
+      // held by another tab: left to it, unless it is in the background and this one is in front - and never while that
+      // tab's round is still going, or both would post the same messages
+      if (l && l.tab !== tabId && l.until > t && (!(visible() && !l.visible) || (l.busy && t - l.busy < 90000))) return false;
+      set(LOCK_KEY, { tab: tabId, until: t + (visible() ? frontMs() : backMs()) + 20000, visible: visible(), busy: 0 });
       await new Promise((r) => setTimeout(r, 400 + Math.floor(Math.random() * 400)));
       const again = get(LOCK_KEY, null);
       return !!again && again.tab === tabId;
@@ -17862,14 +17936,19 @@
         if (rerun) { rerun = false; void round(); }
       }
     }
+    let lastRoundAt = 0;
+    const markBusy = (on) => { const l = get(LOCK_KEY, null); if (l && l.tab === tabId) set(LOCK_KEY, Object.assign({}, l, { busy: on ? Date.now() : 0 })); };
     async function round() {
       if (!enabled() || legacy()) return false;
       if (running) { rerun = true; return true; }
       if (!(await claim())) return false;
       running = true;
+      markBusy(true);
       const viewing = chatIds(), shownBefore = viewing ? zendeskShown() : 0;
       let res = null;
       try { res = await sync.runOnce(); } catch (e) { try { console.warn("[zendesk-chat] round failed:", (e && e.message) || e); } catch (_) {} }
+      markBusy(false);
+      lastRoundAt = Date.now();
       running = false;
       paint();
       if (res && viewing) checkShown(viewing, res, shownBefore);
@@ -17941,6 +18020,7 @@
       "button.b{padding:4px 10px;border:1px solid #2f6fed;border-radius:6px;background:#2f6fed;color:#fff;font:inherit;cursor:pointer}",
       "button.g{padding:4px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#344054;font:inherit;cursor:pointer}",
       ".acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}a{color:#2f6fed}",
+      ".every{margin-top:8px}.every select{font:inherit;font-size:12px;padding:1px 4px;border:1px solid #d0d5dd;border-radius:5px;background:#fff;color:#344054}",
       // what the message being written will be: on the message box, never in the way of a click
       ".frame{position:fixed;z-index:2147482999;pointer-events:none;border:2px solid #e8590c;border-radius:10px;box-shadow:0 0 0 4px rgba(232,89,12,.16)}",
       ".mode{position:fixed;z-index:2147482999;pointer-events:none;max-width:72vw;padding:5px 12px;border-radius:7px;font:600 13px/1.4 Inter,'Segoe UI',Roboto,Arial,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
@@ -18155,6 +18235,21 @@
         off.onclick = () => { void exclusive(async () => sync.unlink(ids.projectId, ids.conversationId)).then(() => { panel.hidden = true; paint(); }); };
         acts.append(now, off, open);
         panel.append(acts);
+        // how often it checks - set here too - and when it last did
+        const every = el("div", "muted every");
+        const pick = document.createElement("select");
+        const cur = intervalSec();
+        for (const sec of INTERVALS.concat(INTERVALS.includes(cur) ? [] : [cur]).sort((a, b) => a - b)) {
+          const o = document.createElement("option");
+          o.value = String(sec);
+          o.textContent = everyText(sec);
+          o.selected = sec === cur;
+          pick.append(o);
+        }
+        pick.onchange = () => { set(INTERVAL_KEY, Number(pick.value)); loop(); };
+        every.append("Checks Zendesk every ", pick, " while Rocketlane is open (at most once a minute in the background)" +
+          (e.lastRun ? ". Last check " + new Date(e.lastRun).toLocaleTimeString() + "." : "."));
+        panel.append(every);
         return;
       }
       panel.append(el("h3", null, "Link the chat to a ticket in the queue"));
@@ -18304,6 +18399,9 @@
       panel.hidden = true;
       paint();
       updateMode();
+      // opening a linked chat checks its ticket at once
+      const here = chatIds();
+      if (here && sync.linkOf(here.projectId, here.conversationId)) soon();
     }
     const pageNav = ((typeof unsafeWindow !== "undefined" && unsafeWindow) || window).navigation || window.navigation;
     if (pageNav && typeof pageNav.addEventListener === "function") pageNav.addEventListener("currententrychange", onRoute);
@@ -18315,14 +18413,16 @@
       // after a message is sent the box empties without a key: the label follows within a second
       if (!bar.hidden) updateMode();
     }, 1000);
-    // the rounds: every 15 s in front, every minute behind, and at once when the tab comes to the front
+    // the rounds: at the set interval in front, at most once a minute behind, and at once when the tab comes to the front
     let loopTimer = 0;
     function loop() {
       clearTimeout(loopTimer);
-      loopTimer = setTimeout(async () => { await round(); loop(); }, visible() ? FAST_MS : SLOW_MS);
+      loopTimer = setTimeout(async () => { await round(); loop(); }, visible() ? frontMs() : backMs());
     }
+    // a visit checks at once: the page loading, the tab or the window coming back to the front
     document.addEventListener("visibilitychange", () => { if (visible()) soon(); });
-    setTimeout(() => { void round().then(loop); }, 4000);
+    window.addEventListener("focus", () => { if (visible() && Date.now() - lastRoundAt > 10000) soon(); });
+    setTimeout(() => { void round().then(loop); }, 1000);
     setInterval(hookPusher, 5000);
 
     try {
@@ -18331,6 +18431,12 @@
           set(EN_KEY, !enabled());
           paint();
           if (enabled()) void round();
+        });
+        GM_registerMenuCommand("Zendesk sync: check every " + everyText(intervalSec()) + "…", () => {
+          const v = window.prompt("Check the linked Zendesk tickets every how many seconds while Rocketlane is open? " +
+            "(10 to 3600; in the background at most once a minute)", String(intervalSec()));
+          const n = Math.round(Number(v));
+          if (v != null && n >= 10 && n <= 3600) { set(INTERVAL_KEY, n); loop(); }
         });
         GM_registerMenuCommand("Zendesk queue for the sync: " + viewTitle() + "…", () => {
           const t = window.prompt("The Zendesk view (queue) the sync looks in:", viewTitle());

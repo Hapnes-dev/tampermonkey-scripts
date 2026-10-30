@@ -12,6 +12,9 @@ const a = src.indexOf('// @@ZDSYNC-ENGINE-START'), b = src.indexOf('// @@ZDSYNC-
 assert.ok(a > 0 && b > a, 'the engine markers are in the userscript');
 const createZendeskChatSync = new Function(src.slice(a, b) + '\nreturn createZendeskChatSync;')();
 
+// a mirrored message's first line without its mark (the link to the Zendesk comment, since 1.80.0)
+const unmark = (h) => String(h).replace(/<a href="[^"]*#zd-comment-\d+"[^>]*>(Zendesk #\d+)<\/a>/g, '$1');
+
 // a round's four counts (its `posted` list aside)
 const counts = (r) => ({ mirrored: r.mirrored, forwarded: r.forwarded, paused: r.paused, errors: r.errors });
 
@@ -67,7 +70,7 @@ function world(opts = {}) {
       async getComments(ticketId) { return { comments: JSON.parse(JSON.stringify(zdComments.get(Number(ticketId)) || [])), users: zdUsers }; },
       async addComment(ticketId, body, isPublic, uploads) {
         if (fail.zdAdd > 0) { fail.zdAdd--; throw new Error('Zendesk svarte HTTP 500'); }
-        const c = { id: nextZd++, author_id: ZD_RUNNER, public: isPublic, plain_body: body, created_at: new Date(tick()).toISOString(), attachments: [] };
+        const c = { id: nextZd++, author_id: ZD_RUNNER, public: isPublic, plain_body: body, created_at: new Date(tick()).toISOString(), attachments: [], via: { channel: 'api' } };
         zdComments.get(Number(ticketId)).push(c);
         posted.zd.push(Object.assign({ ticketId, body, isPublic }, uploads && uploads.length ? { uploads } : {}));
         return { commentId: opts.noZdIds ? null : c.id };
@@ -126,7 +129,9 @@ test('the ticket\'s new messages come into the chat as private messages, each ki
   const r = await w.sync.runOnce();
   assert.strictEqual(r.mirrored, 3);
   assert.deepStrictEqual(r.posted, [{ projectId: '1481787', conversationId: '12896932', ticketId: '53123', count: 3 }], 'what went where');
-  assert.deepStrictEqual(w.posted.rl.slice(1).map((p) => [p.html, p.isPrivate]), [
+  assert.match(w.posted.rl[1].html, /^<p><b><a href="https:\/\/iwmac\.zendesk\.com\/agent\/tickets\/53123#zd-comment-\d+" target="_blank" rel="noopener noreferrer">Zendesk #53123<\/a><\/b> · /,
+    'the first line links the ticket and marks the comment');
+  assert.deepStrictEqual(w.posted.rl.slice(1).map((p) => [unmark(p.html), p.isPrivate]), [
     // a line a paragraph, as Rocketlane writes a message
     ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Anlegget går i alarm igjen.</p><p>Se vedlegg.</p>', true],
     ['<p><b>Zendesk #53123</b> · Ola Agent · internal note</p><p>Sjekker fjernstyring.</p>', true],
@@ -165,10 +170,11 @@ test('without ids from the APIs the sync still knows its own messages', async ()
   w.say(RUNNER, '<p>Svar internt.</p>', 'Thomas');
   let r = await w.sync.runOnce();
   assert.deepStrictEqual([r.mirrored, r.forwarded], [1, 1]);
-  // the mirrored message carries its "Zendesk #" header: not sent back. The internal note sent to Zendesk has no id:
-  // it comes into the chat once, as Zendesk's (a harmless echo), and stops there.
+  // the mirrored message carries its "Zendesk #" header: not sent back. The internal note sent to Zendesk has no id,
+  // but it was made through the API with the chat message's text: it does not come back either (since 1.80.0 - before,
+  // it came into the chat once as Zendesk's)
   r = await w.sync.runOnce();
-  assert.deepStrictEqual([r.mirrored, r.forwarded], [1, 0]);
+  assert.deepStrictEqual([r.mirrored, r.forwarded], [0, 0]);
   r = await w.sync.runOnce();
   assert.deepStrictEqual([r.mirrored, r.forwarded], [0, 0]);
 });
@@ -227,7 +233,7 @@ test('unlinking stops it; files and long texts', async () => {
   const html = w.sync.chatHtmlOf({ id: 1, public: true, plain_body: 'x'.repeat(8100), attachments: [
     { file_name: 'logg <1>.txt', content_url: 'https://iwmac.zendesk.com/attachments/token/a/?name=logg.txt' },
     { file_name: 'skummel', content_url: 'javascript:alert(1)' }] }, { name: 'Kari <Kunde>', role: 'end-user' }, '53123');
-  assert.match(html, /^<p><b>Zendesk #53123<\/b> · Kari &lt;Kunde&gt; \(customer\)<\/p>/);
+  assert.match(unmark(html), /^<p><b>Zendesk #53123<\/b> · Kari &lt;Kunde&gt; \(customer\)<\/p>/);
   assert.match(html, /… \(shortened: read the rest in Zendesk\)/);
   assert.match(html, /<p>Attachments: <a href="https:\/\/iwmac\.zendesk\.com\/attachments\/token\/a\/\?name=logg\.txt">logg &lt;1&gt;\.txt<\/a><\/p>$/);
   assert.ok(!/javascript:/.test(html), 'only https links');
@@ -368,7 +374,7 @@ test('a new Zendesk message brings its pictures and files into the chat with it;
   assert.deepStrictEqual(w.deps.files.calls, [['1481787', ['image001.png', 'tegning.pdf', 'stor.zip']]], 'the signature\'s logo is not even asked for');
   const p = w.posted.rl[w.posted.rl.length - 1];
   assert.deepStrictEqual(p.attachments.map((a) => a.attachmentId), ['rl:image001.png', 'rl:tegning.pdf'], 'they go with the message');
-  assert.strictEqual(p.html, '<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Se klipp under.</p><p>Attachments: <a href="' +
+  assert.strictEqual(unmark(p.html), '<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Se klipp under.</p><p>Attachments: <a href="' +
     ZF('zip', 'stor.zip').replace(/&/g, '&amp;') + '">stor.zip</a></p>', 'what could not go stays a link; what went is not linked as well');
   // without a file transport, every file is a link, as before
   const w2 = world();
@@ -479,4 +485,67 @@ test('what a message being written will be: a reply to the customer, a near miss
   // the box says "reply" exactly when the message will go as one
   for (const t of ['/reply x', '/Reply', ' /reply: x', '/replyx', '/replay x', 'x /reply', '/kunde x', ''])
     assert.strictEqual(m(t).mode === 'reply', w.sync.parseChatMessage(t).isPublic, t);
+});
+
+test('two browsers running the sync for one chat post nothing twice, either way', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  // a second browser: the same chat and ticket, its own record of the link (a copy of it as it stood)
+  const other = { value: w.state.value };
+  const sync2 = createZendeskChatSync(Object.assign({}, w.deps, { store: { load: () => JSON.parse(other.value), save: (st) => { other.value = JSON.stringify(st); } } }));
+  w.reply(700, 'Kunde skriver.');
+  w.say(2, '<p>Notat fra Andreas</p>', 'Andreas', 'Sandnes');
+  w.say(RUNNER, '<p>/reply Svar til kunden</p>', 'Thomas');
+  for (const s of [w.sync, sync2, w.sync, sync2]) await s.runOnce();
+  assert.strictEqual(w.chat.filter((c) => /Kunde skriver/.test(c.content)).length, 1, 'the customer\'s message in the chat once');
+  assert.deepStrictEqual(w.posted.zd.map((p) => p.body), ['Andreas Sandnes (Rocketlane):\nNotat fra Andreas', 'Svar til kunden'], 'each chat message on the ticket once');
+  assert.strictEqual(w.chat.filter((c) => /Zendesk #/.test(c.content) && /Notat fra Andreas|Svar til kunden/.test(c.content)).length, 0,
+    'nothing the other browser sent comes back as a Zendesk message');
+  // and the second browser, from now on, goes on as the first
+  w.reply(800, 'Ny melding.', false);
+  for (const s of [sync2, w.sync]) await s.runOnce();
+  assert.strictEqual(w.chat.filter((c) => /Ny melding/.test(c.content)).length, 1);
+});
+
+test('a record of the link older than what happened since posts nothing again', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const old = w.state.value;
+  w.reply(700, 'Ny kundemelding');
+  w.say(2, '<p>Internt</p>', 'Andreas', 'Sandnes');
+  let r = await w.sync.runOnce();
+  assert.deepStrictEqual([r.mirrored, r.forwarded], [1, 1]);
+  // the record goes back, as if the page had closed before it was saved
+  w.state.value = old;
+  r = await w.sync.runOnce();
+  assert.deepStrictEqual([r.mirrored, r.forwarded, r.errors], [0, 0, 0], 'found on the other side, not posted again');
+  // a message mirrored before 1.80.0 has no mark: its text finds it
+  w.chat.forEach((c) => { c.content = unmark(c.content); });
+  w.state.value = old;
+  r = await w.sync.runOnce();
+  assert.deepStrictEqual([r.mirrored, r.forwarded, r.errors], [0, 0, 0]);
+  assert.strictEqual(w.chat.filter((c) => /Ny kundemelding/.test(c.content)).length, 1);
+  assert.strictEqual(w.posted.zd.length, 1);
+});
+
+test('a Zendesk note with the same words as an old chat message, written in Zendesk, still comes in', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  w.say(2, '<p>Takk</p>', 'Andreas', 'Sandnes');
+  await w.sync.runOnce();
+  w.reply(800, 'Takk', false);   // an agent writes the same in Zendesk itself: not made through the API
+  const r = await w.sync.runOnce();
+  assert.strictEqual(r.mirrored, 1);
+});
+
+test('the same words written twice in the chat go to the ticket twice', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  w.say(2, '<p>Ok</p>', 'Andreas', 'Sandnes');
+  await w.sync.runOnce();
+  w.say(2, '<p>Ok</p>', 'Andreas', 'Sandnes');
+  await w.sync.runOnce();
+  assert.deepStrictEqual(w.posted.zd.map((p) => p.body), ['Andreas Sandnes (Rocketlane):\nOk', 'Andreas Sandnes (Rocketlane):\nOk']);
+  await w.sync.runOnce();
+  assert.strictEqual(w.posted.zd.length, 2, 'and not a third time');
 });
