@@ -9,6 +9,13 @@
             "pass_through": true
         },
         {
+            "name": "INGICS_iBS08TP_param_group_set",
+            "display_name": "INGICS iBS08TP / iBS08P - param - group - set",
+            "driver_type": "MQTT",
+            "file": "INGICS_iBS08TP_param_group_set.sql",
+            "pass_through": true
+        },
+        {
             "name": "ADAM_6015-v1",
             "display_name": "ADAM 6015 v1",
             "driver_type": "ADAM",
