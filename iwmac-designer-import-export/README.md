@@ -531,6 +531,20 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A negative zIndex is legal (v1.107.1)
+
+Thomas: *tillat negative z*. The panel file's schema took a `zIndex` of digits or `default` only, but the Designer
+writes negative ones itself: 249 of the fleet's room popups (the 2026-10-21 harvest) carry their frame,
+`previous_page_tekn_box_no`, at `"-445"`, under every value and label on it. Insert never checked the value; the
+schema an agent writes by, and the Copilot kit's `validate-export.py` that holds a file to it, refused it (EX-S01),
+so a generated popup had to stand its frame at `"1"`.
+- **The schema** (`panel-file.schema.json`, made from this script) takes an integer string - `"110"`, `"-445"` - or
+  `default`.
+- **The in-file guide** says the same, in the object fields' table, in `z_index` and in the checklist.
+
+Nothing else changes: Insert, Export and the sync carry `zIndex` through as before. Placing an object in VectorCraft
+still takes its z from a same-kind object only when that one's z is digits.
+
 ### IWMAC objects of a fixed size cannot be resized in VectorCraft (v1.107.0)
 
 Thomas: *make IWMAC objects that are not designed to be resized non-resizable in VectorCraft*. That applies to every

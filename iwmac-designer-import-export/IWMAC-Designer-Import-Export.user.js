@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.107.0
+// @version      1.107.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.107.0';
+var IWDIE_VERSION = '1.107.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -206,7 +206,7 @@ var IWDIE_OBJECT_SCHEMA = [
   { field: 'posHeight', type: 'integer (pixels)', required: 'yes', meaning: 'Box height.', example: 22 },
   { field: 'posLeft', type: 'integer (pixels)', required: 'yes', meaning: 'X position from the left edge of the canvas (of the container, for a container item). Emit a plain number: a missing or non-numeric value silently lands the object at 0, and a string such as "120px" is read as 120.', example: 1169 },
   { field: 'posTop', type: 'integer (pixels)', required: 'yes', meaning: 'Y position from the top edge of the canvas (of the container, for a container item).', example: 58 },
-  { field: 'zIndex', type: 'string', required: 'yes', allowed: 'digits as a string ("110"), or "default"', meaning: 'Stacking order; higher paints on top. Copy the value used by objects of the same role in this file. "default" makes array order the stacking order, so a label emitted before a duct disappears under it.', example: '110' },
+  { field: 'zIndex', type: 'string', required: 'yes', allowed: 'an integer as a string ("110"; a negative one, "-445", lies under every other object, as the fleet\'s room popups carry their frame), or "default"', meaning: 'Stacking order; higher paints on top. Copy the value used by objects of the same role in this file. "default" makes array order the stacking order, so a label emitted before a duct disappears under it.', example: '110' },
   { field: 'tag_text', type: 'string or null', required: 'yes', meaning: 'The visible caption: an instrument code ("RT401 °C"), a header, a label. Objects that show only a value or a symbol ignore it. A single space " " is the palette default on live-value widgets and null occurs on container items; preserve either exactly and never turn one into the other.', example: 'Tilluft' },
   { field: 'linked', type: 'string', required: 'yes', allowed: '"true" or "false"', meaning: 'Whether the host treats the object as bound. Real exports say "true" on every object, because the host sets it on load whenever driver_id is not the literal "driver_id", even when driver_id is empty. A newly authored unlinked object says "false". It proves nothing about whether the binding is valid.', example: 'true' },
   { field: 'link_name', type: 'string', required: 'yes', meaning: 'Host bookkeeping: the literal "link_name" on exported objects, "" on newly authored ones. Never a panel name or a destination.', example: 'link_name' },
@@ -328,7 +328,8 @@ function iwdiePanelJsonSchema() {
     required: needed(IWDIE_OBJECT_SCHEMA, 'field'), properties: props(IWDIE_OBJECT_SCHEMA, 'field') };
   object.properties.id.const = 'driver_id';
   object.properties.linked.enum = ['true', 'false'];
-  object.properties.zIndex.pattern = '^(\\d+|default)$';
+  // (v1.107.1) a negative zIndex too: the Designer writes it, and 249 of the fleet's room popups carry their frame at -445
+  object.properties.zIndex.pattern = '^(-?\\d+|default)$';
   var container = { type: 'object', description: 'A container of objects (table rows, room cards), as the host writes a plain objects_container.',
     required: needed(IWDIE_CONTAINER_SCHEMA, 'field'), properties: props(IWDIE_CONTAINER_SCHEMA, 'field') };
   container.properties.unique_id.pattern = 'custom_';
@@ -728,7 +729,7 @@ function iwdieBuildAiGuide(hasBackground, constantFields, summary, doc) {
       ]
     },
     z_index: {
-      meaning: 'zIndex is stacking order: higher paints on top. Objects carry it as a string of digits, containers as a JSON number. "default" is legal but makes array order the stacking order, which hides labels under ducts and value boxes under artwork.',
+      meaning: 'zIndex is stacking order: higher paints on top. Objects carry it as a string of an integer - a negative one lies under everything, as a room popup\'s frame at "-445" - containers as a JSON number. "default" is legal but makes array order the stacking order, which hides labels under ducts and value boxes under artwork.',
       rule: 'Copy the zIndex of an existing object with the same role in this file (summary.z_index_values lists the values in use). Never emit "default" into a panel whose objects carry numbers, and never reorder a band to fix a geometry problem.',
       bands_seen_on_ventilation_panels: '5 ducts and headers, 15 dummy arrows, 20 navigation buttons, 40 equipment bodies, 110 value boxes, 375 alarms, LEDs, pumps and valves, 1100 labels. Other panel types use other bands; the supplied file always wins.'
     },
@@ -2090,7 +2091,7 @@ var IWDIE_SELF_CHECK = [
   'Where the panel has a settings column (header bars at x 1145 or more), nothing except that column reaches past x 1145.',
   'Every linked object carries a driver_id and a unit_id copied from one parameter row; every unlinked one carries driver_id "driver_id" and linked "false".',
   'No two objects carry the same alias_text unless the same signal is deliberately shown twice - then say which, and why.',
-  'zIndex is a string of digits from the bands of this file (z_index), not "default", on a panel whose other objects carry numbers.'
+  'zIndex is a string of an integer from the bands of this file (z_index), not "default", on a panel whose other objects carry numbers.'
 ];
 
 /** What goes wrong, from panels that had to be rebuilt. */

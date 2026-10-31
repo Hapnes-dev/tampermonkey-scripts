@@ -320,11 +320,11 @@
         },
         "zIndex": {
           "type": "string",
-          "description": "Stacking order; higher paints on top. Copy the value used by objects of the same role in this file. \"default\" makes array order the stacking order, so a label emitted before a duct disappears under it. Allowed: digits as a string (\"110\"), or \"default\".",
+          "description": "Stacking order; higher paints on top. Copy the value used by objects of the same role in this file. \"default\" makes array order the stacking order, so a label emitted before a duct disappears under it. Allowed: an integer as a string (\"110\"; a negative one, \"-445\", lies under every other object, as the fleet's room popups carry their frame), or \"default\".",
           "examples": [
             "110"
           ],
-          "pattern": "^(\\d+|default)$"
+          "pattern": "^(-?\\d+|default)$"
         },
         "tag_text": {
           "type": [
