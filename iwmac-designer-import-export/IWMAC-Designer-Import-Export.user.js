@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.107.5
+// @version      1.107.6
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.107.5';
+var IWDIE_VERSION = '1.107.6';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -14038,8 +14038,11 @@ function iwdieCbPlan(ops, scene, ctx) {
         });
         if (o.plug) {
           // the template's Plugg: a plug-in case with its own compressor - past a lying case's right end, on a standing
-          // case's wall side (oversikt.py)
-          var lyingP = cbx.w >= cbx.h, ppx = lyingP ? cbx.x + cbx.w + 10 : (o.wall !== 'left' ? cbx.x + cbx.w + 4 : cbx.x - 18);
+          // case's wall side (oversikt.py). (v1.107.6) Clear of the case's value, 42 wide in the case's middle, which
+          // overhangs a 29 px case by 6.5 px each side: the live test's Iskrem case had its value on its Plugg
+          var lyingP = cbx.w >= cbx.h, vL = cbx.x + (cbx.w - 42) / 2, vR = vL + 42;
+          var ppx = lyingP ? Math.max(cbx.x + cbx.w + 10, vR + 3)
+            : (o.wall !== 'left' ? Math.max(cbx.x + cbx.w + 4, vR + 3) : Math.min(cbx.x - 18, vL - 17));
           var ppy = lyingP ? cbx.y + cbx.h / 2 - 7 : cbx.y + cbx.h / 2 - 10;
           var pb = symbolStep({ name: 'Plugg', turn: lyingP ? 0 : 90 }, i, { x: iwdieOvRhu(ppx), y: iwdieOvRhu(ppy) });
           if (pb) ov.plugs.push([pb.x, pb.y, pb.x + pb.w, pb.y + pb.h, 'plug']);

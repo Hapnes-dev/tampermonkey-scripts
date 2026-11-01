@@ -531,6 +531,14 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A plug-in case's Plugg stands clear of its value (v1.107.6)
+
+The copy of the Copilot agent's sandbox (the kit's copilot-sim) replayed live test 11 and found the Iskrem case's value
+on its own Plugg. A standing case's value is 42 px wide in the case's middle and overhangs the 29 px case by 6.5 px each
+side; the Plugg stood 4 px off the case. VectorCraft's `case` op now sets a standing case's Plugg 3 px past the value on
+the wall side, as the Copilot kit's `oversikt.py` does since its Part 206. A lying case's Plugg stays 10 px past its
+right end.
+
 ### An object off the panel is allowed (v1.107.5)
 
 Thomas: *det går fint om noen objekter kommer utenfor panelet*. His own 2349 Oversikt has an alarm reaching y 752 on its
