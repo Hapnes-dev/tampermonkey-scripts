@@ -531,6 +531,26 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A bell or state never lies on a temperature value (v1.107.2)
+
+Thomas: *Objektene for kjøling, avriming og alarm kan overlappe hverandre dersom det ikke er nok plass. De skal
+imidlertid aldri overlappe temperaturverdier.* VectorCraft's `case` and `cluster` ops placed each bell and state at the
+house's measured spots, and the first of them lie on the value's corner: a lying case's bell at +31, −22 from the
+value's top left covered its right end, its cooling and defrost at +34, +5 too. The ops now place as the Copilot kit's
+`oversikt.py` does since its Part 194, object for object (the kit's bridge test holds the two together):
+- **Off the value.** Each spot that would lie on the cluster's own value moves the shortest way off it, so the bell or
+  state touches the value at most: a lying case's bell goes to +42, −22 and its states to +42, +5, a standing case's
+  bell to +29, +22. Where every spot is taken, spots round the value (right, above, below, left, up to 48 px off), and
+  only then one on another cluster's bell or state. Never one on a value, its own or another's.
+- **A name over a group** (`name` with `over`) stands on the room's side of its cases: below a row on a top wall,
+  above one on a bottom wall, beside a column on a side wall - the cases' `wall`, else the nearest drawn wall's within
+  40 px. In the open floor it stays above them first. In the live test of 2026-11-01 "Meieri" over a back-wall row
+  stood above it, outside the store.
+- **A name never crosses a wall** from what it names, so it is never outside the store or in the next room; a case's
+  name tries spots along each side of its box, then a line further out, where its bell and states take the first ones.
+- **`iwmac_check`'s CB-O02** no longer lets a bell or state lie on its own value. One cluster's bell and states may
+  still lie on each other.
+
 ### A negative zIndex is legal (v1.107.1)
 
 Thomas: *tillat negative z*. The panel file's schema took a `zIndex` of digits or `default` only, but the Designer

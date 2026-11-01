@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.107.1
+// @version      1.107.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.107.1';
+var IWDIE_VERSION = '1.107.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12547,9 +12547,10 @@ function iwdieCbCheck(items, size, opts) {
     if (b.x < 0 || b.y < 0 || b.x + b.w > W + 0.5 || b.y + b.h > H + 0.5) add('error', 'CB-O01', (o.obj_id || 'an object') + ' lies off the ' + W + ' x ' + H + ' panel', [o.cid]);
   });
   var live = objs.filter(function (o) { return IWDIE_LIVE_ROLES[o.role]; });
-  // an Oversikt's cluster (v1.84.0): the house hangs the bell, the cooling and the defrost icon on the value's end, and
-  // cooling and defrost share one spot (one shows at a time), so the objects of one cluster lie on each other by design.
-  // A state or bell belongs to the nearest value within 10 px of it.
+  // an Oversikt's cluster (v1.84.0): the bell, the cooling and the defrost icon hang by the value, and cooling and defrost
+  // share one spot (one shows at a time), so they lie on each other by design. (v1.107.2) Never on a temperature value,
+  // their own either (Thomas, 2026-11-01): "kan overlappe hverandre ..., aldri overlappe temperaturverdier". A state or
+  // bell belongs to the nearest value within 10 px of it.
   var ovValues = objs.filter(function (o) { return o.obj_id === IWDIE_OV_ROLE.value[0]; });
   var ovBadge = function (o) { return /^V3_R_\d+px_circular_(alarm|cooling|defrost)/.test(o.obj_id || ''); };
   var ownValue = function (o) {
@@ -12563,10 +12564,13 @@ function iwdieCbCheck(items, size, opts) {
   };
   var oneCluster = function (a, b) {
     if (ovBadge(a) && ovBadge(b)) { var va = ownValue(a); return !!va && va === ownValue(b); }
-    return (ovBadge(a) && ownValue(a) === b) || (ovBadge(b) && ownValue(b) === a);
+    return false;
   };
+  var isValue = function (o) { return o.obj_id === IWDIE_OV_ROLE.value[0]; };
   for (var i = 0; i < live.length; i++) for (var j = i + 1; j < live.length; j++) {
-    if (iwdieCbHit(live[i].box, live[j].box, -1) && !oneCluster(live[i], live[j])) add('error', 'CB-O02', live[i].obj_id + ' and ' + live[j].obj_id + ' lie on each other', [live[i].cid, live[j].cid]);
+    if (!iwdieCbHit(live[i].box, live[j].box, -1) || oneCluster(live[i], live[j])) continue;
+    var onTemp = (ovBadge(live[i]) && isValue(live[j])) || (ovBadge(live[j]) && isValue(live[i]));
+    add('error', 'CB-O02', live[i].obj_id + ' and ' + live[j].obj_id + ' lie on each other' + (onTemp ? ': a bell or state never lies on a temperature value - move it beside the value' : ''), [live[i].cid, live[j].cid]);
   }
   var syms = items.filter(function (it) { return it.kind === 'symbol'; });
   syms.forEach(function (s) {
@@ -13138,7 +13142,8 @@ function iwdieOvNameSpots(box, st, nw, caption, nameAt) {
   }[st] || below.concat(above, right, left);
   var first = { below: below, above: above, left: left, right: right }[side] || [];
   if (nameAt && side === 'auto') first = [[nameAt.just === 'L' ? nameAt.x : nameAt.just === 'R' ? nameAt.x - nw : nameAt.x - nw / 2, nameAt.y - 7]];
-  return first.concat(auto);
+  // (v1.107.2) then along each side, where the bell and states (off the temperature now) take those spots
+  return first.concat(auto, iwdieOvSweep(x, y, w, h, nw, IWDIE_OV_SIDES[st] || IWDIE_OV_SIDES.lying));
 }
 
 /** (v1.105.0) A drawing's subpaths of straight runs, each its points: M, L, H, V and Z, absolute or relative. null for a
@@ -13216,8 +13221,103 @@ function iwdieOvLayout(right, bottom) {
       ignore = ignore || [];
       return !taken.some(function (t) { return ignore.indexOf(t[4]) < 0 && ignore.indexOf(String(t[4]).split(':')[0]) < 0 && hit(b, t); });
     },
-    take: function (b, tag) { taken.push([b[0], b[1], b[2], b[3], tag]); }
+    take: function (b, tag) { taken.push([b[0], b[1], b[2], b[3], tag]); },
+    // (v1.107.2) whether a box lies on a temperature value - any value, its own cluster's too; touching is not lying on
+    onValue: function (b) {
+      return taken.some(function (t) { return /^value:/.test(String(t[4])) && b[0] < t[2] && t[0] < b[2] && b[1] < t[3] && t[1] < b[3]; });
+    }
   };
+}
+
+/** (v1.107.2) Thomas, 2026-11-01: "Objektene for kjøling, avriming og alarm kan overlappe hverandre dersom det ikke er nok
+ *  plass. De skal imidlertid aldri overlappe temperaturverdier." A spot [dx, dy] from a value's top left for a w x h bell
+ *  or state, moved the shortest way off that 42 x 22 value - up, down, right, then left where two moves are as short - so
+ *  that it touches the value at most: a lying case's bell +31, -22 goes to +42, -22, its states +34, +5 to +42, +5, a
+ *  standing case's bell +29, +15 to +29, +22 (oversikt.py's off_value). A spot already off the value stays. -> [dx, dy] */
+function iwdieOvOffValue(dx, dy, w, h) {
+  if (dx >= 42 || dx + w <= 0 || dy >= 22 || dy + h <= 0) return [dx, dy];
+  var moves = [[dy + h, [dx, -h]], [22 - dy, [dx, 22]], [42 - dx, [42, dy]], [dx + w, [-w, dy]]], best = moves[0];
+  moves.forEach(function (m) { if (m[0] < best[0]) best = m; });
+  return best[1];
+}
+
+/** (v1.107.2) Where a bell or state goes when every spot of the anatomy is taken: round its value, these many px off it -
+ *  right, above, below and left of its middle, then beside its upper and its lower half (oversikt.py's ring_spots). */
+var IWDIE_OV_RING = [0, 4, 8, 12, 18, 24, 32, 40, 48];
+function iwdieOvRingSpots(w, h) {
+  var out = [], hw = Math.floor(w / 2), hh = Math.floor(h / 2);
+  IWDIE_OV_RING.forEach(function (g) {
+    out.push([42 + g, 11 - hh], [21 - hw, -h - g], [21 - hw, 22 + g], [-w - g, 11 - hh], [42 + g, 11 - h], [-w - g, 11 - h],
+      [42 + g, 11], [-w - g, 11]);
+  });
+  return out;
+}
+
+/** (v1.107.2) Whether the straight line from p to q passes through the box b [x0, y0, x1, y1] (oversikt.py's crosses). */
+function iwdieOvCrosses(p, q, b) {
+  var t0 = 0, t1 = 1, axes = [[p[0], q[0], b[0], b[2]], [p[1], q[1], b[1], b[3]]];
+  for (var i = 0; i < 2; i++) {
+    var a = axes[i][0], d = axes[i][1] - a, lo = axes[i][2], hi = axes[i][3];
+    if (Math.abs(d) < 1e-9) { if (a < lo || a > hi) return false; continue; }
+    var u = (lo - a) / d, v = (hi - a) / d;
+    if (u > v) { var sw = u; u = v; v = sw; }
+    t0 = Math.max(t0, u); t1 = Math.min(t1, v);
+    if (t0 > t1) return false;
+  }
+  return true;
+}
+
+/** (v1.107.2) Which side of a group of cases its wall is on (oversikt.py's wall_side): the one its cases' `wall` names where
+ *  they agree, else the side of the nearest wall within 40 px that runs along the group, else null (the open floor).
+ *  `group` [x0, y0, x1, y1], `walls` the wall boxes. -> 'top' | 'bottom' | 'left' | 'right' | null */
+function iwdieOvWallSide(sides, group, walls) {
+  var named = [];
+  sides.forEach(function (sd) { if (sd && named.indexOf(sd) < 0) named.push(sd); });
+  if (named.length === 1) return named[0];
+  var x0 = group[0], y0 = group[1], x1 = group[2], y1 = group[3], best = 40, side = null;
+  walls.forEach(function (w) {
+    var near = [];
+    if (w[0] < x1 && x0 < w[2]) near.push([y0 - w[3], 'top'], [w[1] - y1, 'bottom']);
+    if (w[1] < y1 && y0 < w[3]) near.push([x0 - w[2], 'left'], [w[0] - x1, 'right']);
+    near.forEach(function (n) { if (n[0] >= -6 && n[0] < best) { best = n[0]; side = n[1]; } });
+  });
+  return side;
+}
+
+/** (v1.107.2) Where a name over a group of cases may go, the room's side first (oversikt.py's group_spots): below a row on
+ *  a top wall, above one on a bottom wall, right of a column on a left wall, left of one on a right wall; a group in the
+ *  open floor above it first, as before. Each side centred, then a line further out, up to five, then at its end; then
+ *  the other sides, the wall's last. -> [[x, y], ...] */
+function iwdieOvGroupSpots(x0, y0, x1, y1, nw, side) {
+  var mx = (x0 + x1) / 2 - nw / 2, my = (y0 + y1) / 2 - 7, above = [], below = [], right = [], left = [];
+  for (var k = 0; k < 5; k++) { above.push([mx, y0 - 17 - 16 * k]); below.push([mx, y1 + 3 + 16 * k]); }
+  above.push([x0, y0 - 36]); below.push([x0, y1 + 22]);
+  [0, -1, 1, -2, 2].forEach(function (j) { right.push([x1 + 4, my + 16 * j]); left.push([x0 - 4 - nw, my + 16 * j]); });
+  return side === 'top' ? below.concat(right, left, above) : side === 'bottom' ? above.concat(right, left, below)
+    : side === 'left' ? right.concat(above, below, left) : side === 'right' ? left.concat(above, below, right)
+    : above.concat(below, right, left);
+}
+
+/** (v1.107.2) The sides a case's name tries, by how it stands, and the spots along them (oversikt.py's SIDES and sweep):
+ *  from each side's middle out in 8 px steps to its ends, then the same a line further out - where its bell and states,
+ *  off the temperature now, take its first spots. -> [[x, y], ...] */
+var IWDIE_OV_SIDES = { lying: ['below', 'above', 'right', 'left'], 'lying-bottom': ['below', 'above', 'right', 'left'],
+  'row-T': ['above', 'right', 'left', 'below'], 'row-B': ['below', 'right', 'left', 'above'],
+  upright: ['right', 'left', 'below', 'above'], 'upright-right': ['left', 'right', 'below', 'above'],
+  'column-L': ['left', 'below', 'above'], 'column-R': ['right', 'below', 'above'] };
+function iwdieOvSweep(x, y, w, h, nw, sides) {
+  var out = [];
+  [0, 16].forEach(function (d) {
+    sides.forEach(function (side) {
+      var horiz = side === 'below' || side === 'above';
+      var at = horiz ? (side === 'below' ? y + h + 3 + d : y - 17 - d) : (side === 'right' ? x + w + 4 + d : x - 4 - nw - d);
+      var mid = horiz ? x + w / 2 - nw / 2 : y + h / 2 - 7, reach = Math.floor(horiz ? (w + nw) / 2 : (h + 14) / 2);
+      for (var k = 0; k <= reach; k += 8) {
+        (k ? [1, -1] : [1]).forEach(function (sign) { out.push(horiz ? [mid + sign * k, at] : [at, mid + sign * k]); });
+      }
+    });
+  });
+  return out;
 }
 
 /** The clusters and names of an Oversikt's cases (oversikt.py's build, from its values on): `cases` in order, each
@@ -13244,7 +13344,7 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
     var bx = iwdieOvRhu(n.just === 'L' ? n.x : n.just === 'R' ? n.x - nw : n.x - nw / 2), by = iwdieOvRhu(n.y - 7), nb = [bx, by, bx + nw, by + 14];
     var roles = c.roles || { value: null, alarm: null };
     if (roles.alarm !== undefined && p.st !== 'room') {
-      var a = iwdieOvOffsets(p.st, anatomy).alarm[0];
+      var a0 = iwdieOvOffsets(p.st, anatomy).alarm[0], a = iwdieOvOffValue(a0[0], a0[1], 34, 34);
       if (lay.hit(nb, [p.vx + a[0], p.vy + a[1], p.vx + a[0] + 34, p.vy + a[1] + 34])) return;
     }
     if (lay.free(nb)) { lay.take(nb, 'label'); reserved[c.key] = [bx, by]; }
@@ -13260,19 +13360,25 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
         if (!spots[role]) { gaps.push(c.key + ' ' + role + ': the anatomy has no spot for it'); return; }
         if (role === 'defrost' && stateAt) { px = stateAt[0]; py = stateAt[1]; }
         else {
+          // (v1.107.2) never on a temperature value, its own or another's (Thomas, 2026-11-01): each spot of the anatomy
+          // moved off its own value, the first clear of every other case, else of the other objects, else a spot round
+          // the value, else one on another cluster's bell or state - those may lie on each other where room is short
+          var near = spots[role].map(function (d) { return iwdieOvOffValue(d[0], d[1], ow, oh); }), ring = iwdieOvRingSpots(ow, oh);
+          var tries = [[near, mine.concat(['room', 'wall'])], [near, mine.concat(['case', 'room', 'wall'])],
+            [ring, mine.concat(['case', 'room', 'wall'])], [near.concat(ring), mine.concat(['case', 'room', 'wall', 'member'])]];
           var hitAt = null;
-          [mine.concat(['room', 'wall']), mine.concat(['case', 'room', 'wall'])].some(function (ignore) {
-            hitAt = null;
-            spots[role].some(function (d) {
+          tries.some(function (t, n) {
+            t[0].some(function (d) {
               var b = [p.vx + d[0], p.vy + d[1], p.vx + d[0] + ow, p.vy + d[1] + oh];
-              if (lay.free(b, ignore)) { hitAt = [b[0], b[1]]; return true; }
+              if (lay.free(b, t[1]) && !lay.onValue(b)) { hitAt = [b[0], b[1]]; return true; }
               return false;
             });
+            if (hitAt && n === 3) gaps.push(c.key + ' ' + role + ": no room clear of the other clusters; it lies on another cluster's bell or state, never on a value");
             return !!hitAt;
           });
           if (!hitAt) {
-            hitAt = [p.vx + spots[role][0][0], p.vy + spots[role][0][1]];
-            gaps.push(c.key + ' ' + role + ': no free spot near its value; placed at its first spot');
+            hitAt = [p.vx + near[0][0], p.vy + near[0][1]];
+            gaps.push(c.key + ' ' + role + ': no spot clear of the values within 48 px of its own; placed at its first spot - move it off the value by hand');
           }
           px = hitAt[0]; py = hitAt[1];
           if (role === 'cooling' || role === 'defrost') stateAt = [px, py];
@@ -13285,40 +13391,55 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
   // the names, as label objects: the rooms' inside their top left first, then each case's in the first free spot for how
   // it stands, a walk-in room's inside it
   var todo = [];
-  (rooms || []).forEach(function (r) { todo.push({ key: r.key, text: r.name, spots: [[r.box[0] + 6, r.box[1] + 5]], kind: 'inside' }); });
+  (rooms || []).forEach(function (r) {
+    todo.push({ key: r.key, text: r.name, spots: [[r.box[0] + 6, r.box[1] + 5]], kind: 'inside', home: [r.box[0] + r.box[2] / 2, r.box[1] + r.box[3] / 2] });
+  });
   plan.forEach(function (p) {
     var c = p.c, text = c.label || c.key;
-    if (reserved[c.key]) { todo.push({ key: c.key, text: text, spots: [reserved[c.key]], kind: 'taken' }); return; }
+    if (reserved[c.key]) { todo.push({ key: c.key, text: text, spots: [reserved[c.key]], kind: 'taken', home: null }); return; }
     // (v1.105.0) a case named inside its own box: its own box does not keep the name off (oversikt.py, 2026-10-27)
     todo.push({ key: c.key, text: text, spots: iwdieOvNameSpots(c.box, p.st, iwdieOvNameWidth(text), c.caption, c.nameAt),
-      kind: p.st === 'room' ? 'room' : c.caption === 'inside' ? 'inside:case:' + c.key : 'case' });
+      kind: p.st === 'room' ? 'room' : c.caption === 'inside' ? 'inside:case:' + c.key : 'case',
+      home: [c.box[0] + c.box[2] / 2, c.box[1] + c.box[3] / 2] });
   });
-  // a name of no single case: above the cases it is over - centred, then a line higher, up to five, then over their left
-  // end - or at its point
+  var walls = lay.taken.filter(function (t) { return t[4] === 'wall'; }).map(function (t) { return t.slice(0, 4); });
+  // a name of no single case: (v1.107.2) on the room's side of the cases it is over, never past their wall - the side
+  // their `wall` names, else the nearest wall's; a group in the open floor above it first, as before - or at its point
   (free || []).forEach(function (f) {
-    if (f.at) { todo.push({ key: f.key, text: f.text, spots: [f.at], kind: 'free' }); return; }
+    if (f.at) { todo.push({ key: f.key, text: f.text, spots: [f.at], kind: 'free', home: null }); return; }
     var over = f.over || [];
     if (!over.length) return;
     var x0 = Math.min.apply(null, over.map(function (b) { return b[0]; })), x1 = Math.max.apply(null, over.map(function (b) { return b[0] + b[2]; }));
-    var top = Math.min.apply(null, over.map(function (b) { return b[1]; })), nw = iwdieOvNameWidth(f.text), spots = [];
-    for (var k = 0; k < 5; k++) spots.push([(x0 + x1) / 2 - nw / 2, top - 17 - 16 * k]);
-    spots.push([x0, top - 36]);
-    todo.push({ key: f.key, text: f.text, spots: spots, kind: 'free' });
+    var top = Math.min.apply(null, over.map(function (b) { return b[1]; })), bottom = Math.max.apply(null, over.map(function (b) { return b[1] + b[3]; }));
+    var sides = over.map(function (b) {
+      var hit = (cases || []).filter(function (c) { return c.box[0] === b[0] && c.box[1] === b[1] && c.box[2] === b[2] && c.box[3] === b[3]; })[0];
+      return hit ? hit.wall : null;
+    });
+    var side = iwdieOvWallSide(sides, [x0, top, x1, bottom], walls);
+    todo.push({ key: f.key, text: f.text, spots: iwdieOvGroupSpots(x0, top, x1, bottom, iwdieOvNameWidth(f.text), side), kind: 'free',
+      home: [(x0 + x1) / 2, (top + bottom) / 2] });
   });
   todo.forEach(function (t) {
     if (!t.spots.length || !String(t.text || '').trim()) return;
     var nw = iwdieOvNameWidth(t.text), at = null;
     var ignore = t.kind === 'room' || t.kind === 'inside' ? ['room'] : /^inside:/.test(t.kind) ? ['room', t.kind.slice(7)] : [];
+    // (v1.107.2) a name stays on its own side of every wall, seen from the middle of what it names: never outside the
+    // store, never in the next room (oversikt.py)
+    var inside = function (sp) {
+      if (!t.home) return true;
+      var mid = [iwdieOvRhu(sp[0]) + nw / 2, iwdieOvRhu(sp[1]) + 7];
+      return !walls.some(function (w) { return iwdieOvCrosses(t.home, mid, w); });
+    };
     // (v1.105.0) clear of the walls first, as oversikt.py places a name; only where every spot crosses one, the first spot
     // clear of the rest
     [ignore, ignore.concat(['wall'])].some(function (ig) {
       return t.spots.some(function (s) {
         var b = [iwdieOvRhu(s[0]), iwdieOvRhu(s[1]), iwdieOvRhu(s[0]) + nw, iwdieOvRhu(s[1]) + 14];
-        if (t.kind === 'taken' || lay.free(b, ig)) { at = s; return true; }
+        if (t.kind === 'taken' || (inside(s) && lay.free(b, ig))) { at = s; return true; }
         return false;
       });
     });
-    if (!at) { at = t.spots[0]; gaps.push('the name ' + JSON.stringify(t.text) + ': no free spot; placed at its first'); }
+    if (!at) { at = t.spots.filter(inside)[0] || t.spots[0]; gaps.push('the name ' + JSON.stringify(t.text) + ': no free spot; placed at its first'); }
     var nb = { x: iwdieOvRhu(at[0]), y: iwdieOvRhu(at[1]), w: nw, h: 14 };
     names.push({ key: t.key, text: String(t.text), box: nb });
     if (t.kind !== 'taken') lay.take([nb.x, nb.y, nb.x + nw, nb.y + 14], 'label');

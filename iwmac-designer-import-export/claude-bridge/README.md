@@ -120,8 +120,9 @@ example plans every value, bell, cooling and defrost state and name lands on the
   the first free spot of the case's stance, then the names (rooms', cases', the free ones).
 - `iwmac_scene {facts: true}` adds `oversikt` (cases, cold, freezer, those without a value, names
   as label objects, names drawn as text, the legend, where the area ends), and `iwmac_check`
-  CB-C01 (a case without a value), CB-C02 (a name drawn as text) and CB-C03 (no legend). The
-  objects of one cluster lie on each other by design and are no CB-O02.
+  CB-C01 (a case without a value), CB-C02 (a name drawn as text) and CB-C03 (no legend). The bell
+  and the states of one cluster lie on each other by design and are no CB-O02; on a temperature value,
+  their own either, they are (1.107.2, Thomas: never on a temperature value).
 
 Checked end to end in the stub Designer with the local VectorCraft 0.11.0 build (2026-10-18): a
 blank Oversikt, three case controllers and the pack ticked; Claude drew the legend, 12 cases, a
