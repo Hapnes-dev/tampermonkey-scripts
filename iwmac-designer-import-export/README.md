@@ -4770,7 +4770,7 @@ Maskin template, *To offset*, which the .ai keeps as text, outlined letters and 
 0.15 VectorCraft moves the last frame while a drag, pan or zoom goes on, and renders once the view is still.
 
 **VectorCraft 0.20.0 is hosted since 2026-11-01,** with both patches; 0.18.0 and 0.19.0 were never hosted. On 0.20.0,
-in the stub host, script 1.107.5's syncs placed as many objects as on 0.17.0, an .ai opened from the card gave the
+in the stub host, script 1.107.6's syncs placed as many objects as on 0.17.0, an .ai opened from the card gave the
 same shapes and texts, the first save was answered by the clicks, and the IWMAC title stands where it stood in the
 menu bar, 12 px after Help. Two changes for anything that reads VectorCraft from outside:
 - **Saved SVGs hold shape elements** (since 0.19): `<rect>`, `<circle>`, `<ellipse>`, `<line>`, `<polyline>` and
