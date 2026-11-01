@@ -4716,15 +4716,15 @@ The hosted build carries none of this script's changes. The script only adds the
 catches the save while the page runs. Nothing leaves the browser: the editor is a static page,
 and the panel goes from tab to tab through Tampermonkey's storage.
 
-**The hosted copy.** It is VectorCraft 0.17.0 (since 2026-10-27; 0.14.0 from 2026-10-22, 0.11.0
-before), built from the official source at that release with its licences and notices. Until 2026-10-17 it was the official
+**The hosted copy.** It is VectorCraft 0.20.0 (since 2026-11-01; 0.17.0 from 2026-10-27, 0.14.0 from
+2026-10-22, 0.11.0 before), built from the official source at that release with its licences and notices. Until 2026-10-17 it was the official
 web build byte for byte (0.10.0 until 2026-10-15, 0.9.0 until 2026-10-12). Since then it differs in
 these ways:
 - **WebAssembly SIMD is on.** The official web release is built without it, so its canvas renderer
   runs scalar code. With SIMD, VectorCraft draws a frame of a drag on 10214's Maskin in 5.0 ms
   instead of 11.5 ms, and in 7.1 ms instead of 17.4 ms at 1920 × 1080. The pixels are the same.
-- **The ArtCraft name is taken out** (the repository's `build/debrand.py`): the Discord button and
-  the Help menu's ArtCraft links.
+- **The ArtCraft name is taken out** (the repository's `build/debrand.py`): the Discord button,
+  the Help menu's ArtCraft links, and from 0.20 Discord in the application menu.
 - **A fix its release does not have yet** (since 0.14.0, the repository's `build/patches/`). From
   0.12.0 VectorCraft opens a stroked zigzag in an .ai, such as the Maskin template's heat exchanger,
   as its bounding rectangle, and a sync would put that rectangle in the panel's picture. The PDF
@@ -4733,7 +4733,7 @@ these ways:
 - **IWMAC objects of a fixed size cannot be resized** (since 2026-10-29, the repository's
   `build/patches/vectorcraft--iwdie-fixed-size.patch`, this script 1.107.0). An object marked
   `data-iwdie-fixed="1"` shows no handles when selected alone. A transform moves it by its centre and leaves its size and
-  turn. Every release keeps this change.
+  turn. Every release keeps this change; 0.20.0 moved the code it edits, and it was carried over by hand.
 
 The repository's `build/build.sh` makes it from a release tag. **To move to a newer release, follow
 [UPDATING.md](https://github.com/Hapnes-dev/iwmac-vector/blob/main/UPDATING.md)**:
@@ -4768,6 +4768,16 @@ in the stub host, script 1.104.1's syncs placed as many objects as on 0.14.0, an
 same results, and the first save was answered by the clicks, ready after 10.9 s as on 0.14.0. One label of the
 Maskin template, *To offset*, which the .ai keeps as text, outlined letters and text, now opens as one text. Since
 0.15 VectorCraft moves the last frame while a drag, pan or zoom goes on, and renders once the view is still.
+
+**VectorCraft 0.20.0 is hosted since 2026-11-01,** with both patches; 0.18.0 and 0.19.0 were never hosted. On 0.20.0,
+in the stub host, script 1.107.5's syncs placed as many objects as on 0.17.0, an .ai opened from the card gave the
+same shapes and texts, the first save was answered by the clicks, and the IWMAC title stands where it stood in the
+menu bar, 12 px after Help. Two changes for anything that reads VectorCraft from outside:
+- **Saved SVGs hold shape elements** (since 0.19): `<rect>`, `<circle>`, `<ellipse>`, `<line>`, `<polyline>` and
+  `<polygon>` where they held `<path>`. This script's syncs read them as before.
+- **The canvas is 15 px narrower**, so Fit Artboard in Window gives 65.86 % instead of 66.93 % at 1400 × 900. A
+  document point's place on screen comes from `window.vectorcraft.inspect()` (`canvasRect`, `view`), not from fixed
+  numbers.
 
 **Watch in later releases:** upstream has asked for an opened SVG or PDF to take its name from its own title
 metadata, or from its file stem, instead of its file name. This script waits for VectorCraft's window title to be
