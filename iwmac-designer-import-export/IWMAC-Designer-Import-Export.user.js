@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.107.2
+// @version      1.107.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.107.2';
+var IWDIE_VERSION = '1.107.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -13253,6 +13253,51 @@ function iwdieOvRingSpots(w, h) {
   return out;
 }
 
+/** (v1.107.3) The walls a drawing has in Bakgrunn as straight runs [x0, y0, x1, y1, half their width]: each item's runs,
+ *  2 px wide unless the item says otherwise (`strokeWidth`), as oversikt.py draws a spec's walls. */
+function iwdieOvWallRuns(items) {
+  var out = [];
+  (items || []).forEach(function (it) {
+    if (!it || !it.segs || !/^(bakgrunn|background|backround)$/i.test(it.layer || '')) return;
+    var half = (+it.strokeWidth > 0 ? +it.strokeWidth : 2) / 2;
+    it.segs.forEach(function (q) { out.push([q[0], q[1], q[2], q[3], half]); });
+  });
+  return out;
+}
+
+/** (v1.107.3) A walk-in room's or a room's box {x, y, w, h}, each side within 16 px of a wall running along it moved onto
+ *  that wall's inner face (oversikt.py's snap_to_walls, the same rule): a plan read by eye puts a room a few pixels off its
+ *  walls, the Designer's own box then crosses a wall and its name is pushed into a corner. Only straight runs count, and a
+ *  wall counts where its runs at one line cover 40 % of the side; a side with no wall near stays, and so does a box that
+ *  would lose half its size. -> {x, y, w, h} */
+var IWDIE_OV_SNAP = 16;
+function iwdieOvSnapToWalls(b, runs) {
+  var v = [], hz = [];
+  (runs || []).forEach(function (r) {
+    if (Math.abs(r[0] - r[2]) < 0.5) v.push([r[0], Math.min(r[1], r[3]), Math.max(r[1], r[3]), r[4]]);
+    else if (Math.abs(r[1] - r[3]) < 0.5) hz.push([r[1], Math.min(r[0], r[2]), Math.max(r[0], r[2]), r[4]]);
+  });
+  var wall = function (lines, at, lo, hi) {
+    var best = null;
+    lines.forEach(function (l) {
+      if (Math.abs(l[0] - at) > IWDIE_OV_SNAP) return;
+      var cover = 0, half = 0;
+      lines.forEach(function (m) { if (Math.abs(m[0] - l[0]) <= 1.5) { cover += Math.max(0, Math.min(hi, m[2]) - Math.max(lo, m[1])); half = Math.max(half, m[3]); } });
+      if (cover >= 0.4 * (hi - lo) && (!best || Math.abs(l[0] - at) < Math.abs(best[0] - at))) best = [l[0], half];
+    });
+    return best;
+  };
+  var left = b.x, top = b.y, right = b.x + b.w, bottom = b.y + b.h;
+  var L = wall(v, left, top, bottom), R = wall(v, right, top, bottom), T = wall(hz, top, left, right), B = wall(hz, bottom, left, right);
+  if (L) left = L[0] + L[1];
+  if (R) right = R[0] - R[1];
+  if (T) top = T[0] + T[1];
+  if (B) bottom = B[0] - B[1];
+  if (right - left < b.w / 2 || bottom - top < b.h / 2) return b;
+  var nx = iwdieOvRhu(left), ny = iwdieOvRhu(top);
+  return { x: nx, y: ny, w: iwdieOvRhu(right) - nx, h: iwdieOvRhu(bottom) - ny };
+}
+
 /** (v1.107.2) Whether the straight line from p to q passes through the box b [x0, y0, x1, y1] (oversikt.py's crosses). */
 function iwdieOvCrosses(p, q, b) {
   var t0 = 0, t1 = 1, axes = [[p[0], q[0], b[0], b[2]], [p[1], q[1], b[1], b[3]]];
@@ -13952,6 +13997,8 @@ function iwdieCbPlan(ops, scene, ctx) {
         if (!ck2) { fail(i, 'kind is cold, freezer, heated or switch'); break; }
         var cbx = iwdieOvBoxOf(o, place, i);
         if (!cbx) { fail(i, 'a case needs rect [x, y, w, h], or at with w and h'); break; }
+        // (v1.107.3) a walk-in room's box read off the walls it nearly meets (its `more` boxes stay as given)
+        if (o.room) cbx = iwdieOvSnapToWalls(cbx, iwdieOvWallRuns(items));
         var key2 = o.ref !== undefined && o.ref !== null && o.ref !== '' ? 'ref:' + o.ref : 'op' + (i + 1);
         var cro2 = iwdieOvRolesOf(o.roles, key2, fail, i);
         if (cro2 === false) break;
@@ -13994,6 +14041,7 @@ function iwdieCbPlan(ops, scene, ctx) {
         // its name inside its top left
         var rbx = iwdieOvBoxOf(o, place, i);
         if (!rbx) { fail(i, 'a room needs rect [x, y, w, h], or at with w and h'); break; }
+        rbx = iwdieOvSnapToWalls(rbx, iwdieOvWallRuns(items));        // (v1.107.3) read off the walls it nearly meets
         steps.push({ 'do': 'add', kind: 'box', box: rbx, layer: 'Bakgrunn', rx: 4, fill: IWDIE_OV_PALETTE.room, stroke: '', width: 0,
           name: o.name ? String(o.name) : '', ref: o.ref, op: i });
         ov.rooms.push({ key: 'room' + (i + 1), box: [rbx.x, rbx.y, rbx.w, rbx.h], name: o.name || o.label || '', op: i });

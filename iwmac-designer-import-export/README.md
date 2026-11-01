@@ -531,6 +531,16 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A room's box is read off the walls it nearly meets (v1.107.3)
+
+Thomas: *ja, rett alle tre*, after the live test's rerun. The agent read the store's two walk-in rooms about 11 px off
+their walls, so the Designer's own boxes crossed the walls and both names went to the rooms' far corners. VectorCraft's
+`case` op with `room: true` and its `room` op now read a room's box off the walls the drawing has in Bakgrunn, as the
+Copilot kit's `oversikt.py` does since its Part 195. Each side within 16 px of a wall running along it moves onto that
+wall's inner face. A wall counts where its runs at one line cover 40 % of the side, and is taken as 2 px wide unless the
+item says otherwise. A side with no wall near stays, and so do a room's `more` boxes and every case. The kit's bridge
+test holds the two to the same pixel on a store with rooms read off their walls.
+
 ### A bell or state never lies on a temperature value (v1.107.2)
 
 Thomas: *Objektene for kjøling, avriming og alarm kan overlappe hverandre dersom det ikke er nok plass. De skal

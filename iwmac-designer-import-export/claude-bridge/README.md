@@ -120,7 +120,8 @@ example plans every value, bell, cooling and defrost state and name lands on the
   the first free spot of the case's stance, then the names (rooms', cases', the free ones).
 - `iwmac_scene {facts: true}` adds `oversikt` (cases, cold, freezer, those without a value, names
   as label objects, names drawn as text, the legend, where the area ends), and `iwmac_check`
-  CB-C01 (a case without a value), CB-C02 (a name drawn as text) and CB-C03 (no legend). The bell
+  CB-C01 (a case without a value), CB-C02 (a name drawn as text) and CB-C03 (no legend). Since 1.107.3 a
+  walk-in room's (`case` with `room: true`) and a `room`'s box is read off the walls it nearly meets. The bell
   and the states of one cluster lie on each other by design and are no CB-O02; on a temperature value,
   their own either, they are (1.107.2, Thomas: never on a temperature value).
 
