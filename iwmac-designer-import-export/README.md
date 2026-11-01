@@ -531,6 +531,12 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### An object off the panel is allowed (v1.107.5)
+
+Thomas: *det går fint om noen objekter kommer utenfor panelet*. His own 2349 Oversikt has an alarm reaching y 752 on its
+750 px panel. The bridge check's CB-O01 (an IWMAC object off the panel) is now an info, no longer an error, so
+`iwmac_check` no longer asks for it to be moved. The Copilot kit says the same since its Part 203.
+
 ### Every Oversikt case is 29 px thick (v1.107.4)
 
 Thomas: *Du skal aldri gjøre diskene større enn originalstørrelsen ... Rom kan alltid endres etter størrelse ... kan

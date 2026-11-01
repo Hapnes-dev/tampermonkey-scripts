@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.107.4
+// @version      1.107.5
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.107.4';
+var IWDIE_VERSION = '1.107.5';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12532,7 +12532,8 @@ function iwdieCbFacts(items, size) {
   return facts;
 }
 
-/** What is wrong with a drawing before it is synced (v1.64.0): an IWMAC object off the panel, live objects on each
+/** What is wrong with a drawing before it is synced (v1.64.0): an IWMAC object off the panel (v1.107.5: an info -
+ *  allowed, Thomas 2026-11-01: "det går fint om noen objekter kommer utenfor panelet"), live objects on each
  *  other, a symbol the library lacked, a symbol an object should show, a value with no pill under it, symbols on each
  *  other, a pipe that is not straight runs, drawn text that is a number or a state, and - given `opts.resolve(bind)`,
  *  which answers why a binding does not resolve or '' - a placeholder bound to nothing. An Oversikt (v1.84.0: two cases
@@ -12544,7 +12545,7 @@ function iwdieCbCheck(items, size, opts) {
   var objs = items.filter(function (it) { return it.kind === 'object'; });
   objs.forEach(function (o) {
     var b = o.box;
-    if (b.x < 0 || b.y < 0 || b.x + b.w > W + 0.5 || b.y + b.h > H + 0.5) add('error', 'CB-O01', (o.obj_id || 'an object') + ' lies off the ' + W + ' x ' + H + ' panel', [o.cid]);
+    if (b.x < 0 || b.y < 0 || b.x + b.w > W + 0.5 || b.y + b.h > H + 0.5) add('info', 'CB-O01', (o.obj_id || 'an object') + ' lies off the ' + W + ' x ' + H + ' panel: allowed (Thomas, 2026-11-01), if meant', [o.cid]);
   });
   var live = objs.filter(function (o) { return IWDIE_LIVE_ROLES[o.role]; });
   // an Oversikt's cluster (v1.84.0): the bell, the cooling and the defrost icon hang by the value, and cooling and defrost
