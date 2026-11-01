@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.107.3
+// @version      1.107.4
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.107.3';
+var IWDIE_VERSION = '1.107.4';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -13253,6 +13253,18 @@ function iwdieOvRingSpots(w, h) {
   return out;
 }
 
+/** (v1.107.4) A case's box {x, y, w, h} at the house's 29 px thickness (oversikt.py's keep_thickness): its long side
+ *  kept, its short side 29, the side on its wall where it stands on one (`wall` top, bottom, left, right), else its middle
+ *  line; a box 31 px thick or less stays. Thomas, 2026-11-01: "Du skal aldri gjøre diskene større enn
+ *  originalstørrelsen ... Rom kan alltid endres etter størrelse" - a walk-in room keeps its box. -> {x, y, w, h} */
+function iwdieOvKeepThickness(b, wall) {
+  if (Math.min(b.w, b.h) <= 31) return b;
+  if (b.w >= b.h) {
+    return { x: b.x, y: wall === 'bottom' ? b.y + b.h - 29 : wall === 'top' ? b.y : iwdieOvRhu(b.y + (b.h - 29) / 2), w: b.w, h: 29 };
+  }
+  return { x: wall === 'right' ? b.x + b.w - 29 : wall === 'left' ? b.x : iwdieOvRhu(b.x + (b.w - 29) / 2), y: b.y, w: 29, h: b.h };
+}
+
 /** (v1.107.3) The walls a drawing has in Bakgrunn as straight runs [x0, y0, x1, y1, half their width]: each item's runs,
  *  2 px wide unless the item says otherwise (`strokeWidth`), as oversikt.py draws a spec's walls. */
 function iwdieOvWallRuns(items) {
@@ -13997,8 +14009,10 @@ function iwdieCbPlan(ops, scene, ctx) {
         if (!ck2) { fail(i, 'kind is cold, freezer, heated or switch'); break; }
         var cbx = iwdieOvBoxOf(o, place, i);
         if (!cbx) { fail(i, 'a case needs rect [x, y, w, h], or at with w and h'); break; }
-        // (v1.107.3) a walk-in room's box read off the walls it nearly meets (its `more` boxes stay as given)
+        // (v1.107.3) a walk-in room's box read off the walls it nearly meets (its `more` boxes stay as given); (v1.107.4)
+        // every other case 29 px thick, however it came
         if (o.room) cbx = iwdieOvSnapToWalls(cbx, iwdieOvWallRuns(items));
+        else cbx = iwdieOvKeepThickness(cbx, o.wall);
         var key2 = o.ref !== undefined && o.ref !== null && o.ref !== '' ? 'ref:' + o.ref : 'op' + (i + 1);
         var cro2 = iwdieOvRolesOf(o.roles, key2, fail, i);
         if (cro2 === false) break;

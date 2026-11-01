@@ -531,6 +531,14 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Every Oversikt case is 29 px thick (v1.107.4)
+
+Thomas: *Du skal aldri gjøre diskene større enn originalstørrelsen ... Rom kan alltid endres etter størrelse ... kan
+være noen ganger at disker er lengre da*. In the live test the Copilot agent drew a frysetorg's pieces 38 × 89, "altfor
+store". VectorCraft's `case` op now draws every case at the house's 29 px thickness, as the Copilot kit's `oversikt.py`
+does since its Part 201. The long side is kept, so a longer case stays longer. A case on a wall keeps its wall side;
+any other keeps its middle line. A walk-in room (`room: true`) keeps its box: rooms take any size.
+
 ### A room's box is read off the walls it nearly meets (v1.107.3)
 
 Thomas: *ja, rett alle tre*, after the live test's rerun. The agent read the store's two walk-in rooms about 11 px off
