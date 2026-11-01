@@ -4734,6 +4734,11 @@ these ways:
   `build/patches/vectorcraft--iwdie-fixed-size.patch`, this script 1.107.0). An object marked
   `data-iwdie-fixed="1"` shows no handles when selected alone. A transform moves it by its centre and leaves its size and
   turn. Every release keeps this change; 0.20.0 moved the code it edits, and it was carried over by hand.
+- **The wasm ships gzipped** (since 2026-11-02, the repository's `build/compress-wasm.py`). GitHub refuses a file of
+  100 MiB, and VectorCraft's wasm passed 80 MiB in 0.20.0. The page unpacks it as it downloads, and starts it only
+  once its SHA-384 is the one the page was built with. A browser downloads what it did before (Pages already sent
+  the wasm gzipped). A first load takes as long as before; a load from the browser's cache about a quarter of a
+  second longer. This script's syncs, the .ai flow and the first save work on it as before (tested on 1.107.6).
 
 The repository's `build/build.sh` makes it from a release tag. **To move to a newer release, follow
 [UPDATING.md](https://github.com/Hapnes-dev/iwmac-vector/blob/main/UPDATING.md)**:
