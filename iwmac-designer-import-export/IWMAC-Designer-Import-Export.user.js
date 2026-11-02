@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.107.8
+// @version      1.108.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.107.8';
+var IWDIE_VERSION = '1.108.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1606,6 +1606,8 @@ function iwdieCheckPanelGeometry(doc, notes, details) {
   var unknown = {}, placed = {};
   IWDIE_VZ_BOXES.forEach(function (b) { placed[b[2]] = 1; placed[b[3]] = 1; });
   iwdieVcObjectCatalog().forEach(function (c) { placed[c.id] = 1; });
+  // (v1.108.0) and the Designer's duct pieces, coils, exchangers and valves a ventilation picture is read into
+  iwdieVzVentKinds().forEach(function (k) { placed[k.id] = 1; });
   so.forEach(function (o) {
     var id = String(o.obj_id || '');
     if (Object.prototype.hasOwnProperty.call(IWDIE_ROLE_INDEX, id) || /^sub_page/.test(id) || IWDIE_LABEL_KIND_RE.test(id) ||
@@ -10069,6 +10071,8 @@ function iwdieVcObjectIndex() {
   iwdieVcObjectCatalog().forEach(function (o) { known[o.id] = o; });
   // (v1.82.0) and the kinds a picture was searched for by shape
   Object.keys(IWDIE_VC_KNOWN_EXTRA).forEach(function (id) { if (!known[id]) known[id] = IWDIE_VC_KNOWN_EXTRA[id]; });
+  // (v1.108.0) and those a ventilation picture is read into (iwdieVzVent), so a sync makes each found one that object
+  iwdieVzVentKinds().forEach(function (k) { if (!known[k.id]) known[k.id] = k; });
   IWDIE_VZ_BOXES.forEach(function (b) {
     [b[2], b[3]].forEach(function (id, lying) {
       if (known[id]) return;
@@ -10324,10 +10328,12 @@ function iwdieVcDesignerObjects(found, existing) {
     // (v1.80.0) a box the Designer draws itself under every other object: a case's alarm and a room's values stand on it
     if (iwdieVzBoxOf(o.id)) return '5';
     var z = function (e) { return /^\d+$/.test(String(e.zIndex)) ? String(e.zIndex) : null; };
-    var same = have.filter(function (e) { return e.obj_id === o.id && z(e); })[0] ||
-      have.filter(function (e) { var k = known[e.obj_id]; return k && k.role === o.role && z(e); })[0];
+    var same = have.filter(function (e) { return e.obj_id === o.id && z(e); })[0];
     if (same) return z(same);
+    // (v1.108.0) a duct's arrow stands in a band of its own, 15, not its pipes' 5: before the role's, which a pipe gives
     if (o.role === 'duct' && /arrow/i.test(o.id)) return '15';
+    same = have.filter(function (e) { var k = known[e.obj_id]; return k && k.role === o.role && z(e); })[0];
+    if (same) return z(same);
     if (IWDIE_VC_OBJ_Z_BY_ID[o.id]) return IWDIE_VC_OBJ_Z_BY_ID[o.id];
     return IWDIE_VC_OBJ_Z[o.role] || '110';
   };
@@ -10345,7 +10351,11 @@ function iwdieVcDesignerObjects(found, existing) {
     // tag, as written, its default included (v1.43.0); not what a placeholder without the object's
     // picture says the object is, and nothing for an object without a tag
     var text = String(f.text || '').replace(/\s+/g, ' ').trim(), L = f.link || null;
-    if (o.kind !== 'label' && o.kind !== 'bar' && (!o.hasTag || text === iwdieVcObjectCaption(o))) text = '';
+    // (v1.108.0) at the placeholder's own size too: a duct found 947 px long says its whole caption, its kind's 50 px box less
+    var sized = {};
+    Object.keys(o).forEach(function (k) { sized[k] = o[k]; });
+    sized.w = w; sized.h = h;
+    if (o.kind !== 'label' && o.kind !== 'bar' && (!o.hasTag || text === iwdieVcObjectCaption(o) || text === iwdieVcObjectCaption(sized))) text = '';
     // a bound placeholder's caption is its parameter's alias (v1.63.0), not a tag
     if (L && text === String(L.alias_text || '').replace(/\s+/g, ' ').trim()) text = '';
     objects.push({ obj_id: o.id, name: 'object_0', id: 'driver_id', posWidth: w, posHeight: h, posLeft: x, posTop: y, zIndex: zOf(o),
@@ -17725,6 +17735,638 @@ function iwdieVzBoxEdgesOff(pic, W, H, boxes) {
   return out;
 }
 
+/* ===================== A ventilation picture's own objects (v1.108.0) =====================
+   Thomas, 2026-11-02, on 10229's 360.001 Ventilasjon, a picture of the house's Ventilasjon template with no .ai to it:
+   *vectorize of this should be 100 % expect for the roms and tilluft meny square*. The template draws its parts as the
+   Designer's own objects look - a duct a 3 px core in its stream's colour on a 16 px white band, a coil and the exchanger
+   the 360 series' pictures, a valve the 3-way valve's - and writes on its coils "Designer skal brukes hvis mulig". So
+   each becomes that object (iwdieVzVent): a duct its run of the Designer's duct objects - pipes, a connector where it
+   meets another duct's side, an elbow at a corner - and the arrow at its open end the arrow object; a coil, an
+   exchanger or a valve the kind whose picture it is. The rooms, the block they serve and the information column stay
+   drawing, and so do a coil's water pipes, which no object draws. */
+
+/** The duct families (v1.108.0): the Designer's duct objects' family and the colours a duct's core is drawn in - the
+ *  house's Ventilasjon templates' (056, 100: supply #f79e7a, extract and exhaust #f3c96a, intake #b0e0ef) and the duct
+ *  objects' own (#ffb193, #f7de87, #c4eaed). */
+var IWDIE_VZ_DUCTS = [['supply', ['#f79e7a', '#f89f79', '#ffb193']], ['exhaust', ['#f3c96a', '#f7de87']], ['fresh', ['#b0e0ef', '#c4eaed']]];
+
+/** The kinds a ventilation picture's parts are read into by their pictures (v1.108.0): [obj_id, its picture under
+ *  /iw_icons/, the box's width and height as the Designer draws it, where the picture stands in the box (the 360 series'
+ *  CSS puts it 14 px down, under the tag), its role]. A valve by its picture at rest (state 0). */
+var IWDIE_VZ_VENT_PARTS = [
+  ['number_360_vb', 'V3/dummy/360_vb.png', 37, 70, 0, 14, 'zone'],
+  ['number_360_kb', 'V3/dummy/360_kb.png', 37, 70, 0, 14, 'zone'],
+  ['number_360_cb', 'V3/dummy/360_cb.png', 37, 70, 0, 14, 'zone'],
+  ['number_360_vg_rot', 'V3/dummy/360_vg_rot.png', 60, 343, 0, 14, 'zone'],
+  ['number_360_vg_x', 'V3/dummy/360_vg_x.png', 61, 343, 0, 14, 'zone'],
+  ['v3_3w_valve_right_down_nrm', 'V3/valves/3valve_Right_Down_OFF.png', 22, 18, 0, 0, 'valve'],
+  ['v3_3w_valve_right_up_nrm', 'V3/valves/3valve_Right_Up_OFF.png', 22, 18, 0, 0, 'valve'],
+  ['v3_3w_valve_right_left_nrm', 'V3/valves/3valve_Right_Left_OFF.png', 22, 18, 0, 0, 'valve'],
+  ['v3_3w_valve_left_down_nrm', 'V3/valves/3valve_Left_Down_OFF.png', 22, 18, 0, 0, 'valve'],
+  ['v3_3w_valve_left_up_nrm', 'V3/valves/3valve_Left_Up_OFF.png', 22, 18, 0, 0, 'valve'],
+  ['v3_3w_valve_left_right_nrm', 'V3/valves/3valve_Left_Right_OFF.png', 22, 18, 0, 0, 'valve'],
+  ['v3_3w_valve_down_left_nrm', 'V3/valves/3valve_Down_Left_OFF.png', 18, 22, 0, 0, 'valve'],
+  ['v3_3w_valve_down_right_nrm', 'V3/valves/3valve_Down_Right_OFF.png', 18, 22, 0, 0, 'valve'],
+  ['v3_3w_valve_down_up_nrm', 'V3/valves/3valve_Down_Up_OFF.png', 18, 22, 0, 0, 'valve'],
+  ['v3_3w_valve_up_down_nrm', 'V3/valves/3valve_Up_Down_OFF.png', 18, 22, 0, 0, 'valve'],
+  ['v3_3w_valve_up_left_nrm', 'V3/valves/3valve_Up_Left_OFF.png', 18, 22, 0, 0, 'valve'],
+  ['v3_3w_valve_up_right_nrm', 'V3/valves/3valve_Up_Right_OFF.png', 18, 22, 0, 0, 'valve']
+];
+
+/** The duct objects a ventilation picture's ducts are read into (v1.108.0), each family's: [obj_id, picture, w, h]. A
+ *  pipe repeats its picture along its length (the Designer's CSS), so it is drawn at any; a connector or an elbow at its
+ *  own size. */
+function iwdieVzDuctKinds() {
+  var out = [];
+  IWDIE_VZ_DUCTS.forEach(function (d) {
+    var f = d[0], p = 'V3/hvac/ducts/' + f + '_';
+    out.push(['number_v3_' + f + '_pipe_horisontal', p + 'pipe_horisontal.png', 50, 18], ['number_v3_' + f + '_pipe_vertical', p + 'pipe_vertical.png', 18, 50]);
+    ['up', 'down'].forEach(function (s) { out.push(['number_v3_' + f + '_connector_' + s, p + 'connector_' + s + '.png', 18, 50]); });
+    ['left', 'right'].forEach(function (s) { out.push(['number_v3_' + f + '_connector_' + s, p + 'connector_' + s + '.png', 50, 18]); });
+    ['down_left', 'down_right', 'up_left', 'up_right'].forEach(function (s) { out.push(['number_v3_' + f + '_elbow_' + s, p + 'elbow_' + s + '.png', 50, 50]); });
+  });
+  out.push(['number_v3_dummy_21x17_Arrow_Left', 'V3/connectors/21x17_Arrow_Left.png', 21, 17], ['number_v3_dummy_21x17_Arrow_Right', 'V3/connectors/21x17_Arrow_Right.png', 21, 17]);
+  return out;
+}
+
+/** The kinds a ventilation picture is read into (v1.108.0), as the catalogue knows its own (iwdieVcObjectIndex): the
+ *  parts' (IWDIE_VZ_VENT_PARTS) and the ducts' (iwdieVzDuctKinds), so a sync makes each found one that object.
+ *  -> [{id, w, h, role, desc, pic, tag, hasTag, kind}] */
+function iwdieVzVentKinds() {
+  var name = { supply: 'Supply duct', exhaust: 'Exhaust duct', fresh: 'Outdoor air duct' };
+  var parts = { number_360_vb: 'Heating coil', number_360_kb: 'Cooling coil', number_360_cb: 'Combi coil', number_360_vg_rot: 'Rotary heat exchanger',
+    number_360_vg_x: 'Plate heat exchanger' };
+  return IWDIE_VZ_VENT_PARTS.map(function (p) {
+    var v = /^v3_3w_valve_([a-z]+)_([a-z]+)_/.exec(p[0]);
+    return { id: p[0], w: p[2], h: p[3], role: p[6], desc: v ? '3-way valve, actuator ' + v[1] + ', open port ' + v[2] : parts[p[0]] || p[0], pic: p[1], tag: '', hasTag: false, kind: 'picture' };
+  }).concat(iwdieVzDuctKinds().map(function (k) {
+    var m = /^number_v3_(supply|exhaust|fresh)_(\w+?)_(\w+)$/.exec(k[0]);
+    var desc = m ? name[m[1]] + ', ' + (m[2] === 'pipe' ? (m[3] === 'horisontal' ? 'lying' : 'standing') : m[2] + ' ' + m[3].replace('_', '-')) : /Left/.test(k[0]) ? 'Arrow left' : 'Arrow right';
+    return { id: k[0], w: k[2], h: k[3], role: 'duct', desc: desc, pic: k[1], tag: '', hasTag: false, kind: 'picture' };
+  }));
+}
+
+/** Whether a panel is a ventilation panel (v1.108.0), the only kind whose picture is read for ducts: its name says so -
+ *  Ventilasjon, an aggregat, a 360 number - or one of its objects is a ventilation part (a 58 or 40 px fan, a damper, a
+ *  filter, a coil, a duct, the 360 series). On a Maskin the high pressure pipe is the supply duct's very orange. */
+function iwdieVzVentPanel(name, objects) {
+  if (/ventil|aggregat|luftbehandl|(^|\D)36\d\.\d/i.test(String(name || ''))) return true;
+  return (objects || []).some(function (ob) {
+    return /^V3_(58|40)px_fan_|damper|filter|^number_v3_(supply|exhaust|fresh)_|^number_360_|^number_v3_(heater|cooler|el_heater)/i.test(String((ob && ob.obj_id) || ''));
+  });
+}
+
+/** A kind's look as the Designer draws it in its box (v1.108.0): its picture `rgba` (iw x ih) at ox, oy in a box w x h,
+ *  unscaled, as the 360 series' CSS draws it (a valve's 21 px picture in its 22 px box as well: compared, the pixel
+ *  either way is lost in a pixel's reach, and no browser's smoothing enters). -> Uint8ClampedArray (w x h RGBA) */
+function iwdieVzPlaceLook(rgba, iw, ih, w, h, ox, oy) {
+  var out = new Uint8ClampedArray(w * h * 4);
+  for (var y = 0; y < ih; y++) for (var x = 0; x < iw; x++) {
+    var X = x + ox, Y = y + oy;
+    if (X < 0 || Y < 0 || X >= w || Y >= h) continue;
+    var s = (y * iw + x) * 4, o = (Y * w + X) * 4;
+    out[o] = rgba[s]; out[o + 1] = rgba[s + 1]; out[o + 2] = rgba[s + 2]; out[o + 3] = rgba[s + 3];
+  }
+  return out;
+}
+
+/** A part's template to look for (v1.108.0): its look `rgba` (w x h, as the Designer draws the kind) with the pixels it is
+ *  compared by - its opaque ones, but for a valve not its actuator's disc, which the house draws with an m and the
+ *  Designer in its state's colour - grouped by colour; those inside a patch of their own colour (all four neighbours
+ *  alike: a drawing half a pixel off still shows them) marked, and the groups that are thin lines - a quarter of their
+ *  pixels inner or fewer: the house draws such a line across two pixels as often as on one. -> {kind, role, w, h, rgba,
+ *  px: [tx, ty, r, g, b, group, inner], groups, lines} */
+function iwdieVzPartTemplate(kind, role, w, h, rgba) {
+  var side = role === 'valve' ? (/^v3_3w_valve_([a-z]+)_/.exec(kind) || [0, ''])[1] : '';
+  var px = [], cen = [], used = new Uint8Array(w * h);
+  for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+    var i = (y * w + x) * 4;
+    if (rgba[i + 3] < 128) continue;
+    var r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+    // the actuator: the light pixels of the half it stands in
+    if (side && r + g + b > 420 && (side === 'right' ? x * 2 >= w + 1 : side === 'left' ? x * 2 < w - 1 : side === 'down' ? y * 2 >= h + 1 : y * 2 < h - 1)) continue;
+    var k = -1;
+    for (var c = 0; c < cen.length; c++) if (Math.abs(cen[c][0] - r) + Math.abs(cen[c][1] - g) + Math.abs(cen[c][2] - b) <= 60) { k = c; break; }
+    if (k < 0) { k = cen.length; cen.push([r, g, b, 0]); }
+    cen[k][3]++;
+    used[y * w + x] = 1;
+    px.push([x, y, r, g, b, k, 0]);
+  }
+  px.forEach(function (p) {
+    p[6] = [[1, 0], [-1, 0], [0, 1], [0, -1]].every(function (d) {
+      var X = p[0] + d[0], Y = p[1] + d[1];
+      if (X < 0 || Y < 0 || X >= w || Y >= h || !used[Y * w + X]) return false;
+      var j = (Y * w + X) * 4;
+      return Math.abs(rgba[j] - p[2]) + Math.abs(rgba[j + 1] - p[3]) + Math.abs(rgba[j + 2] - p[4]) <= 30;
+    }) ? 1 : 0;
+  });
+  // the groups of a tenth of its pixels or more are each held to their own share
+  var inn = cen.map(function () { return 0; });
+  px.forEach(function (p) { if (p[6]) inn[p[5]]++; });
+  return { kind: kind, role: role, w: w, h: h, rgba: rgba, px: px, groups: cen.map(function (c) { return c[3] >= 0.1 * px.length ? c[3] : 0; }),
+    lines: cen.map(function (c, k) { return inn[k] <= 0.25 * c[3]; }) };
+}
+
+/** Whether pixel `j` (its RGBA offset) shows colour r, g, b (v1.108.0): within 60 of it, red, green and blue summed, or -
+ *  r, g, b a dark ink - a pixel half or more of it, the rest white or the panel's colour (`gr`, [r, g, b]): a 1 px line
+ *  drawn across two pixels shows in the one it covers most. */
+function iwdieVzShows(pic, j, r, g, b, gr) {
+  var pr = pic[j], pg = pic[j + 1], pb = pic[j + 2];
+  if (Math.abs(pr - r) + Math.abs(pg - g) + Math.abs(pb - b) <= 60) return true;
+  if (r + g + b > 420) return false;
+  for (var k = 0; k < 2; k++) {
+    var wr = k && gr ? gr[0] : 255, wg = k && gr ? gr[1] : 255, wb = k && gr ? gr[2] : 255;
+    var dr = wr - r, dg = wg - g, db = wb - b, dd = dr * dr + dg * dg + db * db;
+    if (dd < 3600) continue;
+    var t = ((pr - r) * dr + (pg - g) * dg + (pb - b) * db) / dd;
+    if (t < 0 || t > 0.5) continue;
+    if (Math.abs(r + t * dr - pr) + Math.abs(g + t * dg - pg) + Math.abs(b + t * db - pb) <= 30) return true;
+  }
+  return false;
+}
+
+/** Whether the picture shows colour r, g, b at X, Y or within `reach` pixels round it (v1.108.0, iwdieVzShows): an edge
+ *  drawn half a pixel off, or a part drawn a pixel or two larger than the Designer's picture of it, still shows. */
+function iwdieVzNear(pic, W, H, X, Y, r, g, b, reach, gr) {
+  for (var dy = -reach; dy <= reach; dy++) {
+    var yy = Y + dy;
+    if (yy < 0 || yy >= H) continue;
+    for (var dx = -reach; dx <= reach; dx++) {
+      var xx = X + dx;
+      if (xx < 0 || xx >= W) continue;
+      var j = (yy * W + xx) * 4;
+      if (pic[j + 3] >= 128 && iwdieVzShows(pic, j, r, g, b, gr)) return true;
+    }
+  }
+  return false;
+}
+
+/** How common each colour of a template is in a picture (v1.108.0): of every sixth pixel each way, how many show it
+ *  (iwdieVzShows), by its colour at 8 levels a channel. -> function (r, g, b) -> count */
+function iwdieVzCommon(pic, W, H, gr) {
+  var seen = {};
+  return function (r, g, b) {
+    var key = (r >> 5) << 6 | (g >> 5) << 3 | b >> 5;
+    if (seen[key] != null) return seen[key];
+    var n = 0;
+    for (var y = 3; y < H; y += 6) for (var x = 3; x < W; x += 6) if (iwdieVzShows(pic, (y * W + x) * 4, r, g, b, gr)) n++;
+    return (seen[key] = n);
+  };
+}
+
+/** Where a picture shows a part's template (v1.108.0): each place where 85 % of the pixels it is compared by show
+ *  (iwdieVzNear: within a pixel, two for a part over 100 px, which the house draws a few pixels larger or smaller) and
+ *  seven tenths of each of its colour groups, half of one that is a thin line - the exchanger's white loop and grey rim,
+ *  not only its fill, which the information column's grey matches too. At each place six of its pixels in the colours
+ *  the picture has fewest of are looked for first, then six of each group, five of which must show (three of a line's);
+ *  then the whole, its rarest colours first, given up as soon as a group can no longer make its share. `common` the picture's colours (iwdieVzCommon), `gr` the panel's
+ *  colour; by `until` (a time) it stops where it is. -> [{x, y, score}], the best of each place */
+function iwdieVzFindPart(pic, W, H, t, common, gr, until) {
+  var out = [], n = t.px.length, missMax = Math.floor(0.15 * n), reach = Math.max(t.w, t.h) > 100 ? 2 : 1;
+  if (!n || t.w > W || t.h > H) return out;
+  // the first looked for inside a patch of their colour: an edge's blend is rare too, but only where it was drawn just so
+  var rare = function (p) { return common(p[2], p[3], p[4]); };
+  var order = t.px.slice().sort(function (p, q) { return rare(p) - rare(q); }), inner = order.filter(function (p) { return p[6]; }), first = [];
+  (inner.length >= 6 ? inner : order).forEach(function (p) { if (first.length < 6 && first.every(function (q) { return Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]) >= 4; })) first.push(p); });
+  var per = [], left0 = t.groups.map(function () { return 0; }), need = t.groups.map(function (gn, gi) { return gn * (t.lines[gi] ? 0.5 : 0.7); });
+  t.groups.forEach(function (gn, gi) {
+    if (!gn) return;
+    var mine = t.px.filter(function (p) { return p[5] === gi; }), inner = mine.filter(function (p) { return p[6]; }), from = inner.length >= 6 ? inner : mine;
+    var six = [];
+    for (var k = 0; k < 6; k++) six.push(from[Math.floor((k + 0.5) * from.length / 6)]);
+    six.gi = gi;
+    per.push(six);
+  });
+  order.forEach(function (p) { left0[p[5]]++; });
+  var show = function (x, y, p) { return iwdieVzNear(pic, W, H, x + p[0], y + p[1], p[2], p[3], p[4], reach, gr); };
+  for (var y = 0; y + t.h <= H; y++) {
+    if (until && Date.now() > until) { out.late = true; break; }
+    for (var x = 0; x + t.w <= W; x++) {
+      var a, ok = true;
+      for (a = 0; a < first.length; a++) if (!show(x, y, first[a])) break;
+      if (a < first.length) continue;
+      for (var s = 0; s < per.length && ok; s++) {
+        var miss = 0;
+        for (a = 0; a < 6; a++) if (!show(x, y, per[s][a]) && ++miss > (t.lines[per[s].gi] ? 3 : 1)) { ok = false; break; }
+      }
+      if (!ok) continue;
+      var hit = t.groups.map(function () { return 0; }), left = left0.slice(), missed = 0, q;
+      for (q = 0; q < n; q++) {
+        var p = order[q];
+        left[p[5]]--;
+        if (show(x, y, p)) hit[p[5]]++;
+        else if (++missed > missMax || (t.groups[p[5]] && hit[p[5]] + left[p[5]] < need[p[5]])) break;
+      }
+      if (q < n) continue;
+      out.push({ x: x, y: y, score: 1 - missed / n });
+    }
+  }
+  // the best of each place: none within half the template's size of a better one
+  out.sort(function (p, q2) { return q2.score - p.score; });
+  var keep = [];
+  out.forEach(function (m) { if (keep.every(function (k) { return Math.abs(k.x - m.x) * 2 > t.w || Math.abs(k.y - m.y) * 2 > t.h; })) keep.push(m); });
+  return keep;
+}
+
+/** A part found, placed exactly (v1.108.0): the place within 2 px of where it was found whose pixels match its template's
+ *  most, each where it is (iwdieVzShows, no pixel round it) - which of two looks alike a drawing is (a coil's + and its
+ *  -, a valve's white port and its actuator's side) shows there. -> {x, y, strict} */
+function iwdieVzPartExact(pic, W, H, t, x0, y0, gr) {
+  var best = { x: x0, y: y0, strict: -1 };
+  for (var y = y0 - 2; y <= y0 + 2; y++) for (var x = x0 - 2; x <= x0 + 2; x++) {
+    if (x < 0 || y < 0 || x + t.w > W || y + t.h > H) continue;
+    var hit = 0;
+    for (var q = 0; q < t.px.length; q++) {
+      var p = t.px[q], j = ((y + p[1]) * W + x + p[0]) * 4;
+      if (iwdieVzShows(pic, j, p[2], p[3], p[4], gr)) hit++;
+    }
+    var s = hit / t.px.length;
+    if (s > best.strict) best = { x: x, y: y, strict: s };
+  }
+  return best;
+}
+
+/** Which of two parts found at much the same place the picture shows (v1.108.0): each scored, where it is placed, by its
+ *  pixels where the other's look differs or has none - a coil's + against its -, a valve's white port and dark ones -
+ *  each where it is (iwdieVzShows). -> true when `a` is the one */
+function iwdieVzPartBetter(pic, W, H, a, b, gr) {
+  var score = function (m, o) {
+    var hit = 0, n = 0;
+    m.t.px.forEach(function (p) {
+      var X = m.x + p[0], Y = m.y + p[1], ox = X - o.x, oy = Y - o.y;
+      if (X < 0 || Y < 0 || X >= W || Y >= H) return;
+      if (ox >= 0 && oy >= 0 && ox < o.t.w && oy < o.t.h) {
+        var j = (oy * o.t.w + ox) * 4, r2 = o.t.rgba;
+        if (r2[j + 3] >= 128 && Math.abs(r2[j] - p[2]) + Math.abs(r2[j + 1] - p[3]) + Math.abs(r2[j + 2] - p[4]) <= 60) return;
+      }
+      n++;
+      if (iwdieVzShows(pic, (Y * W + X) * 4, p[2], p[3], p[4], gr)) hit++;
+    });
+    return n ? hit / n : 1;
+  };
+  var sa = score(a, b), sb = score(b, a);
+  return sa > sb || (sa === sb && a.strict > b.strict);
+}
+
+/** The parts of a ventilation picture its templates show (v1.108.0, `templates`: iwdieVzPartTemplate's): each found
+ *  (iwdieVzFindPart) and taken where it matches as it stands - a small one placed exactly (iwdieVzPartExact) where 78 %
+ *  of its pixels match (the house's valves and coils 87 to 89 %; dark outlines and grey boxes of another style that
+ *  looked like a valve within a pixel, 24 to 66 %), a big one, drawn a few pixels larger or smaller than its picture,
+ *  where 92 % do within two pixels - and of those at much the same place - a coil's three looks, a valve's twelve - the
+ *  one the picture shows (iwdieVzPartBetter). `until` a time it stops by.
+ *  -> [{kind, role, x, y, w, h, score, strict, t}] and `late` when it ran out of time */
+function iwdieVzVentParts(pic, W, H, templates, gr, until) {
+  var found = [], common = iwdieVzCommon(pic, W, H, gr), late = false;
+  (templates || []).forEach(function (t) {
+    var ms = iwdieVzFindPart(pic, W, H, t, common, gr, until), big = Math.max(t.w, t.h) > 100;
+    if (ms.late) late = true;
+    ms.forEach(function (m) {
+      var e = big ? { x: m.x, y: m.y, strict: m.score } : iwdieVzPartExact(pic, W, H, t, m.x, m.y, gr);
+      if (e.strict < (big ? 0.92 : 0.78)) return;
+      found.push({ kind: t.kind, role: t.role, x: e.x, y: e.y, w: t.w, h: t.h, score: m.score, strict: e.strict, t: t });
+    });
+  });
+  found.sort(function (a, b) { return b.strict - a.strict || b.score - a.score; });
+  var keep = [];
+  found.forEach(function (f) {
+    for (var i = 0; i < keep.length; i++) {
+      var k = keep[i], ix = Math.min(f.x + f.w, k.x + k.w) - Math.max(f.x, k.x), iy = Math.min(f.y + f.h, k.y + k.h) - Math.max(f.y, k.y);
+      if (ix <= 0 || iy <= 0 || ix * iy < 0.3 * Math.min(f.w * f.h, k.w * k.h)) continue;
+      if (f.role === k.role && iwdieVzPartBetter(pic, W, H, f, k, gr)) keep[i] = f;
+      return;
+    }
+    keep.push(f);
+  });
+  keep.late = late;
+  return keep;
+}
+
+/** A duct family's colours as RGB (v1.108.0). */
+function iwdieVzDuctRgb() {
+  return IWDIE_VZ_DUCTS.map(function (d) { return d[1].map(function (h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }); });
+}
+
+/** The ducts a picture draws (v1.108.0): each straight run of a duct family's colour (IWDIE_VZ_DUCTS, within 36) at most
+ *  6 px thick and 20 long, its axis where its core lies to a fraction of a pixel - the rows half covered at its edges
+ *  counted by how much they are - and as thick as a duct's 3 px core (2.2 to 6.5 px of colour across it; a heating
+ *  coil's 2 px water pipe in the same orange is not one). Runs of one family on one axis that meet are one.
+ *  -> [{f: family index, way: 'h' | 'v', axis, a, b (its extent along, b past its end)}] */
+function iwdieVzDuctRuns(pic, W, H) {
+  var RGB = iwdieVzDuctRgb(), fam = new Int8Array(W * H).fill(-1), i;
+  for (i = 0; i < W * H; i++) {
+    var j = i * 4;
+    if (pic[j + 3] < 200) continue;
+    for (var f = 0; f < RGB.length && fam[i] < 0; f++) {
+      for (var c = 0; c < RGB[f].length; c++) {
+        if (Math.abs(pic[j] - RGB[f][c][0]) + Math.abs(pic[j + 1] - RGB[f][c][1]) + Math.abs(pic[j + 2] - RGB[f][c][2]) <= 36) { fam[i] = f; break; }
+      }
+    }
+  }
+  // how much of family f's colour covers pixel (x, y), against white: a core's edge row
+  var cover = function (x, y, f) {
+    if (x < 0 || y < 0 || x >= W || y >= H) return 0;
+    var j = (y * W + x) * 4, best = 0;
+    RGB[f].forEach(function (c) {
+      var dr = 255 - c[0], dg = 255 - c[1], db = 255 - c[2], dd = dr * dr + dg * dg + db * db;
+      if (!dd) return;
+      var t = ((255 - pic[j]) * dr + (255 - pic[j + 1]) * dg + (255 - pic[j + 2]) * db) / dd;
+      // and the pixel on that line from white: not another colour
+      var er = 255 - t * dr - pic[j], eg = 255 - t * dg - pic[j + 1], eb = 255 - t * db - pic[j + 2];
+      if (Math.abs(er) + Math.abs(eg) + Math.abs(eb) <= 40) best = Math.max(best, Math.max(0, Math.min(1, t)));
+    });
+    return best;
+  };
+  var out = [];
+  ['h', 'v'].forEach(function (way) {
+    var lines = way === 'h' ? H : W, len = way === 'h' ? W : H, open = [];
+    var at = function (line, k) { return way === 'h' ? line * W + k : k * W + line; };
+    var bands = [];
+    for (var ln = 0; ln < lines; ln++) {
+      var runs = [], k = 0;
+      while (k < len) {
+        var f0 = fam[at(ln, k)];
+        if (f0 < 0) { k++; continue; }
+        var k0 = k;
+        while (k < len && fam[at(ln, k)] === f0) k++;
+        if (k - k0 >= 8) runs.push({ f: f0, a: k0, b: k });
+      }
+      var next = [];
+      runs.forEach(function (r) {
+        var best = null, most = 0;
+        open.forEach(function (bd) {
+          var last = bd.rows[bd.rows.length - 1];
+          if (bd.f !== r.f || last.ln !== ln - 1) return;
+          var ov = Math.min(last.b, r.b) - Math.max(last.a, r.a);
+          if (ov >= 0.5 * Math.min(last.b - last.a, r.b - r.a) && ov > most) { most = ov; best = bd; }
+        });
+        if (!best) { best = { f: r.f, rows: [] }; bands.push(best); }
+        if (next.indexOf(best) < 0) next.push(best);
+        best.rows.push({ ln: ln, a: r.a, b: r.b });
+      });
+      open = next;
+    }
+    bands.forEach(function (bd) {
+      var n = bd.rows.length;
+      if (n > 6) return;
+      var as = bd.rows.map(function (r) { return r.a; }).sort(function (p, q) { return p - q; }), bs = bd.rows.map(function (r) { return r.b; }).sort(function (p, q) { return p - q; });
+      var a = as[Math.floor(n / 2)], b = bs[Math.floor((n - 1) / 2)];
+      if (b - a < 20) return;
+      // the edge rows' cover, the median along the run
+      var edge = function (ln) {
+        var cs = [];
+        for (var k2 = a; k2 < b; k2 += Math.max(1, Math.floor((b - a) / 40))) cs.push(way === 'h' ? cover(k2, ln, bd.f) : cover(ln, k2, bd.f));
+        cs.sort(function (p, q) { return p - q; });
+        return cs.length ? cs[Math.floor(cs.length / 2)] : 0;
+      };
+      var l0 = bd.rows[0].ln, l1 = bd.rows[n - 1].ln, c0 = edge(l0 - 1), c1 = edge(l1 + 1), sum = n + c0 + c1;
+      if (sum < 2.2 || sum > 6.5) return;
+      var mid = ((l0 - 0.5) * c0 + (l1 + 1.5) * c1);
+      for (var r = l0; r <= l1; r++) mid += r + 0.5;
+      out.push({ f: bd.f, way: way, axis: mid / sum, a: a, b: b });
+    });
+  });
+  // one family's runs on one axis that meet are one run
+  out.sort(function (p, q) { return p.f - q.f || (p.way < q.way ? -1 : p.way > q.way ? 1 : 0) || p.axis - q.axis || p.a - q.a; });
+  var merged = [];
+  out.forEach(function (r) {
+    for (var m = 0; m < merged.length; m++) {
+      var s = merged[m];
+      if (s.f !== r.f || s.way !== r.way || Math.abs(s.axis - r.axis) > 1.5 || r.a > s.b + 4 || s.a > r.b + 4) continue;
+      var l1 = s.b - s.a, l2 = r.b - r.a;
+      s.axis = (s.axis * l1 + r.axis * l2) / (l1 + l2);
+      s.a = Math.min(s.a, r.a); s.b = Math.max(s.b, r.b);
+      return;
+    }
+    merged.push({ f: r.f, way: r.way, axis: r.axis, a: r.a, b: r.b });
+  });
+  return merged;
+}
+
+/** A ventilation picture's ducts as the Designer's duct objects (v1.108.0), from their runs (iwdieVzDuctRuns): where a
+ *  run's end meets the side of a run across it, a connector of the run's family on that end (the house's way: 18 x 50,
+ *  its open end over the other duct's band, its core to that duct's); where it meets the end of one across it, the
+ *  elbow of their corner; the rest of each run a pipe, its core on the run's axis (the duct objects' core lies 9 px into
+ *  their 18). -> [{kind, x, y, w, h, run, end?}] and each run's ends as `free` [{run, end: 0 | 1}] */
+function iwdieVzDuctPieces(runs) {
+  var R = Math.round, pieces = [], free = [];
+  var fname = function (f) { return IWDIE_VZ_DUCTS[f][0]; };
+  // what each end of each run meets: null, {tee: run} or {corner: run, end}
+  var meets = runs.map(function () { return [null, null]; });
+  runs.forEach(function (s, si) {
+    [0, 1].forEach(function (e) {
+      var at = e ? s.b : s.a;
+      runs.forEach(function (p, pi) {
+        if (pi === si || p.way === s.way || meets[si][e]) return;
+        // its end on the other's axis, the other reaching it
+        if (Math.abs(at - p.axis) > 6 || s.axis < p.a - 6 || s.axis > p.b + 6) return;
+        if (s.axis > p.a + 9 && s.axis < p.b - 9) meets[si][e] = { tee: pi };
+        else meets[si][e] = { corner: pi, end: Math.abs(s.axis - p.a) <= Math.abs(s.axis - p.b) ? 0 : 1 };
+      });
+    });
+  });
+  var corners = {};
+  runs.forEach(function (s, si) {
+    var lo = s.a, hi = s.b, f = fname(s.f), lying = s.way === 'h';
+    [0, 1].forEach(function (e) {
+      var m = meets[si][e];
+      if (!m) { free.push({ run: si, end: e }); return; }
+      if (m.tee != null) {
+        var p = runs[m.tee], c;
+        if (lying) {
+          c = e ? { kind: 'number_v3_' + f + '_connector_right', x: R(p.axis - 52), y: R(s.axis - 9), w: 50, h: 18 } : { kind: 'number_v3_' + f + '_connector_left', x: R(p.axis + 2), y: R(s.axis - 9), w: 50, h: 18 };
+        } else {
+          c = e ? { kind: 'number_v3_' + f + '_connector_down', x: R(s.axis - 9), y: R(p.axis - 52), w: 18, h: 50 } : { kind: 'number_v3_' + f + '_connector_up', x: R(s.axis - 9), y: R(p.axis + 2), w: 18, h: 50 };
+        }
+        c.run = si; c.end = e;
+        pieces.push(c);
+        if (e) hi = Math.min(hi, lying ? c.x : c.y); else lo = Math.max(lo, lying ? c.x + 50 : c.y + 50);
+        return;
+      }
+      // a corner: its elbow once, of the longer run's family, the two runs ending at its edges
+      var o = runs[m.corner], h = lying ? s : o, v = lying ? o : s, he = lying ? e : m.end, ve = lying ? m.end : e;
+      var key = Math.min(si, m.corner) + '-' + Math.max(si, m.corner) + '-' + (lying ? e + '' + m.end : m.end + '' + e);
+      // the legs from the corner: the lying run's other end left or right, the standing one's up or down
+      var right = he === 0, down = ve === 0;
+      var ox = right ? 9 : 41, oy = down ? 9 : 41, cx = v.axis, cy = h.axis;
+      if (!corners[key]) {
+        var ff = fname((h.b - h.a) >= (v.b - v.a) ? h.f : v.f);
+        corners[key] = { kind: 'number_v3_' + ff + '_elbow_' + (down ? 'up' : 'down') + '_' + (right ? 'right' : 'left'), x: R(cx - ox), y: R(cy - oy), w: 50, h: 50, run: si, end: e };
+        pieces.push(corners[key]);
+      }
+      var el = corners[key];
+      if (lying) { if (right) lo = Math.max(lo, el.x + 50); else hi = Math.min(hi, el.x); }
+      else if (down) lo = Math.max(lo, el.y + 50); else hi = Math.min(hi, el.y);
+    });
+    if (R(hi) - R(lo) < 3) return;
+    pieces.push(lying ? { kind: 'number_v3_' + f + '_pipe_horisontal', x: R(lo), y: R(s.axis - 9), w: R(hi) - R(lo), h: 18, run: si }
+      : { kind: 'number_v3_' + f + '_pipe_vertical', x: R(s.axis - 9), y: R(lo), w: 18, h: R(hi) - R(lo), run: si });
+  });
+  return { pieces: pieces, free: free };
+}
+
+/** The arrow at a lying duct's open end (v1.108.0): the house's 2 px slate (#697c86) arrow on its axis, within 45 px past
+ *  the end, read into the Designer's 21 x 17 arrow - Arrow_Left where its head is on its left - its shaft on the duct's
+ *  axis and its middle where the drawn one's is. -> {kind, x, y, w, h, ink: [pixel indices]} | null */
+function iwdieVzDuctArrow(pic, W, H, run, end) {
+  if (run.way !== 'h') return null;
+  var ink = function (x, y) {
+    if (x < 0 || y < 0 || x >= W || y >= H) return false;
+    var j = (y * W + x) * 4;
+    return pic[j + 3] >= 128 && Math.abs(pic[j] - 105) + Math.abs(pic[j + 1] - 124) + Math.abs(pic[j + 2] - 134) <= 90;
+  };
+  var ay = Math.round(run.axis - 0.5), x0 = end ? run.b - 2 : run.a - 45, x1 = end ? run.b + 45 : run.a + 2, seed = -1;
+  for (var x = x0; x <= x1 && seed < 0; x++) for (var dy = -2; dy <= 2; dy++) if (ink(x, ay + dy)) { seed = (ay + dy) * W + x; break; }
+  if (seed < 0) return null;
+  // the ink round it, 8-way, within 30 px of the end
+  var seen = {}, stack = [seed], got = [], bx0 = W, by0 = H, bx1 = -1, by1 = -1;
+  seen[seed] = 1;
+  while (stack.length && got.length < 2000) {
+    var p = stack.pop(), px = p % W, py = (p - px) / W;
+    got.push(p);
+    if (px < bx0) bx0 = px;
+    if (px > bx1) bx1 = px;
+    if (py < by0) by0 = py;
+    if (py > by1) by1 = py;
+    for (var ny = -1; ny <= 1; ny++) for (var nx = -1; nx <= 1; nx++) {
+      var qx = px + nx, qy = py + ny, q = qy * W + qx;
+      if (seen[q] || !ink(qx, qy) || Math.abs(qy - ay) > 12 || (end ? qx < run.b - 4 || qx > run.b + 60 : qx > run.a + 4 || qx < run.a - 60)) continue;
+      seen[q] = 1;
+      stack.push(q);
+    }
+  }
+  var bw = bx1 - bx0 + 1, bh = by1 - by0 + 1;
+  if (got.length < 12 || bw < 10 || bw > 30 || bh < 8 || bh > 20 || Math.abs((by0 + by1 + 1) / 2 - run.axis) > 3) return null;
+  // its head: the end its ink is tallest at
+  var tall = function (xx) { var n = 0; for (var yy = by0; yy <= by1; yy++) if (seen[yy * W + xx]) n++; return n; };
+  var left = 0, right = 0;
+  for (var k = 0; k < 4; k++) { left = Math.max(left, tall(bx0 + k)); right = Math.max(right, tall(bx1 - k)); }
+  var kind = left >= right ? 'number_v3_dummy_21x17_Arrow_Left' : 'number_v3_dummy_21x17_Arrow_Right';
+  return { kind: kind, x: Math.round((bx0 + bx1 + 1) / 2 - 10.5), y: Math.round(run.axis - 8.5), w: 21, h: 17, ink: got };
+}
+
+/** The pixels a duct's run takes out of the picture once its objects stand there (v1.108.0): its 18 px band - white, its
+ *  core's colour and the blends of the two, and its clear or half clear edge - from `lo` to `hi` along it; another
+ *  drawing across it (a water pipe) stays. Sets them in `M` (W x H). */
+function iwdieVzDuctHole(pic, W, H, run, lo, hi, M) {
+  var RGB = iwdieVzDuctRgb()[run.f], lying = run.way === 'h';
+  var a = Math.floor(lo), b = Math.ceil(hi);
+  var c0 = Math.floor(run.axis - 9.5), c1 = Math.ceil(run.axis + 9.5);
+  for (var k = a; k < b; k++) for (var c = c0; c < c1; c++) {
+    var x = lying ? k : c, y = lying ? c : k;
+    if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    // white, or a neutral light grey: the band's edge half over the panel's colour
+    var j = (y * W + x) * 4, r = pic[j], g = pic[j + 1], bl = pic[j + 2];
+    var own = pic[j + 3] < 250 || (r >= 235 && g >= 235 && bl >= 235) || (r + g + bl >= 600 && Math.max(r, g, bl) - Math.min(r, g, bl) <= 8);
+    for (var q = 0; q < RGB.length && !own; q++) {
+      var dr = 255 - RGB[q][0], dg = 255 - RGB[q][1], db = 255 - RGB[q][2], dd = dr * dr + dg * dg + db * db;
+      var t = dd ? Math.max(0, Math.min(1, ((255 - r) * dr + (255 - g) * dg + (255 - bl) * db) / dd)) : 0;
+      own = Math.abs(255 - t * dr - r) + Math.abs(255 - t * dg - g) + Math.abs(255 - t * db - bl) <= 40;
+    }
+    if (own) M[y * W + x] = 1;
+  }
+}
+
+/** A ventilation picture read into the Designer's objects (v1.108.0): `pic` RGBA, W x H, over the panel's colour (changed:
+ *  what is read is taken out of it); `opts.templates` its parts' templates (iwdieVzPartTemplate) - each found becomes
+ *  its kind and is taken out first, so a duct it stood on runs on through it (iwdieVcErase fills a hole from either side
+ *  along a pipe); then the ducts (iwdieVzDuctRuns, iwdieVzDuctPieces) and the arrows at their open ends; `opts.objects`
+ *  the panel's own - one of a part's role where a part is found, or a duct object where a duct runs, is that one shown
+ *  again: taken out, not placed twice; `opts.ground` the panel's colour [r, g, b]; `opts.until` a time the parts' search
+ *  stops by (`late` when it did). -> {found: [{kind, x, y, w, h}], twice, parts, ducts, arrows, runs, late} */
+function iwdieVzVent(pic, W, H, opts) {
+  opts = opts || {};
+  var objects = (opts.objects || []).filter(function (ob) { return ob && [ob.posLeft, ob.posTop, ob.posWidth, ob.posHeight].every(function (v) { return isFinite(parseFloat(v)); }); });
+  var roleOf = function (id) { var s = String(id || ''); return /^number_v3_(supply|exhaust|fresh)_/.test(s) ? 'duct' : /_Arrow_/.test(s) ? 'arrow' : /^number_360_/.test(s) ? 'zone' : /valve/.test(s) ? 'valve' : ''; };
+  var shown = function (f) {
+    return objects.some(function (ob) {
+      var x = parseFloat(ob.posLeft), y = parseFloat(ob.posTop), w = parseFloat(ob.posWidth), h = parseFloat(ob.posHeight);
+      var ix = Math.min(f.x + f.w, x + w) - Math.max(f.x, x), iy = Math.min(f.y + f.h, y + h) - Math.max(f.y, y);
+      return ix > 0 && iy > 0 && ix * iy >= 0.5 * Math.min(f.w * f.h, w * h) && roleOf(ob.obj_id) === roleOf(f.kind) && roleOf(f.kind) !== '';
+    });
+  };
+  var res = { found: [], twice: 0, parts: 0, ducts: 0, arrows: 0 };
+  // 1. the parts by their pictures, out of the picture before the ducts are read through them
+  var parts = iwdieVzVentParts(pic, W, H, opts.templates || [], opts.ground, opts.until), small = [], big = [];
+  res.late = !!parts.late;
+  parts.forEach(function (p) {
+    // a big one the house draws a pixel or two larger than the Designer's picture: out with four pixels round it
+    (Math.max(p.w, p.h) > 100 ? big : small).push({ x: p.x, y: p.y, w: p.w, h: p.h, rgba: p.t.rgba });
+    var f = { kind: p.kind, x: p.x, y: p.y, w: p.w, h: p.h };
+    if (shown(f)) res.twice++;
+    else { res.found.push(f); res.parts++; }
+  });
+  if (parts.length) iwdieVcEraseMask(pic, W, H, iwdieVcHoleMask(W, H, big, 4, iwdieVcHoleMask(W, H, small, 1)));
+  // 2. the ducts, 3. the arrows at their open ends
+  var runs = iwdieVzDuctRuns(pic, W, H);
+  // one family's runs on one axis that a part found stands between are one duct, on under it: the exhaust across the
+  // rotor, as the house's panels lay it (the hole's fill joins them only where the line met the part cleanly); and so are
+  // two 20 px apart or less where a duct across them ends - a branch whose band was drawn over the core it meets
+  var across = function (r, lo, hi) {
+    return parts.some(function (p) {
+      var lying = r.way === 'h', a = lying ? p.x : p.y, b = lying ? p.x + p.w : p.y + p.h, c0 = lying ? p.y : p.x, c1 = lying ? p.y + p.h : p.x + p.w;
+      return r.axis > c0 + 4 && r.axis < c1 - 4 && lo >= a - 6 && hi <= b + 6;
+    }) || (hi - lo <= 20 && runs.some(function (o) {
+      return o.way !== r.way && o.axis >= lo - 2 && o.axis <= hi + 2 && (Math.abs(o.a - r.axis) <= 10 || Math.abs(o.b - r.axis) <= 10);
+    }));
+  };
+  runs.sort(function (p, q) { return p.a - q.a; });
+  for (var r1 = 0; r1 < runs.length; r1++) {
+    for (var r2 = r1 + 1; r2 < runs.length; r2++) {
+      var A = runs[r1], B = runs[r2];
+      if (A.f !== B.f || A.way !== B.way || Math.abs(A.axis - B.axis) > 1.5 || B.a < A.b || !across(A, A.b, B.a)) continue;
+      A.axis = (A.axis * (A.b - A.a) + B.axis * (B.b - B.a)) / (A.b - A.a + B.b - B.a);
+      A.b = Math.max(A.b, B.b);
+      runs.splice(r2--, 1);
+    }
+  }
+  // a duct that ends at a part found runs on under it, as the house's panels lay the intake and supply under the rotor;
+  // what is left of its band there goes, to the part's far side
+  runs.forEach(function (r) {
+    r.ha = r.a; r.hb = r.b;
+    parts.forEach(function (p) {
+      var lying = r.way === 'h', lo = lying ? p.x : p.y, hi = lying ? p.x + p.w : p.y + p.h, c0 = lying ? p.y : p.x, c1 = lying ? p.y + p.h : p.x + p.w;
+      if (r.axis < c0 + 4 || r.axis > c1 - 4) return;
+      if (r.b <= lo + 2 && r.b >= lo - 6) { r.b = lo + 3; r.hb = hi + 4; }
+      if (r.a >= hi - 2 && r.a <= hi + 6) { r.a = hi - 3; r.ha = lo - 4; }
+    });
+  });
+  var dp = iwdieVzDuctPieces(runs), M = new Uint8Array(W * H);
+  dp.pieces.forEach(function (p) {
+    var f = { kind: p.kind, x: p.x, y: p.y, w: p.w, h: p.h };
+    if (shown(f)) res.twice++;
+    else { res.found.push(f); res.ducts++; }
+  });
+  var openEnd = {};
+  dp.free.forEach(function (e) { openEnd[e.run + ':' + e.end] = 1; });
+  // two open ends on one axis 16 px apart or less - the gap a damper stands in - and the band between them goes too
+  runs.forEach(function (r, i) {
+    runs.forEach(function (o, k) {
+      if (k === i || o.way !== r.way || Math.abs(o.axis - r.axis) > 1.5 || !openEnd[i + ':1'] || !openEnd[k + ':0'] || o.a - r.b < 0 || o.a - r.b > 16) return;
+      r.hb = Math.max(r.hb, o.a);
+    });
+  });
+  // past an end that meets another duct, into that one's band
+  runs.forEach(function (r, i) { iwdieVzDuctHole(pic, W, H, r, r.ha - (openEnd[i + ':0'] ? 0 : 10), r.hb + (openEnd[i + ':1'] ? 0 : 10), M); });
+  dp.free.forEach(function (e) {
+    var ar = iwdieVzDuctArrow(pic, W, H, runs[e.run], e.end);
+    if (!ar) return;
+    ar.ink.forEach(function (q) {
+      var qx = q % W, qy = (q - qx) / W;
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) if (qx + dx >= 0 && qy + dy >= 0 && qx + dx < W && qy + dy < H) M[(qy + dy) * W + qx + dx] = 1;
+    });
+    var f = { kind: ar.kind, x: ar.x, y: ar.y, w: ar.w, h: ar.h };
+    if (shown(f)) res.twice++;
+    else { res.found.push(f); res.arrows++; }
+  });
+  // under a duct is the panel's colour: filled from either side, a room's fill beside its end ran into its band
+  var gr = opts.ground;
+  if (gr) {
+    for (var q = 0; q < W * H; q++) if (M[q]) { pic[q * 4] = gr[0]; pic[q * 4 + 1] = gr[1]; pic[q * 4 + 2] = gr[2]; pic[q * 4 + 3] = 255; }
+  } else iwdieVcEraseMask(pic, W, H, M);
+  res.runs = runs.length;
+  return res;
+}
+
 /* ===================== The picture's words as label objects (v1.78.0) =====================
    Thomas, with 10214's Oversikt: *more can be replaced with objects from database like info panel letters and objects ...
    the text next to the disk can be replace with object text*. A picture of pixels has its words as letters: case names
@@ -20882,7 +21524,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function doExportRead() {
       var paper = null;
       var steps = [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['text', 'Text in the picture'],
-        ['boxes', 'Cases, rooms and bars'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'], ['build', 'The drawing and the new objects'],
+        ['boxes', 'Cases, rooms and bars'], ['vent', 'Ducts, coils and valves'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'], ['build', 'The drawing and the new objects'],
         ['plant', 'The plant’s units and parameters, the file']];
       var open = function () { paper = exportProgress('Export JSON - the panel as Edit in VectorCraft makes it', steps); return paper; };
       var close = function () { if (paper) { paper.close(); paper = null; } };
@@ -24792,7 +25434,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           // and the house symbols found in it first
           if (ai === 'vector' || (!ai && base)) { info.vector = true; ai = null; lib = null; }
           if (ai) { info.ai = ai; lib = null; }
-          paper = info.vector ? vcPaper(tab, [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['text', 'Text in the picture'], ['boxes', 'Cases, rooms and bars'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'],
+          paper = info.vector ? vcPaper(tab, [['objects', 'What the objects stand on'], ['found', 'IWMAC objects in the picture'], ['text', 'Text in the picture'], ['boxes', 'Cases, rooms and bars'], ['vent', 'Ducts, coils and valves'], ['symbols', 'House symbols'], ['vector', 'Vectorizing the rest'],
             ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']])
             : lib ? vcPaper(tab, [['lib', 'Your components'], ['find', 'Looking for them'], ['check', 'What each one shows'], ['pills', 'Pills'],
             ['pipes', 'Pipes'], ['build', 'The drawing for VectorCraft'], ['open', 'Opening VectorCraft']], true)
@@ -25752,6 +26394,54 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           return { k: i, w: e.w, h: e.h, rgba: g.getImageData(0, 0, e.w, e.h).data, still: true, kinds: e.kinds, pic: e.pic };
         }, function () { return null; });
       })).then(function (all) { return all.filter(Boolean); });
+    }
+
+    /** The pictures a ventilation picture is read by (v1.108.0): each part's (IWDIE_VZ_VENT_PARTS) and each duct object's
+     *  (iwdieVzDuctKinds), fetched from /iw_icons/ and kept a week with the state pictures (vcObjectStates); each part's
+     *  template (iwdieVzPartTemplate: its picture where the Designer draws it in its box, iwdieVzPlaceLook) and each kind's
+     *  look for its placeholder - a duct's its picture, which the placeholder stretches along it as the Designer repeats
+     *  it. -> Promise<{templates, looks: {id: {src, iw, ih}}}> */
+    var vcVentPics = null;
+    function vcVentTemplates() {
+      if (vcVentPics) return vcVentPics;
+      var want = IWDIE_VZ_VENT_PARTS.map(function (p) { return p[1]; }).concat(iwdieVzDuctKinds().map(function (k) { return k[1]; }));
+      var kept = null;
+      try { kept = GM_getValue(IWDIE_VC_STATES_KEY, null); } catch (e) { kept = null; }
+      var fresh = !!(kept && kept.v === 1 && kept.pics && kept.at > Date.now() - 7 * 864e5), pics = fresh ? kept.pics : {};
+      var missing = want.filter(function (p, i) { return !pics[p] && want.indexOf(p) === i; });
+      vcVentPics = Promise.all(missing.map(function (p) {
+        return vcIconPng(vcDesignerUrl('../iw_icons/' + p)).then(function (got) { pics[p] = { src: got.url, w: got.w, h: got.h }; }, function () {});
+      })).then(function () {
+        if (missing.some(function (p) { return pics[p]; })) { try { GM_setValue(IWDIE_VC_STATES_KEY, { v: 1, at: fresh ? kept.at : Date.now(), pics: pics }); } catch (e) {} }
+        var px = {};
+        return Promise.all(IWDIE_VZ_VENT_PARTS.filter(function (q) { return pics[q[1]]; }).map(function (q) {
+          return loadPicture(pics[q[1]].src).then(function (img) {
+            var c = document.createElement('canvas');
+            c.width = pics[q[1]].w; c.height = pics[q[1]].h;
+            var g = c.getContext('2d');
+            g.drawImage(img, 0, 0);
+            px[q[1]] = { w: c.width, h: c.height, rgba: g.getImageData(0, 0, c.width, c.height).data };
+          }, function () {});
+        })).then(function () {
+          var templates = [], looks = {};
+          IWDIE_VZ_VENT_PARTS.forEach(function (q) {
+            var P = px[q[1]];
+            if (!P) return;
+            var rgba = iwdieVzPlaceLook(P.rgba, P.w, P.h, q[2], q[3], q[4], q[5]);
+            templates.push(iwdieVzPartTemplate(q[0], q[6], q[2], q[3], rgba));
+            var c = document.createElement('canvas');
+            c.width = q[2]; c.height = q[3];
+            var g = c.getContext('2d'), d = g.createImageData(q[2], q[3]);
+            d.data.set(rgba);
+            g.putImageData(d, 0, 0);
+            looks[q[0]] = { src: c.toDataURL('image/png'), iw: q[2], ih: q[3] };
+          });
+          iwdieVzDuctKinds().forEach(function (k) { if (pics[k[1]]) looks[k[0]] = { src: pics[k[1]].src, iw: pics[k[1]].w, ih: pics[k[1]].h }; });
+          return { templates: templates, looks: looks };
+        });
+      });
+      vcVentPics.then(null, function () { vcVentPics = null; });
+      return vcVentPics;
     }
 
     /** The IWMAC objects a picture shows (v1.77.0): `data` its pixels (RGBA, w x h) over the panel's colour, `objects`
@@ -26901,6 +27591,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           paper.done(placed.length || again ? (placed.length ? placed.length + ' as objects: ' + top.join(', ') + (Object.keys(count).length > 3 ? ', …' : '') : 'none new') +
             (again ? '; ' + again + ' the panel has already, taken out' : '') : 'none found', 0.21);
         });
+      }).then(function () {
+        // v1.108.0: a ventilation picture's ducts, coils, exchanger, valves and arrows the Designer's own objects, as the house's
+        // Ventilasjon template draws them (iwdieVzVent) - before the closest objects and the house symbols take them for others
+        got.vent = null;
+        if (info && info.findObjects === false) { paper.none('vent', 'not looked for: switched off on the card'); return null; }
+        if (!iwdieVzVentPanel(info && info.panel, objects)) { paper.none('vent', 'not a ventilation panel'); return null; }
+        paper.step('vent', 'ducts, coils, valves and the exchanger…', 0.21, 0.22);
+        return vcVentTemplates().then(function (tv) {
+          return paper.breath().then(function () {
+            var r = iwdieVzVent(data, w, h, { templates: tv.templates, objects: objects, ground: ground, until: Date.now() + IWDIE_VZ_OBJECT_MS });
+            r.found.forEach(function (f) { f.look = tv.looks[f.kind] || null; });
+            got.found = got.found.concat(r.found); got.twice += r.twice; got.vent = r;
+            paper.done(r.found.length ? iwdieN(r.ducts, 'duct piece', 'duct pieces') + ', ' + iwdieN(r.arrows, 'arrow', 'arrows') + ' and ' +
+              iwdieN(r.parts, 'coil, exchanger or valve', 'coils, exchangers and valves') + ' as objects' + (r.twice ? '; ' + r.twice + ' the panel has already, taken out' : '') +
+              (r.late ? ' · not all looked for in time' : '') : 'none found', 0.22);
+          });
+        }, function () { paper.done('not looked for: the Designer’s pictures of them could not be had', 0.22); });
       }).then(function () {
         // v1.81.0: what the Designer's pictures did not find exactly, its closest object by shape - an IWMAC object before
         // a house symbol - each state picture unturned, placed as one found exactly is
@@ -30431,6 +31138,20 @@ if (typeof module !== 'undefined' && module.exports) {
     txCodes: iwdieTxCodes,
     txCodeOdd: iwdieTxCodeOdd,
     vzBoxes: iwdieVzBoxes,
+    VZ_DUCTS: IWDIE_VZ_DUCTS,
+    VZ_VENT_PARTS: IWDIE_VZ_VENT_PARTS,
+    vzDuctKinds: iwdieVzDuctKinds,
+    vzVentKinds: iwdieVzVentKinds,
+    vzVentPanel: iwdieVzVentPanel,
+    vzPlaceLook: iwdieVzPlaceLook,
+    vzPartTemplate: iwdieVzPartTemplate,
+    vzFindPart: iwdieVzFindPart,
+    vzPartExact: iwdieVzPartExact,
+    vzVentParts: iwdieVzVentParts,
+    vzDuctRuns: iwdieVzDuctRuns,
+    vzDuctPieces: iwdieVzDuctPieces,
+    vzDuctArrow: iwdieVzDuctArrow,
+    vzVent: iwdieVzVent,
     vzBoxTemplate: iwdieVzBoxTemplate,
     vzBoxKind: iwdieVzBoxKind,
     vzFolderRole: iwdieVzFolderRole,

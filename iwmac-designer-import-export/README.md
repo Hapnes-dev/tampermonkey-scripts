@@ -531,6 +531,55 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A ventilation picture read into the Designer's own objects (v1.108.0)
+
+Thomas, 2026-11-02, on plant 10229's `360.001 Ventilasjon`, whose picture is the house's Ventilasjon template with no
+.ai to it: *"vectorize of this should be 100 % expect for the roms and tilluft meny square"*. Vectorize image made none
+of it objects. The template draws its ducts, coils, exchanger and valves the way the Designer's own objects look, and
+writes on its coils "Designer skal brukes hvis mulig", but no step knew them.
+
+On a ventilation panel a new step now reads them (`iwdieVzVent`), after the Designer's boxes and before the house
+symbols and the trace. A panel counts as one when its name says Ventilasjon, Aggregat, Luftbehandling or a 360 number,
+or when one of its objects is a ventilation part (a 58 or 40 px fan, a damper, a filter, a coil, a duct, the 360
+series). On a Maskin the high pressure pipe is the supply duct's very orange, so it is never read there.
+- **Coils, exchangers and valves** are read by the Designer's own pictures: `number_360_vb` (+), `number_360_kb` (-),
+  `number_360_cb`, `number_360_vg_rot`, `number_360_vg_x`, and the twelve 3-way valves `v3_3w_valve_*_nrm` at rest.
+  - Each is looked for within a pixel, two for the exchangers, which the house draws a few pixels larger than the
+    picture.
+  - It is taken where 78 % of its pixels match where it stands. The house's coils and valves match 87 to 89 %; the
+    dark outlines of another style that looked like a valve within a pixel matched 24 to 66 %.
+  - Of look-alikes at one place (a coil's + and -, a valve's orientations), it takes the one whose differing pixels
+    the picture shows.
+  - A 360 part's box stands 14 px above its picture, as the Designer's CSS draws it.
+- **Ducts** are read by colour: each straight run of the supply's (#f79e7a), the extract and exhaust's (#f3c96a) or
+  the outdoor air's (#b0e0ef) colour, or the duct objects' own, 2.2 to 6.5 px thick. A coil's 2 px water pipe in the
+  supply's orange is no duct.
+  - A run becomes pipes with their core on its axis.
+  - Where its end meets another duct's side, it gets a connector of its own family, the house's way.
+  - At a corner it gets the elbow.
+  - A duct broken only by a part found, or by a branch whose band was drawn over its core, is one duct.
+  - A duct that ends at a part runs on under it, as the house lays the intake and the supply under the rotor.
+- **Arrows** at a lying duct's open end become `number_v3_dummy_21x17_Arrow_Left` or `_Right`, by where the head is.
+- What the panel already has an object on is not placed twice.
+- What is read goes out of the picture. Under a duct is the panel's colour; through a coil the duct runs on.
+- The rooms, the block they serve, the information column and a coil's water pipes stay drawing: no object draws
+  them.
+
+The step shows on Edit in VectorCraft's card and on Export JSON's as *Ducts, coils and valves*. Its pictures come from
+the Designer's `/iw_icons/` and are kept a week with the state pictures. A sync and Insert's check know the new kinds.
+Two fixes came with it:
+- A duct's arrow now takes the band 15 even where the panel's pipes stand at 5. Before, the arrow took the role's band
+  from the pipes.
+- A long duct's placeholder caption is no longer taken for its tag.
+
+Measured on three pictures:
+- 10229: 25 objects - 14 duct pieces, 2 arrows, the rotor, 2 heating and 2 cooling coils and 4 valves, every coil's
+  sign right.
+- 2515, the same template: 7 duct pieces, 2 arrows, the rotor, a heating and a cooling coil.
+- 3003, another style with 12 px ducts: nothing.
+
+The kit's `optimise.js` reads a ventilation picture the same way (Part 224).
+
 ### An island's bells where Thomas hangs them (v1.107.8)
 
 Thomas, 2026-11-02, on plant 8855: Copilot had drawn a plug-in island with the wrong alarm object, and its bells
