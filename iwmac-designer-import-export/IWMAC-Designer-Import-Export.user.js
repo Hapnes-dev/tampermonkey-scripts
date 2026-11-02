@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.107.6
+// @version      1.107.7
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.107.6';
+var IWDIE_VERSION = '1.107.7';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -22439,14 +22439,43 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             .then(function () { return tap(-92, -40); }).then(slow)                       // SVG
             .then(function () { return typing() ? false : tap(154, 19).then(finish); });  // OK, then OK in SVG Options
         };
-        return byClicks().then(function (ok) {
+        // VectorCraft's own control channel, where the build has it (v1.107.7: window.vectorcraft, as hosted since
+        // 0.20.0): the Save As dialog's format set to SVG and confirmed, and its SVG Options confirmed - nothing tapped.
+        // The taps were measured on a native document's tall dialog, and a document already SVG, or an .ai, opens one of
+        // another height: the Format tap missed, and the sync said VectorCraft did not save the drawing (Thomas,
+        // 2026-11-02, plants 10229 and 8855). -> Promise<saved | false: it answered and no save came | null: no channel>
+        var byControl = function () {
+          var vc = W.vectorcraft;
+          if (!vc || typeof vc.request !== 'function') return Promise.resolve(null);
+          var ask = function (method, args) { return Promise.resolve(vc.request(method, args || {})); };
+          return ask('ui.dialog.set', { field: 'format', value: 'svg' }).then(function (r) {
+            // another dialog than Save As in front: the taps' way
+            if (!r || r.kind !== 'saveOptions') return null;
+            return ask('ui.dialog.confirm').then(function (c) { return c && c.pending ? ask('ui.dialog.confirm') : c; })
+              .then(function () { return until(function () { return saved() || state.other; }, 1200); })
+              .then(function () { return saved(); });
+          });
+        };
+        var byTaps = function () {
+          return byClicks().then(function (ok) {
+            if (ok || saved()) return true;
+            // the clicks did not get there: the dialogs closed, Save As again, and the keys
+            return shut().then(function () {
+              state.other = 0;
+              key('S', 'KeyS', { ctrl: true, shift: true });
+              return until(typing, 480 * k);
+            }).then(function (open) { return open ? byKeys() : false; });
+          });
+        };
+        return byControl().then(null, function () { return null; }).then(function (ok) {
           if (ok || saved()) return true;
-          // the clicks did not get there: the dialogs closed, Save As again, and the keys
+          if (ok === null) return byTaps();
+          // the channel answered and no save came: Save As once more, by the channel again
           return shut().then(function () {
             state.other = 0;
             key('S', 'KeyS', { ctrl: true, shift: true });
             return until(typing, 480 * k);
-          }).then(function (open) { return open ? byKeys() : false; });
+          }).then(function (open) { return open ? byControl().then(null, function () { return false; }) : false; });
         }).then(function (ok) {
           return ok || saved() ? true : shut().then(function () { return false; });
         }).then(done, function () { return shut().then(function () { return done(false); }, function () { return done(false); }); });

@@ -531,6 +531,33 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Ctrl+S answers VectorCraft's Save As through its own control channel (v1.107.7)
+
+Thomas, 2026-11-02, on plants 10229 and 8855: a sync *"sometimes bugs out"*. Its cover said *Syncing to the IWMAC
+Designer…*, then *Not synced: VectorCraft did not save the drawing*.
+
+This script answered Save As by taps at fixed offsets from the window's centre: Format at 5, −159, SVG at −92, −40 and
+OK at 154, 19. They were measured on a native document's dialog. In VectorCraft 0.20.0, Save As shows the format's own
+options, so its height depends on the format the document has. It is tall for a native document and short for one
+that is SVG already, and the dialog stands centred, so the Format tap missed whenever the dialog was not the tall
+one. A probe on the hosted build also showed the same taps opening the list one time and not the next.
+
+VectorCraft's web build has a control channel, `window.vectorcraft`, which takes the same methods as its desktop
+control server. Where the build has it, Save As is now answered through it:
+1. `ui.dialog.set {field: 'format', value: 'svg'}` on the Save As dialog (`saveOptions`);
+2. `ui.dialog.confirm`;
+3. `ui.dialog.confirm` once more for SVG Options.
+
+Nothing is tapped. A build without the channel, or a dialog that is no Save As, gets the taps and keys as before.
+
+Measured on the hosted 0.20.0:
+- the probe saved SVG three times in three, whether the document was native, `.ai` or SVG;
+- in the stub host, the first save was ready in 9.9 s with no tap (10.9 s and six taps before);
+- the sync took 0.4 s;
+- the `.ai` opened from the card synced in 0.7 s.
+
+Not yet run in the live Designer.
+
 ### A plug-in case's Plugg stands clear of its value (v1.107.6)
 
 The copy of the Copilot agent's sandbox (the kit's copilot-sim) replayed live test 11 and found the Iskrem case's value
