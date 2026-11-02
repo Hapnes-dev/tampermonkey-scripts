@@ -531,6 +531,30 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### An island's bells where Thomas hangs them (v1.107.8)
+
+Thomas, 2026-11-02, on plant 8855: Copilot had drawn a plug-in island with the wrong alarm object, and its bells
+*"plassert litt feil"*. He corrected it by hand in VectorCraft:
+- each case got the 34 px bell `V3_R_34px_circular_alarm_nrm`, not the 24 px animated alarm;
+- an island's top row has its bell centred above its value, its bottom row below its value;
+- a standing end has its bell above its value;
+- each bell touches its value and stands outside the case;
+- the names stay at their places on the outer side.
+
+The `case` op plans an island that way now, as the kit's `oversikt.py` does (Part 219):
+- **The stances.** A standing end of an island is `end-L` with the island to its right and `end-R` with it to its
+  left. Its bell goes above its value, and its name stands 10 px beside it.
+- **The names come first.** A top row's name is reserved above the case's left end, a bottom row's below it. The
+  bell, centred on the value, slides a few px (2 px steps) off the name.
+- **Rows that are close.** A row with another case within 72 px above it (`row-T-close`), or below it
+  (`row-B-close`), keeps the compact spots it had, and so does an end with one above it. The room between two rows
+  is shared, and two bells hung fully outside would not fit there. The template's frysetorg stacks its islands
+  48 px apart.
+- **`IWDIE_OV_HOUSE`** is the kit's `oversikt-layout.json` again.
+
+The kit's parity tests plan every example and the 8855 island alike in both: every value, bell and name lands on the
+same pixel.
+
 ### Ctrl+S answers VectorCraft's Save As through its own control channel (v1.107.7)
 
 Thomas, 2026-11-02, on plants 10229 and 8855: a sync *"sometimes bugs out"*. Its cover said *Syncing to the IWMAC

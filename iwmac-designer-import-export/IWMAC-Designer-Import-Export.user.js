@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.107.7
+// @version      1.107.8
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.107.7';
+var IWDIE_VERSION = '1.107.8';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12968,17 +12968,27 @@ var IWDIE_OV_LABEL = 'number_v3_label_12px_norm';
 
 /** Where a cluster hangs its bell and its states, from its value's top left, by how its case stands - Thomas's live
  *  Oversikt panels, measured 2026-10-16 (4632's 119 objects, 10112's wall cases): the first spot first, the rest in
- *  order where it is taken (oversikt.py's HOUSE). `compact`: the bell above, the states below (its COMPACT). */
+ *  order where it is taken (oversikt.py's HOUSE). `compact`: the bell above, the states below (its COMPACT).
+ *  (v1.107.8, Thomas, 2026-11-02, plant 8855) An island's top row hangs its bell centred above its value, its bottom
+ *  row below, a standing end (end-L, end-R) above its value, each sliding a few px off the case's name; a row or an
+ *  end with another case within IWDIE_OV_CLOSE px keeps the compact spots it had (row-T-close, row-B-close). */
 var IWDIE_OV_HOUSE = {
   lying: { alarm: [[31, -22], [31, 10], [-23, -22], [4, -36], [4, 24]], state: [[34, 5], [-34, 5], [7, 23], [7, -31]] },
   'lying-bottom': { alarm: [[4, -36], [31, -22], [-23, -22]], state: [[34, 5], [-34, 5], [7, 23]] },
   upright: { alarm: [[29, 15], [29, -27], [4, -36], [4, 24]], state: [[6, 24], [6, -30], [29, -6]] },
   'column-L': { alarm: [[-36, -6], [4, -36], [4, 24], [-20, -30], [-20, 18]], state: [[-30, 18], [-30, -24], [7, 24], [7, -30]] },
   'column-R': { alarm: [[44, -6], [4, -36], [4, 24], [28, -30], [28, 18]], state: [[44, 18], [44, -24], [7, 24], [7, -30]] },
-  'row-T': { alarm: [[31, -22], [20, -40], [4, -36], [-23, -22]], state: [[34, 5], [-34, 5]] },
-  'row-B': { alarm: [[31, 10], [20, 30], [4, 24], [-23, 10]], state: [[34, 5], [-34, 5]] }
+  'row-T': { alarm: [[4, -35], [6, -35], [2, -35], [8, -35], [0, -35], [10, -35], [-2, -35], [12, -35], [-4, -35], [14, -35], [16, -35], [18, -35], [20, -35], [31, -22], [20, -40], [-23, -22], [44, -6], [-36, -6]], state: [[34, 5], [-34, 5]] },
+  'row-B': { alarm: [[4, 24], [6, 24], [2, 24], [8, 24], [0, 24], [10, 24], [-2, 24], [12, 24], [-4, 24], [14, 24], [16, 24], [18, 24], [20, 24], [31, 10], [20, 30], [-23, 10], [44, -6], [-36, -6]], state: [[34, 5], [-34, 5]] },
+  'end-L': { alarm: [[4, -36], [2, -36], [6, -36], [0, -36], [8, -36], [-2, -36], [-4, -36], [-21, 15], [-21, -27], [4, 24]], state: [[8, 24], [8, -30], [-15, -6]] },
+  'end-R': { alarm: [[4, -36], [6, -36], [2, -36], [8, -36], [0, -36], [10, -36], [12, -36], [29, 15], [29, -27], [4, 24]], state: [[6, 24], [6, -30], [29, -6]] },
+  'row-T-close': { alarm: [[31, -22], [20, -40], [4, -36], [-23, -22]], state: [[34, 5], [-34, 5]] },
+  'row-B-close': { alarm: [[31, 10], [20, 30], [4, 24], [-23, 10]], state: [[34, 5], [-34, 5]] }
 };
 var IWDIE_OV_COMPACT = { alarm: [4, -35], cooling: [7, 23], defrost: [7, 23] };
+/** (v1.107.8) A row or an island's end with another case this close above it (or a row below it) shares the room
+ *  between them: two bells hung fully outside, 32 px each, would not fit there (oversikt.py's CLOSE). */
+var IWDIE_OV_CLOSE = 72;
 
 /** Arial's advance widths in thousandths of the size: characters 32 to 126, then some beyond (the kit's check.py ARIAL
  *  and LATIN1) - how wide oversikt.py measures a name. */
@@ -13076,18 +13086,26 @@ function iwdieOvRhu(v) { return Math.floor(v + 0.5); }
 /** How a case stands (oversikt.py's stance): lying (wider than tall), lying on a bottom wall, standing - mirrored on a
  *  right-hand wall - or one column of an island (another standing box beside it, the same height, 4 px or less away). A
  *  lying row with a box straight below it is an island's top row (row-T), one with a box straight above it its bottom
- *  row (row-B); a standing end with the island straight to its right takes the mirrored spots. `box` [x, y, w, h];
- *  `all` [[key, [x, y, w, h]]] every case of the drawing in order, this one among them as `key`; `wall` top, left,
- *  right or bottom. -> lying | lying-bottom | row-T | row-B | upright | upright-right | column-L | column-R */
+ *  row (row-B). (v1.107.8) A standing end of an island - its lying rows beside it, 4 px or less away - is end-L with
+ *  the island to its right, end-R with it to its left; a row with another case within IWDIE_OV_CLOSE px above it
+ *  (row-T-close) or below it (row-B-close), and an end with one above it (the standing spots it had), share the room
+ *  between them. `box` [x, y, w, h]; `all` [[key, [x, y, w, h]]] every case of the drawing in order, this one among
+ *  them as `key`; `wall` top, left, right or bottom. -> lying | lying-bottom | row-T | row-B | row-T-close |
+ *  row-B-close | upright | upright-right | column-L | column-R | end-L | end-R */
 function iwdieOvStance(key, box, all, wall) {
   var x = box[0], y = box[1], w = box[2], h = box[3];
   var across = function (a0, a1, b0, b1) { return Math.min(a1, b1) - Math.max(a0, b0) > 2; };
   var others = (all || []).filter(function (e) { return e[0] !== key; }).map(function (e) { return e[1]; });
+  var close = function (up) {
+    return others.some(function (b) { var g = up ? y - (b[1] + b[3]) : b[1] - (y + h); return across(x, x + w, b[0], b[0] + b[2]) && g >= 0 && g <= IWDIE_OV_CLOSE; });
+  };
   if (w >= h) {
     if (wall === 'bottom') return 'lying-bottom';
     var below = others.some(function (b) { var g = b[1] - (y + h); return across(x, x + w, b[0], b[0] + b[2]) && g >= 0 && g <= 4; });
     var above = others.some(function (b) { var g = y - (b[1] + b[3]); return across(x, x + w, b[0], b[0] + b[2]) && g >= 0 && g <= 4; });
-    return below && !above ? 'row-T' : above && !below ? 'row-B' : 'lying';
+    if (below && !above) return close(true) ? 'row-T-close' : 'row-T';
+    if (above && !below) return close(false) ? 'row-B-close' : 'row-B';
+    return 'lying';
   }
   for (var i = 0; i < others.length; i++) {
     var b = others[i];
@@ -13096,7 +13114,11 @@ function iwdieOvStance(key, box, all, wall) {
     if (r >= 0 && r <= 4) return 'column-L';
     if (l >= 0 && l <= 4) return 'column-R';
   }
-  if (others.some(function (b) { var g = b[0] - (x + w); return b[2] >= b[3] && across(y, y + h, b[1], b[1] + b[3]) && g >= 0 && g <= 4; })) return 'upright-right';
+  var lyingBeside = function (right) {
+    return others.some(function (b) { var g = right ? b[0] - (x + w) : x - (b[0] + b[2]); return b[2] >= b[3] && across(y, y + h, b[1], b[1] + b[3]) && g >= 0 && g <= 4; });
+  };
+  if (lyingBeside(true)) return close(true) ? 'upright-right' : 'end-L';
+  if (lyingBeside(false)) return close(true) ? 'upright' : 'end-R';
   return wall === 'right' ? 'upright-right' : 'upright';
 }
 
@@ -13137,9 +13159,11 @@ function iwdieOvNameSpots(box, st, nw, caption, nameAt) {
   var auto = {
     lying: below.concat(above, right, left), 'lying-bottom': below.concat(above, right, left),
     'row-T': above.concat(right, left, below), 'row-B': below.concat(right, left, above),
+    'row-T-close': above.concat(right, left, below), 'row-B-close': below.concat(right, left, above),
     upright: right.concat(left, below, above), 'upright-right': left.concat(right, below, above),
     'column-L': left.concat([[x - 17 - nw, y + h - 15], [x - nw, y - 17]], below, above),
-    'column-R': right.concat([[x + w + 17, y + h - 15], [x + w, y - 17]], below, above)
+    'column-R': right.concat([[x + w + 17, y + h - 15], [x + w, y - 17]], below, above),
+    'end-L': left.concat(below, above, right), 'end-R': right.concat(below, above, left)
   }[st] || below.concat(above, right, left);
   var first = { below: below, above: above, left: left, right: right }[side] || [];
   if (nameAt && side === 'auto') first = [[nameAt.just === 'L' ? nameAt.x : nameAt.just === 'R' ? nameAt.x - nw : nameAt.x - nw / 2, nameAt.y - 7]];
@@ -13361,8 +13385,10 @@ function iwdieOvGroupSpots(x0, y0, x1, y1, nw, side) {
  *  off the temperature now, take its first spots. -> [[x, y], ...] */
 var IWDIE_OV_SIDES = { lying: ['below', 'above', 'right', 'left'], 'lying-bottom': ['below', 'above', 'right', 'left'],
   'row-T': ['above', 'right', 'left', 'below'], 'row-B': ['below', 'right', 'left', 'above'],
+  'row-T-close': ['above', 'right', 'left', 'below'], 'row-B-close': ['below', 'right', 'left', 'above'],
   upright: ['right', 'left', 'below', 'above'], 'upright-right': ['left', 'right', 'below', 'above'],
-  'column-L': ['left', 'below', 'above'], 'column-R': ['right', 'below', 'above'] };
+  'column-L': ['left', 'below', 'above'], 'column-R': ['right', 'below', 'above'],
+  'end-L': ['left', 'below', 'above', 'right'], 'end-R': ['right', 'below', 'above', 'left'] };
 function iwdieOvSweep(x, y, w, h, nw, sides) {
   var out = [];
   [0, 16].forEach(function (d) {
@@ -13394,18 +13420,31 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
     plan.push({ c: c, st: st, vx: v[0], vy: v[1] });
   });
   // an arrangement's names where the template writes them, before the bells take their spots - unless one would lie on
-  // its own bell's first spot: that name goes beside the case afterwards
+  // its own bell's first spot: that name goes beside the case afterwards. (v1.107.8, Thomas, plant 8855) An island's row
+  // or standing end, of an arrangement or not, keeps its name at the house's place on its outer side - above or below
+  // the case's left end, beside an end, 10 px off it - and its bell, centred on its value there, slides a few px off it
   plan.forEach(function (p) {
     var c = p.c;
-    if (!c.nameAt || (c.caption || 'auto') !== 'auto') return;
-    var text = c.label || c.key, nw = iwdieOvNameWidth(text), n = c.nameAt;
-    var bx = iwdieOvRhu(n.just === 'L' ? n.x : n.just === 'R' ? n.x - nw : n.x - nw / 2), by = iwdieOvRhu(n.y - 7), nb = [bx, by, bx + nw, by + 14];
-    var roles = c.roles || { value: null, alarm: null };
-    if (roles.alarm !== undefined && p.st !== 'room') {
-      var a0 = iwdieOvOffsets(p.st, anatomy).alarm[0], a = iwdieOvOffValue(a0[0], a0[1], 34, 34);
-      if (lay.hit(nb, [p.vx + a[0], p.vy + a[1], p.vx + a[0] + 34, p.vy + a[1] + 34])) return;
+    if ((c.caption || 'auto') !== 'auto') return;
+    var text = c.label || c.key, nw = iwdieOvNameWidth(text);
+    var x = c.box[0], y = c.box[1], w = c.box[2], h = c.box[3];
+    var house = { 'row-T': [x, y - 17], 'row-B': [x, y + h + 3], 'end-L': [x - 10 - nw, y + 1], 'end-R': [x + w + 10, y + 1] }[p.st];
+    var spots = [];
+    if (c.nameAt && p.st !== 'end-L' && p.st !== 'end-R') {
+      var n = c.nameAt, bell = null;
+      var bx = iwdieOvRhu(n.just === 'L' ? n.x : n.just === 'R' ? n.x - nw : n.x - nw / 2), by = iwdieOvRhu(n.y - 7);
+      var roles = c.roles || { value: null, alarm: null };
+      if (roles.alarm !== undefined && p.st !== 'room') {
+        var a0 = iwdieOvOffsets(p.st, anatomy).alarm[0], a = iwdieOvOffValue(a0[0], a0[1], 34, 34);
+        bell = [p.vx + a[0], p.vy + a[1], p.vx + a[0] + 34, p.vy + a[1] + 34];
+      }
+      if (!bell || !lay.hit([bx, by, bx + nw, by + 14], bell)) spots.push([bx, by]);
     }
-    if (lay.free(nb)) { lay.take(nb, 'label'); reserved[c.key] = [bx, by]; }
+    if (house && (c.nameAt || !spots.length)) spots.push([iwdieOvRhu(house[0]), iwdieOvRhu(house[1])]);
+    for (var i = 0; i < spots.length; i++) {
+      var nb = [spots[i][0], spots[i][1], spots[i][0] + nw, spots[i][1] + 14];
+      if (lay.free(nb)) { lay.take(nb, 'label'); reserved[c.key] = spots[i]; break; }
+    }
   });
   plan.forEach(function (p) {
     var c = p.c, roles = c.roles || { value: null, alarm: null }, spots = iwdieOvOffsets(p.st === 'room' ? 'lying' : p.st, anatomy), stateAt = null;
