@@ -531,6 +531,46 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Every house template's components in VectorCraft, found by any word (v1.109.0)
+
+Thomas, 2026-11-03, holding the house's Varme template (`xxxx_varmeanlegg.ai`) up to VectorCraft: one tank was
+missing. Then the energy meters were missing, and the level gauge by its tank. Then: *"alle objecter må finnes i
+dropdown menyen også"*. There were four causes.
+
+- **Import .ai lost a layer's own components after its first sublayer.** The reader closed the layer when a sublayer
+  ended, so everything after it was dropped. The Maskin template's Maskinrom layer keeps nine components there,
+  among them the energy meters, the level bar and the Level % pill. The template now gives 430 components; before, 418.
+  A layer now goes on after its sublayers, and a sublayer of a hidden layer is hidden with it.
+- **It read no text.** A component's own words now come with it, set where Illustrator set them, as the art reader
+  does since 1.86.0: the "kW" in an energy meter, "Oil-sep.", a label beside a pill.
+  - What an IWMAC object shows is left out: a value anywhere ("2,7 °C", "30 %"), and any word on a pill ("Running",
+    "Manuel"). The object placed there writes it.
+  - A text alone is a caption, not a component.
+  - The table's names still hold, because a component's print is of its drawing, its words aside.
+- **The built-in components were only the Maskin and Oversikt templates'.** The house's other templates are now read
+  the same way. They add 124 components that neither of those two draws, from the Maskin variants and the Energi,
+  Varme, Tørrkjøler, Ventilasjon and Romkontroll templates. Among them are the tank in a tank, the aerotempers, the
+  energy and heat recovery blocks, valve and exchanger variants and the heating curve.
+  - Each has a name and a description of what it is, and they stand on layers named after their template.
+  - Left out on purpose, because IWMAC objects show them: coils, ducts, filters, flow arrows, LEDs and the room
+    temperature box.
+  - Also left out: bars, line pieces, pipe runs, dashed frames and notes.
+  - The kit's `house-extra-decisions.json` lists every one with its reason.
+  - 754 are built in: Maskin 430, Oversikt 200, the others 124. A kept library is filled in with the named ones it
+    lacks, as before only the table's were.
+- **The IWMAC menu's search took the query as one piece of a name.** "nivå med tank" found nothing, though
+  BeholderNivå was there.
+  - Now every word must be found, in the component's name, its layer, its words or its description (its own, or its
+    family's).
+  - Each word is searched in all of its forms: Norwegian, Swedish, English and the templates' own. Examples: tank,
+    beholder, receiver; nivå, level; energi, kW, effekt; pumpe, minivifte.
+  - Components that hold the words as typed come first.
+  - The objects' search takes the same forms, so "pumpe" finds the pumps.
+
+Import .ai now reads a file of many artboards artboard by artboard, so components in the gaps between them count.
+The picture search, and the mend of a background, still look for a component's drawing alone (`iwdieLibDrawn`): a
+label beside a pill is no part of what the pill looks like.
+
 ### A ventilation picture read into the Designer's own objects (v1.108.0)
 
 Thomas, 2026-11-02, on plant 10229's `360.001 Ventilasjon`, whose picture is the house's Ventilasjon template with no
