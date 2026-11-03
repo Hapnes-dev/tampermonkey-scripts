@@ -217,6 +217,60 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.waitForFunction(() => /synced/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
     await page.screenshot({ path: path.join(OUT, '2-linked.png') });
 
+    // a /reply in the chat shows a mark in place of the word, read from the ticket (v1.81.0). The messages are put on the
+    // page as Rocketlane renders them: a [data-spotlight] wrapper holding the commentId, the text in a read-only
+    // .ck-content. A: the reply sent above ("/reply Hei Kari, …" in one paragraph). B: one written just now, "/reply"
+    // alone in its first paragraph as the message box writes it, not on the ticket yet. C: an ordinary note.
+    const ids = await page.evaluate(() => {
+      const W = window.__world;
+      const a = W.chat.find((c) => /^<p>\/reply Hei Kari/.test(c.content));
+      const b = { commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>/reply&nbsp;</p><p>Hei</p><p>Kommer i morgen.</p>', createdAt: Date.now(), user: { userId: 1, firstName: 'Thomas' } };
+      W.chat.push(b);
+      const c = W.chat.find((x) => x.content === '<p>Sjekk kompressor 2.</p>');
+      const board = document.createElement('div');
+      board.id = 'reply-marks';
+      board.style.cssText = 'position:fixed;left:40px;top:40px;width:640px;padding:12px 16px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;font:14px/1.5 sans-serif';
+      for (const m of [a, b, c]) {
+        const w = document.createElement('div');
+        w.setAttribute('data-spotlight', String(m.commentId));
+        w.style.margin = '0 0 12px';
+        w.innerHTML = '<b>' + m.user.firstName + '</b><div class="editor__StyledReadOnlyRte ck-content">' + m.content + '</div>';
+        board.appendChild(w);
+      }
+      document.body.appendChild(board);
+      return { a: String(a.commentId), b: String(b.commentId), c: String(c.commentId) };
+    });
+    const markOf = (id) => page.evaluate((id) => {
+      const box = document.querySelector('[data-spotlight="' + id + '"] .ck-content');
+      const mk = box.querySelector(':scope > .rlzd-reply-mark');
+      return { state: mk ? mk.dataset.state : null, mark: mk ? mk.textContent : null, href: mk && mk.querySelector('a') ? mk.querySelector('a').href : null,
+        shown: box.innerText.replace(mk ? mk.innerText : '', '').replace(/\n+/g, '\n').trim(), marks: box.querySelectorAll('.rlzd-reply-mark').length };
+    }, id);
+    const stateIs = (id, st) => page.waitForFunction(([id, st]) => {
+      const mk = document.querySelector('[data-spotlight="' + id + '"] .rlzd-reply-mark');
+      return mk && mk.dataset.state === st;
+    }, [id, st], { timeout: 25000 });
+    await stateIs(ids.a, 'sent');
+    const ma = await markOf(ids.a);
+    // the time as this browser writes it ("10:14", "10.14" or "10:14 AM")
+    assert.match(ma.mark, /^✓ Sent to the customer · Zendesk #53123 · \d{1,2}[:.]\d\d(?:\s?[AP]M)?$/, 'sent, read from the ticket: ' + JSON.stringify(ma));
+    assert.match(ma.href, /\/agent\/tickets\/53123#zd-comment-\d+$/, 'the ticket, at the reply');
+    assert.strictEqual(ma.shown, 'Hei Kari, vi sender en tekniker.', 'the word hidden, the text as written');
+    await stateIs(ids.b, 'sending');
+    assert.strictEqual((await markOf(ids.b)).mark, '↩ Reply to the customer · Zendesk #53123 · being sent…');
+    assert.strictEqual((await markOf(ids.b)).shown, 'Hei\nKommer i morgen.', '"/reply" alone in its paragraph: the paragraph hidden');
+    assert.deepStrictEqual(await markOf(ids.c), { state: null, mark: null, href: null, shown: 'Sjekk kompressor 2.', marks: 0 }, 'a note has no mark');
+    await page.screenshot({ path: path.join(OUT, '2c-reply-sending.png') });
+    // the sync sends B; its mark follows by itself
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
+    await page.waitForFunction(() => window.__world.puts.length === 3, null, { timeout: 15000 });
+    assert.deepStrictEqual((await page.evaluate(() => window.__world.puts))[2], { body: 'Hei\nKommer i morgen.', public: true });
+    await stateIs(ids.b, 'sent');
+    assert.strictEqual((await markOf(ids.a)).marks, 1, 'one mark each, however often it is painted');
+    assert.strictEqual(await page.evaluate(() => window.__world.chat.find((c) => c.content.startsWith('<p>/reply&nbsp;')).content), '<p>/reply&nbsp;</p><p>Hei</p><p>Kommer i morgen.</p>', 'the message itself unchanged');
+    await page.screenshot({ path: path.join(OUT, '2d-reply-sent.png') });
+    await page.evaluate(() => document.getElementById('reply-marks').remove());
+
     // how often it checks is set in the panel (and kept), with the last check beside it
     assert.match(await page.locator('#rl-zendesk-chat-sync >> .every').textContent(), /^Checks Zendesk every .* while Rocketlane is open \(at most once a minute in the background\)\. Last check /);
     await page.locator('#rl-zendesk-chat-sync >> .every select').selectOption('60');
@@ -227,7 +281,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click().catch(() => {});
     await page.waitForTimeout(1500);
     w = await page.evaluate(() => window.__world);
-    assert.deepStrictEqual([w.posts.length, w.puts.length], [2, 2], 'nothing twice, nothing echoed');
+    assert.deepStrictEqual([w.posts.length, w.puts.length], [2, 3], 'nothing twice, nothing echoed (the third: the marks step\'s reply)');
     // the ticket's earlier messages: only on request, from the panel
     await page.locator('#rl-zendesk-chat-sync >> text="Post earlier messages"').click();
     await page.waitForFunction(() => window.__world.posts.some((p) => /earlier messages/.test(p.content)), null, { timeout: 15000 });

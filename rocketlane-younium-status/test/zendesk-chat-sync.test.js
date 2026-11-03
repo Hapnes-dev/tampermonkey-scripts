@@ -549,3 +549,44 @@ test('the same words written twice in the chat go to the ticket twice', async ()
   await w.sync.runOnce();
   assert.strictEqual(w.posted.zd.length, 2, 'and not a third time');
 });
+
+// ---- v1.81.0: a /reply shown with a mark in place of the word ----------------------------------------------------
+// Thomas: "instead of the /reply be there after used the macro can you just show a better marking that message have
+// been sent on zendesk?" The word is hidden as the chat shows the message (replyLead); the mark says what became of it,
+// read from the ticket (sentAs), so it is the same whichever browser sent it. The message's own text never changes.
+
+test('replyLead: the word as the chat shows a message\'s first paragraph', () => {
+  const { sync } = world();
+  assert.deepStrictEqual(sync.replyLead('/reply'), { whole: true, length: 6 });
+  assert.deepStrictEqual(sync.replyLead('/reply\u00a0'), { whole: true, length: 7 }, 'the chat writes "/reply&nbsp;" as its own paragraph');
+  assert.deepStrictEqual(sync.replyLead('/Reply: Hei Kari,'), { whole: false, length: 8 });
+  assert.deepStrictEqual(sync.replyLead('\u200B/reply Hei'), { whole: false, length: 8 }, 'measured on the text as it stands');
+  for (const t of ['/replay Hei', 'Hei /reply', '/replyx', '', null]) assert.strictEqual(sync.replyLead(t), null, String(t));
+});
+
+test('sentAs: what a chat message became on the ticket - a reply, or a note', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const ticket = () => w.zdComments.get(53123);
+  const m = w.say(RUNNER, '<p>/reply&nbsp;</p><p>Hei</p><p>Når du har adressert plugin diskene kan du merke adressene på oversiktbildet?</p>', 'Thomas', 'Kvalvåg Håpnes');
+  assert.strictEqual(w.sync.sentAs(m, ticket()), null, 'not on the ticket before the round');
+  await w.sync.runOnce();
+  const made = ticket()[ticket().length - 1];
+  assert.deepStrictEqual(w.sync.sentAs(m, ticket()), { commentId: String(made.id), isPublic: true, at: Date.parse(made.created_at) });
+  const n = w.say(2, '<p>Sjekker fjernstyring</p>', 'Andreas', 'Sandnes');
+  await w.sync.runOnce();
+  assert.strictEqual(w.sync.sentAs(n, ticket()).isPublic, false, 'a message without /reply is found as the note it became');
+});
+
+test('sentAs: a reply sent by another browser counts; the same words from the customer do not', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const m = w.say(2, '<p>/reply Vi kommer i morgen.</p>', 'Andreas', 'Sandnes');
+  w.reply(700, 'Vi kommer i morgen.');   // the customer happens to write the same words: an email, not the API
+  assert.strictEqual(w.sync.sentAs(m, w.zdComments.get(53123)), null);
+  // another browser's sync sent it: through the API, signed as the sync signs a reply
+  const z = { id: 9001, author_id: 800, public: true, plain_body: 'Vi kommer i morgen.\n\n— Andreas Sandnes', created_at: new Date(w.tick()).toISOString(), attachments: [], via: { channel: 'api' } };
+  w.zdComments.get(53123).push(z);
+  assert.deepStrictEqual(w.sync.sentAs(m, w.zdComments.get(53123)), { commentId: '9001', isPublic: true, at: Date.parse(z.created_at) });
+  assert.strictEqual(w.sync.sentAs(m, null), null, 'no ticket read: nothing claimed');
+});

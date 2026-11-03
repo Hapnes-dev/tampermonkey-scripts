@@ -364,6 +364,16 @@ v1.73.0.
   - The bar turns red and says nothing will be sent when the sync is off in this browser or the ticket is not open.
   - For someone whose browser does not run the sync, the reply bar and the warning show when the chat holds the
     sync's messages.
+- **A sent reply** (v1.81.0). In the chat, a message written with `/reply` shows a mark in place of the word:
+  - "✓ Sent to the customer · Zendesk #… · time" once the ticket has the reply (green). The ticket number is a link
+    to the reply on the ticket.
+  - "↩ Reply to the customer · Zendesk #… · being sent…" until the sync has sent it (yellow), and "↩ Not sent ·
+    Zendesk #… has no such reply" for one the ticket still does not have after ten minutes, such as one written before
+    the chat was linked or while the sync was off (red). In a chat linked to no ticket it says so.
+  - The mark reads the ticket itself, so it says the same in every browser, whichever one sent the message. In a
+    browser without a Zendesk session it only names the ticket.
+  - Only how the message is shown changes. Its text keeps the word, for colleagues and for the sync, which knows its
+    own messages on the ticket by their text.
 - **Files from the chat** (v1.75.0). Files attached to a chat message go to the ticket with it. They are uploaded to
   Zendesk first and then carried by the internal note, or by the reply to the customer after `/reply`. A message with
   only files says their names. A file over 25 MB, or one that could not be read or that Zendesk refused, is named

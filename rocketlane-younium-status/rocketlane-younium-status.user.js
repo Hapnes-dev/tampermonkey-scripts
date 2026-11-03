@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.80.0
+// @version      1.81.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -99,9 +99,10 @@
  *     The ticket's pictures and attachments come along as the message's own
  *     Rocketlane attachments (v1.74.0), and files attached in the chat go to
  *     the ticket with their message (v1.75.0). The message box shows what a
- *     message will be: an orange frame and bar for /reply (v1.76.0). Off
- *     until turned on in this browser (button on chat pages, Tampermonkey
- *     menu); one tab runs it.
+ *     message will be: an orange frame and bar for /reply (v1.76.0). A sent
+ *     /reply shows a mark in place of the word - "Sent to the customer ·
+ *     Zendesk #N", read from the ticket (v1.81.0). Off until turned on in
+ *     this browser (button on chat pages, Tampermonkey menu); one tab runs it.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -17128,6 +17129,9 @@
   //     v1.80.0: nothing is posted twice, also when two browsers run the sync or a record is old: a mirrored message
   //     carries its Zendesk comment's id, and each side is searched before anything goes to it. The interval is a
   //     setting; opening or returning to Rocketlane checks at once.
+  //     v1.81.0: a /reply in the chat shows a mark in place of the word - "✓ Sent to the customer · Zendesk #N · time",
+  //     or that it is on its way, or not sent - read from the ticket itself, so every browser shows the same. Only how
+  //     the message is shown changes; its text stays as written, because the sync knows its own messages by it.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17177,6 +17181,16 @@
       const w = m ? m[1].toLowerCase() : "";
       if (w === "kunde" || w === "customer" || (w.length >= 3 && w[0] === "r" && editDistance(w, "reply") <= 2)) return { mode: "typo", word: "/" + m[1] };
       return { mode: "note", word: "" };
+    }
+    /** The "/reply" a sent message starts with, as the chat shows its first paragraph (v1.81.0): `whole` when that
+     *  paragraph holds nothing else - it is hidden - else how many characters to hide; null when it does not start
+     *  with /reply as parseChatMessage reads it. The chat's own text is never changed, only how it is shown. */
+    function replyLead(firstParagraph) {
+      // measured on the text as it stands, zero-width marks and all, so the length cuts the very text it was read from
+      const t = String(firstParagraph || "");
+      const m = /^[\s\u00A0\u200B\u2060\uFEFF]*\/reply\b[ \t\u00A0\u200B\u2060\uFEFF:]*/i.exec(t);
+      if (!m) return null;
+      return t.slice(m[0].length).replace(/[\u200B\u2060\uFEFF]/g, "").trim() ? { whole: false, length: m[0].length } : { whole: true, length: t.length };
     }
     function editDistance(a, b) {
       let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -17330,6 +17344,12 @@
       if (t && t < ms(m.createdAt) - 120000) return false;
       const text = zdText(z);
       return !!text && forwardForms(m).some((f) => text === f || text.startsWith(f + " Not attached"));
+    }
+    /** What chat message `m` became on the ticket (v1.81.0): the oldest of the ticket's `comments` made of it - found
+     *  by its text, so it holds whichever browser sent it - or null while there is none. */
+    function sentAs(m, comments) {
+      const z = (Array.isArray(comments) ? comments : []).slice().sort((a, b) => Number(a.id) - Number(b.id)).find((c) => isForwardOf(c, m));
+      return z ? { commentId: String(z.id), isPublic: z.public !== false, at: ms(z.created_at) } : null;
     }
     /** Whether the chat has Zendesk comment `z` already: its mark (the comment's id in the "Zendesk #" link), or - for a
      *  message from before the marks - the same first line and text. */
@@ -17644,7 +17664,7 @@
 
     function links() { return load().links; }
 
-    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, isActive };
+    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, replyLead, sentAs, isActive };
   }
   // @@ZDSYNC-ENGINE-END
 
@@ -17960,7 +17980,9 @@
     // Rocketlane adds a new message to an open chat when its push event comes; when the message came through its API in
     // the name of the user looking at the chat, it may not. Then the chat view is reloaded in place: its route left and
     // entered again, which makes Rocketlane fetch the chat's messages - never while something is being typed.
-    const zendeskShown = () => ((document.body && document.body.innerText.match(/Zendesk #\d+/g)) || []).length;
+    // the sync's messages on screen, by their "Zendesk #N"; a /reply's mark (v1.81.0) names the ticket too and is not one
+    const zendeskShown = () => ((document.body && document.body.innerText.match(/Zendesk #\d+/g)) || []).length -
+      document.querySelectorAll(".rlzd-reply-mark").length;
     function checkShown(viewing, res, before) {
       const n = (res.posted || []).filter((p) => p.projectId === viewing.projectId && p.conversationId === viewing.conversationId)
         .reduce((a, p) => a + p.count, 0);
@@ -18383,6 +18405,140 @@
     document.addEventListener("scroll", () => { if (!bar.hidden) updateMode(); }, true);
     window.addEventListener("resize", () => { if (!bar.hidden) updateMode(); });
 
+    // ---- a /reply in the chat: a mark saying what became of it, in place of the word (v1.81.0) ----
+    // Thomas: "instead of the /reply be there after used the macro, can you just show a better marking that message
+    // have been sent on zendesk?" Only how this browser shows the message changes. Its text stays as written: the sync
+    // knows its own messages on the ticket by that text, so rewriting it could send it again. A message is Rocketlane's
+    // [data-spotlight] wrapper - the value is its commentId (checked 2026-11-03) - with its text in the read-only
+    // .ck-content inside. Whether it went is read from the ticket itself, the comment made of it, so the mark says the
+    // same in every browser, whichever one sent it.
+    const MARK = "rlzd-reply-mark";
+    const marks = new Map();   // chat commentId -> { state, at, zdId, isPublic }
+    let marksBusy = false, marksCheckedAt = 0, marksTicket = "";
+    function injectMarkStyles() {
+      if (document.getElementById(MARK + "-style")) return;
+      const st = document.createElement("style");
+      st.id = MARK + "-style";
+      st.textContent =
+        "." + MARK + "{display:inline-flex;align-items:center;gap:4px;margin:0 0 6px;padding:2px 10px;border-radius:999px;" +
+        "border:1px solid #d0d5dd;background:#f2f4f7;color:#475467;font-size:12px;font-weight:600;line-height:18px;user-select:none;}" +
+        "." + MARK + "[data-state=sent]{background:#ecfdf3;border-color:#abefc6;color:#067647;}" +
+        "." + MARK + "[data-state=sending],." + MARK + "[data-state=checking]{background:#fffaeb;border-color:#fedf89;color:#b54708;}" +
+        "." + MARK + "[data-state=missing]{background:#fef3f2;border-color:#fecdca;color:#b42318;}" +
+        "." + MARK + " a{color:inherit;text-decoration:underline;}";
+      (document.head || document.documentElement).appendChild(st);
+    }
+    // when it reached the ticket, with the date when that was not today - the section's own formats, as it runs on its own
+    const clockOf = (t) => (new Date(t).toDateString() === new Date().toDateString() ? "" : new Date(t).toLocaleDateString() + " ") + hhmm(t);
+    /** The chat's messages that start with /reply, as shown: their commentId, text box and first paragraph. */
+    function replyMessages() {
+      const out = [];
+      for (const w of document.querySelectorAll("[data-spotlight]")) {
+        const box = w.querySelector(".ck-content");
+        // a message being edited is CKEditor's own and is never touched
+        if (!box || box.isContentEditable || box.closest(".ck-editor__editable")) continue;
+        const first = [...box.children].find((el) => !el.classList.contains(MARK));
+        const lead = first ? sync.replyLead(first.textContent) : null;
+        if (!lead) { const old = box.querySelector(":scope > ." + MARK); if (old) old.remove(); continue; }
+        out.push({ id: String(w.getAttribute("data-spotlight") || ""), box, first, lead });
+      }
+      return out;
+    }
+    /** The word hidden: its paragraph when it stands alone, else the word itself in the paragraph's first text. */
+    function hideWord(m) {
+      if (m.lead.whole) { if (m.first.style.display !== "none") m.first.style.display = "none"; return; }
+      if (m.first.querySelector("[data-rlzd-word]")) return;
+      const t = document.createTreeWalker(m.first, NodeFilter.SHOW_TEXT).nextNode();
+      // as the chat writes it the word is in one text node, measured on that node; anything else keeps it, the mark above
+      const own = t ? sync.replyLead(t.nodeValue) : null;
+      if (!own) return;
+      if (!own.whole) t.splitText(own.length);
+      const span = document.createElement("span");
+      span.setAttribute("data-rlzd-word", "");
+      span.hidden = true;
+      t.parentNode.insertBefore(span, t);
+      span.appendChild(t);
+    }
+    function paintMark(m, ticketId) {
+      let el = m.box.querySelector(":scope > ." + MARK);
+      if (!el) { el = document.createElement("div"); el.className = MARK; m.box.insertBefore(el, m.box.firstChild); }
+      const k = marks.get(m.id);
+      const state = !ticketId ? "unlinked" : k ? k.state : "checking";
+      const sig = [state, ticketId, k ? k.at : "", k ? k.isPublic : ""].join("|");
+      if (el.dataset.sig === sig) return;
+      el.dataset.sig = sig;
+      el.dataset.state = state;
+      const ref = () => {
+        const a = document.createElement("a");
+        a.href = api.zd.ticketUrl(ticketId) + (k && k.zdId ? "#zd-comment-" + k.zdId : "");
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = "Zendesk #" + ticketId;
+        return a;
+      };
+      const say = (...parts) => el.replaceChildren(...parts.map((p) => (typeof p === "string" ? document.createTextNode(p) : p)));
+      if (state === "sent") {
+        say(k.isPublic ? "✓ Sent to the customer · " : "✓ On the ticket as an internal note · ", ref(), " · " + clockOf(k.at));
+        el.title = k.isPublic ? "Sent with /reply as a public reply on the ticket, and emailed to the customer." :
+          "On the ticket as an internal note, not as a reply to the customer.";
+      } else if (state === "sending") {
+        say("↩ Reply to the customer · ", ref(), " · being sent…");
+        el.title = "Not on the ticket yet: the sync sends it at its next check.";
+      } else if (state === "missing") {
+        say("↩ Not sent · ", ref(), " has no such reply");
+        el.title = "The ticket has no reply made of this message: written before the chat was linked, or the sync was off.";
+      } else if (state === "unknown") {
+        say("↩ Reply to the customer · ", ref());
+        el.title = "Zendesk could not be read in this browser, so it is not known whether this went out.";
+      } else if (state === "checking") {
+        say("↩ Reply to the customer · ", ref(), " · checking…");
+        el.title = "";
+      } else {
+        say("↩ Not sent · this chat is not linked to a Zendesk ticket");
+        el.title = "/reply sends a message to the customer only in a chat linked to a Zendesk ticket.";
+      }
+    }
+    /** Reads the chat and the ticket once, and settles the marks of `list` from what the ticket holds. */
+    async function checkMarks(ids, ticketId, list) {
+      marksBusy = true;
+      marksCheckedAt = Date.now();
+      try {
+        const [chat, zdc] = await Promise.all([api.rl.getComments(ids.projectId, ids.conversationId), api.zd.getComments(ticketId)]);
+        const comments = (zdc && zdc.comments) || [];
+        for (const m of list) {
+          const c = (chat || []).find((x) => String(x.commentId) === m.id);
+          if (!c) continue;
+          const s = sync.sentAs(c, comments);
+          const at = typeof c.createdAt === "number" ? c.createdAt : Date.parse(c.createdAt) || 0;
+          marks.set(m.id, s ? { state: "sent", at: s.at, zdId: s.commentId, isPublic: s.isPublic }
+            : { state: Date.now() - at < 10 * 60 * 1000 ? "sending" : "missing", at: 0, zdId: "", isPublic: true });
+        }
+      } catch (_) {
+        for (const m of list) if (!marks.has(m.id)) marks.set(m.id, { state: "unknown", at: 0, zdId: "", isPublic: true });
+      } finally {
+        marksBusy = false;
+      }
+      markReplies();
+    }
+    function markReplies() {
+      const ids = chatIds();
+      if (!ids || legacy()) return;
+      const list = replyMessages();
+      if (!list.length) return;
+      injectMarkStyles();
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      const ticketId = e ? String(e.ticketId) : ticketInChat(ids.conversationId);
+      if (ticketId !== marksTicket) { marks.clear(); marksTicket = ticketId; }
+      for (const m of list) { hideWord(m); paintMark(m, ticketId); }
+      // the ticket is read for a mark not yet settled: at once for a new one, every 15 s while one is on its way,
+      // every minute for one the ticket does not have
+      if (!ticketId || marksBusy) return;
+      const open = list.filter((m) => { const k = marks.get(m.id); return !k || k.state !== "sent"; });
+      if (!open.length) return;
+      const wait = open.some((m) => !marks.has(m.id)) ? 2000 : open.some((m) => marks.get(m.id).state === "sending") ? 15000 : 60000;
+      if (Date.now() - marksCheckedAt > wait) void checkMarks(ids, ticketId, open);
+    }
+
     pill.addEventListener("click", () => { if (!panel.hidden) { panel.hidden = true; return; } void openFor(); });
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") panel.hidden = true; });
 
@@ -18412,6 +18568,8 @@
       paint();
       // after a message is sent the box empties without a key: the label follows within a second
       if (!bar.hidden) updateMode();
+      // a /reply shown in the chat gets its mark within a second as well (v1.81.0)
+      try { markReplies(); } catch (_) {}
     }, 1000);
     // the rounds: at the set interval in front, at most once a minute behind, and at once when the tab comes to the front
     let loopTimer = 0;
