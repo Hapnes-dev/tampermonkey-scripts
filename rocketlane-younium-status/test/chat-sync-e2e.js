@@ -227,10 +227,13 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
       const b = { commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>/reply&nbsp;</p><p>Hei</p><p>Kommer i morgen.</p>', createdAt: Date.now(), user: { userId: 1, firstName: 'Thomas' } };
       W.chat.push(b);
       const c = W.chat.find((x) => x.content === '<p>Sjekk kompressor 2.</p>');
+      // D: a reply written before the chat was linked, which the sync never sends (v1.81.1)
+      const d = { commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>/reply Gammelt svar.</p>', createdAt: Date.now() - 3600000, user: { userId: 1, firstName: 'Thomas' } };
+      W.chat.unshift(d);
       const board = document.createElement('div');
       board.id = 'reply-marks';
       board.style.cssText = 'position:fixed;left:40px;top:40px;width:640px;padding:12px 16px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;font:14px/1.5 sans-serif';
-      for (const m of [a, b, c]) {
+      for (const m of [a, b, c, d]) {
         const w = document.createElement('div');
         w.setAttribute('data-spotlight', String(m.commentId));
         w.style.margin = '0 0 12px';
@@ -238,7 +241,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
         board.appendChild(w);
       }
       document.body.appendChild(board);
-      return { a: String(a.commentId), b: String(b.commentId), c: String(c.commentId) };
+      return { a: String(a.commentId), b: String(b.commentId), c: String(c.commentId), d: String(d.commentId) };
     });
     const markOf = (id) => page.evaluate((id) => {
       const box = document.querySelector('[data-spotlight="' + id + '"] .ck-content');
@@ -260,6 +263,8 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.strictEqual((await markOf(ids.b)).mark, '↩ Reply to the customer · Zendesk #53123 · being sent…');
     assert.strictEqual((await markOf(ids.b)).shown, 'Hei\nKommer i morgen.', '"/reply" alone in its paragraph: the paragraph hidden');
     assert.deepStrictEqual(await markOf(ids.c), { state: null, mark: null, href: null, shown: 'Sjekk kompressor 2.', marks: 0 }, 'a note has no mark');
+    await stateIs(ids.d, 'before');
+    assert.strictEqual((await markOf(ids.d)).mark, '↩ Not sent · written before this chat was linked to Zendesk #53123', 'known from the link, never guessed');
     await page.screenshot({ path: path.join(OUT, '2c-reply-sending.png') });
     // the sync sends B; its mark follows by itself
     await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();

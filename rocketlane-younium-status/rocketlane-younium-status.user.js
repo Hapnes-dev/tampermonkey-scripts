@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.81.0
+// @version      1.81.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -17132,6 +17132,10 @@
   //     v1.81.0: a /reply in the chat shows a mark in place of the word - "✓ Sent to the customer · Zendesk #N · time",
   //     or that it is on its way, or not sent - read from the ticket itself, so every browser shows the same. Only how
   //     the message is shown changes; its text stays as written, because the sync knows its own messages by it.
+  //     v1.81.1: a reply the customer got showed "Not sent" - the ticket's text match missed it. The browser that sends a
+  //     message now records what it became (link.sent), and that settles its mark first; the ticket is read only for
+  //     what no record settles, accepting a comment made through the session ("web") and a signature after a reply.
+  //     "Not sent" is said only for a message written before the chat was linked; a missed match is "not confirmed".
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17345,11 +17349,54 @@
       const text = zdText(z);
       return !!text && forwardForms(m).some((f) => text === f || text.startsWith(f + " Not attached"));
     }
+    /** For a mark only (v1.81.1), so looser than isForwardOf, which keeps nothing from crossing twice: made through the
+     *  API or the agent's session in the browser - the sync posts with that session, which Zendesk may record as "web" -
+     *  never an email; and a public reply may carry the agent's signature after the text. */
+    function looksLikeForwardOf(z, m) {
+      if (!(z && z.via && (z.via.channel === "api" || z.via.channel === "web"))) return false;
+      const t = ms(z.created_at);
+      if (t && t < ms(m.createdAt) - 120000) return false;
+      const text = zdText(z);
+      return !!text && forwardForms(m).some((f) => text === f || text.startsWith(f + " Not attached") ||
+        (z.public !== false && text.startsWith(f + " ") && text.length - f.length <= 400));
+    }
     /** What chat message `m` became on the ticket (v1.81.0): the oldest of the ticket's `comments` made of it - found
      *  by its text, so it holds whichever browser sent it - or null while there is none. */
     function sentAs(m, comments) {
-      const z = (Array.isArray(comments) ? comments : []).slice().sort((a, b) => Number(a.id) - Number(b.id)).find((c) => isForwardOf(c, m));
+      const z = (Array.isArray(comments) ? comments : []).slice().sort((a, b) => Number(a.id) - Number(b.id))
+        .find((c) => isForwardOf(c, m) || looksLikeForwardOf(c, m));
       return z ? { commentId: String(z.id), isPublic: z.public !== false, at: ms(z.created_at) } : null;
+    }
+    /** What became of chat message `m`, for its mark (v1.81.1): this browser's record of sending it (`e.sent`) first;
+     *  else the ticket's `comments` (by its text, whichever browser sent it); else this browser's sync having taken it
+     *  on - sent, or found on the ticket - before records were kept. Null when none of them knows. Thomas: a reply the
+     *  customer got showed "Not sent", the text match alone having missed it. */
+    function wentAs(e, m, comments) {
+      if (!m) return null;
+      const id = cidOf(m);
+      const rec = e && e.sent && e.sent[id];
+      if (rec) return { commentId: rec.z != null ? String(rec.z) : "", isPublic: rec.p === 1, at: Number(rec.t) || 0 };
+      const z = sentAs(m, comments);
+      if (z) return z;
+      // rlSince is the newest message's time when the chat was linked: that message was there, not sent
+      if (e && ms(m.createdAt) > Number(e.rlSince || 0) && (e.rlSeen || []).includes(id)) {
+        const msg = parseChatMessage(textOfHtml(m.content));
+        if (msg.body || rlFilesOf(m).length) return { commentId: "", isPublic: msg.isPublic, at: 0 };
+      }
+      return null;
+    }
+    /** Whether chat message `m` was in the chat when this browser's link `e` was made - the sync never sends those.
+     *  rlSince is the newest one's time then, so it counts too. */
+    function beforeLink(e, m) { return !!(e && m && ms(m.createdAt) <= Number(e.rlSince || 0)); }
+    // what a chat message became on the ticket, kept per link for its mark: chat id -> { z: comment id, p: 1 when public,
+    // t: when } (v1.81.1), the newest KEEP of them
+    function noteSent(e, chatId, z) {
+      const s = Object.assign({}, e.sent || {});
+      delete s[chatId];
+      s[chatId] = { z: z && z.id != null ? String(z.id) : null, p: z && z.public === false ? 0 : 1, t: (z && ms(z.created_at)) || now() };
+      const keys = Object.keys(s);
+      for (const k of keys.slice(0, Math.max(0, keys.length - KEEP))) delete s[k];
+      e.sent = s;
     }
     /** Whether the chat has Zendesk comment `z` already: its mark (the comment's id in the "Zendesk #" link), or - for a
      *  message from before the marks - the same first line and text. */
@@ -17593,7 +17640,7 @@
             const sources = sinceLink.filter((m) => isForwardOf(c, m));
             if (sources.length) {
               const m = sources.find((x) => !e.rlSeen.includes(cidOf(x)));
-              if (m) e.rlSeen = tail(e.rlSeen.concat(cidOf(m)));
+              if (m) { e.rlSeen = tail(e.rlSeen.concat(cidOf(m))); noteSent(e, cidOf(m), c); }
               e.ownZd = tail(e.ownZd.concat(String(c.id)));
               e.zdMax = Number(c.id);
               deps.store.save(st);
@@ -17628,7 +17675,7 @@
               if (!recent) recent = ((((await deps.zd.getComments(e.ticketId)) || {}).comments) || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
               // the oldest such comment not yet known as another message's: the same words written twice go twice
               const dup = recent.find((z) => !e.ownZd.includes(String(z.id)) && isForwardOf(z, c));
-              if (dup) { e.ownZd = tail(e.ownZd.concat(String(dup.id))); e.rlSeen = tail(e.rlSeen.concat(id)); deps.store.save(st); continue; }
+              if (dup) { e.ownZd = tail(e.ownZd.concat(String(dup.id))); e.rlSeen = tail(e.rlSeen.concat(id)); noteSent(e, id, dup); deps.store.save(st); continue; }
             }
             const who = authorName(c.user);
             // its files go to Zendesk first and the comment carries them; a message of files alone says their names
@@ -17640,6 +17687,7 @@
             const res = await deps.zd.addComment(e.ticketId, body, msg.isPublic, sent.uploads);
             if (res && res.commentId != null) e.ownZd = tail(e.ownZd.concat(String(res.commentId)));
             e.rlSeen = tail(e.rlSeen.concat(id));
+            noteSent(e, id, { id: res && res.commentId != null ? res.commentId : null, public: msg.isPublic, created_at: now() });
             out.forwarded++;
             deps.store.save(st);
             if (missing && msg.isPublic) {
@@ -17664,7 +17712,7 @@
 
     function links() { return load().links; }
 
-    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, replyLead, sentAs, isActive };
+    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, replyLead, sentAs, wentAs, beforeLink, isActive };
   }
   // @@ZDSYNC-ENGINE-END
 
@@ -18424,7 +18472,7 @@
         "border:1px solid #d0d5dd;background:#f2f4f7;color:#475467;font-size:12px;font-weight:600;line-height:18px;user-select:none;}" +
         "." + MARK + "[data-state=sent]{background:#ecfdf3;border-color:#abefc6;color:#067647;}" +
         "." + MARK + "[data-state=sending],." + MARK + "[data-state=checking]{background:#fffaeb;border-color:#fedf89;color:#b54708;}" +
-        "." + MARK + "[data-state=missing]{background:#fef3f2;border-color:#fecdca;color:#b42318;}" +
+        "." + MARK + "[data-state=before]{background:#fef3f2;border-color:#fecdca;color:#b42318;}" +
         "." + MARK + " a{color:inherit;text-decoration:underline;}";
       (document.head || document.documentElement).appendChild(st);
     }
@@ -18478,15 +18526,19 @@
       };
       const say = (...parts) => el.replaceChildren(...parts.map((p) => (typeof p === "string" ? document.createTextNode(p) : p)));
       if (state === "sent") {
-        say(k.isPublic ? "✓ Sent to the customer · " : "✓ On the ticket as an internal note · ", ref(), " · " + clockOf(k.at));
+        say(k.isPublic ? "✓ Sent to the customer · " : "✓ On the ticket as an internal note · ", ref(), k.at ? " · " + clockOf(k.at) : "");
         el.title = k.isPublic ? "Sent with /reply as a public reply on the ticket, and emailed to the customer." :
           "On the ticket as an internal note, not as a reply to the customer.";
       } else if (state === "sending") {
         say("↩ Reply to the customer · ", ref(), " · being sent…");
         el.title = "Not on the ticket yet: the sync sends it at its next check.";
-      } else if (state === "missing") {
-        say("↩ Not sent · ", ref(), " has no such reply");
-        el.title = "The ticket has no reply made of this message: written before the chat was linked, or the sync was off.";
+      } else if (state === "before") {
+        say("↩ Not sent · written before this chat was linked to ", ref());
+        el.title = "The sync sends only messages written after the chat was linked.";
+      } else if (state === "unconfirmed") {
+        // v1.81.1: no longer "Not sent" - a reply the customer got showed that, the ticket's text match having missed it
+        say("↩ Reply to the customer · ", ref(), " · not confirmed");
+        el.title = "This browser did not send it, and the ticket shows no reply with this text. It may still have gone out, from another browser or with other words.";
       } else if (state === "unknown") {
         say("↩ Reply to the customer · ", ref());
         el.title = "Zendesk could not be read in this browser, so it is not known whether this went out.";
@@ -18498,23 +18550,34 @@
         el.title = "/reply sends a message to the customer only in a chat linked to a Zendesk ticket.";
       }
     }
-    /** Reads the chat and the ticket once, and settles the marks of `list` from what the ticket holds. */
+    /** Settles the marks of `list`: this browser's own record of what its sync sent first (sync.wentAs, no Zendesk call),
+     *  then the ticket itself, read once for whatever that leaves open. */
     async function checkMarks(ids, ticketId, list) {
       marksBusy = true;
       marksCheckedAt = Date.now();
+      const keep = (id, state, s) => marks.set(id, { state, at: s ? s.at : 0, zdId: s ? s.commentId : "", isPublic: s ? s.isPublic : true });
       try {
-        const [chat, zdc] = await Promise.all([api.rl.getComments(ids.projectId, ids.conversationId), api.zd.getComments(ticketId)]);
-        const comments = (zdc && zdc.comments) || [];
+        const e = sync.linkOf(ids.projectId, ids.conversationId);
+        const chat = (await api.rl.getComments(ids.projectId, ids.conversationId)) || [];
+        let comments = null;   // the ticket's comments, read once when the record does not settle a mark; false: unreadable
         for (const m of list) {
-          const c = (chat || []).find((x) => String(x.commentId) === m.id);
+          const c = chat.find((x) => String(x.commentId) === m.id);
           if (!c) continue;
-          const s = sync.sentAs(c, comments);
+          let s = sync.wentAs(e, c, null);
+          if (!s && !sync.beforeLink(e, c)) {
+            if (comments === null) {
+              try { comments = ((await api.zd.getComments(ticketId)) || {}).comments || []; } catch (_) { comments = false; }
+            }
+            if (comments) s = sync.wentAs(e, c, comments);
+          }
           const at = typeof c.createdAt === "number" ? c.createdAt : Date.parse(c.createdAt) || 0;
-          marks.set(m.id, s ? { state: "sent", at: s.at, zdId: s.commentId, isPublic: s.isPublic }
-            : { state: Date.now() - at < 10 * 60 * 1000 ? "sending" : "missing", at: 0, zdId: "", isPublic: true });
+          if (s) keep(m.id, "sent", s);
+          else if (sync.beforeLink(e, c)) keep(m.id, "before");
+          else if (Date.now() - at < 10 * 60 * 1000) keep(m.id, "sending");
+          else keep(m.id, comments === false ? "unknown" : "unconfirmed");
         }
       } catch (_) {
-        for (const m of list) if (!marks.has(m.id)) marks.set(m.id, { state: "unknown", at: 0, zdId: "", isPublic: true });
+        for (const m of list) if (!marks.has(m.id)) keep(m.id, "unknown");
       } finally {
         marksBusy = false;
       }
@@ -18530,10 +18593,10 @@
       const ticketId = e ? String(e.ticketId) : ticketInChat(ids.conversationId);
       if (ticketId !== marksTicket) { marks.clear(); marksTicket = ticketId; }
       for (const m of list) { hideWord(m); paintMark(m, ticketId); }
-      // the ticket is read for a mark not yet settled: at once for a new one, every 15 s while one is on its way,
-      // every minute for one the ticket does not have
+      // a mark not yet settled is looked at again: at once for a new one, every 15 s while one is on its way, every
+      // minute for one not confirmed; sent, and written before the link, are final
       if (!ticketId || marksBusy) return;
-      const open = list.filter((m) => { const k = marks.get(m.id); return !k || k.state !== "sent"; });
+      const open = list.filter((m) => { const k = marks.get(m.id); return !k || (k.state !== "sent" && k.state !== "before"); });
       if (!open.length) return;
       const wait = open.some((m) => !marks.has(m.id)) ? 2000 : open.some((m) => marks.get(m.id).state === "sending") ? 15000 : 60000;
       if (Date.now() - marksCheckedAt > wait) void checkMarks(ids, ticketId, open);

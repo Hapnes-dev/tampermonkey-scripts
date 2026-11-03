@@ -590,3 +590,70 @@ test('sentAs: a reply sent by another browser counts; the same words from the cu
   assert.deepStrictEqual(w.sync.sentAs(m, w.zdComments.get(53123)), { commentId: '9001', isPublic: true, at: Date.parse(z.created_at) });
   assert.strictEqual(w.sync.sentAs(m, null), null, 'no ticket read: nothing claimed');
 });
+
+// ---- v1.81.1: the mark trusts the sending browser's record before the ticket's text --------------------------------
+// Thomas, of a reply the customer got: its mark said "Not sent". The ticket's text match had missed it. Now the browser
+// that sent a message records what it became; the ticket is read only for what no record settles, and a missed match
+// is "not confirmed", never "not sent".
+
+test('wentAs: the sending browser\'s own record settles the mark, with no Zendesk read', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const m = w.say(RUNNER, '<p>/reply&nbsp;</p><p>Hei</p><p>Kan du merke adressene på oversiktbildet?</p>', 'Thomas', 'Kvalvåg Håpnes');
+  await w.sync.runOnce();
+  const e = w.sync.linkOf(1481787, 12896932);
+  const made = w.zdComments.get(53123)[w.zdComments.get(53123).length - 1];
+  const s = w.sync.wentAs(e, m, null);
+  assert.strictEqual(s.commentId, String(made.id));
+  assert.strictEqual(s.isPublic, true);
+  assert.ok(s.at > 0, 'when it went');
+  const n = w.say(2, '<p>Sjekker fjernstyring</p>', 'Andreas', 'Sandnes');
+  await w.sync.runOnce();
+  assert.strictEqual(w.sync.wentAs(w.sync.linkOf(1481787, 12896932), n, null).isPublic, false, 'a note is recorded as one');
+});
+
+test('wentAs: a reply this browser sent before records were kept still counts as sent', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const m = w.say(RUNNER, '<p>/reply Vi kommer i morgen.</p>', 'Thomas');
+  await w.sync.runOnce();
+  const e = JSON.parse(JSON.stringify(w.sync.linkOf(1481787, 12896932)));
+  delete e.sent;   // as a 1.81.0 link stood
+  assert.deepStrictEqual(w.sync.wentAs(e, m, null), { commentId: '', isPublic: true, at: 0 }, 'taken on by this browser: on the ticket');
+  // a message never taken on, and one from before the link, are not
+  const later = { commentId: 999, messageType: 'USER_MESSAGE', content: '<p>/reply Til slutt.</p>', createdAt: Date.now() + 99999, user: { userId: 1 } };
+  assert.strictEqual(w.sync.wentAs(e, later, null), null);
+  const old = w.chat.find((c) => c.commentId === 12);
+  assert.strictEqual(w.sync.beforeLink(e, old), true, 'written before the link: the sync never sends it');
+  assert.strictEqual(w.sync.beforeLink(e, m), false);
+  assert.strictEqual(w.sync.beforeLink(null, m), false, 'no link here: not known');
+});
+
+test('wentAs: the ticket\'s text settles it in another browser - through the session ("web") too, a signature after a reply', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const m = w.say(2, '<p>/reply Vi kommer i morgen.</p>', 'Andreas', 'Sandnes');
+  const at = (d) => new Date(m.createdAt + d).toISOString();
+  const web = { id: 9101, author_id: 800, public: true, plain_body: 'Vi kommer i morgen.\n\n— Andreas Sandnes', created_at: at(5000), via: { channel: 'web' } };
+  assert.deepStrictEqual(w.sync.wentAs(null, m, [web]), { commentId: '9101', isPublic: true, at: Date.parse(web.created_at) });
+  const signed = { id: 9102, author_id: 800, public: true, plain_body: 'Vi kommer i morgen.\n\n— Andreas Sandnes\n\nBest regards,\nAndreas Sandnes\nKiona', created_at: at(5000), via: { channel: 'web' } };
+  assert.strictEqual(w.sync.wentAs(null, m, [signed]).commentId, '9102', 'the agent\'s signature after a public reply');
+  const note = { id: 9103, author_id: 800, public: false, plain_body: 'Andreas Sandnes (Rocketlane):\nOk\n\nmer tekst', created_at: at(5000), via: { channel: 'web' } };
+  const ok = w.say(2, '<p>Ok</p>', 'Andreas', 'Sandnes');
+  assert.strictEqual(w.sync.wentAs(null, ok, [note]), null, 'an internal note has no signature: more text is another comment');
+  const mail = { id: 9104, author_id: 700, public: true, plain_body: 'Vi kommer i morgen.', created_at: at(5000), via: { channel: 'email' } };
+  assert.strictEqual(w.sync.wentAs(null, m, [mail]), null, 'an email with the same words is the customer\'s');
+  const early = Object.assign({}, web, { id: 9105, created_at: at(-600000) });
+  assert.strictEqual(w.sync.wentAs(null, m, [early]), null, 'made before the message was written: not of it');
+});
+
+test('a message another browser sent is recorded when this one finds it on the ticket', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const m = w.say(2, '<p>/reply Vi kommer i morgen.</p>', 'Andreas', 'Sandnes');
+  w.zdComments.get(53123).push({ id: 9201, author_id: 800, public: true, plain_body: 'Vi kommer i morgen.\n\n— Andreas Sandnes', created_at: new Date(w.tick()).toISOString(), attachments: [], via: { channel: 'api' } });
+  const r = await w.sync.runOnce();
+  assert.strictEqual(r.forwarded, 0, 'not sent twice');
+  const s = w.sync.wentAs(w.sync.linkOf(1481787, 12896932), m, null);
+  assert.strictEqual(s.commentId, '9201', 'recorded as the comment it is');
+});
