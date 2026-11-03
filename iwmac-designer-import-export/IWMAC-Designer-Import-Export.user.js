@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.110.0
+// @version      1.110.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.110.0';
+var IWDIE_VERSION = '1.110.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -10480,14 +10480,24 @@ function iwdieVcSearchFold(s, name) {
 var iwdieVcSearchGroups = null;
 /** The words of `query` the search goes by (v1.109.0): folded, the little ones that join others ("med", "with") left
  *  out, each with every word of its groups in IWDIE_VC_SEARCH_WORDS (one that starts like a group's word, from three
- *  letters on, takes that group). -> [[alternatives]] */
+ *  letters on, takes that group). Since v1.110.1 a query's brackets and marks part its words ("energimåler (kW)" is
+ *  energimåler and kW - before, "(kw)" had to be found as written, and only labels like "Effekt (kW)" held it), and a
+ *  Norwegian plural or definite form is taken for its stem as well ("målere" måler, "ventilene" ventil). -> [[alternatives]] */
 function iwdieVcSearchWords(query) {
   if (!iwdieVcSearchGroups) iwdieVcSearchGroups = IWDIE_VC_SEARCH_WORDS.map(function (g) { return g.map(iwdieVcSearchFold); });
   var stop = { med: 1, og: 1, i: 1, 'på': 1, pa: 1, til: 1, for: 1, av: 1, en: 1, et: 1, ei: 1, the: 1, with: 1, and: 1, of: 1, an: 1, som: 1, uten: 1, utan: 1, och: 1 };
-  return iwdieVcSearchFold(query).split(' ').filter(function (w) { return w && !stop[w]; }).map(function (w) {
-    var alts = [w];
-    iwdieVcSearchGroups.forEach(function (g) {
-      if (g.some(function (x) { return x === w || (w.length >= 3 && x.indexOf(w) === 0); })) g.forEach(function (x) { if (alts.indexOf(x) < 0) alts.push(x); });
+  var marks = /[()\[\]{}<>,;:!?"'`\u00b4\u00ab\u00bb\u2026\/\\|*+=~^&#@$_-]+/g;
+  return iwdieVcSearchFold(String(query == null ? '' : query).replace(marks, ' ')).split(' ').filter(function (w) { return w && !stop[w]; }).map(function (w) {
+    var forms = [w];
+    ['ene', 'ere', 'er', 'en', 'et', 'a', 'e'].some(function (end) {
+      if (w.length - end.length >= 4 && w.slice(-end.length) === end) { forms.push(w.slice(0, -end.length)); return true; }
+      return false;
+    });
+    var alts = forms.slice();
+    forms.forEach(function (f) {
+      iwdieVcSearchGroups.forEach(function (g) {
+        if (g.some(function (x) { return x === f || (f.length >= 3 && x.indexOf(f) === 0); })) g.forEach(function (x) { if (alts.indexOf(x) < 0) alts.push(x); });
+      });
     });
     return alts;
   });
@@ -10507,9 +10517,9 @@ function iwdieVcComponentSearch(items, names, query, skip, max) {
   var words = iwdieVcSearchWords(query);
   if (!words.length) return [];
   // as typed: each word alone, without its other forms - what holds the words so ranks first; before all, a name that
-  // is the query itself, its spaces aside ("tank i tank": TankITank)
+  // is the query itself, its spaces and marks aside ("tank i tank": TankITank)
   var typed = words.map(function (alts) { return [alts[0]]; }), t = iwdieSymTable(), rank = [[], [], [], [], []];
-  var whole = iwdieVcSearchFold(query).replace(/\s+/g, '');
+  var whole = iwdieVcSearchFold(query).replace(/[^a-z0-9æøå%°]+/g, '');
   (items || []).forEach(function (it, k) {
     if (skip && skip[k]) return;
     var nm = names[k] + ' ' + ((it.sym && it.sym.name) || ''), fam = it.sym ? t.families[t.byName[it.sym.name]] : null;

@@ -531,6 +531,14 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### The IWMAC menu reads a query's words without brackets, and Norwegian plurals (v1.110.1)
+
+Thomas searched *energimåler (kW)* and found no energy meter. The search took "(kw)" as one word, with its brackets,
+and only components whose labels read "Effekt (kW)" or "el-input(kW)" held it. The energy meters' own word is "kW".
+Brackets and marks in a query now separate its words, so *energimåler (kW)* finds EnergimålerLinjer,
+EnergimålerStående and Energimåler first. A Norwegian plural or definite form also finds its stem: *målere*,
+*ventilene*, *pumper*.
+
 ### Copilot and Claude place the house-named components by name too (v1.110.0)
 
 Thomas, 2026-11-03, after 1.109.0 had built the other house templates' components into VectorCraft: *"gjør så Copilot
