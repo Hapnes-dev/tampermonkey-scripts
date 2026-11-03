@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.109.0
+// @version      1.109.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.109.0';
+var IWDIE_VERSION = '1.109.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -6311,13 +6311,17 @@ function iwdieAiIsPill(s) {
 
 /** A component's shapes without the texts an IWMAC object stands for (v1.109.0): a value (IWDIE_AI_VALUE_TEXT) anywhere,
  *  and any text on a pill (iwdieAiIsPill), where the template writes what its value or state object shows ("2,7 °C",
- *  "Running", "Manuel"). Labels beside a pill, and a symbol's own words (the "kW" in an energy meter), stay.
+ *  "Running", "Manuel"). Labels beside a pill, and a symbol's own words (the "kW" in an energy meter), stay. Since
+ *  v1.109.1 a note's words go too: more than 160 letters, or the Illustrator shortcuts the templates' grey box lists.
  *  -> {shape, box: its box anew, out: how many were left out} */
 function iwdieAiStandInsOut(shape) {
   var pills = [], out = 0;
   iwdieSymLeaves([shape]).forEach(function (s) { if (iwdieAiIsPill(s)) pills.push(iwdieSymBox(s)); });
+  // (v1.109.1) the template's note to whoever draws (its Illustrator shortcuts, a paragraph): the box stays, its words go
+  var all = iwdieSymLeaves([shape]).filter(function (q) { return q.t === 'text'; }).map(function (q) { return String(q.text); });
+  var note = all.join(' ').length > 160 || all.some(function (w) { return /Hurtigtaster|CTRL\s*\+/.test(w); });
   var standIn = function (t) {
-    if (IWDIE_AI_VALUE_TEXT.test(String(t.text).trim())) return true;
+    if (note || IWDIE_AI_VALUE_TEXT.test(String(t.text).trim())) return true;
     var b = iwdieAiShapeBox(t), cx = (b.x0 + b.x1) / 2, cy = t.y - t.size * 0.35;
     return pills.some(function (p) { return cx >= p.x0 - 1 && cx <= p.x1 + 1 && cy >= p.y0 - 1 && cy <= p.y1 + 1; });
   };

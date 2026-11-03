@@ -531,6 +531,13 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A template's note keeps its box, not its words (v1.109.1)
+
+The house templates keep a grey box listing Illustrator's shortcuts (*Hurtigtaster for Adobe illustrator*). Since
+1.109.0 read its words, a plant's own Oversikt .ai offered that box in VectorCraft with the whole list in it. A
+component whose words run past 160 letters, or name those shortcuts, now keeps its box and loses its words, as the
+kit leaves such notes out of the built-in components.
+
 ### Every house template's components in VectorCraft, found by any word (v1.109.0)
 
 Thomas, 2026-11-03, holding the house's Varme template (`xxxx_varmeanlegg.ai`) up to VectorCraft: one tank was
