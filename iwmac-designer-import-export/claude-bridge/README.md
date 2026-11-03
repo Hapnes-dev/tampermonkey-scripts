@@ -59,11 +59,11 @@ join, which object shows which parameter, and the binding grammar.
 
 | Tool | Does |
 |---|---|
-| `iwmac_status` | Whether a tab is attached, and its plant, panel, library and units. `mode: by itself` (server 1.7.0, userscript 1.87.0): VectorCraft was opened by itself, with no Designer behind it - the user's Ctrl+S saves a panel file for *Insert JSON… → Replace*, and its rows come only from an Export JSON opened on the start card |
-| `iwmac_scene` | The drawing as rows (`cid, kind, name, x, y, w, h, note`), filtered by layer, kind, area or words; `facts: true` adds the drawing's own layout: rows of like symbols and their spacing, the information column, circuits, value offsets, text style |
+| `iwmac_status` | Whether a tab is attached, and its plant, panel, library and units; whether the tab is in front (server 1.9.0); which end needs an update. `mode: by itself` (server 1.7.0, userscript 1.87.0): VectorCraft was opened by itself, with no Designer behind it - the user's Ctrl+S saves a panel file for *Insert JSON… → Replace*, and its rows come only from an Export JSON opened on the start card |
+| `iwmac_scene` | The drawing as rows (`cid, kind, name, x, y, w, h, note`), filtered by layer, kind, area or words (the IWMAC menu's synonyms since 1.9.0: *tank* finds a Beholder); `facts: true` adds the drawing's own layout: rows of like symbols and their spacing, the information column, circuits, value offsets, text style; `preview` its picture and `status` the plant in short (server 1.9.0) |
 | `iwmac_preview` | A JPEG of the drawing, or of a box of it |
-| `iwmac_find` | Every component VectorCraft offers, with the template it comes from, sizes and ports: the house symbols, pipe pieces and colour samples (`all: true` adds what an IWMAC object shows). `set: "Oversikt"` keeps the Oversikt template's floor plan kit (server 1.4.0, userscript 1.72.0): its cases in light blue for cooling (`KjølDisk`, `KjølGavl`, `KjølSirkel`, `KjølRom` …) and dark blue for freezer (`FrysDisk` …), and `Inngang`, `Handlevogn`, `Kasse`, `SelvbetjentKasse`, `Kondensator2`–`4`, `Plugg`, `Nål`; and (server 1.5.0, userscript 1.75.0) its 28 arrangements, marked `[arrangement]`: whole islands, rows and checkouts (`KjølØy3Stående`, `FrysØyRund`, `KjølHjørnerad`, `Kassepar` …); `set: "Maskin"` the machine room's. Since server 1.8.0 and userscript 1.110.0 it also lists the components of the other house templates by their own names, marked `[house: <layer>]`. These are the 124 the userscript built in from the Maskin variants, Energi, Varme, Tørrkjøler, Ventilasjon and Romkontroll templates, and the nine Maskinrom ones the table does not name: `AerotemperNed`, `Energimåler`, `TankITank`, `Oljeutskiller`, `VVKVBlokk`, `EnergimålingBlokk`, `Varmekurve` …. A `symbol` op places them by name, as it places the families. The IWMAC menu's objects. The plant's parameters, with the exact binding text; `what: "cases"` the case controllers' value, alarm, cooling and defrost rows (server 1.6.0) |
-| `iwmac_edit` | A batch of ops: `symbol` (an arrangement's name places it whole, one group, with a label object where each case is named: `labels` the names in reading order, `false` none, else the template's own *K1* / *F1*), `bank`, `object`, `value`, `pill`, `box` (a panel of the information column; never under an IWMAC object, which draws itself), `pipe`, `connect`, `text`, `move`, `delete`, `set_text`, `bind`, `align`, `distribute`; an Oversikt's `case`, `room`, `cluster`, `name`, `legend` (below); `dry_run` plans only |
+| `iwmac_find` | Every component VectorCraft offers, with the template it comes from, sizes and ports: the house symbols, pipe pieces and colour samples (`all: true` adds what an IWMAC object shows). `set: "Oversikt"` keeps the Oversikt template's floor plan kit (server 1.4.0, userscript 1.72.0): its cases in light blue for cooling (`KjølDisk`, `KjølGavl`, `KjølSirkel`, `KjølRom` …) and dark blue for freezer (`FrysDisk` …), and `Inngang`, `Handlevogn`, `Kasse`, `SelvbetjentKasse`, `Kondensator2`–`4`, `Plugg`, `Nål`; and (server 1.5.0, userscript 1.75.0) its 28 arrangements, marked `[arrangement]`: whole islands, rows and checkouts (`KjølØy3Stående`, `FrysØyRund`, `KjølHjørnerad`, `Kassepar` …); `set: "Maskin"` the machine room's. Since server 1.8.0 and userscript 1.110.0 it also lists the components of the other house templates by their own names, marked `[house: <layer>]`. These are the 124 the userscript built in from the Maskin variants, Energi, Varme, Tørrkjøler, Ventilasjon and Romkontroll templates, and the nine Maskinrom ones the table does not name: `AerotemperNed`, `Energimåler`, `TankITank`, `Oljeutskiller`, `VVKVBlokk`, `EnergimålingBlokk`, `Varmekurve` …. A `symbol` op places them by name, as it places the families. The IWMAC menu's objects. The plant's parameters grouped by unit, with the exact binding text; `what: "cases"` the case controllers' value, alarm, cooling and defrost rows (server 1.6.0). `queries: [...]` several searches in one call (server 1.9.0) |
+| `iwmac_edit` | A batch of ops: `symbol` (an arrangement's name places it whole, one group, with a label object where each case is named: `labels` the names in reading order, `false` none, else the template's own *K1* / *F1*), `bank`, `object`, `value`, `pill`, `box` (a panel of the information column; never under an IWMAC object, which draws itself), `pipe`, `connect`, `text`, `move`, `delete`, `set_text`, `bind`, `align`, `distribute`; an Oversikt's `case`, `room`, `cluster`, `name`, `legend` (below); `dry_run` plans only. A bind may be `{unit, alias}`, found by the server (1.9.0). The answer (server 1.9.0, userscript 1.111.0): `added`, every placed thing's cid and box; `check`, the findings this edit brought; `preview: true` the new version's picture |
 | `iwmac_check` | Objects off the panel or on each other, symbols missing or standing in for objects, values without pills, overlaps, diagonal pipes, flow arrows not on a pipe running their way, drawn numbers, bindings to nothing; on an Oversikt a case without a value, a name drawn as text, no legend |
 | `iwmac_undo` | Opens the version before Claude's last edit again |
 | `iwmac_export` | Reads an Export JSON file on this computer, part by part, without its picture |
@@ -72,7 +72,9 @@ A place is `{x, y}`, `{cx, cy}` or `{near: target, side, gap, align}`, with `fre
 to slide to the nearest free spot. A bank placed next to one of a row of the same symbol
 carries that row on, at its spacing. `connect` routes an orthogonal pipe between two
 ports (a compressor's `out` on top, a gas cooler's `in` on its left, a motor valve's at its
-knot) and colours it by circuit: HP, Liquid, MT suction, LT suction, Heat recovery.
+knot) and colours it by circuit: HP, Liquid, MT suction, LT suction, Heat recovery; since 1.111.0 also the water and
+air side by name (Hot water, Warm water, Water, Coldest water, Brine, Feed, Oil; Supply, Intake, Extract and Exhaust
+air, 3 px).
 
 A target is the `cid` the scene gave, or a `ref` an earlier op of the same edit placed.
 Since server 1.2.0 and userscript 1.69.0 it may also be portable:
@@ -145,6 +147,9 @@ Ctrl+S placed 62 objects, the 12 of the three units linked to their rows.
   request must name `127.0.0.1` or `localhost` as its host (no DNS rebinding), carry the
   `X-IWDIE-Bridge` header and no web page's `Origin` (a page cannot send that header
   without a preflight, and none is answered), and, after the attach, the session's token.
+- **A second session's calls need the key** (server 1.9.0). The server that holds the port writes a random key to
+  `iwmac-vc-mcp-<port>.key` in the user's temp folder; another session's server sends it with each call it passes on
+  (`/bridge/tool`). Without it the call is refused.
 - **Nothing is read but what the tools name.** `iwmac_export` reads `.json` files only,
   and only reads. The tab sends no cookies, passwords or tokens: the plant, the panel, the
   symbol and object catalogues and the parameter rows of the units in scope.
@@ -155,8 +160,9 @@ Ctrl+S placed 62 objects, the 12 of the three units linked to their rows.
 | You see | Do |
 |---|---|
 | Claude row: *not running* | Claude Code is not running the server: restart Claude Code after adding it. |
-| `iwmac_status`: port *in use* | Another Claude Code session has the bridge. Work there, or end it: this one takes the port over by itself. |
-| *did not answer in N s* | Bring the VectorCraft tab to the front. The browser pauses a hidden tab's drawing. |
+| `iwmac_status`: port *in use: another Claude Code session's server holds it* | Nothing (server 1.9.0): this session's calls go through it, and it takes the port over when that session ends. With a server older than 1.9.0 there, end that session or restart it. |
+| *behind another tab* | Bring the VectorCraft tab to the front: VectorCraft neither saves nor opens there. Nothing was changed. |
+| *did not answer in N s* | It may still be working: the next call starts with a note if it answered after all. |
 | A red dashed box where a symbol should be | The component library kept in this browser lacks it: import the Maskin template's `.ai` under Components in the banner, then Edit in VectorCraft again. |
 | Values placed but not linked after the sync | The banner says why per object: no such parameter in that unit, an alias two units share, a unit whose rows were not read. |
 

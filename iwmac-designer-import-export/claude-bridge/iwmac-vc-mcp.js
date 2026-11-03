@@ -9,9 +9,11 @@
  * a new document and keeps the version before. Nothing here or there syncs to the Designer: the user reviews and presses
  * Ctrl+S. Reading an Export JSON file (iwmac_export) needs no tab.
  *
- * Who may talk to the port: only the userscript. A request must come to 127.0.0.1 or localhost by that very name (no
- * DNS rebinding), carry the X-IWDIE-Bridge header (a web page cannot send it without a CORS preflight, which is
- * refused) and no web page's Origin; after the attach, the session's token. The port is bound to the loopback only.
+ * Who may talk to the port: only the userscript, and (1.9.0) another session's server of this same file. A request must
+ * come to 127.0.0.1 or localhost by that very name (no DNS rebinding), carry the X-IWDIE-Bridge header (a web page cannot
+ * send it without a CORS preflight, which is refused) and no web page's Origin; after the attach, the session's token. A
+ * second Claude Code session finds the port taken and sends its calls through the server that holds it, with the key
+ * that server wrote to this user's temp folder. The port is bound to the loopback only.
  *
  * No dependencies. Node 18 or later.
  */
@@ -19,32 +21,56 @@
 const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.8.0', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.9.0', PROTOCOL = 1;
+// the userscript that answers an edit's check and preview in the same call, and says whether its tab shows
+const TAB_MIN = '1.111.0';
 const PORT = parseInt(process.env.IWDIE_BRIDGE_PORT || '47913', 10);
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY = 64 * 1024 * 1024;
+const KEY_FILE = path.join(os.tmpdir(), 'iwmac-vc-mcp-' + PORT + '.key');
+const SELF = 'pid:' + process.pid;
+// every wait of this server times this (1.9.0): the tests run it fast
+const SCALE = Math.max(0.001, parseFloat(process.env.IWDIE_BRIDGE_TIME_SCALE || '1') || 1);
 
-// the userscript's pure helpers, where it lies beside this folder (roles of objects in an export)
+// the userscript's pure helpers, where it lies beside this folder (roles of objects in an export, the menu's search words)
 let script = null;
 try { script = require(path.join(__dirname, '..', 'IWMAC-Designer-Import-Export.user.js')); } catch (e) { script = null; }
 
 const log = (...a) => process.stderr.write('[' + NAME + '] ' + a.join(' ') + '\n');
 
+/** Whether version a is older than b, number by number. */
+function older(a, b) {
+  const x = String(a || '').split('.').map(n => parseInt(n, 10) || 0), y = String(b || '').split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0); }
+  return false;
+}
+
 /* ---------------- the page: the VectorCraft tab's userscript ---------------- */
 
-let page = null;            // {session, context, at, seen, waiting, waitTimer}
+let page = null;            // {session, context, at, seen, vis, visAt, waiting, waitTimer, working}
 const queue = [];           // commands for the page, in order
 const sent = new Map();     // id -> a command the page has
+const late = new Map();     // id -> a command whose time ran out while the page had it: its answer is still taken (1.9.0)
+const news = [];            // what such answers said, told with the next call of the session that made it
 const takenOver = [];       // sessions another tab replaced: told so, they do not take Claude back by themselves
-let nextId = 1, portState = 'starting';
-let readJob = null;         // the edit job whose scene Claude read last: only that drawing may be changed
+const readJobs = new Map(); // caller -> the edit job whose scene that session read last: only that drawing may be changed
+let nextId = 1, portState = 'starting', listening = false, key = null;
+let proxy = null;           // (1.9.0) the server that holds the port, when another session's does: {version, pid}
 const TAKEN = 'another VectorCraft tab attached';
 
-const NOT_ATTACHED = 'No VectorCraft tab is attached. In the IWMAC Designer, open the panel and click "Edit in VectorCraft…"; ' +
-  'the tab finds this server by itself within 15 s (its banner shows Claude: connected). The userscript must be 1.64.0 or later, ' +
-  'and Tampermonkey must be allowed to reach 127.0.0.1.';
+const NOT_ATTACHED = 'No VectorCraft tab is attached. In the IWMAC Designer, open the panel and click "Edit in VectorCraft…" (or open ' +
+  'VectorCraft by itself and a panel file from its start card); the tab finds this server by itself within seconds (its banner shows ' +
+  'Claude: connected). The userscript must be 1.64.0 or later, and Tampermonkey must be allowed to reach 127.0.0.1.';
+const BEHIND = 'The VectorCraft tab is behind another tab, where Chrome stops drawing it, so VectorCraft can neither save the drawing ' +
+  'nor open a new version. Nothing was changed. Ask the user to bring the VectorCraft tab to the front, then try again.';
+
+/** What the port says, where this server could not take it. */
+function portNote() {
+  return listening || proxy ? '' : ' This server has no port: ' + PORT + ' ' + portState + '.';
+}
 
 function reply(res, status, obj) {
   const body = JSON.stringify(obj);
@@ -70,6 +96,8 @@ function pump() {
   page.waiting = null;
   clearTimeout(page.waitTimer);
   sent.set(cmd.id, cmd);
+  // (1.9.0) handed over is heard from: a tab busy with it sends nothing else until it answers or beats
+  page.seen = Date.now();
   reply(res, 200, { cmd: { id: cmd.id, name: cmd.name, args: cmd.args } });
 }
 
@@ -80,23 +108,45 @@ function detach(why) {
   for (const cmd of [...queue, ...sent.values()]) { clearTimeout(cmd.timer); cmd.reject(new Error('the VectorCraft tab went away: ' + why)); }
   queue.length = 0;
   sent.clear();
+  late.clear();
 }
 
+/** A change needs the tab in front: VectorCraft draws, and so saves and opens, only there. */
+const needsFront = (name, args) => (name === 'edit' && !(args && args.dry_run)) || name === 'undo';
+
 /** One call to the page. -> Promise<result> */
-function ask(name, args, ms) {
+function ask(name, args, ms, caller) {
+  ms = Math.max(50, Math.round(ms * SCALE));
   return new Promise((resolve, reject) => {
-    if (!page) { reject(new Error(NOT_ATTACHED)); return; }
-    const cmd = { id: nextId++, name, args: args || {}, resolve, reject };
+    if (!page) { reject(new Error(NOT_ATTACHED + portNote())); return; }
+    // (1.9.0) the tab said it is behind another tab: no waiting for a time to run out
+    if (page.vis === false && needsFront(name, args)) { reject(new Error(BEHIND)); return; }
+    const cmd = { id: nextId++, name, args: args || {}, resolve, reject, caller: caller || SELF };
     cmd.timer = setTimeout(() => {
       const i = queue.indexOf(cmd);
       if (i >= 0) queue.splice(i, 1);
-      sent.delete(cmd.id);
-      reject(new Error('the VectorCraft tab did not answer in ' + Math.round(ms / 1000) + ' s. Is it open, with its tab in front? ' +
-        'VectorCraft draws, and so saves, only while its tab shows.'));
+      // the tab has it: its answer, when it comes, is told with the next call (1.9.0)
+      if (sent.delete(cmd.id)) late.set(cmd.id, { name, caller: cmd.caller, at: Date.now() });
+      reject(new Error('the VectorCraft tab did not answer in ' + Math.round(ms / 1000) + ' s. ' + (page && page.vis === false
+        ? 'It is behind another tab, where Chrome stops drawing it: ask the user to bring it to the front.'
+        : 'Is it open, with its tab in front? VectorCraft draws, and so saves, only while its tab shows.') +
+        (i < 0 ? ' If it answers after all, the next call says what came of it.' : '')));
     }, ms);
     queue.push(cmd);
     pump();
   });
+}
+
+/** What a late answer said, in a line. */
+function lateLine(l, body) {
+  const r = body && body.result;
+  if (!body || !body.ok) return 'the earlier ' + l.name + ' that ran out of time failed after all: ' + String((body && body.error) || 'no reason given');
+  if (l.name === 'edit' && r && r.applied) {
+    return 'the earlier edit that ran out of time was made after all: it is open as ' + r.document + (Array.isArray(r.added) ? ' (' + r.added.length + (r.added.length === 1 ? ' thing' : ' things') + ' added)' : '') +
+      ' - read the scene before another edit, and do not make it again';
+  }
+  if (l.name === 'undo' && r) return 'the earlier undo that ran out of time was made after all: ' + r.document + ' is open';
+  return 'the earlier ' + l.name + ' that ran out of time answered after all';
 }
 
 const server = http.createServer((req, res) => {
@@ -110,7 +160,20 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   const mine = page && req.headers['x-iwdie-session'] === page.session;
   if (req.method === 'GET' && url.pathname === '/bridge/hello') {
-    reply(res, 200, { server: 'iwmac-vc-mcp', version: VERSION, protocol: PROTOCOL, attached: !!page });
+    // `tool`: another session's server may send its calls here (1.9.0)
+    reply(res, 200, { server: 'iwmac-vc-mcp', version: VERSION, protocol: PROTOCOL, attached: !!page, tool: true, pid: process.pid });
+    return;
+  }
+  // (1.9.0) another Claude Code session's call, sent by its own server of this file: with the key this one wrote
+  if (req.method === 'POST' && url.pathname === '/bridge/tool') {
+    const given = String(req.headers['x-iwdie-key'] || '');
+    if (!key || given.length !== key.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(key))) { reply(res, 403, { error: 'forbidden' }); return; }
+    readBody(req).then(body => {
+      const caller = 'proxy:' + String((body && body.caller) || 'other');
+      return call(body && body.name, (body && body.args) || {}, caller)
+        .then(result => reply(res, 200, { result }),
+          e => reply(res, 200, { result: { content: [{ type: 'text', text: 'Error: ' + (e && e.message ? e.message : String(e)) }], isError: true } }));
+    }, e => reply(res, 400, { error: e.message }));
     return;
   }
   if (req.method === 'POST' && url.pathname === '/bridge/attach') {
@@ -122,15 +185,18 @@ const server = http.createServer((req, res) => {
         if (takenOver.length > 20) takenOver.shift();
         detach(TAKEN);
       }
-      page = { session: crypto.randomBytes(24).toString('hex'), context: ctx, at: Date.now(), seen: Date.now(), waiting: null, waitTimer: null };
-      log('attached: plant', ctx.job.plant, 'panel', JSON.stringify(ctx.job.panel));
-      reply(res, 200, { session: page.session });
+      page = { session: crypto.randomBytes(24).toString('hex'), context: ctx, at: Date.now(), seen: Date.now(), vis: undefined, visAt: 0, waiting: null, waitTimer: null, working: '' };
+      log('attached: plant', ctx.job.plant, 'panel', JSON.stringify(ctx.job.panel), 'userscript', ctx.version);
+      reply(res, 200, { session: page.session, server: VERSION });
     }, e => reply(res, 400, { error: e.message }));
     return;
   }
   if (!mine) { reply(res, 409, { error: takenOver.includes(String(req.headers['x-iwdie-session'] || '')) ? TAKEN : 'no such session' }); return; }
   page.seen = Date.now();
   if (req.method === 'GET' && url.pathname === '/bridge/next') {
+    const v = url.searchParams.get('vis');
+    if (v === '0' || v === '1') { page.vis = v === '1'; page.visAt = Date.now(); }
+    page.working = '';
     if (page.waiting) { reply(page.waiting, 200, { cmd: null }); clearTimeout(page.waitTimer); }
     page.waiting = res;
     const wait = Math.max(1, Math.min(30, parseInt(url.searchParams.get('wait') || '25', 10)));
@@ -139,10 +205,31 @@ const server = http.createServer((req, res) => {
     pump();
     return;
   }
+  // (1.9.0) the tab's state between calls: whether it shows, and that a long call still runs
+  if (req.method === 'POST' && url.pathname === '/bridge/beat') {
+    readBody(req).then(body => {
+      if (body && typeof body.vis === 'boolean') { page.vis = body.vis; page.visAt = Date.now(); }
+      if (body && typeof body.working === 'string') page.working = body.working;
+      reply(res, 200, { ok: true });
+    }, e => reply(res, 400, { error: e.message }));
+    return;
+  }
   if (req.method === 'POST' && url.pathname === '/bridge/result') {
     readBody(req).then(body => {
       const cmd = body && sent.get(body.id);
-      if (!cmd) { reply(res, 404, { error: 'no such call' }); return; }
+      if (!cmd) {
+        // (1.9.0) one whose time ran out: what it says is kept for the next call of the session that asked
+        const l = body && late.get(body.id);
+        if (l) {
+          late.delete(body.id);
+          news.push({ caller: l.caller, line: lateLine(l, body) });
+          if (news.length > 20) news.shift();
+          reply(res, 200, { ok: true, late: true });
+          return;
+        }
+        reply(res, 404, { error: 'no such call' });
+        return;
+      }
       sent.delete(body.id);
       clearTimeout(cmd.timer);
       if (body.ok) cmd.resolve(body.result); else cmd.reject(new Error(String(body.error || 'the tab could not do it')));
@@ -153,20 +240,102 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && url.pathname === '/bridge/detach') { detach('the tab left'); reply(res, 200, { ok: true }); return; }
   reply(res, 404, { error: 'not found' });
 });
-// one bridge per computer: a second Claude Code session finds the port taken, says so, and takes it over when the
-// first one ends
+
+/* ---------------- one port, shared by the sessions on this computer ---------------- */
+
+// (1.9.0) A second Claude Code session finds the port taken. If the server there is one of these (1.9.0 or later), its
+// calls go through that one, with the key it wrote; either way it takes the port over when that session ends.
 const RETRY_MS = Math.max(100, parseInt(process.env.IWDIE_BRIDGE_RETRY_MS || '10000', 10));
-server.on('listening', () => { portState = 'listening'; log('bridge on 127.0.0.1:' + PORT); });
+
+function bridgeGet(p, ms) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port: PORT, method: 'GET', path: p, timeout: ms || 2500,
+      headers: { Host: '127.0.0.1:' + PORT, 'X-IWDIE-Bridge': String(PROTOCOL) } }, res => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => { let j = null; try { j = JSON.parse(data); } catch (e) {} resolve({ status: res.statusCode, json: j }); });
+    });
+    r.on('timeout', () => r.destroy(new Error('timeout')));
+    r.on('error', reject);
+    r.end();
+  });
+}
+
+/** Who holds the port: another of these, and whether it takes calls from this one. */
+function probeHolder() {
+  return bridgeGet('/bridge/hello', 2500).then(r => {
+    const j = r.json;
+    if (r.status !== 200 || !j || j.server !== 'iwmac-vc-mcp') {
+      proxy = null;
+      portState = 'in use by something else than this bridge: free port ' + PORT + ', or set IWDIE_BRIDGE_PORT for both ends';
+      return;
+    }
+    if (!j.tool) {
+      proxy = null;
+      portState = 'in use: another Claude Code session most likely has this bridge (its server ' + (j.version || 'old') +
+        ' is too old to share it); this one takes the port over when that session ends';
+      return;
+    }
+    proxy = { version: j.version, pid: j.pid };
+    portState = 'in use: another Claude Code session’s server (' + j.version + ', pid ' + j.pid + ') holds it; this session’s calls go through it';
+  }, () => {
+    proxy = null;
+    portState = 'in use: another Claude Code session most likely has this bridge; this one takes the port over when that session ends';
+  }).then(() => log('port', PORT, portState));
+}
+
+/** A tool call sent to the server that holds the port. -> Promise<MCP result> */
+function forward(name, args) {
+  let k = '';
+  try { k = fs.readFileSync(KEY_FILE, 'utf8').trim(); } catch (e) { k = ''; }
+  return new Promise((resolve, reject) => {
+    const body = Buffer.from(JSON.stringify({ name, args, caller: SELF }));
+    const r = http.request({ host: '127.0.0.1', port: PORT, method: 'POST', path: '/bridge/tool', timeout: 240000,
+      headers: { Host: '127.0.0.1:' + PORT, 'X-IWDIE-Bridge': String(PROTOCOL), 'X-IWDIE-Key': k, 'Content-Type': 'application/json', 'Content-Length': body.length } }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        let j = null;
+        try { j = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) {}
+        if (res.statusCode === 200 && j && j.result) resolve(j.result);
+        else reject(new Error('the server holding port ' + PORT + ' refused the call (' + res.statusCode + (j && j.error ? ': ' + j.error : '') + ')'));
+      });
+    });
+    r.on('timeout', () => r.destroy(new Error('the server holding port ' + PORT + ' did not answer')));
+    r.on('error', reject);
+    r.end(body);
+  });
+}
+
+server.on('listening', () => {
+  listening = true;
+  proxy = null;
+  portState = 'listening';
+  key = crypto.randomBytes(24).toString('hex');
+  try { fs.writeFileSync(KEY_FILE, key, { mode: 0o600 }); } catch (e) { log('no key file', KEY_FILE, e.message, '- other sessions cannot share this port'); }
+  log('bridge on 127.0.0.1:' + PORT);
+});
 server.on('error', e => {
   const taken = e && e.code === 'EADDRINUSE';
-  portState = taken ? 'in use: another Claude Code session most likely has this bridge; this one takes the port over when that session ends'
-    : 'unusable: ' + e.message;
-  log('port', PORT, portState);
-  if (taken) setTimeout(() => { server.close(); server.listen(PORT, '127.0.0.1'); }, RETRY_MS).unref();
+  listening = false;
+  if (!taken) { portState = 'unusable: ' + e.message; log('port', PORT, portState); return; }
+  probeHolder();
+  setTimeout(() => { server.close(); server.listen(PORT, '127.0.0.1'); }, RETRY_MS).unref();
 });
 server.listen(PORT, '127.0.0.1');
-// a tab that stopped asking is gone
-setInterval(() => { if (page && !page.waiting && Date.now() - page.seen > 90000) detach('it stopped asking'); }, 15000).unref();
+// a tab that stopped asking is gone; one busy with a call is not, unless it was not heard from for ten minutes (1.9.0)
+setInterval(() => {
+  if (!page) return;
+  const quiet = Date.now() - page.seen;
+  if (!page.waiting && !sent.size && quiet > 90000 * SCALE) detach('it stopped asking');
+  else if (sent.size && quiet > 600000 * SCALE) detach('it was not heard from for ten minutes');
+}, Math.max(20, 15000 * SCALE)).unref();
+
+function dropKey() {
+  if (!key) return;
+  try { if (fs.readFileSync(KEY_FILE, 'utf8').trim() === key) fs.unlinkSync(KEY_FILE); } catch (e) {}
+}
+process.on('exit', dropKey);
 
 /* ---------------- what the tools answer from the context ---------------- */
 
@@ -175,21 +344,44 @@ const fold = s => lower(s).replace(/æ/g, 'ae').replace(/[øö]/g, 'o').replace(
 const words = q => lower(q).split(/\s+/).filter(Boolean);
 const hits = (hay, q) => words(q).every(w => lower(hay).includes(w) || fold(hay).includes(fold(w)));
 
-function status() {
-  if (!page) return { attached: false, port: PORT + ' ' + portState, help: NOT_ATTACHED };
+/** (1.9.0) A query as the IWMAC menu takes one: its words in any of their forms and synonyms (tank finds a Beholder), each
+ *  somewhere in the text - or, with no userscript beside this file, each word as it is. -> (hay) => boolean */
+function matcher(q) {
+  if (!q) return () => true;
+  if (script && script.vcSearchWords && script.vcSearchHas && script.vcSearchFold) {
+    const w = script.vcSearchWords(q);
+    if (!w.length) return () => true;
+    return hay => script.vcSearchHas(script.vcSearchFold(hay), w) || hits(hay, q);
+  }
+  return hay => hits(hay, q);
+}
+
+function status(caller) {
+  if (!page) return { attached: false, port: PORT + ' ' + portState, server: VERSION, help: NOT_ATTACHED };
   const c = page.context, P = c.params;
   return {
-    attached: true, plant: c.job.plant, panel: c.job.panel, document: c.job.name, size: c.size, userscript: c.version,
+    attached: true, plant: c.job.plant, panel: c.job.panel, document: c.job.name, size: c.size, userscript: c.version, server: VERSION,
+    update: older(c.version, TAB_MIN) ? 'userscript ' + c.version + ' is older than ' + TAB_MIN + ': an edit\'s check and preview then cost a call each, and a tab ' +
+      'behind another is found only when its time runs out - the user updates it in Tampermonkey' : undefined,
     // VectorCraft opened by itself (userscript 1.87.0): no Designer behind it
     mode: c.job.solo ? 'by itself: no Designer behind this drawing - the user’s Ctrl+S saves it as a panel file, which Insert JSON… → '
       + 'Replace puts on the panel' : undefined,
+    tab: page.vis === false ? 'behind another tab: an edit needs it in front' : page.vis === true ? 'in front' : undefined,
     library: { file: c.library && c.library.file, symbols: c.library ? Object.keys(c.library.symbols || {}).length : 0 },
     objects: c.objects ? c.objects.rows.length : 0,
     units: P && P.units ? P.units.slice(0, 40) : [], unitsNote: P ? (P.failed && P.failed.length ? 'rows not read for ' + P.failed.join(', ') : undefined)
       : c.job.solo ? 'no parameter rows: this drawing by itself has none - open an Export JSON of the plant on the start card for them'
       : 'no parameter rows came with this edit: link an object on the panel to a unit, or tick units in the Parameter Selector, then Edit in VectorCraft again',
-    sceneRead: readJob === c.job.id, lastSeen: Math.round((Date.now() - page.seen) / 1000) + ' s ago'
+    sceneRead: readJobs.get(caller || SELF) === c.job.id, lastSeen: Math.round((Date.now() - page.seen) / 1000) + ' s ago'
   };
+}
+
+/** The few status fields a scene carries (1.9.0), so no status call is needed before it. */
+function brief() {
+  if (!page) return undefined;
+  const c = page.context, P = c.params;
+  return { plant: c.job.plant, panel: c.job.panel, size: c.size, userscript: c.version, units: P && P.units ? P.units.length : 0,
+    rows: P && P.rows ? Object.keys(P.rows).length : 0, solo: c.job.solo ? true : undefined, update: older(c.version, TAB_MIN) ? 'update the userscript to ' + TAB_MIN : undefined };
 }
 
 /** The text a placeholder binds a unit's row by: `alias @ unit` where the alias is plain and the unit has it once, else
@@ -230,15 +422,23 @@ function unitOf(P, q) {
 }
 
 function find(a) {
-  if (!page) throw new Error(NOT_ATTACHED);
+  if (!page) throw new Error(NOT_ATTACHED + portNote());
+  // (1.9.0) several searches in one call: each a query, or {what, query, unit, set}
+  if (Array.isArray(a.queries)) {
+    return { results: a.queries.slice(0, 40).map(q => {
+      const one = Object.assign({}, a, typeof q === 'object' && q ? q : { query: String(q) });
+      delete one.queries;
+      try { return Object.assign({ q: typeof q === 'object' && q ? (q.query || q.what) : q }, find(one)); } catch (e) { return { q, error: e.message }; }
+    }) };
+  }
   const c = page.context, what = a.what, q = a.query || '', limit = Math.max(1, Math.min(500, a.limit || 40));
   if (what === 'symbols') {
-    const syms = (c.library && c.library.symbols) || {};
+    const syms = (c.library && c.library.symbols) || {}, m = matcher(q);
     // the template a symbol comes from (userscript 1.72.0): Maskin, or Oversikt - the floor plan's cases in light blue
     // (Kjøl...) and dark blue (Frys...) and the rest of its kit; an older userscript sends none, and all are Maskin's
     const setOf = n => syms[n].set || 'Maskin';
     // (userscript 1.110.0) and the components the house named, from its other templates: `house` their layer
-    const rows = Object.keys(syms).filter(n => !q || hits(n + ' ' + syms[n].what + ' ' + setOf(n) + ' ' + (syms[n].house || ''), q))
+    const rows = Object.keys(syms).filter(n => !q || m(n + ' ' + syms[n].what + ' ' + setOf(n) + ' ' + (syms[n].house || '')))
       .filter(n => !a.set || lower(setOf(n)) === lower(a.set))
       .filter(n => a.all || (syms[n].object === undefined ? syms[n].offered : !syms[n].object))
       .map(n => [n, syms[n].sizes.map(s => s[0] + 'x' + s[1]).join(' '),
@@ -246,33 +446,39 @@ function find(a) {
         syms[n].what + (syms[n].group ? ' [arrangement: ' + syms[n].group + ' pieces, ' + syms[n].names + ' names]' : '') +
           (syms[n].house ? ' [house: ' + syms[n].house + ']' : ''),
         Object.keys((c.ports || {})[n] || {}).join(' '), setOf(n)]);
+    // those whose name holds the query first
+    if (q) {
+      const f = fold(q);
+      rows.sort((x, y) => (fold(y[0]).includes(f) ? 1 : 0) - (fold(x[0]).includes(f) ? 1 : 0));
+    }
     return { cols: ['name', 'sizes', 'what', 'ports (besides top bottom left right)', 'set'], rows: rows.slice(0, limit), more: Math.max(0, rows.length - limit),
       note: Object.keys(syms).length ? undefined : 'no library came with this tab: the userscript is older than 1.70.0 - the user updates it in Tampermonkey, then Edit in VectorCraft again' };
   }
   if (what === 'objects') {
-    const rows = ((c.objects && c.objects.rows) || []).filter(r => !q || hits(r.join(' '), q));
+    const m = matcher(q);
+    const rows = ((c.objects && c.objects.rows) || []).filter(r => !q || m(r.join(' ')));
     return { cols: c.objects ? c.objects.cols : [], rows: rows.slice(0, limit), more: Math.max(0, rows.length - limit) };
   }
   if (what === 'parameters') {
     const P = c.params;
-    if (!P || !P.rows) return { rows: [], note: 'no parameter rows came with this edit (see iwmac_status)' };
+    if (!P || !P.rows) return { units: [], note: 'no parameter rows came with this edit (see iwmac_status)' };
     const units = P.units || [], name = {}, out = [];
+    let n = 0, more = 0;
     units.forEach(u => { name[u[0]] = u[1]; });
     const unitOk = u => !a.unit || lower(u) === lower(a.unit) || lower(name[u]) === lower(a.unit);
     Object.keys(P.rows).forEach(u => {
       if (!unitOk(u)) return;
-      const twice = {};
-      P.rows[u].forEach(r => { const k = lower(String(r[0]).trim()); twice[k] = (twice[k] || 0) + 1; });
+      const rows = [];
       P.rows[u].forEach(r => {
         if (q && !hits(r[0] + ' ' + r[2] + ' ' + r[1] + ' ' + r[5], q)) return;
-        const alias = String(r[0]).replace(/\s+/g, ' ').trim(), plain = /^[\w æøåÆØÅ.,%°()+#'-]+$/;
-        const bind = alias && plain.test(alias) && plain.test(name[u] || '') && twice[lower(alias)] === 1 ? alias + ' @ ' + name[u] : '[' + r[1] + ']';
-        out.push([name[u] || u, u, r[2], alias, r[4], r[3], r[5], r[1], bind]);
+        if (n >= limit) { more++; return; }
+        n++;
+        rows.push([r[2], String(r[0]).replace(/\s+/g, ' ').trim(), r[4], r[3], r[5], r[1], bindOf(P, u, r)]);
       });
+      if (rows.length) out.push({ unit: name[u] || u, unit_id: u, rows });
     });
-    // kinds: the object this panel shows a value, an alarm and a state with - place a parameter's row as that
-    return { cols: ['unit', 'unit_id', 'group', 'alias', 'rw', 'type', 'eng', 'driver_id', 'bind'], rows: out.slice(0, limit), more: Math.max(0, out.length - limit),
-      kinds: P.kinds || undefined };
+    // (1.9.0) grouped by unit, each unit said once; kinds: the object this panel shows a value, an alarm and a state with
+    return { cols: ['group', 'alias', 'rw', 'type', 'eng', 'driver_id', 'bind'], units: out, more, kinds: P.kinds || undefined };
   }
   if (what === 'cases') {
     // (userscript 1.84.0) the units whose rows carry a case's cluster: the bind text of each role, for a case op's roles,
@@ -301,15 +507,38 @@ function find(a) {
 
 /* ---------------- an Export JSON, read on this computer ---------------- */
 
+// (1.9.0) the last files read, by path, size and time: a part after the summary is not parsed again
+const exportCache = new Map();
+function loadExport(file) {
+  const st = fs.statSync(file);
+  if (st.size > 120 * 1024 * 1024) throw new Error('the file is over 120 MB');
+  const k = path.resolve(file), was = exportCache.get(k);
+  if (was && was.size === st.size && was.mtime === st.mtimeMs) return was.json;
+  const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+  exportCache.set(k, { size: st.size, mtime: st.mtimeMs, json });
+  if (exportCache.size > 4) exportCache.delete(exportCache.keys().next().value);
+  return json;
+}
+
+/** Every `rows` list in a part cut to `limit`, with how many more there were. */
+function cut(v, limit) {
+  if (!v || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v;
+  const out = {};
+  Object.keys(v).forEach(k => {
+    if (k === 'rows' && Array.isArray(v.rows) && v.rows.length > limit) { out.rows = v.rows.slice(0, limit); out.more = v.rows.length - limit; }
+    else out[k] = k === 'rows' ? v[k] : cut(v[k], limit);
+  });
+  return out;
+}
+
 function readExport(a) {
   const file = String(a.path || '');
   if (!/\.json$/i.test(file)) throw new Error('give the path of an Export JSON file (.json)');
-  const st = fs.statSync(file);
-  if (st.size > 120 * 1024 * 1024) throw new Error('the file is over 120 MB');
-  const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const j = loadExport(file);
   const env = j && j.panel && typeof j.panel === 'object' ? j : null, panel = env ? env.panel : Array.isArray(j) ? j[0] : j;
   if (!panel || !Array.isArray(panel.single_objects)) throw new Error('no panel in it (single_objects)');
-  const ov = env && env.overview, part = a.part || 'summary', limit = Math.max(1, Math.min(2000, a.limit || 300)), q = a.query || '';
+  const ov = env && env.overview, part = a.part || 'summary', limit = Math.max(1, Math.min(2000, a.limit || 100)), q = a.query || '';
   const role = id => script && script.roleOf ? script.roleOf(id) : '';
   const objs = [];
   panel.single_objects.forEach(o => objs.push(o));
@@ -322,7 +551,7 @@ function readExport(a) {
       plant: panel.plant_id, panel: panel.panel_name, size: [panel.panel_width, panel.panel_height],
       objects: objs.length, roles, linked: objs.filter(o => /^\d+_/.test(String(o.driver_id || ''))).length,
       background: env && env.background ? { mime: env.background.mime, w: env.background.width, h: env.background.height } : (panel.image_svg ? 'image_svg' : panel.image_data ? 'embedded' : 'none'),
-      // (userscript 1.83.0) a picture of pixels read at export as Edit in VectorCraft reads it: what that made, and where
+      // (1.83.0) a picture of pixels read at export as Edit in VectorCraft reads it: what that made, and where
       optimised: env && env.ai_guide && env.ai_guide.artwork && env.ai_guide.artwork.optimised ? env.ai_guide.artwork.optimised : null,
       overview: ov ? {
         plant: ov.plant, units: ov.units ? ov.units.rows.length : 0,
@@ -340,7 +569,7 @@ function readExport(a) {
     return { cols: ['name', 'obj_id', 'role', 'x', 'y', 'w', 'h', 'z', 'tag_text', 'unit_id', 'alias_text', 'driver_id'], rows: rows.slice(0, limit), more: Math.max(0, rows.length - limit) };
   }
   if (!ov) throw new Error('this export has no overview block (userscript 1.62.0 or later writes one)');
-  if (part === 'units') return ov.units;
+  if (part === 'units') return cut(ov.units, limit);
   if (part === 'signals') {
     const s = ov.signals || { cols: [], rows: [] }, rows = (s.rows || []).filter(r => !q || hits(r.join(' '), q));
     return { cols: s.cols, rows: rows.slice(0, limit), kinds: s.kinds, more: Math.max(0, rows.length - limit) };
@@ -356,50 +585,61 @@ function readExport(a) {
     });
     return { cols: ['unit_id', 'group'].concat(P.cols || []), rows: out.slice(0, limit), more: Math.max(0, out.length - limit), left_out: P.left_out };
   }
-  if (part === 'style') return ov.style || null;
-  if (part === 'picture') return ov.picture || null;
-  if (part === 'symbols') return (ov.parts && ov.parts.components) || null;
+  if (part === 'style') return cut(ov.style || null, limit);
+  if (part === 'picture') return cut(ov.picture || null, limit);
+  if (part === 'symbols') return cut((ov.parts && ov.parts.components) || null, limit);
   throw new Error('part is summary, objects, units, parameters, signals, style, picture or symbols');
 }
 
 /* ---------------- the tools ---------------- */
 
+const RO = { readOnlyHint: true, openWorldHint: false };
+const PREVIEW = { anyOf: [{ type: 'boolean' }, { type: 'object', properties: { box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, max: { type: 'integer' } }, additionalProperties: false }] };
 const TOOLS = [
-  { name: 'iwmac_status', description: 'Whether a VectorCraft tab with an IWMAC panel is attached, and what it holds: plant, panel, size, the kept symbol library, the plant units whose parameter rows came along. Call it first.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'iwmac_scene', description: 'The drawing open in VectorCraft, as rows: cid (an id that lasts), kind (symbol, object, pill, pipe, text, group, rect, shape), name, box x y w h in panel pixels, and a note (an object\'s binding, a pipe\'s circuit, colour and points). facts: true adds the drawing\'s own layout: rows of like symbols and their spacing, the info column, the circuits, where values sit by each symbol, the text size. Filter with layer, kind, near [x,y,w,h], query, limit (150).',
-    inputSchema: { type: 'object', properties: { layer: { type: 'string' }, kind: { type: 'string' }, near: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, query: { type: 'string' }, limit: { type: 'integer' }, facts: { type: 'boolean' } }, additionalProperties: false } },
-  { name: 'iwmac_preview', description: 'A picture of the drawing as it stands (JPEG): the whole panel, or box [x,y,w,h] in panel pixels to look closer. max is the longer side in pixels (1000). Each IWMAC object shows as its look in a dashed blue box; a value or text box reads 12.3, the Designer\'s design-time value, not a reading.',
+  { name: 'iwmac_status', description: 'Whether a VectorCraft tab with an IWMAC panel is attached, and what it holds: plant, panel, size, the kept symbol library, the plant units whose parameter rows came along, whether the tab is in front. iwmac_scene carries the same in short: call this only when something fails.',
+    annotations: Object.assign({ title: 'IWMAC: status' }, RO), inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'iwmac_scene', description: 'The drawing open in VectorCraft, as rows: cid (an id that lasts), kind (symbol, object, pill, pipe, text, group, rect, shape), name, box x y w h in panel pixels, and a note (an object\'s binding; a pipe\'s circuit, its colour and width where not the circuit\'s, its points). facts: true adds the drawing\'s own layout: rows of like symbols and their spacing, the info column, the circuits, where values sit by each symbol, the text size. preview: true (or {box, max}) adds a picture of it in the same call. status: the plant, panel and units in short. Filter with layer, kind, near [x,y,w,h], query (words, with the IWMAC menu\'s synonyms: tank finds a Beholder), limit (150). The first call of a session: {facts: true, preview: true}.',
+    annotations: Object.assign({ title: 'IWMAC: read the drawing' }, RO),
+    inputSchema: { type: 'object', properties: { layer: { type: 'string' }, kind: { type: 'string' }, near: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, query: { type: 'string' }, limit: { type: 'integer' }, facts: { type: 'boolean' }, preview: PREVIEW }, additionalProperties: false } },
+  { name: 'iwmac_preview', description: 'A picture of the drawing as it stands (JPEG): the whole panel, or box [x,y,w,h] in panel pixels to look closer. max is the longer side in pixels (1000). Each IWMAC object shows as its look in a dashed blue box; a value or text box reads 12.3, the Designer\'s design-time value, not a reading. A picture costs about 700 tokens: look as often as it helps.',
+    annotations: Object.assign({ title: 'IWMAC: look at the drawing' }, RO),
     inputSchema: { type: 'object', properties: { box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, max: { type: 'integer' } }, additionalProperties: false } },
-  { name: 'iwmac_find', description: 'Search what can be placed. what: symbols (every component VectorCraft offers - the house symbols, pipe pieces and colour samples - with the template each comes from, sizes and ports; set: Maskin or Oversikt keeps one template\'s: Oversikt is the floor plan kit, its cases light blue for cooling (KjølDisk, KjølGavl, KjølSirkel, KjølRom ...) and dark blue for freezer (FrysDisk ...), and Inngang, Handlevogn, Kasse, SelvbetjentKasse, Kondensator2-4, Plugg, Nål; and its arrangements, placed whole: islands, rows and checkouts as the template lays them out (KjølØy3Stående, FrysØyRund, KjølHjørnerad, Kassepar ..., marked [arrangement] in what); and the components of the other house templates, each by its own name (set Maskin, marked [house: its layer] in what: AerotemperNed, Energimåler, TankITank, Oljeutskiller, VVKVBlokk, EnergimålingBlokk, Varmekurve ... - search them by any word of what they are); all: true adds those an IWMAC object shows, which a drawing should not place), objects (the IWMAC objects the IWMAC menu offers, with obj_id, role and size: values, labels, LEDs, alarms, compressors, fans, pumps, valves, AK-PC strips ...), parameters (the plant\'s rows, with the bind text a placeholder takes; unit narrows it), cases (an Oversikt\'s case controllers: each unit\'s value, alarm, cooling and defrost rows as bind texts, for a case op\'s roles - or give the op unit), ports (one symbol\'s connection points, query = its name).',
-    inputSchema: { type: 'object', properties: { what: { type: 'string', enum: ['symbols', 'objects', 'parameters', 'cases', 'ports'] }, query: { type: 'string' }, unit: { type: 'string' }, set: { type: 'string', enum: ['Maskin', 'Oversikt'] }, limit: { type: 'integer' }, all: { type: 'boolean' } }, required: ['what'], additionalProperties: false } },
-  { name: 'iwmac_edit', description: 'Change the drawing. ops, in order, each {op, ...}: symbol {name, at, w?, h?, turn?, flip?, ref?, label?, labels?} (the name of an arrangement places it whole, one group, with a label object where each of its cases is named: labels the names in reading order - null skips one, false none - else the template\'s own K1/F1); bank {name, count, at, spacing?, axis?, refs?, labels?} (near one of a row of the same symbol, along it, it carries that row on); object {obj_id, at, bind?, text?, ref?}; value {bind, at, dark?, label?, ref?} (a value on its pill); pill {at, dark?}; box {at, w, h}, rx?, fill?, stroke?, layer? (layer Bakgrunn: a panel of the information column; never draw anything under an IWMAC object - it draws itself; only a value stands on its pill, which value makes); pipe {points|d, circuit?, colour?, width?}; connect {from, to, circuit?} (routed between ports); text {text, at, size?, anchor?}; move {target, dx?, dy?, at?}; delete {target}; set_text {target, text}; bind {target, bind}; align {targets, how}; distribute {targets, axis, gap?}. An Oversikt (userscript 1.84.0): case {kind: cold|freezer, rect [x,y,w,h] | at+w+h, label, unit? | roles? {value, alarm, cooling, defrost: bind text or null}, wall?, caption?, room?, plug?, more?, ref?} draws the case in the template\'s blue and places its cluster (value, bell, cooling, defrost where his live panels hang them by how the case stands) and its name as a label object - as Copilot\'s oversikt.py does, number for number; room {rect, name} a grey room with its name inside; cluster {target, unit?|roles?, label?} a cluster on a case already drawn; name {text, over: [targets] | at} a name over a group of cases; legend {} the Symbolforklaring column; an arrangement symbol op takes cases: [name or {label, unit|roles, cluster?} or null, ...] in its names\' order, or clusters: true; (userscript 1.105.0) scale (0.25-4) or module [w, h] (its plain case module\'s size) sizes it, clusters: "first" or [places] gives only those cases a cluster and a name, a case {cluster: false} is its box only, and a name keeps off a wall\'s runs - as oversikt.py does. at is {x,y} (top left), {cx,cy}, or {near: target, side: right|left|above|below|on, gap?, align?: start|center|end}; free: true finds the nearest free place. A target is {cid}, {ref} (placed earlier in this edit), {object: name} (a panel object by its own name, object_N) or {find: {kind?, symbol?, obj_id?, text?, name?, layer?, circuit?, bind?, near?: [x, y], within?}} (the one thing that matches, nearest near, within 30 px); from/to add port (in, out, branch, tip, top, bottom, left, right). circuit: HP, Liquid, MT suction, LT suction, Heat recovery. dry_run: true plans without changing anything. The result opens in VectorCraft as a new document; the version before stays in its tab.',
-    inputSchema: { type: 'object', properties: { ops: { type: 'array', items: { type: 'object' } }, dry_run: { type: 'boolean' }, partial: { type: 'boolean' }, preview: { type: 'boolean' } }, required: ['ops'], additionalProperties: false } },
-  { name: 'iwmac_check', description: 'What is wrong with the drawing before the user syncs it: objects off the panel or on each other, symbols missing from the library or shown by objects, values without a pill, symbols overlapping, pipes that are not orthogonal, flow arrows not on a pipe running their way, drawn numbers or states, placeholders bound to no parameter of the plant.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'iwmac_find', description: 'Search what can be placed. what: symbols (every component VectorCraft offers - the house symbols, pipe pieces and colour samples - with the template each comes from, sizes and ports; set: Maskin or Oversikt keeps one template\'s: Oversikt is the floor plan kit, its cases light blue for cooling (KjølDisk, KjølGavl, KjølSirkel, KjølRom ...) and dark blue for freezer (FrysDisk ...), and Inngang, Handlevogn, Kasse, SelvbetjentKasse, Kondensator2-4, Plugg, Nål; and its arrangements, placed whole: islands, rows and checkouts as the template lays them out (KjølØy3Stående, FrysØyRund, KjølHjørnerad, Kassepar ..., marked [arrangement] in what); and the components of the other house templates, each by its own name (set Maskin, marked [house: its layer] in what: AerotemperNed, Energimåler, TankITank, Oljeutskiller, VVKVBlokk, EnergimålingBlokk, Varmekurve ... - search them by any word of what they are, synonyms too); all: true adds those an IWMAC object shows, which a drawing should not place), objects (the IWMAC objects the IWMAC menu offers, with obj_id, role and size: values, labels, LEDs, alarms, compressors, fans, pumps, valves, AK-PC strips ...), parameters (the plant\'s rows grouped by unit, with the bind text a placeholder takes; unit narrows it), cases (an Oversikt\'s case controllers: each unit\'s value, alarm, cooling and defrost rows as bind texts, for a case op\'s roles - or give the op unit), ports (one symbol\'s connection points, query = its name). queries: [...] runs several searches in one call, each a query text for the same what, or {what, query, unit, set}.',
+    annotations: Object.assign({ title: 'IWMAC: find symbols, objects, parameters' }, RO),
+    inputSchema: { type: 'object', properties: { what: { type: 'string', enum: ['symbols', 'objects', 'parameters', 'cases', 'ports'] }, query: { type: 'string' }, queries: { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'object' }] } }, unit: { type: 'string' }, set: { type: 'string', enum: ['Maskin', 'Oversikt'] }, limit: { type: 'integer' }, all: { type: 'boolean' } }, additionalProperties: false } },
+  { name: 'iwmac_edit', description: 'Change the drawing: one batch of ops, all planned before anything is made - an op that cannot be planned stops the whole batch and nothing changes (partial: true makes the rest). ops, in order, each {op, ...}: symbol {name, at, w?, h?, turn?, flip?, ref?, label?, labels?} (the name of an arrangement places it whole, one group, with a label object where each of its cases is named: labels the names in reading order - null skips one, false none - else the template\'s own K1/F1); bank {name, count, at, spacing?, axis?, refs?, labels?} (near one of a row of the same symbol, along it, it carries that row on; compressors 80 apart by default); object {obj_id, at, bind?, text?, ref?}; value {bind, at, dark?, label?, ref?} (a value on its pill, its caption 2.6 px left of the pill); pill {at, dark?}; box {at, w, h}, rx?, fill?, stroke?, layer? (layer Bakgrunn: a panel of the information column; never draw anything under an IWMAC object - it draws itself; only a value stands on its pill, which value makes); pipe {points|d, circuit?, colour?, width?}; connect {from, to, circuit?} (routed between ports); text {text, at, size?, anchor?}; move {target, dx?, dy?, at?}; delete {target}; set_text {target, text}; bind {target, bind}; align {targets, how}; distribute {targets, axis, gap?}. A bind is the text iwmac_find parameters gives, or {unit, alias} (or {unit, query}, or {driver_id}) and this server finds the row. An Oversikt (userscript 1.84.0): case {kind: cold|freezer, rect [x,y,w,h] | at+w+h, label, unit? | roles? {value, alarm, cooling, defrost: bind text or null}, wall?, caption?, room?, plug?, more?, ref?} draws the case in the template\'s blue and places its cluster (value, bell, cooling, defrost where his live panels hang them by how the case stands) and its name as a label object - as Copilot\'s oversikt.py does, number for number; room {rect, name} a grey room with its name inside; cluster {target, unit?|roles?, label?} a cluster on a case already drawn; name {text, over: [targets] | at} a name over a group of cases; legend {} the Symbolforklaring column; an arrangement symbol op takes cases: [name or {label, unit|roles, cluster?} or null, ...] in its names\' order, or clusters: true; (userscript 1.105.0) scale or module [w, h] (its plain case module\'s size) sizes it, clusters: "first" or [places] gives only those cases a cluster and a name, a case {cluster: false} is its box only, and a name keeps off a wall\'s runs - as oversikt.py does. at is {x,y} (top left), {cx,cy}, or {near: target, side: right|left|above|below|on, gap?, align?: start|center|end}; free: true finds the nearest free place. A target is {cid}, {ref} (placed earlier in this edit), {object: name} (a panel object by its own name, object_N) or {find: {kind?, symbol?, obj_id?, text?, name?, layer?, circuit?, bind?, near?: [x, y], within?}} (the one thing that matches, nearest near, within 30 px); from/to add port (in, out, branch, tip, top, bottom, left, right). circuit: HP, Liquid, MT suction, LT suction, Heat recovery; on the water and air side Hot water (tur), Warm water (retur), Water (cold), Coldest water, Brine, Feed, Oil, Supply air, Intake air, Extract air, Exhaust air (ducts 3 px). The answer: added (every thing placed - bank members, labels and pills too - with its cid and box: no scene needed after it), refs, notes, and check: the findings this edit brought (check: false leaves it out); preview: true or {box, max} adds the new version\'s picture. dry_run: true plans without making anything - rarely needed, an edit that fails changes nothing. The result opens in VectorCraft as a new document; the version before stays in its tab.',
+    annotations: { title: 'IWMAC: change the drawing', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: { type: 'object', properties: { ops: { type: 'array', items: { type: 'object' } }, dry_run: { type: 'boolean' }, partial: { type: 'boolean' }, check: { type: 'boolean' }, preview: PREVIEW }, required: ['ops'], additionalProperties: false } },
+  { name: 'iwmac_check', description: 'What is wrong with the whole drawing before the user syncs it: objects off the panel or on each other, symbols missing from the library or shown by objects, values without a pill, symbols overlapping, pipes that are not orthogonal, flow arrows not on a pipe running their way, drawn numbers or states, placeholders bound to no parameter of the plant. An edit already says what it brought; this is for the drawing as a whole.',
+    annotations: Object.assign({ title: 'IWMAC: check the drawing' }, RO), inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'iwmac_undo', description: 'Open again the version before Claude\'s last edit in this tab.',
+    annotations: { title: 'IWMAC: undo the last edit', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  { name: 'iwmac_export', description: 'Read an IWMAC Export JSON file on this computer, without its picture: part summary (default), objects, units, parameters (unit, query), signals, style, picture (the outline of the drawn picture: pills, pipes, panels, figures, words), symbols. Works with no VectorCraft tab.',
+  { name: 'iwmac_export', description: 'Read an IWMAC Export JSON file on this computer, without its picture: part summary (default), objects, units, parameters (unit, query), signals, style, picture (the outline of the drawn picture: pills, pipes, panels, figures, words), symbols. limit (100) cuts every list. Works with no VectorCraft tab.',
+    annotations: Object.assign({ title: 'IWMAC: read an Export JSON' }, RO),
     inputSchema: { type: 'object', properties: { path: { type: 'string' }, part: { type: 'string' }, unit: { type: 'string' }, query: { type: 'string' }, limit: { type: 'integer' } }, required: ['path'], additionalProperties: false } }
 ];
 
 const INSTRUCTIONS = 'Reads and edits the IWMAC Designer panel open in VectorCraft. The user opens a panel in the IWMAC Designer and ' +
-  'clicks Edit in VectorCraft; that tab attaches to this server (iwmac_status). Read the drawing with iwmac_scene (facts: true for its ' +
-  'layout conventions) and look at it with iwmac_preview. Find house symbols, IWMAC objects and the plant\'s parameters with iwmac_find. ' +
-  'Change it with iwmac_edit - one batch of ops per request, dry_run first for a large one; each edit opens as a new document and ' +
-  'iwmac_undo goes back. Run iwmac_check before telling the user it is done. You cannot sync: the user reviews and presses Ctrl+S in ' +
-  'VectorCraft. Load the iwmac-vectorcraft skill for IWMAC\'s layout rules, symbols, objects and bindings before drawing. ' +
-  'For an Oversikt floor plan, case ops draw each case with its cluster and name in one go; iwmac_find cases gives their rows.';
+  'clicks Edit in VectorCraft; that tab attaches to this server. Start with one iwmac_scene {facts: true, preview: true}: the drawing\'s ' +
+  'rows, its own layout conventions, the plant and panel, and a picture, in one call. Find house symbols, IWMAC objects and the plant\'s ' +
+  'parameters with iwmac_find (queries: [...] for several at once). Change it with iwmac_edit - one batch of ops per request; it answers ' +
+  'with every added thing\'s cid and box and the check\'s findings for what it brought, and preview: true adds the picture, so no dry run, ' +
+  'scene or check is needed around it; each edit opens as a new document and iwmac_undo goes back. Fix what the edit\'s check found, ' +
+  'then tell the user. You cannot sync: the user reviews and presses Ctrl+S in VectorCraft. Load the iwmac-vectorcraft skill for ' +
+  'IWMAC\'s layout rules, symbols, objects and bindings before drawing. For an Oversikt floor plan, case ops draw each case with its ' +
+  'cluster and name in one go; iwmac_find cases gives their rows.';
 
 const text = v => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v) }] });
+const image = p => ({ type: 'image', data: p.data, mimeType: p.mime || 'image/jpeg' });
 
-/** Before a change: the drawing open now must be the one Claude read. Another tab may have taken over since, with
+/** Before a change: the drawing open now must be the one this session read. Another tab may have taken over since, with
  *  another plant's panel, where the cids Claude holds name other things. */
-function sameDrawing() {
-  if (!page) throw new Error(NOT_ATTACHED);
-  const job = page.context.job;
-  if (readJob !== job.id) {
-    throw new Error(readJob ? 'The VectorCraft tab attached now holds plant ' + job.plant + ', panel ' + JSON.stringify(job.panel) +
+function sameDrawing(caller) {
+  if (!page) throw new Error(NOT_ATTACHED + portNote());
+  const job = page.context.job, read = readJobs.get(caller || SELF);
+  if (read !== job.id) {
+    throw new Error(read ? 'The VectorCraft tab attached now holds plant ' + job.plant + ', panel ' + JSON.stringify(job.panel) +
       ' - not the drawing you read. Nothing was changed. Read it with iwmac_scene first, and make sure it is the panel the user means.'
       : 'Read the drawing with iwmac_scene before changing it (plant ' + job.plant + ', panel ' + JSON.stringify(job.panel) + '). Nothing was changed.');
   }
@@ -432,37 +672,145 @@ function fillUnits(ops) {
   return { ops: out, notes };
 }
 
-async function call(name, a) {
+/** (1.9.0) A bind given as {unit, alias}, {unit, query} or {driver_id}: the plant's row found here and its bind text put
+ *  in its place, as iwmac_find parameters would give it. -> {text} or {why} */
+function bindFor(spec) {
+  const P = page && page.context.params;
+  if (spec.driver_id !== undefined && spec.driver_id !== null && spec.driver_id !== '') return { text: '[' + String(spec.driver_id) + ']' };
+  if (!P || !P.rows) return { why: 'no parameter rows came with this edit (iwmac_status says why)' };
+  const u = unitOf(P, spec.unit);
+  if (!u) return { why: 'no rows came for unit ' + JSON.stringify(spec.unit) };
+  const rows = P.rows[u] || [], want = lower(String(spec.alias || '').replace(/\s+/g, ' ').trim());
+  let r = want ? rows.filter(x => lower(String(x[0]).replace(/\s+/g, ' ').trim()) === want) : [];
+  if (!r.length && (spec.query || spec.alias)) r = rows.filter(x => hits(x[0] + ' ' + x[2] + ' ' + x[1], spec.query || spec.alias));
+  if (r.length === 1) return { text: bindOf(P, u, r[0]) };
+  if (!r.length) return { why: 'unit ' + JSON.stringify(spec.unit) + ' has no row ' + JSON.stringify(spec.alias || spec.query) };
+  return { why: r.length + ' rows of unit ' + JSON.stringify(spec.unit) + ' match ' + JSON.stringify(spec.alias || spec.query) + ': ' +
+    r.slice(0, 6).map(x => String(x[0]).trim() + ' [' + x[1] + '] (' + x[2] + ')').join(', ') + ' - give the alias exactly, or {driver_id}' };
+}
+
+/** Every bind of an edit given as an object, resolved (bindFor). A value's or an object's that finds no row is placed
+ *  unbound and said; a bind op's stops the edit, which then changes nothing. -> {ops, notes} */
+function fillBinds(ops) {
+  const notes = [], stops = [];
+  const one = (v, where, strict) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return v;
+    const b = bindFor(v);
+    if (b.text !== undefined) return b.text;
+    (strict ? stops : notes).push(where + ': ' + b.why + (strict ? '' : ' - placed unbound'));
+    return strict ? v : '';
+  };
+  const roles = (r, where) => {
+    if (!r || typeof r !== 'object') return r;
+    const out = {};
+    Object.keys(r).forEach(k => { out[k] = one(r[k], where + ' ' + k); });
+    return out;
+  };
+  const out = (ops || []).map((o, i) => {
+    if (!o || typeof o !== 'object') return o;
+    const w = 'op ' + (i + 1), c = Object.assign({}, o);
+    if (c.bind && typeof c.bind === 'object') c.bind = one(c.bind, w, c.op === 'bind');
+    if (c.roles) c.roles = roles(c.roles, w);
+    if (Array.isArray(c.cases)) c.cases = c.cases.map((e, j) => e && typeof e === 'object' && e.roles ? Object.assign({}, e, { roles: roles(e.roles, w + ' case ' + (j + 1)) }) : e);
+    if (Array.isArray(c.values)) c.values = c.values.map((v, j) => one(v, w + ' value ' + (j + 1)));
+    return c;
+  });
+  if (stops.length) throw new Error(stops.join('; ') + '. Nothing was changed.');
+  return { ops: out, notes };
+}
+
+/** (1.9.0) Findings in few lines: of a rule found more than eight times, the first six and a count of the rest. */
+function grouped(list) {
+  if (!Array.isArray(list)) return list;
+  const by = {}, out = [];
+  list.forEach(f => { (by[f.rule] = by[f.rule] || []).push(f); });
+  Object.keys(by).forEach(rule => {
+    const fs2 = by[rule];
+    if (fs2.length <= 8) { fs2.forEach(f => out.push(f)); return; }
+    fs2.slice(0, 6).forEach(f => out.push(f));
+    out.push({ level: fs2[6].level, rule, what: 'and ' + (fs2.length - 6) + ' more like these', cids: fs2.slice(6).map(f => (f.cids || [])[0]).filter(Boolean).slice(0, 40) });
+  });
+  return out;
+}
+
+/** What late answers said for this caller, told once. */
+function newsFor(caller) {
+  const mine = [];
+  for (let i = news.length - 1; i >= 0; i--) if (news[i].caller === caller) { mine.unshift(news[i].line); news.splice(i, 1); }
+  return mine;
+}
+
+async function call(name, a, caller) {
   a = a || {};
+  caller = caller || SELF;
+  const told = newsFor(caller);
+  const r = await call1(name, a, caller);
+  if (told.length) r.content.unshift({ type: 'text', text: 'Note: ' + told.join('; ') + '.' });
+  return r;
+}
+
+async function call1(name, a, caller) {
   switch (name) {
-    case 'iwmac_status': return text(status());
+    case 'iwmac_status': return text(status(caller));
     case 'iwmac_scene': {
       const job = page ? page.context.job.id : null;
-      const r = await ask('scene', a, 120000);
-      if (page && page.context.job.id === job) readJob = job;
+      const args = Object.assign({}, a);
+      const r = await ask('scene', args, 120000, caller);
+      if (page && page.context.job.id === job) readJobs.set(caller, job);
+      if (r && typeof r === 'object') r.status = brief();
+      const p = r && r.preview;
+      if (p) { delete r.preview; return { content: [{ type: 'text', text: JSON.stringify(r) }, image(p)] }; }
       return text(r);
     }
     case 'iwmac_preview': {
-      const r = await ask('preview', a, 90000);
-      return { content: [{ type: 'image', data: r.data, mimeType: r.mime || 'image/jpeg' }, { type: 'text', text: JSON.stringify({ width: r.width, height: r.height, box: r.box, document: r.document }) }] };
+      const r = await ask('preview', a, 90000, caller);
+      return { content: [image(r), { type: 'text', text: JSON.stringify({ width: r.width, height: r.height, box: r.box, document: r.document }) }] };
     }
     case 'iwmac_find': return text(find(a));
     case 'iwmac_edit': {
-      sameDrawing();
-      const f = fillUnits(a.ops);
-      const r = await ask('edit', { ops: f.ops, dry_run: !!a.dry_run, partial: !!a.partial }, 180000);
-      if (r && f.notes.length) r.notes = (Array.isArray(r.notes) ? r.notes : []).concat(f.notes);
-      if (a.preview && r && r.applied) {
-        const p = await ask('preview', {}, 90000);
-        return { content: [{ type: 'text', text: JSON.stringify(r) }, { type: 'image', data: p.data, mimeType: p.mime || 'image/jpeg' }] };
-      }
+      sameDrawing(caller);
+      const f = fillUnits(a.ops), b = fillBinds(f.ops);
+      const r = await ask('edit', { ops: b.ops, dry_run: !!a.dry_run, partial: !!a.partial, check: a.check !== false, preview: a.dry_run ? undefined : a.preview || undefined }, 180000, caller);
+      const notes = f.notes.concat(b.notes);
+      if (r && notes.length) r.notes = (Array.isArray(r.notes) ? r.notes : []).concat(notes);
+      if (r && r.check && Array.isArray(r.check.found)) r.check.found = grouped(r.check.found);
+      let p = r && r.preview;
+      if (p) delete r.preview;
+      // a userscript before 1.111.0 answers neither: the picture then costs a call of its own
+      else if (a.preview && r && r.applied) p = await ask('preview', typeof a.preview === 'object' ? a.preview : {}, 90000, caller);
+      if (r && r.applied && !r.check && a.check !== false && page && older(page.context.version, TAB_MIN)) r.check = 'not made: userscript ' + page.context.version + ' is older than ' + TAB_MIN + ' - call iwmac_check';
+      return p ? { content: [{ type: 'text', text: JSON.stringify(r) }, image(p)] } : text(r);
+    }
+    case 'iwmac_check': {
+      const r = await ask('check', {}, 120000, caller);
+      if (r && Array.isArray(r.findings)) r.findings = grouped(r.findings);
       return text(r);
     }
-    case 'iwmac_check': return text(await ask('check', {}, 120000));
-    case 'iwmac_undo': sameDrawing(); return text(await ask('undo', {}, 90000));
+    case 'iwmac_undo': sameDrawing(caller); return text(await ask('undo', {}, 90000, caller));
     case 'iwmac_export': return text(readExport(a));
     default: throw new Error('no tool ' + name);
   }
+}
+
+/** A tool call: here, or (1.9.0) through the server that holds the port when another session's does. */
+async function route(name, a) {
+  if (!listening && proxy && name !== 'iwmac_export') {
+    try {
+      const r = await forward(name, a || {});
+      if (name === 'iwmac_status' && r && r.content && r.content[0] && !r.isError) {
+        let s = null;
+        try { s = JSON.parse(r.content[0].text); } catch (e) { s = null; }
+        if (s) { s.port = PORT + ' ' + portState; s.shared = true; r.content[0].text = JSON.stringify(s); }
+      }
+      return r;
+    } catch (e) {
+      // that server went away: this one looks again, and takes the port when it can
+      proxy = null;
+      portState = 'in use, but its server did not answer (' + e.message + '): this one takes the port over when it can';
+      probeHolder();
+    }
+  }
+  return call(name, a, SELF);
 }
 
 /* ---------------- MCP over stdio ---------------- */
@@ -481,7 +829,7 @@ async function handle(msg) {
     } else if (method === 'ping') result = {};
     else if (method === 'tools/list') result = { tools: TOOLS };
     else if (method === 'tools/call') {
-      try { result = await call(params && params.name, params && params.arguments); }
+      try { result = await route(params && params.name, params && params.arguments); }
       catch (e) { result = { content: [{ type: 'text', text: 'Error: ' + (e && e.message ? e.message : String(e)) }], isError: true }; }
     } else if (method === 'resources/list') result = { resources: [] };
     else if (method === 'prompts/list') result = { prompts: [] };
@@ -508,4 +856,4 @@ process.stdin.on('data', chunk => {
     if (Array.isArray(msg)) msg.forEach(m => handle(m)); else handle(msg);
   }
 });
-process.stdin.on('end', () => { detach('the server stopped'); server.close(); process.exit(0); });
+process.stdin.on('end', () => { detach('the server stopped'); dropKey(); server.close(); process.exit(0); });

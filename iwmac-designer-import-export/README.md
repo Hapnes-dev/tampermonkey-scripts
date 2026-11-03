@@ -531,6 +531,68 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Claude's bridge: dependable, and three or four calls a change (v1.111.0, server 1.9.0)
+
+Thomas asked for a deep analysis of the MCP set-up: faster, more accurate drawing, reusing what exists, fewer calls.
+The analysis (2026-11-04) found the bridge barely used: 73 calls in four sessions, no live edit that succeeded. What
+failed was the plumbing, not the drawing. This is the first of its phases.
+
+**What no longer fails:**
+- **A busy tab is not let go.** The server marked a tab as seen only when it asked for work, and dropped one silent for
+  90 s, so a long edit lost its tab half-way and its answer was refused. Handing a call over now counts as seeing the
+  tab; the tab sends a beat every 10 s while it works, and a tab with a call is not let go.
+- **A late answer is not lost.** A call whose time runs out stays on the server's books. When its answer comes, the
+  next call begins with a note: *the earlier edit that ran out of time was made after all: it is open as …*. The tab
+  posts each result up to four times.
+- **A tab behind another one is said at once.** VectorCraft draws, saves and opens only while its tab shows. The tab
+  now tells the server when it comes to the front or goes behind, so an edit or undo is refused at once with *bring
+  the VectorCraft tab to the front*, not after 90 s. A drawing that must be saved to be read says the same. A save or
+  sync under way is waited for, up to 15 s, instead of failing.
+- **A second Claude Code session shares the port.** It used to find the port taken and say only *no tab is attached*.
+  It now sends its calls through the server that holds the port, with a key that server wrote to the user's temp
+  folder, and takes the port over when that session ends. Each session's reads are its own: one cannot change a
+  drawing only the other has read.
+- **Each end says when the other is too old.** The banner's Claude row says when the server is older than 1.9.0, and
+  the server's status says when the userscript is older than 1.111.0.
+
+**Fewer calls:**
+- **An edit answers with what it made.** Every placed thing comes back with its cid and box: bank members, labels and
+  pills too, which used to get none. The check runs on the new version and says only the findings this edit brought.
+  `preview: true` (or `{box, max}`) adds the new version's picture, in the same call.
+- **A scene can carry its picture** (`preview`) and the plant in short (`status`), so a session starts with one call.
+- **`iwmac_find` takes `queries`**, several searches in one call, and a bind may be written `{unit, alias}`: the
+  server finds the row. Two rows that match are said, never guessed.
+- The skill no longer asks for a dry run first, a status call first, or one picture only.
+
+**Smaller and quicker:**
+- A pipe's row reads its circuit and points, with its colour and width only where they are not the circuit's.
+  Parameters come grouped by unit. A rule found more than eight times is said in seven lines. Objects off the panel are
+  one info, not one each.
+- The symbol sizes are worked out once per library, the object index once, and the drawing is decoded once for all
+  crops of it. An Export JSON is read once until it changes; its lists default to 100 rows.
+- The version before an edit closes as soon as VectorCraft shows another title, not after a fixed 0.7 s, and a new
+  version's title is looked for every 25 ms, not 100. The first minute after the tab opens, it looks for the server
+  every 3 s.
+
+**Drawn the house way:**
+- A value's caption is set as the house's templates set it: its end 2.6 px left of the pill, its baseline 13.5 below
+  the pill's top, 12 px in #3c505e (the kit's `house-style.json`; `compose.py` the same). Labels and text take the same
+  size and colour unless the drawing has its own. Text is measured in Arial, as `check.py` measures it.
+- Compressors in a new row stand 80 apart, the house's step, unless the drawing has a row of its own.
+- The water and air side have circuits by name: Hot water (tur), Warm water (retur), Water, Coldest water, Brine, Feed,
+  Oil, and the ducts Supply, Intake, Extract and Exhaust air at 3 px. These are the Copilot kit's names and the house's
+  colours. A name no circuit has is drawn grey, as before, and now said.
+- CB-P01 knows the house's other pills and the blocks built of them (PilleHvit, PilleFøler, NivåPille, the information
+  and energy blocks of 1.109.0), so a value on one is no longer *without a pill*.
+- `box for:` is refused: it drew a box under an IWMAC object, which draws itself (Thomas, 2026-10-15).
+- An Oversikt arrangement is never bigger than the house's own size: `scale` 0.5 to 1, a `module` no bigger than the
+  template's (Thomas, 2026-11-01: *"aldri gjøre diskene større enn originalstørrelsen"*), as `oversikt.py` refuses it.
+
+The Copilot kit's `vc_edits.py` places the same (captions, Arial widths, the compressor step, the circuits, no
+`box for:`), and its tests hold the two alike. Tested in the kit (`test-claude-bridge.js`: the heartbeat and a late
+answer on a server whose waits run a hundred times faster, the background tab, the shared port, binds, queries, an
+edit's check and picture). Run end to end in the stub host against the hosted VectorCraft (the e2e driver plays Claude as the skill now says): the scene with its facts and picture took 136 ms, a find of three queries 8 ms, an edit placing 13 things 93 ms with every cid and box, the next edit by those cids 107 ms, the undo 98 ms. Not run in the live Designer.
+
 ### The IWMAC menu reads a query's words without brackets, and Norwegian plurals (v1.110.1)
 
 Thomas searched *energimåler (kW)* and found no energy meter. The search took "(kw)" as one word, with its brackets,
