@@ -531,6 +531,16 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Vectorize image looks for what it looked for before (v1.109.2)
+
+Since 1.109.0 the built-in library holds 754 components, 124 of them from the house's other templates: boxes,
+pills, info blocks. Vectorize image looked for every one of them in a picture, words and all, and a plain box could
+be taken for anything. Its house-symbol search now leaves out the components the house named (`en`) and looks for
+each of the rest as a drawing alone (`iwdieLibForPicture`). That is 621 templates: the 618 it looked for before, and
+the Maskin template's Føler, Strek and grey LED, which the reader lost before. The export's symbols do the same.
+VectorCraft's Libraries and the IWMAC menu still offer all 754. Copilot's converter (kit Part 225) looks for the
+same templates.
+
 ### A template's note keeps its box, not its words (v1.109.1)
 
 The house templates keep a grey box listing Illustrator's shortcuts (*Hurtigtaster for Adobe illustrator*). Since

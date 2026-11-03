@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.109.1
+// @version      1.109.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.109.1';
+var IWDIE_VERSION = '1.109.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8885,6 +8885,15 @@ function iwdieLibDrawn(lib) {
   return out;
 }
 
+/** The components a picture is searched for (v1.109.2): a library's less those the house named (`en`) - VectorCraft's to
+ *  offer, not a picture's to be read into: the other templates' boxes, pills and blocks would be taken for anything -
+ *  each a drawing alone (iwdieLibDrawn). Vectorize image's house symbols, and Copilot's converter with them, so look for
+ *  what they looked for before 1.109.0. -> [items] */
+function iwdieLibForPicture(lib) {
+  var items = (lib && lib.items) || [];
+  return iwdieLibDrawn({ items: items.filter(function (it) { return it && !it.en; }) }).items;
+}
+
 /** The group the panel's own colour stands in at the bottom of Bakgrunn (v1.75.1): there in VectorCraft, so the drawing
  *  shows as the Designer shows it, and left out of the panel's picture by a sync (iwdieVcDropPlate). */
 var IWDIE_VC_PLATE = 'Bakgrunnsfarge';
@@ -15823,12 +15832,14 @@ function iwdieOvRasterItems(found, outline) {
 }
 
 /** The library's components whose house symbols a picture of a kind may show (v1.76.0): those the templates name, of the
- *  template `set` ('Oversikt' for an Oversikt, else 'Maskin'), less what an IWMAC object shows. */
+ *  template `set` ('Oversikt' for an Oversikt, else 'Maskin'), less what an IWMAC object shows and (v1.109.2) those the
+ *  house named itself. */
 function iwdieSymItemsOfSet(items, set) {
   var t = iwdieSymTable();
   return (items || []).filter(function (it) {
     var fam = it && it.sym ? t.families[t.byName[it.sym.name]] : null;
-    return !!fam && fam.set === set && !iwdieSymIsObject(fam.name);
+    // (v1.109.2) a house-named component is no member of the family its drawing resembles (Oljeutskiller, a Beholder)
+    return !!fam && !it.en && fam.set === set && !iwdieSymIsObject(fam.name);
   });
 }
 
@@ -27978,7 +27989,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           });
         }).catch(function () { return null; });
       }).then(function () {
-        var lib = libSymbols(), items = lib && lib.items ? lib.items : [];
+        // (v1.109.2) the house-named components left out, each a drawing alone (iwdieLibForPicture)
+        var lib = libSymbols(), items = iwdieLibForPicture(lib);
         if (!items.length) { paper.none('symbols', 'no library'); return null; }
         paper.step('symbols', iwdieN(items.length, 'symbol', 'symbols') + ' of ' + (lib.builtin ? 'the house templates' : '“' + (lib.file || 'the library') + '” and the house templates') +
           ', drawn at 1:1…', 0.06, 0.1);
@@ -31408,6 +31420,7 @@ if (typeof module !== 'undefined' && module.exports) {
     libWithBuiltin: iwdieLibWithBuiltin,
     libForVc: iwdieLibForVc,
     libDrawn: iwdieLibDrawn,
+    libForPicture: iwdieLibForPicture,
     symIsObject: iwdieSymIsObject,
     SYM_OBJECT_FAMILIES: IWDIE_SYM_OBJECT_FAMILIES,
     symExpand: iwdieSymExpand,
