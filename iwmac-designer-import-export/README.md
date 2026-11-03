@@ -531,6 +531,21 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Copilot and Claude place the house-named components by name too (v1.110.0)
+
+Thomas, 2026-11-03, after 1.109.0 had built the other house templates' components into VectorCraft: *"gjør så Copilot
+og MCP også kjenner de nye navnene"*. The 133 house-named components (the 124 from the other templates, and the nine
+Maskinrom ones the table does not name) are now symbols everywhere a family is:
+
+- **Claude's bridge.** `iwdieCbSymbolSizes` lists each by its own name and size, set Maskin, with `house` its layer.
+  `iwmac_find symbols` shows them marked `[house: <layer>]` (server 1.8.0), and a `symbol` op places one by its name,
+  whatever its case (`iwdieCbSymbolBox` gives the name as the library writes it). The drawing is made from the
+  built-in library, as Insert makes it.
+- **Copilot.** The kit's `reference_data/house-symbols.json` lists them as `maskin-symbols.json` lists the families,
+  and every skill carries it. `references/symbols.md` gains a table of them. The validators accept them (`check.py`,
+  `validate-overview-picture.py`), and the builders place them at their own size (`compose.py`, `vent_build.py`,
+  `vc_scene.py`, `vc_edits.py`, `preview.py`). `vc-object-catalogue.json`'s `symbols` holds their sizes.
+
 ### Vectorize image looks for what it looked for before (v1.109.2)
 
 Since 1.109.0 the built-in library holds 754 components, 124 of them from the house's other templates: boxes,

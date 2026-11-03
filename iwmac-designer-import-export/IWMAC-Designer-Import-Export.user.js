@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.109.2
+// @version      1.110.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.109.2';
+var IWDIE_VERSION = '1.110.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -13001,7 +13001,10 @@ function iwdieCbStrayArrows(items, tol) {
 
 /** The sizes the kept library draws each house symbol at (v1.64.0), turned members turned back, exact to the hundredth;
  *  with what it is, whether a drawing may place it, whether only its inside turns, and the template it comes from
- *  (v1.72.0: Maskin or Oversikt). -> {name: {sizes: [[w, h]], what, offered, inner, object, set}} */
+ *  (v1.72.0: Maskin or Oversikt). Since v1.110.0 the components the house named (`en`: the other templates', the Maskin
+ *  template's own the table does not name) by their own names too, with `house` their layer - Thomas, 2026-11-03:
+ *  "gjør så Copilot og MCP også kjenner de nye navnene". -> {name: {sizes: [[w, h]], what, offered, inner, object, set,
+ *  house?}} */
 function iwdieCbSymbolSizes(items) {
   var t = iwdieSymTable(), out = {}, r = function (v) { return Math.round(v * 100) / 100; };
   (items || []).forEach(function (it) {
@@ -13014,6 +13017,11 @@ function iwdieCbSymbolSizes(items) {
     var odd = (it.sym.k & 1) && !f.inner, w = r(odd ? it.h : it.w), h = r(odd ? it.w : it.h);
     if (!o.sizes.some(function (s) { return Math.abs(s[0] - w) < 0.6 && Math.abs(s[1] - h) < 0.6; })) o.sizes.push([w, h]);
   });
+  // (v1.110.0) the house-named components, each at its own size; set Maskin (none is a floor plan's piece)
+  (items || []).forEach(function (it) {
+    if (!it || !it.en || !it.name || out[it.name]) return;
+    out[it.name] = { sizes: [[r(it.w), r(it.h)]], what: it.en, offered: true, inner: false, object: false, set: 'Maskin', house: it.layer || 'house' };
+  });
   // the Oversikt template's arrangements (v1.75.0) whose pieces the library draws, each at its own size: `group` how many
   // pieces, `names` how many of its cases the template names
   var have = Object.keys(out).map(iwdieSymKey);
@@ -13025,10 +13033,16 @@ function iwdieCbSymbolSizes(items) {
 }
 
 /** The size a symbol gets placed at (v1.64.0): `want` (w and/or h, either may be missing) fitted to the nearest size the
- *  library has, its proportions kept; turned by `k`. -> {w, h} or null when the library has no such symbol */
+ *  library has, its proportions kept; turned by `k`. A house-named component's (v1.110.0) carries its name as the
+ *  library writes it. -> {w, h, name?} or null when the library has no such symbol */
 function iwdieCbSymbolBox(sizes, name, k, want) {
   // an arrangement's name too (v1.75.0)
-  var t = iwdieSymTable(), f = t.families[t.byKey[iwdieSymKey(name)]] || iwdieSymGroup(name), s = sizes && f ? sizes[f.name] : null;
+  var t = iwdieSymTable(), f = t.families[t.byKey[iwdieSymKey(name)]] || iwdieSymGroup(name), s = sizes && f ? sizes[f.name] : null, own = '';
+  // (v1.110.0) a component the house named, by its own name
+  if (!s && sizes && !f) {
+    var key = iwdieSymKey(name);
+    Object.keys(sizes).some(function (n) { if (sizes[n].house && iwdieSymKey(n) === key) { s = sizes[n]; own = n; return true; } return false; });
+  }
   if (!s || !s.sizes.length) return null;
   var odd = (k & 1) && !s.inner, list = s.sizes.map(function (z) { return odd ? [z[1], z[0]] : z; });
   var w = want && want.w > 0 ? +want.w : 0, h = want && want.h > 0 ? +want.h : 0, best = list[0];
@@ -13036,9 +13050,11 @@ function iwdieCbSymbolBox(sizes, name, k, want) {
     var cost = function (z) { var q = Math.min(w ? w / z[0] : Infinity, h ? h / z[1] : Infinity); return Math.abs(Math.log(q)); };
     list.forEach(function (z) { if (cost(z) < cost(best)) best = z; });
     var q = Math.min(w ? w / best[0] : Infinity, h ? h / best[1] : Infinity);
-    return { w: Math.round(best[0] * q * 100) / 100, h: Math.round(best[1] * q * 100) / 100 };
+    var fit = { w: Math.round(best[0] * q * 100) / 100, h: Math.round(best[1] * q * 100) / 100 };
+    if (own) fit.name = own;
+    return fit;
   }
-  return { w: best[0], h: best[1] };
+  return own ? { w: best[0], h: best[1], name: own } : { w: best[0], h: best[1] };
 }
 
 /** The turn an op asks for: degrees clockwise (90, 180, 270, -90…) and a mirror. -> k as iwdieSymMatrix takes it */
@@ -14150,7 +14166,8 @@ function iwdieCbPlan(ops, scene, ctx) {
     }
     var box = place(at, sz.w, sz.h, i);
     if (!box) return null;
-    var st2 = iwdieSymTable(), real = (st2.families[st2.byKey[iwdieSymKey(o.name)]] || grp || {}).name || o.name;
+    // (v1.110.0) a house-named component by its name as the library writes it
+    var st2 = iwdieSymTable(), real = (st2.families[st2.byKey[iwdieSymKey(o.name)]] || grp || {}).name || sz.name || o.name;
     if (iwdieSymIsObject(real)) {
       notes.push('op ' + (i + 1) + ': ' + real + ' is what an IWMAC object shows on a live panel; placed as drawing all the same');
     }
