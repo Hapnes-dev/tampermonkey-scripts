@@ -20,13 +20,15 @@
 'use strict';
 const http = require('http');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.9.0', PROTOCOL = 1;
-// the userscript that answers an edit's check and preview in the same call, and says whether its tab shows
-const TAB_MIN = '1.111.0';
+const NAME = 'iwmac-vectorcraft', VERSION = '1.10.0', PROTOCOL = 1;
+// the userscript that answers an edit's check and preview in the same call, and says whether its tab shows; and (1.10.0)
+// the one that opens a file and gives the drawing as a panel file
+const TAB_MIN = '1.111.0', OPEN_MIN = '1.112.0';
 const PORT = parseInt(process.env.IWDIE_BRIDGE_PORT || '47913', 10);
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY = 64 * 1024 * 1024;
@@ -34,6 +36,20 @@ const KEY_FILE = path.join(os.tmpdir(), 'iwmac-vc-mcp-' + PORT + '.key');
 const SELF = 'pid:' + process.pid;
 // every wait of this server times this (1.9.0): the tests run it fast
 const SCALE = Math.max(0.001, parseFloat(process.env.IWDIE_BRIDGE_TIME_SCALE || '1') || 1);
+// (1.10.0) the Copilot kit's skills (the private tampermonkey-scripts-documents, beside this repository, or IWDIE_KIT),
+// whose builders, checks and readers iwmac_build, iwmac_snapshot and iwmac_trace run; and the Python that runs them
+const PY = process.env.IWDIE_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+function findKit() {
+  const cands = [];
+  if (process.env.IWDIE_KIT) cands.push(process.env.IWDIE_KIT, path.join(process.env.IWDIE_KIT, 'copilot-skill'));
+  let d = __dirname;
+  for (let i = 0; i < 6; i++) {
+    d = path.dirname(d);
+    cands.push(path.join(d, 'tampermonkey-scripts-documents', 'iwmac-designer-import-export', 'copilot-skill'));
+  }
+  return cands.find(c => { try { return fs.existsSync(path.join(c, 'iwmac-overview-picture', 'scripts', 'check.py')); } catch (e) { return false; } }) || null;
+}
+const KIT = findKit();
 
 // the userscript's pure helpers, where it lies beside this folder (roles of objects in an export, the menu's search words)
 let script = null;
@@ -357,7 +373,7 @@ function matcher(q) {
 }
 
 function status(caller) {
-  if (!page) return { attached: false, port: PORT + ' ' + portState, server: VERSION, help: NOT_ATTACHED };
+  if (!page) return { attached: false, port: PORT + ' ' + portState, server: VERSION, help: NOT_ATTACHED, kit: KIT ? 'found' : 'not found (IWDIE_KIT)' };
   const c = page.context, P = c.params;
   return {
     attached: true, plant: c.job.plant, panel: c.job.panel, document: c.job.name, size: c.size, userscript: c.version, server: VERSION,
@@ -368,6 +384,7 @@ function status(caller) {
       + 'Replace puts on the panel' : undefined,
     tab: page.vis === false ? 'behind another tab: an edit needs it in front' : page.vis === true ? 'in front' : undefined,
     library: { file: c.library && c.library.file, symbols: c.library ? Object.keys(c.library.symbols || {}).length : 0 },
+    kit: KIT ? 'found: iwmac_build, iwmac_snapshot and iwmac_trace run its scripts' : 'not found: set IWDIE_KIT to the copilot-skill folder of tampermonkey-scripts-documents',
     objects: c.objects ? c.objects.rows.length : 0,
     units: P && P.units ? P.units.slice(0, 40) : [], unitsNote: P ? (P.failed && P.failed.length ? 'rows not read for ' + P.failed.join(', ') : undefined)
       : c.job.solo ? 'no parameter rows: this drawing by itself has none - open an Export JSON of the plant on the start card for them'
@@ -591,19 +608,203 @@ function readExport(a) {
   throw new Error('part is summary, objects, units, parameters, signals, style, picture or symbols');
 }
 
+/* ---------------- the kit's scripts, run here (1.10.0) ---------------- */
+
+/** A kit script run with Python, its output kept (the last megabyte). -> Promise<{code, out}> */
+function runPy(script, args, ms) {
+  return new Promise(resolve => {
+    let out = '', done = false;
+    const ch = spawn(PY, [script].concat(args), { cwd: os.tmpdir(), windowsHide: true,
+      env: Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }) });
+    const keep = c => { out += c; if (out.length > 2000000) out = out.slice(-1000000); };
+    const t = setTimeout(() => { if (!done) { out += '\n[stopped after ' + Math.round(ms / 1000) + ' s]'; ch.kill(); } }, ms);
+    ch.stdout.on('data', keep);
+    ch.stderr.on('data', keep);
+    ch.on('error', e => { if (done) return; done = true; clearTimeout(t); resolve({ code: -1, out: out + '\n' + e.message + ' (is ' + PY + ' on the PATH? IWDIE_PYTHON names another)' }); });
+    ch.on('close', code => { if (done) return; done = true; clearTimeout(t); resolve({ code, out }); });
+  });
+}
+
+/** What a kit script said, in short: its ERROR and WARN lines first, their counts, and its last lines. */
+function said(text, n) {
+  const lines = String(text || '').split(/\r?\n/).map(l => l.replace(/\s+$/, '')).filter(Boolean);
+  const err = lines.filter(l => /^ERROR\b/.test(l)), warn = lines.filter(l => /^WARN\b/.test(l));
+  return { errors: err.length, warnings: warn.length, findings: err.concat(warn).slice(0, n || 30),
+    more: Math.max(0, err.length + warn.length - (n || 30)), last: lines.filter(l => !/^(ERROR|WARN)\b/.test(l)).slice(-12) };
+}
+
+function kitScript(rel) {
+  if (!KIT) throw new Error('the Copilot kit is not beside this repository: set IWDIE_KIT to the copilot-skill folder of tampermonkey-scripts-documents, then restart Claude Code');
+  const f = path.join(KIT, rel);
+  if (!fs.existsSync(f)) throw new Error('the kit has no ' + rel);
+  return f;
+}
+
+/** A picture file read for a reply or a look: PNG or JPEG, at most `max` bytes. -> {data, mime} | null */
+function pictureFile(f, max) {
+  try {
+    const st = fs.statSync(f);
+    if (!st.isFile() || st.size > (max || 6 * 1024 * 1024)) return null;
+    const mime = /\.jpe?g$/i.test(f) ? 'image/jpeg' : /\.png$/i.test(f) ? 'image/png' : null;
+    return mime ? { data: fs.readFileSync(f).toString('base64'), mime } : null;
+  } catch (e) { return null; }
+}
+
+/** A preview's options as the tab takes them: an underlay given as a file read here. -> object | undefined */
+function previewSpec(p) {
+  if (!p) return undefined;
+  if (p === true) return true;
+  const o = Object.assign({}, p);
+  if (o.underlay && typeof o.underlay === 'object' && o.underlay.path) {
+    const pic = pictureFile(String(o.underlay.path), 12 * 1024 * 1024);
+    if (!pic) throw new Error('underlay.path is no PNG or JPEG of at most 12 MB: ' + o.underlay.path);
+    o.underlay = { data: pic.data, mime: pic.mime, box: o.underlay.box, opacity: o.underlay.opacity };
+  }
+  return o;
+}
+
+function needTab(min, what) {
+  if (!page) throw new Error(NOT_ATTACHED + portNote());
+  if (older(page.context.version, min)) throw new Error(what + ' needs userscript ' + min + ' or later in the VectorCraft tab; it runs ' + page.context.version + ': the user updates it in Tampermonkey');
+}
+
+function work(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
+
+/** A panel file opened in the tab (iwmac_open), from a path or a document already read. */
+async function openFile(a, caller, doc, name) {
+  needTab(OPEN_MIN, 'iwmac_open');
+  sameDrawing(caller);
+  if (!doc) {
+    const f = String(a.path || '');
+    if (!/\.json$/i.test(f)) throw new Error('give the path of a panel JSON or an edit file (.json)');
+    if (fs.statSync(f).size > 60 * 1024 * 1024) throw new Error('the file is over 60 MB');
+    doc = JSON.parse(fs.readFileSync(f, 'utf8'));
+    name = path.basename(f);
+  }
+  const r = await ask('open', { name, doc, objects: a.objects === 'keep' ? 'keep' : undefined, check: a.check !== false, preview: previewSpec(a.preview) }, 240000, caller);
+  if (r && r.check && Array.isArray(r.check.found)) r.check.found = grouped(r.check.found);
+  return r;
+}
+
+const BUILDERS = {
+  system: 'iwmac-overview-picture/scripts/build.py', rack: 'iwmac-overview-picture/scripts/rack.py',
+  compose: 'iwmac-overview-picture/scripts/compose.py', oversikt: 'iwmac-overview-picture/scripts/oversikt.py',
+  energi: 'iwmac-overview-picture/scripts/energi.py', vent: 'iwmac-overview-picture/scripts/vent_build.py'
+};
+
+/** A kit builder run on a spec (iwmac_build): the panel file written, its check said, a preview drawn by the kit, and the
+ *  result opened in the tab as a version of its own when one is attached. -> {result, images} */
+async function build(a, caller) {
+  const type = String(a.type || '');
+  if (!BUILDERS[type]) throw new Error('type is ' + Object.keys(BUILDERS).join(', ') + ' (references/ in the kit say what each spec holds)');
+  const script = kitScript(BUILDERS[type]), dir = work('iwmac-build-');
+  let spec = a.spec_path ? String(a.spec_path) : null;
+  if (!spec) {
+    if (!a.spec || typeof a.spec !== 'object') throw new Error('give spec (the builder\'s spec as an object) or spec_path');
+    spec = path.join(dir, type + '-spec.json');
+    fs.writeFileSync(spec, JSON.stringify(a.spec, null, 1));
+  }
+  const out = a.out ? path.resolve(String(a.out)) : path.join(dir, type + '.json');
+  const args = [spec, out];
+  if (a.export) args.push('--export', String(a.export));
+  if (a.base && type === 'oversikt') args.push('--base', String(a.base));
+  const r = await runPy(script, args, Math.round(300000 * Math.max(SCALE, 0.05)));
+  const result = { type, spec, built: fs.existsSync(out) ? out : null, exit: r.code, said: said(r.out) };
+  if (!result.built) { result.note = 'the builder wrote no panel: fix the spec by what it said'; return { result, images: [] }; }
+  const images = [];
+  if (a.preview !== false) {
+    const png = out.replace(/\.json$/i, '') + '-preview.png';
+    const pv = await runPy(kitScript('iwmac-overview-picture/scripts/preview.py'), [out, '--out', png, '--scale', '0.75'], 120000);
+    const pic = pictureFile(png);
+    if (pic) images.push({ type: 'image', data: pic.data, mimeType: pic.mime }); else result.preview = said(pv.out).last.join(' ');
+  }
+  if (a.open !== false && page) {
+    try {
+      const doc = JSON.parse(fs.readFileSync(out, 'utf8'));
+      result.opened = await openFile({ objects: a.objects, check: a.check, preview: a.live_preview }, caller, doc, path.basename(out));
+      const lp = result.opened && result.opened.preview;
+      if (lp) { delete result.opened.preview; images.push(image(lp)); }
+    } catch (e) { result.opened = 'not opened: ' + e.message; }
+  } else if (a.open !== false) result.opened = 'not opened: no VectorCraft tab is attached - the user opens ' + out + ' with Open IWMAC JSON…';
+  return { result, images };
+}
+
+// the first panel file each drawing was taken as, which later snapshots are judged against (check.py --baseline)
+const baselines = new Map();
+
+/** The drawing as a panel file (iwmac_snapshot), checked by the kit's check.py and drawn by its preview.py. */
+async function snapshot(a, caller) {
+  needTab(OPEN_MIN, 'iwmac_snapshot');
+  const r = await ask('snapshot', {}, 120000, caller);
+  const job = page ? page.context.job : {};
+  const dir = a.path ? path.dirname(path.resolve(String(a.path))) : path.join(os.tmpdir(), 'iwmac-snapshots');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = a.path ? path.resolve(String(a.path)) : path.join(dir, String(r.name || 'snapshot.json').replace(/[^\w.\-]+/g, '_'));
+  fs.writeFileSync(file, r.text);
+  const result = { file, document: r.document, insert_would_refuse: r.refused || undefined }, images = [];
+  const key = String(job.id || ''), base = baselines.get(key);
+  if (a.check !== false && KIT) {
+    const type = a.type || (/oversikt/i.test(job.panel || '') ? 'oversikt' : /energi/i.test(job.panel || '') ? 'energi' : /vent/i.test(job.panel || '') ? 'ventilation' : null);
+    const args = [file].concat(type ? ['--type', type] : []).concat(a.export ? ['--export', String(a.export)] : []).concat(base && a.baseline !== false ? ['--baseline', base] : []);
+    const c = await runPy(kitScript('iwmac-overview-picture/scripts/check.py'), args, 180000);
+    result.check = Object.assign({ type: type || 'maskin-pid', against: base && a.baseline !== false ? base : undefined }, said(c.out));
+  } else if (a.check !== false) result.check = 'not run: the kit is not beside this repository (IWDIE_KIT)';
+  if (!base) baselines.set(key, file);
+  if (a.preview !== false && KIT) {
+    const png = file.replace(/\.json$/i, '') + '-preview.png';
+    await runPy(kitScript('iwmac-overview-picture/scripts/preview.py'), [file, '--out', png, '--scale', '0.75'], 120000);
+    const pic = pictureFile(png);
+    if (pic) images.push({ type: 'image', data: pic.data, mimeType: pic.mime });
+  }
+  return { result, images };
+}
+
+/** A source read by the kit's readers (iwmac_trace): a P&ID or maker's drawing with vector lines (source_trace.py), a
+ *  floor plan PDF (plan_read.py), or a picture of a plan (plan_redraw.py trace). */
+async function trace(a) {
+  const file = path.resolve(String(a.file || ''));
+  if (!fs.existsSync(file)) throw new Error('no file ' + file);
+  const kind = a.kind || (/\.pdf$/i.test(file) ? 'pid' : /\.(png|jpe?g|gif|bmp|webp)$/i.test(file) ? 'picture' : '');
+  const dir = work('iwmac-trace-'), result = { file, kind, dir }, images = [];
+  const pageArgs = a.page ? ['--page', String(a.page)] : [], boxArgs = Array.isArray(a.box) && a.box.length === 4 ? ['--box', a.box.join(',')] : [];
+  let r;
+  if (kind === 'pid') {
+    const json = path.join(dir, 'trace.json');
+    r = await runPy(kitScript('iwmac-overview-picture/scripts/source_trace.py'), [file].concat(pageArgs, boxArgs,
+      Array.isArray(a.fit) && a.fit.length === 4 ? ['--fit', a.fit.join(',')] : [], ['--json', json]), 240000);
+    result.json = fs.existsSync(json) ? json : null;
+  } else if (kind === 'plan') {
+    const json = path.join(dir, 'plan.json'), draft = path.join(dir, 'draft-spec.json');
+    r = await runPy(kitScript('iwmac-overview-picture/scripts/plan_read.py'), [file].concat(pageArgs, boxArgs, ['--json', json, '--draft', draft]), 240000);
+    result.json = fs.existsSync(json) ? json : null;
+    result.draft = fs.existsSync(draft) ? draft : null;
+  } else if (kind === 'picture') {
+    r = await runPy(kitScript('iwmac-overview-picture/scripts/plan_redraw.py'), ['trace', file, '--out', dir], 240000);
+    ['pieces.json', 'straight.png', 'pieces.png'].forEach(n => { if (fs.existsSync(path.join(dir, n))) result[n.replace('.', '_')] = path.join(dir, n); });
+    const pic = pictureFile(path.join(dir, 'pieces.png'), 3 * 1024 * 1024);
+    if (pic) images.push({ type: 'image', data: pic.data, mimeType: pic.mime });
+  } else throw new Error('kind is pid (a P&ID or maker\'s drawing with vector lines), plan (a floor plan PDF) or picture (a plan that is only a picture)');
+  result.exit = r.code;
+  result.said = said(r.out, 40);
+  result.output = String(r.out).split(/\r?\n/).filter(Boolean).slice(0, Math.max(10, Math.min(200, a.lines || 60)));
+  return { result, images };
+}
+
 /* ---------------- the tools ---------------- */
 
 const RO = { readOnlyHint: true, openWorldHint: false };
-const PREVIEW = { anyOf: [{ type: 'boolean' }, { type: 'object', properties: { box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, max: { type: 'integer' } }, additionalProperties: false }] };
+const LOOK = { box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, max: { type: 'integer' }, labels: { type: 'boolean' }, diff: { type: 'boolean' },
+  underlay: { type: 'object', properties: { path: { type: 'string' }, box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, opacity: { type: 'number' } }, required: ['path'], additionalProperties: false } };
+const PREVIEW = { anyOf: [{ type: 'boolean' }, { type: 'object', properties: LOOK, additionalProperties: false }] };
 const TOOLS = [
   { name: 'iwmac_status', description: 'Whether a VectorCraft tab with an IWMAC panel is attached, and what it holds: plant, panel, size, the kept symbol library, the plant units whose parameter rows came along, whether the tab is in front. iwmac_scene carries the same in short: call this only when something fails.',
     annotations: Object.assign({ title: 'IWMAC: status' }, RO), inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'iwmac_scene', description: 'The drawing open in VectorCraft, as rows: cid (an id that lasts), kind (symbol, object, pill, pipe, text, group, rect, shape), name, box x y w h in panel pixels, and a note (an object\'s binding; a pipe\'s circuit, its colour and width where not the circuit\'s, its points). facts: true adds the drawing\'s own layout: rows of like symbols and their spacing, the info column, the circuits, where values sit by each symbol, the text size. preview: true (or {box, max}) adds a picture of it in the same call. status: the plant, panel and units in short. Filter with layer, kind, near [x,y,w,h], query (words, with the IWMAC menu\'s synonyms: tank finds a Beholder), limit (150). The first call of a session: {facts: true, preview: true}.',
     annotations: Object.assign({ title: 'IWMAC: read the drawing' }, RO),
     inputSchema: { type: 'object', properties: { layer: { type: 'string' }, kind: { type: 'string' }, near: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, query: { type: 'string' }, limit: { type: 'integer' }, facts: { type: 'boolean' }, preview: PREVIEW }, additionalProperties: false } },
-  { name: 'iwmac_preview', description: 'A picture of the drawing as it stands (JPEG): the whole panel, or box [x,y,w,h] in panel pixels to look closer. max is the longer side in pixels (1000). Each IWMAC object shows as its look in a dashed blue box; a value or text box reads 12.3, the Designer\'s design-time value, not a reading. A picture costs about 700 tokens: look as often as it helps.',
+  { name: 'iwmac_preview', description: 'A picture of the drawing as it stands (JPEG): the whole panel, or box [x,y,w,h] in panel pixels to look closer. max is the longer side in pixels (1000). Each IWMAC object shows as its look in a dashed blue box; a value or text box reads 12.3, the Designer\'s design-time value, not a reading. labels: true writes each thing\'s cid on it (objects blue, pipes brown); underlay {path, box?, opacity?} lays a picture - the source the drawing follows, a house template, the plant\'s old panel - over it at box [x,y,w,h] in panel pixels (the whole panel by default), 0.4 opaque; diff: true shows in red what changed since the version before Claude\'s last edit. The same options go in an edit\'s or a scene\'s preview. A picture costs about 700 tokens: look as often as it helps.',
     annotations: Object.assign({ title: 'IWMAC: look at the drawing' }, RO),
-    inputSchema: { type: 'object', properties: { box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, max: { type: 'integer' } }, additionalProperties: false } },
+    inputSchema: { type: 'object', properties: LOOK, additionalProperties: false } },
   { name: 'iwmac_find', description: 'Search what can be placed. what: symbols (every component VectorCraft offers - the house symbols, pipe pieces and colour samples - with the template each comes from, sizes and ports; set: Maskin or Oversikt keeps one template\'s: Oversikt is the floor plan kit, its cases light blue for cooling (KjølDisk, KjølGavl, KjølSirkel, KjølRom ...) and dark blue for freezer (FrysDisk ...), and Inngang, Handlevogn, Kasse, SelvbetjentKasse, Kondensator2-4, Plugg, Nål; and its arrangements, placed whole: islands, rows and checkouts as the template lays them out (KjølØy3Stående, FrysØyRund, KjølHjørnerad, Kassepar ..., marked [arrangement] in what); and the components of the other house templates, each by its own name (set Maskin, marked [house: its layer] in what: AerotemperNed, Energimåler, TankITank, Oljeutskiller, VVKVBlokk, EnergimålingBlokk, Varmekurve ... - search them by any word of what they are, synonyms too); all: true adds those an IWMAC object shows, which a drawing should not place), objects (the IWMAC objects the IWMAC menu offers, with obj_id, role and size: values, labels, LEDs, alarms, compressors, fans, pumps, valves, AK-PC strips ...), parameters (the plant\'s rows grouped by unit, with the bind text a placeholder takes; unit narrows it), cases (an Oversikt\'s case controllers: each unit\'s value, alarm, cooling and defrost rows as bind texts, for a case op\'s roles - or give the op unit), ports (one symbol\'s connection points, query = its name). queries: [...] runs several searches in one call, each a query text for the same what, or {what, query, unit, set}.',
     annotations: Object.assign({ title: 'IWMAC: find symbols, objects, parameters' }, RO),
     inputSchema: { type: 'object', properties: { what: { type: 'string', enum: ['symbols', 'objects', 'parameters', 'cases', 'ports'] }, query: { type: 'string' }, queries: { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'object' }] } }, unit: { type: 'string' }, set: { type: 'string', enum: ['Maskin', 'Oversikt'] }, limit: { type: 'integer' }, all: { type: 'boolean' } }, additionalProperties: false } },
@@ -615,13 +816,30 @@ const TOOLS = [
   { name: 'iwmac_undo', description: 'Open again the version before Claude\'s last edit in this tab.',
     annotations: { title: 'IWMAC: undo the last edit', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'iwmac_build', description: 'Build a whole picture the house way with the Copilot kit\'s own builder, here on this computer, and open it in the VectorCraft tab as a version of its own: type system (build.py: a refrigeration system from a spec), rack (rack.py: a CO2 booster rack; its "template": "781A" the house rack skeleton), compose (compose.py: a system panel of units, banks, blocks and pipes), oversikt (oversikt.py: a store floor plan\'s cases, clusters and names; base: a panel the user has, its links and moves kept), energi (energi.py: an energy meter tree), vent (vent_build.py: an air handler). spec is the builder\'s spec as an object (the kit\'s references and assets/ examples say what each holds), or spec_path a file; export the plant\'s Export JSON to link its rows. The answer: the panel file, what the builder\'s check said (ERROR and WARN lines), the kit\'s own preview, and what opening it did - the file\'s objects are new on the panel, and Ctrl+S would put it there as Insert JSON… → Replace; objects: "keep" keeps the panel\'s own placeholders instead. open: false only writes the file. A new picture, or anything bigger than a small change, is built this way and then touched up with iwmac_edit.',
+    annotations: { title: 'IWMAC: build a picture with the kit', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: { type: 'object', properties: { type: { type: 'string', enum: ['system', 'rack', 'compose', 'oversikt', 'energi', 'vent'] }, spec: { type: 'object' }, spec_path: { type: 'string' },
+      export: { type: 'string' }, base: { type: 'string' }, out: { type: 'string' }, open: { type: 'boolean' }, objects: { type: 'string', enum: ['file', 'keep'] }, preview: { type: 'boolean' }, live_preview: PREVIEW, check: { type: 'boolean' } }, required: ['type'], additionalProperties: false } },
+  { name: 'iwmac_open', description: 'Open a file in the VectorCraft tab as a version of its own: a panel JSON (a builder\'s, an export of this or another panel) - its drawing, its objects as placeholders - or an edit file Copilot wrote (made on this drawing as an edit). Another panel\'s objects are new on this one, and Ctrl+S would put the file on the panel as Insert JSON… → Replace; objects: "keep" keeps the panel\'s own placeholders instead. Like an edit, the answer carries the check and (preview) a picture; iwmac_undo goes back.',
+    annotations: { title: 'IWMAC: open a panel or edit file', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, objects: { type: 'string', enum: ['file', 'keep'] }, check: { type: 'boolean' }, preview: PREVIEW }, required: ['path'], additionalProperties: false } },
+  { name: 'iwmac_snapshot', description: 'The drawing as it stands as a panel file (its picture, its placeholders as objects, the bound ones linked), written on this computer without syncing, then judged by the Copilot kit\'s check.py - its 40-odd rules on overlaps, the house style, natives, links - against the first snapshot of this drawing (only what is new since), and drawn by the kit\'s preview.py. type: the picture type check.py judges by (maskin-pid, maskin, system, unit, oversikt, energi, kurve, ventilation, wireless; guessed from the panel\'s name). path: where to write it.',
+    annotations: Object.assign({ title: 'IWMAC: the drawing through the kit\'s check' }, RO),
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, type: { type: 'string' }, export: { type: 'string' }, baseline: { type: 'boolean' }, check: { type: 'boolean' }, preview: { type: 'boolean' } }, additionalProperties: false } },
+  { name: 'iwmac_trace', description: 'Read a source with the Copilot kit\'s readers, on this computer: kind pid (a P&ID, a maker\'s or a system drawing with vector lines: source_trace.py - its lines by colour fitted to the panel, fit [x0,y0,x1,y1] the panel area, box the part of the page), plan (a floor plan PDF: plan_read.py - its rooms, cases and words, and a draft spec for oversikt.py), picture (a plan that is only a picture, a scan or a photo: plan_redraw.py trace - walls straightened and measured, its pieces drawn). page and box choose the part. The answer: what it read, the files it wrote (the JSON to build from), and a picture where it draws one. A raster P&ID (600 dpi tiles) goes through the iwmac-panel-drawing skill\'s compose_pdf.py and trace_lines.py instead.',
+    annotations: Object.assign({ title: 'IWMAC: read a source' }, RO),
+    inputSchema: { type: 'object', properties: { file: { type: 'string' }, kind: { type: 'string', enum: ['pid', 'plan', 'picture'] }, page: { type: 'integer' }, box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 },
+      fit: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, lines: { type: 'integer' } }, required: ['file'], additionalProperties: false } },
   { name: 'iwmac_export', description: 'Read an IWMAC Export JSON file on this computer, without its picture: part summary (default), objects, units, parameters (unit, query), signals, style, picture (the outline of the drawn picture: pills, pipes, panels, figures, words), symbols. limit (100) cuts every list. Works with no VectorCraft tab.',
     annotations: Object.assign({ title: 'IWMAC: read an Export JSON' }, RO),
     inputSchema: { type: 'object', properties: { path: { type: 'string' }, part: { type: 'string' }, unit: { type: 'string' }, query: { type: 'string' }, limit: { type: 'integer' } }, required: ['path'], additionalProperties: false } }
 ];
 
 const INSTRUCTIONS = 'Reads and edits the IWMAC Designer panel open in VectorCraft. The user opens a panel in the IWMAC Designer and ' +
-  'clicks Edit in VectorCraft; that tab attaches to this server. Start with one iwmac_scene {facts: true, preview: true}: the drawing\'s ' +
+  'clicks Edit in VectorCraft; that tab attaches to this server. A new picture, or anything bigger than a small change, is built with ' +
+  'iwmac_build (the Copilot kit\'s own builders, drawn the house way and checked) and opened in the tab; iwmac_open opens a panel or ' +
+  'edit file there; iwmac_trace reads a source (a P&ID, a plan); iwmac_snapshot runs the kit\'s check.py on the drawing as it stands. ' +
+  'Start with one iwmac_scene {facts: true, preview: true}: the drawing\'s ' +
   'rows, its own layout conventions, the plant and panel, and a picture, in one call. Find house symbols, IWMAC objects and the plant\'s ' +
   'parameters with iwmac_find (queries: [...] for several at once). Change it with iwmac_edit - one batch of ops per request; it answers ' +
   'with every added thing\'s cid and box and the check\'s findings for what it brought, and preview: true adds the picture, so no dry run, ' +
@@ -755,6 +973,7 @@ async function call1(name, a, caller) {
     case 'iwmac_scene': {
       const job = page ? page.context.job.id : null;
       const args = Object.assign({}, a);
+      if (args.preview) args.preview = previewSpec(args.preview);
       const r = await ask('scene', args, 120000, caller);
       if (page && page.context.job.id === job) readJobs.set(caller, job);
       if (r && typeof r === 'object') r.status = brief();
@@ -763,21 +982,21 @@ async function call1(name, a, caller) {
       return text(r);
     }
     case 'iwmac_preview': {
-      const r = await ask('preview', a, 90000, caller);
-      return { content: [image(r), { type: 'text', text: JSON.stringify({ width: r.width, height: r.height, box: r.box, document: r.document }) }] };
+      const r = await ask('preview', previewSpec(Object.assign({}, a)), 90000, caller);
+      return { content: [image(r), { type: 'text', text: JSON.stringify({ width: r.width, height: r.height, box: r.box, document: r.document, labels: r.labels, diff: r.diff }) }] };
     }
     case 'iwmac_find': return text(find(a));
     case 'iwmac_edit': {
       sameDrawing(caller);
       const f = fillUnits(a.ops), b = fillBinds(f.ops);
-      const r = await ask('edit', { ops: b.ops, dry_run: !!a.dry_run, partial: !!a.partial, check: a.check !== false, preview: a.dry_run ? undefined : a.preview || undefined }, 180000, caller);
+      const r = await ask('edit', { ops: b.ops, dry_run: !!a.dry_run, partial: !!a.partial, check: a.check !== false, preview: a.dry_run ? undefined : previewSpec(a.preview) }, 180000, caller);
       const notes = f.notes.concat(b.notes);
       if (r && notes.length) r.notes = (Array.isArray(r.notes) ? r.notes : []).concat(notes);
       if (r && r.check && Array.isArray(r.check.found)) r.check.found = grouped(r.check.found);
       let p = r && r.preview;
       if (p) delete r.preview;
       // a userscript before 1.111.0 answers neither: the picture then costs a call of its own
-      else if (a.preview && r && r.applied) p = await ask('preview', typeof a.preview === 'object' ? a.preview : {}, 90000, caller);
+      else if (a.preview && r && r.applied) p = await ask('preview', typeof a.preview === 'object' ? previewSpec(a.preview) : {}, 90000, caller);
       if (r && r.applied && !r.check && a.check !== false && page && older(page.context.version, TAB_MIN)) r.check = 'not made: userscript ' + page.context.version + ' is older than ' + TAB_MIN + ' - call iwmac_check';
       return p ? { content: [{ type: 'text', text: JSON.stringify(r) }, image(p)] } : text(r);
     }
@@ -788,13 +1007,23 @@ async function call1(name, a, caller) {
     }
     case 'iwmac_undo': sameDrawing(caller); return text(await ask('undo', {}, 90000, caller));
     case 'iwmac_export': return text(readExport(a));
+    case 'iwmac_open': {
+      const r = await openFile(a, caller);
+      const p = r && r.preview;
+      if (p) { delete r.preview; return { content: [{ type: 'text', text: JSON.stringify(r) }, image(p)] }; }
+      return text(r);
+    }
+    case 'iwmac_build': case 'iwmac_snapshot': case 'iwmac_trace': {
+      const got = name === 'iwmac_build' ? await build(a, caller) : name === 'iwmac_snapshot' ? await snapshot(a, caller) : await trace(a);
+      return { content: [{ type: 'text', text: JSON.stringify(got.result) }].concat(got.images) };
+    }
     default: throw new Error('no tool ' + name);
   }
 }
 
 /** A tool call: here, or (1.9.0) through the server that holds the port when another session's does. */
 async function route(name, a) {
-  if (!listening && proxy && name !== 'iwmac_export') {
+  if (!listening && proxy && name !== 'iwmac_export' && name !== 'iwmac_trace') {
     try {
       const r = await forward(name, a || {});
       if (name === 'iwmac_status' && r && r.content && r.content[0] && !r.isError) {

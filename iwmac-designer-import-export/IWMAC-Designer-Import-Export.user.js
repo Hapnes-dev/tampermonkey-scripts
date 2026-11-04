@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.111.0
+// @version      1.112.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.111.0';
+var IWDIE_VERSION = '1.112.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12973,8 +12973,11 @@ function iwdieCbCheck(items, size, opts) {
     return false;
   };
   var isValue = function (o) { return o.obj_id === IWDIE_OV_ROLE.value[0]; };
+  // (v1.112.0) a bare-text value shows on its 40 px pill, centred in its 50 px box: two whose pills keep apart do not
+  // lie on each other (the house's racks set value columns closer than the boxes)
+  var shown = function (o) { return /^number_v3_(white_)?value_only$/.test(o.obj_id || '') && o.box.w > 10 ? { x: o.box.x + 5, y: o.box.y, w: o.box.w - 10, h: o.box.h } : o.box; };
   for (var i = 0; i < live.length; i++) for (var j = i + 1; j < live.length; j++) {
-    if (!iwdieCbHit(live[i].box, live[j].box, -1) || oneCluster(live[i], live[j])) continue;
+    if (!iwdieCbHit(shown(live[i]), shown(live[j]), -1) || oneCluster(live[i], live[j])) continue;
     var onTemp = (ovBadge(live[i]) && isValue(live[j])) || (ovBadge(live[j]) && isValue(live[i]));
     add('error', 'CB-O02', live[i].obj_id + ' and ' + live[j].obj_id + ' lie on each other' + (onTemp ? ': a bell or state never lies on a temperature value - move it beside the value' : ''), [live[i].cid, live[j].cid]);
   }
@@ -25365,11 +25368,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var run = function (cmd) {
         var a = cmd.args || {};
         // (v1.111.0) a change opens a version, which VectorCraft does only in front
-        if (((cmd.name === 'edit' && !a.dry_run) || cmd.name === 'undo') && !shown()) return Promise.reject(new Error(BEHIND));
+        if (((cmd.name === 'edit' && !a.dry_run) || cmd.name === 'undo' || cmd.name === 'open') && !shown()) return Promise.reject(new Error(BEHIND));
         working = cmd.name;
         line('busy');
+        // (v1.112.0) and a panel or edit file opened here, and the drawing as a panel file
         var p = cmd.name === 'scene' ? scene(a) : cmd.name === 'preview' ? preview(a) : cmd.name === 'edit' ? edit(a)
-          : cmd.name === 'check' ? check() : cmd.name === 'undo' ? undo() : cmd.name === 'ping' ? Promise.resolve({ pong: true })
+          : cmd.name === 'check' ? check() : cmd.name === 'undo' ? undo() : cmd.name === 'open' ? open(a) : cmd.name === 'snapshot' ? snapshot(a)
+          : cmd.name === 'ping' ? Promise.resolve({ pong: true })
           : Promise.reject(new Error('no command "' + cmd.name + '"'));
         var done = function () { working = ''; line('on'); };
         return p.then(function (v) { done(); return v; }, function (e) { done(); throw e; });
@@ -25480,30 +25485,82 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       // (v1.111.0) the drawing decoded once, kept for each crop of it until it changes
       var drawn = null;
-      var picture = function (svg, size) {
-        if (drawn && drawn.svg === svg) return Promise.resolve(drawn.img);
+      var decode = function (src) {
         return new Promise(function (resolve, reject) {
-          var url = URL.createObjectURL(new Blob([iwdieVcSized(iwdieVcCssLengths(svg), size.w, size.h)], { type: 'image/svg+xml' })), img = new Image();
-          img.onload = function () { URL.revokeObjectURL(url); drawn = { svg: svg, img: img }; resolve(img); };
-          img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('the drawing could not be drawn')); };
-          img.src = url;
+          var img = new Image();
+          img.onload = function () { resolve(img); };
+          img.onerror = function () { reject(new Error('the picture could not be drawn')); };
+          img.src = src;
         });
       };
+      var picture = function (svg, size, once) {
+        if (drawn && drawn.svg === svg) return Promise.resolve(drawn.img);
+        var url = URL.createObjectURL(new Blob([iwdieVcSized(iwdieVcCssLengths(svg), size.w, size.h)], { type: 'image/svg+xml' }));
+        return decode(url).then(function (img) {
+          URL.revokeObjectURL(url);
+          // `once`: an older version, drawn for a comparison only - the drawing as it stands stays the one kept
+          if (!once) drawn = { svg: svg, img: img };
+          return img;
+        }, function () { URL.revokeObjectURL(url); throw new Error('the drawing could not be drawn'); });
+      };
       var preview = function (a) { return current().then(function (s) { return render(s, a); }); };
+      // `a`: {box, max} and (v1.112.0) what helps a look - labels: each thing's cid on it, for the ops that name it;
+      // underlay: {data, mime, box?, opacity?} a picture (the source a drawing follows) laid over it, in panel pixels; diff:
+      // what changed since the version before this edit, red on the drawing faded
       var render = function (s, a) {
         a = a || {};
         var max = Math.max(200, Math.min(1600, +a.max || 1000));
         var box = Array.isArray(a.box) && a.box.length === 4 && a.box.every(function (v) { return isFinite(+v); }) && +a.box[2] > 0 && +a.box[3] > 0
           ? a.box.map(Number) : [0, 0, s.size.w, s.size.h];
         var k = Math.min(max / box[2], max / box[3], 4), w = Math.max(1, Math.round(box[2] * k)), h = Math.max(1, Math.round(box[3] * k));
-        return picture(s.svg, s.size).then(function (img) {
-          var c = document.createElement('canvas');
-          c.width = w; c.height = h;
-          var g = c.getContext('2d');
+        var prev = a.diff && revisions.length ? revisions[revisions.length - 1] : null, extra = {};
+        var under = a.underlay && typeof a.underlay.data === 'string' && a.underlay.data ? a.underlay : null;
+        return Promise.all([picture(s.svg, s.size), prev ? picture(prev.svg, s.size, true) : null,
+          under ? decode('data:' + (under.mime || 'image/png') + ';base64,' + under.data) : null]).then(function (got) {
+          var img = got[0];
+          var canvas = function () { var cv = document.createElement('canvas'); cv.width = w; cv.height = h; return cv; };
+          var c = canvas(), g = c.getContext('2d');
           g.fillStyle = '#ffffff';
           g.fillRect(0, 0, w, h);
           g.drawImage(img, box[0], box[1], box[2], box[3], 0, 0, w, h);
-          return { mime: 'image/jpeg', data: c.toDataURL('image/jpeg', 0.86).split(',')[1], width: w, height: h, box: box, document: s.title };
+          if (got[1]) {
+            var c2 = canvas(), g2 = c2.getContext('2d');
+            g2.fillStyle = '#ffffff';
+            g2.fillRect(0, 0, w, h);
+            g2.drawImage(got[1], box[0], box[1], box[2], box[3], 0, 0, w, h);
+            var A = g.getImageData(0, 0, w, h), B = g2.getImageData(0, 0, w, h), d = A.data, e = B.data, changed = 0;
+            for (var i = 0; i < d.length; i += 4) {
+              if (Math.abs(d[i] - e[i]) + Math.abs(d[i + 1] - e[i + 1]) + Math.abs(d[i + 2] - e[i + 2]) > 60) { d[i] = 226; d[i + 1] = 32; d[i + 2] = 32; changed++; }
+              else { d[i] = 255 - (255 - d[i]) * 0.3; d[i + 1] = 255 - (255 - d[i + 1]) * 0.3; d[i + 2] = 255 - (255 - d[i + 2]) * 0.3; }
+            }
+            g.putImageData(A, 0, 0);
+            extra.diff = { against: prev.title, changed: changed, of: w * h };
+          } else if (a.diff) extra.diff = { against: null, why: 'no version before this one in this tab' };
+          if (got[2]) {
+            var ub = Array.isArray(under.box) && under.box.length === 4 ? under.box.map(Number) : [0, 0, s.size.w, s.size.h];
+            g.globalAlpha = Math.max(0.05, Math.min(1, +under.opacity || 0.4));
+            g.drawImage(got[2], (ub[0] - box[0]) * k, (ub[1] - box[1]) * k, ub[2] * k, ub[3] * k);
+            g.globalAlpha = 1;
+          }
+          if (a.labels) {
+            var n = 0, fs = Math.max(9, Math.min(12, Math.round(10 * Math.sqrt(k))));
+            g.font = fs + 'px Arial, sans-serif';
+            g.textBaseline = 'top';
+            s.items.forEach(function (it) {
+              if (n >= 400 || !it.box || it.layer === 'Bakgrunn' || !iwdieCbHit(it.box, { x: box[0], y: box[1], w: box[2], h: box[3] }, 0)) return;
+              var at = it.kind === 'pipe' && it.pts && it.pts.length ? it.pts[0] : [it.box.x, it.box.y];
+              var x = Math.max(0, (at[0] - box[0]) * k), y = Math.max(0, (at[1] - box[1]) * k), tw = g.measureText(it.cid).width + 4;
+              g.fillStyle = it.kind === 'object' ? 'rgba(29,78,216,0.85)' : it.kind === 'pipe' ? 'rgba(180,83,9,0.85)' : 'rgba(15,23,42,0.8)';
+              g.fillRect(x, y, tw, fs + 3);
+              g.fillStyle = '#ffffff';
+              g.fillText(it.cid, x + 2, y + 1.5);
+              n++;
+            });
+            extra.labels = n;
+          }
+          var out = { mime: 'image/jpeg', data: c.toDataURL('image/jpeg', 0.86).split(',')[1], width: w, height: h, box: box, document: s.title };
+          Object.keys(extra).forEach(function (key) { out[key] = extra[key]; });
+          return out;
         });
       };
 
@@ -25689,6 +25746,80 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var check = function () {
         return current().then(function (s) {
           return { document: s.title, findings: findings(s) };
+        });
+      };
+      // the panel's name as the Designer writes it, spaces and case aside
+      var samePanel = function (a, b) { var f = function (v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase(); }; return f(a) === f(b); };
+      // the placeholders of the drawing `from` put into `svg` in place of its own (its IWMAC-objekter layer)
+      var keepObjects = function (svg, from) {
+        var d1 = new DOMParser().parseFromString(svg, 'image/svg+xml'), d0 = new DOMParser().parseFromString(from, 'image/svg+xml');
+        var objsOf = function (doc) { return layersOf(doc.documentElement).filter(function (L) { return String(nameOf(L)).toLowerCase() === 'iwmac-objekter'; })[0] || null; };
+        var mine = objsOf(d1), theirs = objsOf(d0);
+        if (mine) mine.parentNode.removeChild(mine);
+        if (theirs) layer(d1, 'IWMAC-objekter').parentNode.replaceChild(d1.importNode(theirs, true), layer(d1, 'IWMAC-objekter'));
+        return new XMLSerializer().serializeToString(d1);
+      };
+      // (v1.112.0) a file opened here, as Claude's iwmac_open sends it (`a` {name, doc, objects?, check?, preview?}). An
+      // edit file is made on this drawing by the same plan as an edit. A panel file - a builder's, an export - opens as a
+      // version of its own: its drawing, its objects as placeholders over it. With the Designer behind this tab they are
+      // the panel's new objects - unless the file is this very panel's, whose objects they then stay - and the panel's own
+      // placeholders are left out, so Ctrl+S puts the file on the panel as Insert JSON… → Replace would; objects: 'keep'
+      // keeps the panel's placeholders instead of the file's. Nothing reaches the Designer but by the user's Ctrl+S.
+      var open = function (a) {
+        var j = a.doc, fileName = String(a.name || 'file.json');
+        if (!j || typeof j !== 'object') return Promise.reject(new Error(fileName + ' is no JSON object'));
+        if (j.format === IWDIE_VC_EDITS_FORMAT) {
+          var ef = iwdieVcEditFile(j, api.job);
+          if (!ef.ok) return Promise.reject(new Error(fileName + ' cannot be made on this panel: ' + ef.problems.join('; ') + '. Nothing was changed.'));
+          return edit({ ops: ef.ops, check: a.check, preview: a.preview }).then(function (r) { r.file = fileName; if (ef.summary) r.summary = ef.summary; return r; });
+        }
+        var p = null;
+        try { p = iwdieParsePayload(j); } catch (e) { p = null; }
+        var doc = p && p.doc;
+        if (!doc || typeof doc !== 'object' || !Array.isArray(doc.single_objects)) return Promise.reject(new Error(fileName + ' is no IWMAC panel file (single_objects)'));
+        var size = api.size(), keep = a.objects === 'keep';
+        var objects = keep ? [] : doc.single_objects.filter(function (o) { return o && typeof o === 'object'; });
+        var own = !api.job.solo && String(doc.plant_id == null ? '' : doc.plant_id) === String(api.job.plant || '') && samePanel(doc.panel_name, api.job.panel);
+        var bg = typeof doc.image_data === 'string' && /^data:image\/(png|jpeg)[;,]/i.test(doc.image_data) ? doc.image_data : '';
+        var authored = typeof doc.image_svg === 'string' && doc.image_svg && !iwdieKeepsOwnPicture(doc);
+        var parsed = bg ? iwdieParseDataUrl(bg) : null;
+        return current().then(function (s) {
+          return (authored ? vcOriginalBack(doc).then(function (svg) {
+            if (iwdieSymRefs(svg).length) { var L = library(); svg = iwdieSymExpand(svg, L.lib ? L.lib.items : []).svg; }
+            return iwdieVcAuthored(svg, size);
+          }) : parsed && parsed.bytes ? vcDocumentOf(parsed.bytes) : Promise.resolve(null)).then(function (svg) {
+            var fit = svg ? iwdieVcFitDrawing(svg, size) : null, out;
+            if (svg) out = iwdieVcAddPanelObjects(fit ? fit.svg : svg, objects, api.looks, null, fit ? fit.m : null);
+            else out = iwdieVcSvg({ width: size.w, height: size.h, plate: '#e5e7ea', picture: bg || null, objects: objects, looks: api.looks, title: fileName });
+            // another panel's objects are new ones here; this panel's stay its own, as this edit knows them
+            out = own ? iwdieVcTagJob(out, api.job.id) : out.replace(/\sdata-iwdie-(?:ref|job)="[^"]*"/g, '');
+            if (keep) out = keepObjects(out, s.svg);
+            var before = { svg: s.svg, title: s.title };
+            return reopen(out, 'Claude').then(function (name) {
+              revisions.push(before);
+              if (revisions.length > 20) revisions.shift();
+              edits++;
+              var s2 = read(out, name), placed = s2.items.filter(function (it) { return it.kind === 'object'; }).length;
+              var had = s.items.filter(function (it) { return it.kind === 'object' && it.ref; }).length;
+              var summary = { applied: true, opened: fileName, document: name, objects: placed, drawn: !!svg,
+                note: keep ? 'the panel\'s own placeholders kept; the file\'s objects left out' : own ? 'this panel\'s own file: its objects stay the panel\'s'
+                  : api.job.solo ? undefined : 'the file\'s ' + placed + ' objects are new on this panel; Ctrl+S would take the panel\'s ' + had + ' objects off it (as Insert JSON… → Replace), its drawing replacing the background' };
+              if (a.check !== false) summary.check = { found: findings(s2) };
+              api.note('✓ <b>' + esc2(fileName) + '</b> is open as <b>' + esc2(name) + '</b>' + (summary.note ? ': ' + esc2(summary.note) : '') +
+                '. Look it over; <b>Ctrl+S</b> syncs it to the Designer. The version before is in its own tab.', false, true);
+              if (!a.preview) return summary;
+              return render(s2, a.preview === true ? {} : a.preview).then(function (pv) { summary.preview = pv; return summary; }, function () { return summary; });
+            });
+          });
+        });
+      };
+      // (v1.112.0) the drawing as it stands as a panel file - its picture, its placeholders as objects, those bound linked to
+      // the plant's rows - as VectorCraft by itself saves one: for the kit's check.py and preview.py on Claude's edits.
+      // Nothing is synced or saved.
+      var snapshot = function () {
+        return current().then(function (s) {
+          var r = vcSoloSave(api.job, s.svg);
+          return { name: r.name, text: r.text, refused: r.bad, document: s.title };
         });
       };
       // the Designer's Ctrl+S (v1.73.0): the panel's objects as they stand there (`p`: {objects, gone}) brought into the

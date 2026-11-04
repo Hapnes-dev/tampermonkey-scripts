@@ -531,6 +531,43 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Claude builds with the kit, opens files, and checks with the kit (v1.112.0, server 1.10.0)
+
+The second phase of the MCP analysis of 2026-11-04: reuse what already draws well. The Copilot kit's builders draw the
+house's geometry themselves (rack.py, compose.py, oversikt.py and the others) and its check.py judges a panel by 40-odd
+rules. The bridge could reach neither, so a new picture was either drawn op by op or built offline and opened by hand.
+
+- **`iwmac_build`** runs a kit builder on this computer: `system`, `rack`, `compose`, `oversikt` (with `base`, the
+  user's panel kept), `energi` or `vent`, from a spec. It answers with what the builder's own check said, the kit's
+  preview, and the result opened in the VectorCraft tab as a version of its own. The server finds the kit beside this
+  repository, or where `IWDIE_KIT` says.
+- **`iwmac_open`** opens a panel JSON or a Copilot edit file in the tab. A panel file opens as a version: its drawing,
+  its objects as placeholders. Another panel's objects are new on this one, so Ctrl+S would put the file on the panel as
+  *Insert JSON… → Replace*, and the answer says so. A file of this very panel keeps its objects as the panel's.
+  `objects: "keep"` keeps the panel's own placeholders and takes only the file's drawing. Nothing is handed to the
+  Designer: the user's Ctrl+S stays the only way there.
+- **`iwmac_snapshot`** takes the drawing as it stands as a panel file, the way VectorCraft by itself saves one, without
+  syncing. The kit's check.py then judges it (against the first snapshot of the drawing: only what is new) and preview.py
+  draws it.
+- **`iwmac_trace`** reads a source with the kit's readers: a vector P&ID (source_trace.py), a floor plan PDF
+  (plan_read.py, with a draft spec for oversikt.py), or a plan that is only a picture (plan_redraw.py trace).
+- **A preview that helps a look:**
+  - `labels: true` writes each thing's cid on it;
+  - `underlay` lays a picture over it: the source, a house template, the plant's old panel;
+  - `diff: true` shows in red what the last edit changed.
+  An edit's and a scene's preview take the same options.
+- Two bare-text values whose pills keep apart are no longer *on each other* (CB-O02): the house's racks set value
+  columns closer than the values' boxes.
+
+Run end to end in the stub host against the hosted VectorCraft:
+- labels on 71 things: 36 ms;
+- the kit's rack example built (78 objects, its check 0 errors) and opened in the tab: 1.1 s;
+- an edit whose picture showed only the new text in red: 0.2 s;
+- the drawing judged by check.py: 0.75 s;
+- a file opened keeping the panel's placeholders, then undone.
+
+Not run in the live Designer.
+
 ### Claude's bridge: dependable, and three or four calls a change (v1.111.0, server 1.9.0)
 
 Thomas asked for a deep analysis of the MCP set-up: faster, more accurate drawing, reusing what exists, fewer calls.
