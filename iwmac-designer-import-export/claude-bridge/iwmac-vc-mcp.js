@@ -25,7 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.12.0', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.13.0', PROTOCOL = 1;
 // the userscript that answers an edit's check and preview in the same call, and says whether its tab shows; and (1.10.0)
 // the one that opens a file and gives the drawing as a panel file
 const TAB_MIN = '1.111.0', OPEN_MIN = '1.112.0';
@@ -787,7 +787,23 @@ async function trace(a) {
     ['pieces.json', 'straight.png', 'pieces.png'].forEach(n => { if (fs.existsSync(path.join(dir, n))) result[n.replace('.', '_')] = path.join(dir, n); });
     const pic = pictureFile(path.join(dir, 'pieces.png'), 3 * 1024 * 1024);
     if (pic) images.push({ type: 'image', data: pic.data, mimeType: pic.mime });
-  } else throw new Error('kind is pid (a P&ID or maker\'s drawing with vector lines), plan (a floor plan PDF) or picture (a plan that is only a picture)');
+  } else if (kind === 'raster') {
+    // (1.13.0) a source of pixels - a P&ID of 600 dpi tiles, a scan, a screenshot: raster_read.py
+    const anchors = a.anchors && typeof a.anchors === 'object' ? Object.keys(a.anchors).map(t => t + '=' + [].concat(a.anchors[t]).join(',')).join(';') : '';
+    r = await runPy(kitScript('iwmac-overview-picture/scripts/raster_read.py'), [file, '--out', dir].concat(pageArgs, boxArgs,
+      Array.isArray(a.fit) && a.fit.length === 4 ? ['--fit', a.fit.join(',')] : [], a.ocr ? ['--ocr'] : [], a.lang ? ['--lang', String(a.lang)] : [],
+      anchors ? ['--anchors', anchors] : [], a.dark ? ['--dark'] : [], a.dpi ? ['--dpi', String(a.dpi)] : []), 900000);
+    const rj = path.join(dir, 'read.json'), md = path.join(dir, 'pipes.md');
+    if (fs.existsSync(rj)) {
+      const read = JSON.parse(fs.readFileSync(rj, 'utf8'));
+      result.read = rj;
+      result.summary = { size: read.size, dpi: read.dpi, colours: read.colours.map(c => [c.hex, c.px, c.runs]), runs: read.runs, joints: read.joints, crossings: read.crossings,
+        pipes: read.pipes.length, panel: read.panel, tags: read.tags.slice(0, 60), said: read.said };
+    }
+    if (fs.existsSync(md)) result.pipe_list = fs.readFileSync(md, 'utf8').split(/\r?\n/).slice(0, 90);
+    const pic = pictureFile(path.join(dir, 'check.png'), 4 * 1024 * 1024);
+    if (pic) images.push({ type: 'image', data: pic.data, mimeType: pic.mime });
+  } else throw new Error('kind is pid (a P&ID or maker\'s drawing with vector lines), plan (a floor plan PDF), picture (a plan that is only a picture) or raster (a P&ID, scan or screenshot of pixels)');
   result.exit = r.code;
   result.said = said(r.out, 40);
   result.output = String(r.out).split(/\r?\n/).filter(Boolean).slice(0, Math.max(10, Math.min(200, a.lines || 60)));
@@ -830,10 +846,11 @@ const TOOLS = [
   { name: 'iwmac_snapshot', description: 'The drawing as it stands as a panel file (its picture, its placeholders as objects, the bound ones linked), written on this computer without syncing, then judged by the Copilot kit\'s check.py - its 40-odd rules on overlaps, the house style, natives, links - against the first snapshot of this drawing (only what is new since), and drawn by the kit\'s preview.py. type: the picture type check.py judges by (maskin-pid, maskin, system, unit, oversikt, energi, kurve, ventilation, wireless; guessed from the panel\'s name). path: where to write it.',
     annotations: Object.assign({ title: 'IWMAC: the drawing through the kit\'s check' }, RO),
     inputSchema: { type: 'object', properties: { path: { type: 'string' }, type: { type: 'string' }, export: { type: 'string' }, baseline: { type: 'boolean' }, check: { type: 'boolean' }, preview: { type: 'boolean' } }, additionalProperties: false } },
-  { name: 'iwmac_trace', description: 'Read a source with the Copilot kit\'s readers, on this computer: kind pid (a P&ID, a maker\'s or a system drawing with vector lines: source_trace.py - its lines by colour fitted to the panel, fit [x0,y0,x1,y1] the panel area, box the part of the page), plan (a floor plan PDF: plan_read.py - its rooms, cases and words, and a draft spec for oversikt.py), picture (a plan that is only a picture, a scan or a photo: plan_redraw.py trace - walls straightened and measured, its pieces drawn). page and box choose the part. The answer: what it read, the files it wrote (the JSON to build from), and a picture where it draws one. A raster P&ID (600 dpi tiles) goes through the iwmac-panel-drawing skill\'s compose_pdf.py and trace_lines.py instead.',
+  { name: 'iwmac_trace', description: 'Read a source with the Copilot kit\'s readers, on this computer: kind pid (a P&ID, a maker\'s or a system drawing with vector lines: source_trace.py - its lines by colour fitted to the panel, fit [x0,y0,x1,y1] the panel area, box the part of the page), raster (a source of pixels - a P&ID of 600 dpi tiles, a scan, a screenshot: raster_read.py - its line colours found by clustering, level, upright and slanting runs with dashes joined, joints (corners, tees, dots) and crossings, a draft pipe list to tick off against the source; ocr: true reads its words with Windows\' own OCR (lang nb), anchors {TAG: [x, y]} fits the panel scale from two or three tags it finds instead of assuming it, dark: true reads black lines too, dpi 600), plan (a floor plan PDF: plan_read.py - its rooms, cases and words, and a draft spec for oversikt.py), picture (a plan that is only a picture, a scan or a photo: plan_redraw.py trace - walls straightened and measured, its pieces drawn). page and box choose the part (a PDF\'s box in points from the page\'s top left). The answer: what it read, the files it wrote (the JSON to build from), the draft pipe list, and its check picture.',
     annotations: Object.assign({ title: 'IWMAC: read a source' }, RO),
-    inputSchema: { type: 'object', properties: { file: { type: 'string' }, kind: { type: 'string', enum: ['pid', 'plan', 'picture'] }, page: { type: 'integer' }, box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 },
-      fit: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, lines: { type: 'integer' } }, required: ['file'], additionalProperties: false } },
+    inputSchema: { type: 'object', properties: { file: { type: 'string' }, kind: { type: 'string', enum: ['pid', 'raster', 'plan', 'picture'] }, page: { type: 'integer' }, box: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 },
+      fit: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 }, lines: { type: 'integer' }, ocr: { type: 'boolean' }, lang: { type: 'string' },
+      anchors: { type: 'object' }, dark: { type: 'boolean' }, dpi: { type: 'integer' } }, required: ['file'], additionalProperties: false } },
   { name: 'iwmac_export', description: 'Read an IWMAC Export JSON file on this computer, without its picture: part summary (default), objects, units, parameters (unit, query), signals, style, picture (the outline of the drawn picture: pills, pipes, panels, figures, words), symbols. limit (100) cuts every list. Works with no VectorCraft tab.',
     annotations: Object.assign({ title: 'IWMAC: read an Export JSON' }, RO),
     inputSchema: { type: 'object', properties: { path: { type: 'string' }, part: { type: 'string' }, unit: { type: 'string' }, query: { type: 'string' }, limit: { type: 'integer' } }, required: ['path'], additionalProperties: false } }

@@ -69,7 +69,7 @@ join, which object shows which parameter, and the binding grammar.
 | `iwmac_build` | (1.10.0) A whole picture built by the Copilot kit's own builder (`system`, `rack`, `compose`, `oversikt`, `energi`, `vent`) from a spec, its check said, the kit's preview, and the result opened in the tab as a version of its own. The kit is found beside this repository, or at `IWDIE_KIT` |
 | `iwmac_open` | (1.10.0, userscript 1.112.0) A panel JSON or a Copilot edit file opened in the tab as a version; another panel's objects new on this one (Ctrl+S then replaces, as *Insert JSON… → Replace*), `objects: "keep"` keeps the panel's own |
 | `iwmac_snapshot` | (1.10.0) The drawing as a panel file, unsynced, judged by the kit's `check.py` (only what is new since the first snapshot) and drawn by its `preview.py` |
-| `iwmac_trace` | (1.10.0) A source read by the kit's readers: a vector P&ID (`source_trace.py`), a floor plan PDF (`plan_read.py`), a plan that is a picture (`plan_redraw.py trace`) |
+| `iwmac_trace` | (1.10.0) A source read by the kit's readers: a vector P&ID (`source_trace.py`), a floor plan PDF (`plan_read.py`), a plan that is a picture (`plan_redraw.py trace`); (1.13.0) `kind: "raster"` a source of pixels by `raster_read.py`: its line colours, runs, joints, crossings and a draft pipe list, `ocr` its tags by Windows' own OCR, `anchors` the panel scale fitted from them |
 | `iwmac_export` | Reads an Export JSON file on this computer, part by part, without its picture |
 
 A place is `{x, y}`, `{cx, cy}` or `{near: target, side, gap, align}`, with `free: true`
