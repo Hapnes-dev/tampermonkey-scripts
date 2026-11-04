@@ -531,6 +531,22 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A picture's sample values and states are no labels (v1.115.0)
+
+Thomas, of plant 8682's Maskin converted from a picture of the panel as it ran: its CO2 alarm's *OK* and its room's
+*2,7 °C* had become labels, each over the object that shows it (*fiks det i Tampermonkey-skriptet også*). Vectorize
+image, and Copilot's `optimise.py` with it, now leaves out of the labels:
+- **Any word on an IWMAC object found in the picture.** It is that object's own look: the Designer's status objects
+  are pictures with their words in them (*61x21_State_Running.png*), so a state the picture shows is that object's.
+- **A value or a state on a pill.** A value with its unit or decimals (*2,7 °C*, *45 %*), a value's dashes (*--.-*)
+  or a state (*OK*, *Running*, *Drift*) on a pill no object of the panel stands on is the sample of the value that goes
+  there. A whole number alone, and a caption with its unit (*Pc bar*), stay labels.
+
+A label is on a box when its middle is and half of it or more. Its letters are taken out of the picture as before, so
+the pill stays empty for its value. The opening's summary and the optimised export's `ai_guide.artwork.optimised`
+(`samples`) count them. Measured with the kit's `optimise.py`, which runs these functions, on 8682's export: the two
+labels are gone, and every other object and the drawing are as before. Not run in the live Designer.
+
 ### The script is text again (v1.114.1)
 
 1.114.0 carried one NUL byte, written where an escape was meant (the test of a bank's own refs in a dry run), so Git took

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.114.1
+// @version      1.115.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.114.1';
+var IWDIE_VERSION = '1.115.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1119,11 +1119,15 @@ function iwdieOptimisedNote(made) {
   if (m.pipes) out.pipes = n(m.pipes);
   if (m.font) out.words_read_in = String(m.font) + (m.loose ? ' (not the picture\'s own font)' : '');
   if (m.kept) out.kept = n(m.kept);
+  // (v1.115.0) the values and states the picture showed where objects show them live, made no labels (iwdieTxSamplesOff)
+  if (m.samples) out.samples = n(m.samples);
   var parts = [out.labels ? iwdieN(out.labels, 'label', 'labels') + ' with its words' : '', out.objects ? iwdieN(out.objects, 'IWMAC object', 'IWMAC objects') : '',
     out.boxes ? iwdieN(out.boxes, 'box the Designer draws', 'boxes the Designer draws') : ''].filter(Boolean);
   out.what = (parts.length ? 'Made by this export from the picture, as Edit in VectorCraft and a save there make them: ' + parts.join(', ') +
     (out.names ? ' - ' + out.names + ' in single_objects, after the panel\'s own, unlinked' : '') : 'No object made from the picture') +
-    '. The panel\'s own objects are as it has them.';
+    '. The panel\'s own objects are as it has them.' +
+    (out.samples ? ' The ' + iwdieN(out.samples, 'value or state', 'values and states') + ' it showed on a pill or an IWMAC object ' +
+      'made no label: the objects show them live.' : '');
   return out;
 }
 
@@ -18374,6 +18378,9 @@ function iwdieVzTrace(pic, W, H, opts, say) {
         list.forEach(function (q) { b[0] = Math.min(b[0], q.box[0]); b[1] = Math.min(b[1], q.box[1]); b[2] = Math.max(b[2], q.box[2]); b[3] = Math.max(b[3], q.box[3]); });
         return [Math.round(b[0]), Math.round(b[1]), Math.round(b[2] - b[0]), Math.round(b[3] - b[1]), hex(cols[list[0].c]), list.length];
       }),
+      // (v1.115.0) the pills no object of the panel stands on, their outer edges: a value or a state read on one is its
+      // sample, no label (iwdieTxSamplesOff)
+      pills: pills.map(function (pl) { var o = pl.outer || pl; return [f2(o.x), f2(o.y), f2(o.w), f2(o.h)]; }),
       work: work === pic ? null : work, ground: ground, ms: Date.now() - t0
     };
   }
@@ -20790,6 +20797,55 @@ function iwdieTxDistinct(boxes) {
  *  iwdieTxLabelSizes), white where the text is light on a dark ground. -> obj_id */
 function iwdieTxLabelKind(px, white) {
   return 'number_v3_label_' + px + 'px_norm' + (white ? '_white' : '');
+}
+
+/** The states the Designer's status objects show (v1.115.0), lower case, as a picture of them writes them: its pictures
+ *  61x21_State_Running.png, ok.png, alarm.png, 81x21_State_Enabled.png and danfoss/state_ready_grey.png, normal_control.png
+ *  and stopped.png, and the words of a switch and a mode (iwdieTxSample). */
+var IWDIE_TX_STATES = ['ok', 'alarm', 'running', 'stopped', 'enabled', 'disabled', 'ready', 'normal control', 'normal', 'run', 'stop',
+  'stopp', 'on', 'off', 'auto', 'man', 'manual', 'manuel', 'manuell', 'hand', 'drift', 'i drift', 'av', 'på', 'feil', 'fault', 'error',
+  'open', 'closed', 'åpen', 'lukket', 'aktiv', 'inaktiv', 'active', 'inactive', 'start', 'standby'];
+
+/** Whether a word a picture shows is the sample of what an IWMAC object shows live, not a caption (v1.115.0): a value
+ *  with its unit or its decimals ("2,7 °C", "45 %", "-18.5"), a value's dashes ("--.-", "--- °C") or a state
+ *  (IWDIE_TX_STATES: "OK", "Running", "Drift"). A whole number alone is none - a case's or a step's number is a
+ *  caption - and neither is a value's caption, a name with its unit ("Pc bar", "Tc °C"). -> boolean */
+function iwdieTxSample(s) {
+  s = String(s || '').replace(/\s+/g, ' ').trim();
+  if (!s || s.length > 16) return false;
+  var unit = '(?:°C|°F|°|%|%rh|K|A|mA|V|Hz|W|kW|kWh|MWh|bar|mbar|Pa|kPa|ppm|m3/h|m³/h|l/s|l/min|rpm|h|min|s)';
+  if (new RegExp('^[-+\u2212]?\\d+(?:[.,]\\d+)?\\s?' + unit + '$', 'i').test(s)) return true;
+  if (/^[-+\u2212]?\d+[.,]\d+$/.test(s)) return true;
+  if (new RegExp('^-+(?:[.,]-+)?(?:\\s?' + unit + ')?$', 'i').test(s)) return true;
+  return IWDIE_TX_STATES.indexOf(s.toLowerCase()) >= 0;
+}
+
+/** The labels a picture's words became, without its samples of what IWMAC objects show live (v1.115.0). A word on an
+ *  IWMAC object found in the picture (`shown`, [{x, y, w, h}]) is that object's own look - the Designer's status objects
+ *  are pictures with their words in them - and a value or a state (iwdieTxSample) on a pill (`pills`, [[x, y, w, h]],
+ *  their outer edges) is the sample of the value that goes on it. Plant 8682's Maskin, a picture of the panel as it ran,
+ *  gave its CO2 alarm's "OK" and its room's "2,7 °C" as labels, each over the object that shows it (Thomas,
+ *  2026-11-04). A label is on a box when its middle is and half of it or more. Their letters are out of the picture
+ *  already, as every word's. -> {keep: [label...], gone: [{text, x, y, w, h, on: 'object' | 'pill'}]} */
+function iwdieTxSamplesOff(labels, pills, shown) {
+  var on = function (l, b) {
+    var cx = l.x + l.w / 2, cy = l.y + l.h / 2;
+    if (!(cx >= b[0] && cx <= b[0] + b[2] && cy >= b[1] && cy <= b[1] + b[3])) return false;
+    var a = Math.max(0, Math.min(l.x + l.w, b[0] + b[2]) - Math.max(l.x, b[0])) * Math.max(0, Math.min(l.y + l.h, b[1] + b[3]) - Math.max(l.y, b[1]));
+    return a >= 0.5 * l.w * l.h;
+  };
+  var fine = function (b) { return !!b && b.every(function (v) { return isFinite(v); }) && b[2] > 0 && b[3] > 0; };
+  var objects = (shown || []).map(function (o) { return o ? [+o.x, +o.y, +o.w, +o.h] : null; }).filter(fine);
+  var rings = (pills || []).map(function (p) { return p ? [+p[0], +p[1], +p[2], +p[3]] : null; }).filter(fine);
+  var keep = [], gone = [];
+  (labels || []).forEach(function (l) {
+    if (!l) return;
+    var where = objects.some(function (b) { return on(l, b); }) ? 'object' :
+      iwdieTxSample(l.text) && rings.some(function (b) { return on(l, b); }) ? 'pill' : '';
+    if (where) gone.push({ text: l.text, x: l.x, y: l.y, w: l.w, h: l.h, on: where });
+    else keep.push(l);
+  });
+  return { keep: keep, gone: gone };
 }
 
 /** The sizes of the labels words read become (v1.78.1). The label's font is the Designer's, wider than Illustrator's
@@ -27174,6 +27230,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           vz.pills ? iwdieN(vz.pills, 'pill', 'pills') + ' as rounded rectangles' : '', vz.pipes ? iwdieN(vz.pipes, 'pipe', 'pipes') + ' as lines' : '',
           vz.boxes ? iwdieN(vz.boxes, 'case, room or bar', 'cases, rooms and bars') + ' as the Designer’s own boxes' : '',
           vz.labels && vz.labels.length ? iwdieN(vz.labels.length, 'word', 'words') + ' read as label objects' + (vz.textFont ? ' (' + vz.textFont + (vz.textLoose ? ', not the picture’s own font' : '') + ')' : '') : '',
+          // (v1.115.0) its samples of values and states, left to the objects that show them live
+          vz.samples ? iwdieN(vz.samples, 'sample value or state', 'sample values and states') + ' on pills and objects not made labels' : '',
           vz.textNone ? 'its words not read as labels (' + vz.textNone + ': add the picture’s font on the card - Myriad Pro is in Illustrator’s Support ' +
             'Files › Required › Fonts)' : '',
           vz.letters ? iwdieN(vz.letters, 'letter', 'letters') + ' in ' + iwdieN(vz.words, 'word', 'words') : ''].filter(Boolean).join(', ') +
@@ -27281,7 +27339,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 iwdieN(n.boxes, 'box', 'boxes')].join(', ') + ' · ' + (Math.round(drawing.length / 1024)) + ' kB of drawing', 0.96);
               return { svg: ph.svg, objects: made.objects,
                 made: { version: IWDIE_VERSION, labels: n.labels, objects: n.objects, boxes: n.boxes, kept: made.already, symbols: (vz.symbols || []).length,
-                  pipes: vz.pipes || 0, font: vz.textFont || '', loose: !!vz.textLoose, ms: vz.ms, names: [] } };
+                  pipes: vz.pipes || 0, font: vz.textFont || '', loose: !!vz.textLoose, ms: vz.ms, names: [], samples: vz.samples || 0 } };
             });
           });
         });
@@ -28440,6 +28498,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               // (v1.91.0) read at the picture's own size: each word where the canvas has it, and as big
               var X = function (u) { return put ? put.x + u * put.kx : u; }, Y = function (v) { return put ? put.y + v * put.ky : v; };
               var kx = put ? put.kx : 1, ky = put ? put.ky : 1;
+              // (v1.115.0) the pills its words were read on, where the canvas has them (iwdieTxSamplesOff)
+              var pills = ((tr && tr.pills) || []).map(function (p) { return [X(p[0]), Y(p[1]), p[2] * kx, p[3] * ky]; });
               // (v1.78.1) each label's size weighed between its word's width and height, words of one size alike - measured in the
               // label's own font as the Designer draws it
               var ref = vcTxLabelLook('number_v3_label_12px_norm'), g1 = document.createElement('canvas').getContext('2d');
@@ -28462,7 +28522,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 if (put) iwdieTxErase(put.data, put.w, put.h, { x: X(x.I.x + l.x0 - 1) - 1, y: Y(c.y0) - 1, w: (l.x1 - l.x0 + 2) * kx + 2, h: (c.y1 - c.y0) * ky + 2 }, x.I.ground, x.I.text);
                 else iwdieTxErase(data, w, h, { x: inkLeft - 1, y: c.y0, w: l.x1 - l.x0 + 2, h: c.y1 - c.y0 }, x.I.ground, x.I.text);
               });
-              return { labels: out, runs: R.length + long, font: best.f.label, fonts: labels, left: left + long, loose: loose, own: put ? { w: w, h: h } : null };
+              return { labels: out, runs: R.length + long, font: best.f.label, fonts: labels, left: left + long, loose: loose, own: put ? { w: w, h: h } : null, pills: pills };
             });
           });
         });
@@ -29122,6 +29182,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function vcVectorize(c, paper, info) {
       var w = c.width, h = c.height, data = c.getContext('2d').getImageData(0, 0, w, h).data, t0 = Date.now();
       var objects = (info && info.objects) || [], got = { symbols: [], symbolCount: {}, unders: {}, carried: 0, left: 0, looks: 0 };
+      // (v1.115.0) the IWMAC objects found in the picture and the pills its words were read on: a sample on one is no label
+      var shown = [], textPills = [];
       // (v1.80.0) the picture as it came: the boxes the Designer draws itself are found on it, what the steps before took out
       // of them counting as theirs
       var pristine = new Uint8ClampedArray(data);
@@ -29155,6 +29217,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (!fo) { paper.done('not finished in time: none placed', 0.09); return; }
           iwdieVcErase(data, w, h, fo.holes);
           got.found = fo.placed; got.twice = fo.twice.length; got.objectsKept = fo.kept.length;
+          shown = fo.placed.slice();
           var count = {};
           fo.placed.forEach(function (f) { var d = (iwdieVcObjectIndex()[f.kind] || {}).desc || f.kind; count[d] = (count[d] || 0) + 1; });
           var top = Object.keys(count).sort(function (a, b) { return count[b] - count[a]; }).slice(0, 3).map(function (d) { return d + (count[d] > 1 ? ' ×' + count[d] : ''); });
@@ -29185,6 +29248,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return;
           }
           got.labels = rt.labels; got.textRuns = rt.runs; got.textLeft = rt.left; got.textFont = rt.font; got.textLoose = !!rt.loose;
+          textPills = rt.pills || [];
           var said3 = rt.labels.slice(0, 4).map(function (l) { return l.text; }).join(', ');
           // (v1.91.0) read at the picture's own size: said
           var at = rt.own ? ' · read at the picture’s own size, ' + rt.own.w + ' × ' + rt.own.h : '';
@@ -29272,6 +29336,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               });
               iwdieVcErase(data, w, h, holes3);
               got.found = got.found.concat(seen.placed); got.closeObjects = seen.placed.length; got.twice += seen.twice.length;
+              shown = shown.concat(seen.placed);
             });
           });
         }).catch(function () { return null; });
@@ -29411,6 +29476,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             (got.native ? '; ' + iwdieN(got.native, 'case or box', 'cases and boxes') + ' as the Designer’s own boxes' : ''), 0.5);
         }, function () { paper.done('not looked for', 0.5); });
       }).then(function () {
+        // (v1.115.0) the samples the picture showed of what its objects show live - a value or a state on a pill, any word on
+        // an IWMAC object found in it - no labels (iwdieTxSamplesOff); their letters are out of it already
+        var sm = iwdieTxSamplesOff(got.labels || [], textPills, shown);
+        got.labels = sm.keep; got.samples = sm.gone.length;
         paper.step('vector', 'its colours', 0.6, 0.62);
         // what the picture had transparent (v1.75.1): the panel's colour there, which the trace leaves undrawn
         var clear = info && info.clear && info.clear.mask && info.clear.mask.length === w * h ? { plate: info.clear.plate, clear: info.clear.mask } : {};
@@ -32801,6 +32870,9 @@ if (typeof module !== 'undefined' && module.exports) {
     txReadAll: iwdieTxReadAll,
     txDistinct: iwdieTxDistinct,
     txLabelKind: iwdieTxLabelKind,
+    txSample: iwdieTxSample,
+    txSamplesOff: iwdieTxSamplesOff,
+    TX_STATES: IWDIE_TX_STATES,
     txLabelSizes: iwdieTxLabelSizes,
     txFit: iwdieTxFit,
     txKnownBest: iwdieTxKnownBest,
