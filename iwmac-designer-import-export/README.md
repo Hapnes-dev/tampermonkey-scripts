@@ -531,6 +531,59 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Claude's pipes the house way: routed, teed, broken, carried (v1.113.0, server 1.11.0)
+
+The third phase of the MCP analysis of 2026-11-04, the Maskin geometry. Claude placed symbols well and joined them
+badly. The router entered a port from behind, ran along other pipes, went through equipment, and kept 0.3 px jogs.
+`connect` used a box's sides, not a symbol's own ports. A new pipe came out grey. Nothing joined a header or put a valve on
+a line. The scene saw nothing inside a builder's groups.
+
+**Pipes:**
+- **The router** finds the cheapest orthogonal path on the grid of every place a turn could matter. It costs length,
+  bends and crossings, keeps 4 px clear of equipment, objects and words, never lies on another pipe, and never enters a
+  port from behind. Ports facing each other less than 3 px apart are joined straight, and a jog under 3 px is lined up,
+  as compose.py snaps.
+- **`connect`** with no port given tries the symbols' own ports and takes the pair that joins best, naming it in the
+  notes. With a pipe as either end it makes a **tee** onto that pipe (`tee` is the same op).
+- **A new pipe takes the circuit** of the pipe it joins, else of a pipe its end touches; else it is said.
+- **`header {y | x, joins}`** draws one straight header and a riser from each join's port onto it.
+- **`breaks: "auto"`** breaks a pipe 6 px either side of every other circuit's pipe it crosses, as the house draws a
+  crossing (the kit's `house_style.break_at_crossings`). **Deleting a pipe heals** the breaks other pipes made for it.
+- **`arrow: mid | start | end`** sets a PilLiten 7 px beside the longest run, or 10 px past an end, pointing along it.
+
+**Placing:**
+- **A symbol at a port** (`at: {port, as?, gap?}`): its own port on another's, such as a valve on a gas cooler's
+  inlet.
+- **A symbol on a pipe** (`at: {on, point?}`): it is turned along the run and the pipe is cut between its in and out.
+- **`value {for}`** stands where the drawing's own values stand by that kind of symbol. **`at: {info: true}`** takes
+  the information column's next row (`facts.infoRows`: its values' x, their step, the next row).
+- **`free: true`** keeps clear of pipes and words too, and out of the information column.
+- **`move` carries** a symbol's tag above it, its values with their pills and captions, and the pipe ends at it, which
+  stay orthogonal. `carry: false` moves it alone.
+
+**Reading and checking:**
+- **The scene reads inside groups** that only gather things, three levels down: a builder's *Value pills*,
+  *MT compressors*, a circuit's own groups. Symbols, objects and walls stay whole. A pipe broken at a crossing is read
+  run by run, and a symbol turned by hand in VectorCraft has its turn read off its transform.
+- **The check knows the geometry:**
+  - CB-R02, a pipe through a compressor, a gas cooler or words;
+  - CB-R03, pipe ends that meet nothing (info);
+  - CB-R04, pipes on each other;
+  - CB-R05, a jog under 3 px;
+  - CB-T02, words on words;
+  - CB-O03, drawing under an IWMAC object;
+  - CB-O04, symbols or pipes off the panel (info);
+  - CB-B02, new objects bound to nothing (info).
+- An edit's check now says a finding is new when it names one thing more, not when a count in its wording moves.
+
+Measured end to end in the stub host against the hosted VectorCraft, on the kit's rack opened with `iwmac_build`:
+- Its 54 value pills, inside the builder's *Value pills* group, are read: the 54 false CB-P01 of 1.112.0 are gone.
+- A Motorventil was put on the MT suction header, and the header was cut 18 px around it.
+- A brine pipe across the drawing was broken at its three crossings, 12 px each, with its arrow.
+- The kit's check.py found 0 errors on the result. The edit took 0.26 s.
+
+Not run in the live Designer.
+
 ### Claude builds with the kit, opens files, and checks with the kit (v1.112.0, server 1.10.0)
 
 The second phase of the MCP analysis of 2026-11-04: reuse what already draws well. The Copilot kit's builders draw the

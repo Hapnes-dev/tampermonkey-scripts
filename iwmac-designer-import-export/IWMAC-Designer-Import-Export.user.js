@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.112.0
+// @version      1.113.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.112.0';
+var IWDIE_VERSION = '1.113.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12681,7 +12681,7 @@ var IWDIE_CB_DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
 function iwdieCbPorts(name, box, k) {
   var out = {}, r = function (v) { return Math.round(v * 10) / 10; };
   var sides = { top: [0.5, 0, 'up'], bottom: [0.5, 1, 'down'], left: [0, 0.5, 'left'], right: [1, 0.5, 'right'] };
-  var own = name ? IWDIE_CB_PORTS[name] || IWDIE_CB_PORTS[(iwdieSymTable().families[iwdieSymTable().byKey[iwdieSymKey(name)]] || {}).name] : null;
+  var own = name ? IWDIE_CB_PORTS[name] || IWDIE_CB_PORTS[(iwdieSymTable().families[iwdieSymTable().byKey[iwdieSymKey(name)]] || {}).name] || iwdieCbPortsByName(name) : null;
   var m = iwdieSymMatrix(k || 0), turn = function (u, v) {
     var x = u - 0.5, y = v - 0.5;
     return [m[0] * x + m[2] * y + 0.5, m[1] * x + m[3] * y + 0.5];
@@ -12733,9 +12733,309 @@ function iwdieCbRoute(a, b, stub) {
   return iwdieCbSimplify(pts);
 }
 
-/** SVG path data for a polyline. */
-function iwdieCbPathD(pts) {
-  return pts.map(function (p, i) { return (i ? 'L' : 'M') + iwdieDrawFmt(p[0]) + ' ' + iwdieDrawFmt(p[1]); }).join(' ');
+/** SVG path data for a polyline, or (v1.113.0) for runs: one move-to each. */
+function iwdieCbPathD(pts, runs) {
+  var one = function (r) { return r.map(function (p, i) { return (i ? 'L' : 'M') + iwdieDrawFmt(p[0]) + ' ' + iwdieDrawFmt(p[1]); }).join(' '); };
+  return runs && runs.length ? runs.map(one).join(' ') : one(pts);
+}
+
+/** (v1.113.0) An orthogonal pipe from port `a` to port `b` ({x, y, dir}) that leaves each along its way by `opts.stub`
+ *  (8), enters neither from behind, keeps 4 px clear of `opts.obstacles` (boxes; the two ends' own boxes left out by the
+ *  caller), crosses as few of `opts.pipes` ([[a, b]] runs of other pipes) as it can and lies on none of them, and bends
+ *  as little: the cheapest path on the grid of every place where a turn could matter - its length, 16 a bend, 40 a
+ *  crossing. Two ports facing each other less than 3 px apart across get a straight pipe; a jog under 3 px is lined up
+ *  (as compose.py snaps). With no free way round, iwdieCbRoute's. -> [[x, y]...] */
+function iwdieCbRoute2(a, b, opts) {
+  opts = opts || {};
+  var stub = opts.stub === undefined ? 8 : +opts.stub, m = 4, BEND = 16, CROSS = 40;
+  var da = IWDIE_CB_DIRS[a.dir] || [0, 0], db = IWDIE_CB_DIRS[b.dir] || [0, 0];
+  var aV = da[1] !== 0, bV = db[1] !== 0;
+  var p = [a.x + da[0] * stub, a.y + da[1] * stub], q = [b.x + db[0] * stub, b.y + db[1] * stub];
+  var lo = [Math.min(p[0], q[0]) - 160, Math.min(p[1], q[1]) - 160], hi = [Math.max(p[0], q[0]) + 160, Math.max(p[1], q[1]) + 160];
+  var obs = (opts.obstacles || []).filter(function (o) { return o && o.w > 0 && o.h > 0 && o.x < hi[0] && o.x + o.w > lo[0] && o.y < hi[1] && o.y + o.h > lo[1]; })
+    .map(function (o) { return { x: o.x - m, y: o.y - m, w: o.w + 2 * m, h: o.h + 2 * m }; });
+  var runs = (opts.pipes || []).filter(function (s) { return Math.max(s[0][0], s[1][0]) >= lo[0] && Math.min(s[0][0], s[1][0]) <= hi[0] && Math.max(s[0][1], s[1][1]) >= lo[1] && Math.min(s[0][1], s[1][1]) <= hi[1]; });
+  var xs = {}, ys = {};
+  [p[0], q[0], Math.round((p[0] + q[0]) / 2)].forEach(function (v) { xs[Math.round(v * 10) / 10] = 1; });
+  [p[1], q[1], Math.round((p[1] + q[1]) / 2)].forEach(function (v) { ys[Math.round(v * 10) / 10] = 1; });
+  obs.forEach(function (o) { xs[Math.round((o.x - 0.5) * 10) / 10] = 1; xs[Math.round((o.x + o.w + 0.5) * 10) / 10] = 1; ys[Math.round((o.y - 0.5) * 10) / 10] = 1; ys[Math.round((o.y + o.h + 0.5) * 10) / 10] = 1; });
+  var X = Object.keys(xs).map(Number).sort(function (u, v) { return u - v; }), Y = Object.keys(ys).map(Number).sort(function (u, v) { return u - v; });
+  if (X.length * Y.length > 9000) return iwdieCbRoute(a, b, stub);
+  var blocked = function (x0, y0, x1, y1) {
+    var lx = Math.min(x0, x1), hx = Math.max(x0, x1), ly = Math.min(y0, y1), hy = Math.max(y0, y1);
+    for (var i = 0; i < obs.length; i++) { var o = obs[i]; if (lx < o.x + o.w && hx > o.x && ly < o.y + o.h && hy > o.y) return true; }
+    return false;
+  };
+  // facing each other, under 3 px across: straight, where nothing stands between
+  if (aV && bV && Math.abs(a.x - b.x) < 3 && da[1] === -db[1] && (b.y - a.y) * da[1] > 0 && !blocked(a.x, a.y, a.x, b.y)) return [[a.x, a.y], [a.x, b.y]];
+  if (!aV && !bV && Math.abs(a.y - b.y) < 3 && da[0] === -db[0] && (b.x - a.x) * da[0] > 0 && !blocked(a.x, a.y, b.x, a.y)) return [[a.x, a.y], [b.x, a.y]];
+  var cost = function (x0, y0, x1, y1) {
+    var n = 0, lying = Math.abs(y0 - y1) < 0.05;
+    for (var i = 0; i < runs.length; i++) {
+      var c = runs[i][0], d = runs[i][1], cl = Math.abs(c[1] - d[1]) < 0.05, cu = Math.abs(c[0] - d[0]) < 0.05;
+      if (lying && cu && c[0] > Math.min(x0, x1) + 0.5 && c[0] < Math.max(x0, x1) - 0.5 && y0 > Math.min(c[1], d[1]) + 0.5 && y0 < Math.max(c[1], d[1]) - 0.5) n += CROSS;
+      else if (!lying && cl && c[1] > Math.min(y0, y1) + 0.5 && c[1] < Math.max(y0, y1) - 0.5 && x0 > Math.min(c[0], d[0]) + 0.5 && x0 < Math.max(c[0], d[0]) - 0.5) n += CROSS;
+      // on another pipe: dearer than any way round
+      else if (lying && cl && Math.abs(c[1] - y0) < 1.5 && Math.min(Math.max(x0, x1), Math.max(c[0], d[0])) - Math.max(Math.min(x0, x1), Math.min(c[0], d[0])) > 1) n += 1000;
+      else if (!lying && cu && Math.abs(c[0] - x0) < 1.5 && Math.min(Math.max(y0, y1), Math.max(c[1], d[1])) - Math.max(Math.min(y0, y1), Math.min(c[1], d[1])) > 1) n += 1000;
+    }
+    return Math.abs(x1 - x0) + Math.abs(y1 - y0) + n;
+  };
+  var key = function (i, j, d) { return (i * Y.length + j) * 3 + d; };
+  var si = X.indexOf(Math.round(p[0] * 10) / 10), sj = Y.indexOf(Math.round(p[1] * 10) / 10), gi = X.indexOf(Math.round(q[0] * 10) / 10), gj = Y.indexOf(Math.round(q[1] * 10) / 10);
+  if (si < 0 || sj < 0 || gi < 0 || gj < 0) return iwdieCbRoute(a, b, stub);
+  var dist = {}, from = {}, open = [[0, si, sj, aV ? 1 : 0]];
+  dist[key(si, sj, aV ? 1 : 0)] = 0;
+  var best = null;
+  while (open.length) {
+    var mi = 0;
+    for (var k = 1; k < open.length; k++) if (open[k][0] < open[mi][0]) mi = k;
+    var cur = open.splice(mi, 1)[0], cd = cur[0], ci = cur[1], cj = cur[2], cdir = cur[3];
+    if (cd > (dist[key(ci, cj, cdir)] === undefined ? Infinity : dist[key(ci, cj, cdir)])) continue;
+    if (ci === gi && cj === gj) {
+      // into the goal's stub, straight on to its port: a bend there costs as one
+      var fin = cd + (cdir !== (bV ? 1 : 0) ? BEND : 0);
+      if (!best || fin < best[0]) best = [fin, ci, cj, cdir];
+      continue;
+    }
+    [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (s) {
+      var ni = ci + s[0], nj = cj + s[1], nd = s[0] ? 0 : 1;
+      if (ni < 0 || nj < 0 || ni >= X.length || nj >= Y.length) return;
+      if (blocked(X[ci], Y[cj], X[ni], Y[nj])) return;
+      var c2 = cd + cost(X[ci], Y[cj], X[ni], Y[nj]) + (nd !== cdir ? BEND : 0), kk = key(ni, nj, nd);
+      if (dist[kk] === undefined || c2 < dist[kk]) { dist[kk] = c2; from[kk] = key(ci, cj, cdir); open.push([c2, ni, nj, nd]); }
+    });
+  }
+  if (!best) return iwdieCbRoute(a, b, stub);
+  var path = [], at = key(best[1], best[2], best[3]);
+  while (at !== undefined) {
+    var cell = Math.floor(at / 3), pj = cell % Y.length, pi = Math.floor(cell / Y.length);
+    path.unshift([X[pi], Y[pj]]);
+    at = from[at];
+  }
+  return iwdieCbUnjog(iwdieCbSimplify([[a.x, a.y]].concat(path, [[b.x, b.y]])));
+}
+
+/** A polyline with each jog under 3 px between two bends lined up (v1.113.0): the points after it moved across by the
+ *  jog, as compose.py snaps. -> [[x, y]...] */
+function iwdieCbUnjog(pts) {
+  var out = pts.map(function (p) { return [p[0], p[1]]; });
+  for (var k = 1; k < out.length - 2; k++) {
+    var dx = out[k + 1][0] - out[k][0], dy = out[k + 1][1] - out[k][1], len = Math.abs(dx) + Math.abs(dy);
+    if (len > 0.05 && len < 3) {
+      for (var j = k + 1; j < out.length; j++) { if (Math.abs(dx) > 0) out[j][0] -= dx; else out[j][1] -= dy; }
+      return iwdieCbUnjog(iwdieCbSimplify(out));
+    }
+  }
+  return iwdieCbSimplify(out);
+}
+
+/** Where a pipe from `from` ({x, y}) joins one of `runs` (v1.113.0): the nearest point on a run, the way the joining
+ *  pipe leaves it - a tee. -> {x, y, dir} | null */
+function iwdieCbTee(runs, from) {
+  var best = null, bd = Infinity;
+  (runs || []).forEach(function (run) {
+    for (var k = 1; k < run.length; k++) {
+      var a = run[k - 1], b = run[k], lying = Math.abs(a[1] - b[1]) < 0.05, x, y;
+      if (lying) { x = Math.max(Math.min(a[0], b[0]), Math.min(Math.max(a[0], b[0]), from.x)); y = a[1]; }
+      else { y = Math.max(Math.min(a[1], b[1]), Math.min(Math.max(a[1], b[1]), from.y)); x = a[0]; }
+      var d = Math.abs(x - from.x) + Math.abs(y - from.y);
+      if (d < bd) { bd = d; best = { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, dir: lying ? (from.y < y ? 'up' : 'down') : (from.x < x ? 'left' : 'right') }; }
+    }
+  });
+  return best;
+}
+
+/** A pipe's runs broken where it crosses another circuit's pipe, as the house draws a crossing (v1.113.0; the kit's
+ *  house_style.break_at_crossings): `gap` (6) before and after each pipe it crosses, a crossing with under `stub` (3) of
+ *  run left either side kept whole. `others` the other circuits' runs. -> {runs, broken: [[x, y]], whole: [[x, y]]} */
+function iwdieCbBreakRuns(pts, others, gap, stub) {
+  gap = gap === undefined ? 6 : gap;
+  stub = stub === undefined ? 3 : stub;
+  var cross = function (a, b, c, d) {
+    if (Math.abs(a[1] - b[1]) < 0.01 && Math.abs(c[0] - d[0]) < 0.01) {
+      var x = c[0], y = a[1];
+      return x > Math.min(a[0], b[0]) + 0.5 && x < Math.max(a[0], b[0]) - 0.5 && y > Math.min(c[1], d[1]) + 0.5 && y < Math.max(c[1], d[1]) - 0.5 ? [x, y] : null;
+    }
+    if (Math.abs(a[0] - b[0]) < 0.01 && Math.abs(c[1] - d[1]) < 0.01) return cross(c, d, a, b);
+    return null;
+  };
+  var runs = [[[pts[0][0], pts[0][1]]]], broken = [], whole = [];
+  for (var k = 1; k < pts.length; k++) {
+    var a = pts[k - 1], b = pts[k], lying = Math.abs(a[1] - b[1]) < 0.01, ax = lying ? 0 : 1, step = b[ax] >= a[ax] ? 1 : -1;
+    var hits = [], seen = {};
+    (others || []).forEach(function (o) {
+      for (var j = 1; j < o.length; j++) { var h = cross(a, b, o[j - 1], o[j]); if (h && !seen[h.join(',')]) { seen[h.join(',')] = 1; hits.push(h); } }
+    });
+    hits.sort(function (u, v) { return step * (u[ax] - v[ax]); });
+    var last = a[ax];
+    hits.forEach(function (h) {
+      var stop = h[ax] - step * gap, go = h[ax] + step * gap;
+      if (step * (stop - last) < stub || step * (b[ax] - go) < stub) { whole.push(h); return; }
+      runs[runs.length - 1].push(lying ? [stop, a[1]] : [a[0], stop]);
+      runs.push([lying ? [go, a[1]] : [a[0], go]]);
+      broken.push(h);
+      last = go;
+    });
+    runs[runs.length - 1].push([b[0], b[1]]);
+  }
+  return { runs: runs.filter(function (r) { return r.length >= 2; }), broken: broken, whole: whole };
+}
+
+/** The breaks a removed pipe leaves with nothing in them (v1.113.0; the kit's house_style.gaps_left and join_runs): for
+ *  each pipe of `pieces` ({cid: runs}) two run ends on one line facing each other at most 30 px apart, which `removed`
+ *  crossed and no other pipe of `others` crosses, joined again. -> {cid: runs} for each pipe that changed */
+function iwdieCbHeal(pieces, removed, others) {
+  var tol = 0.15, out = {};
+  var segsOf = function (rs) { var s = []; rs.forEach(function (r) { for (var k = 1; k < r.length; k++) s.push([r[k - 1], r[k]]); }); return s; };
+  var gone = segsOf(removed), still = segsOf(others || []);
+  var across = function (p, q, segs, inside) {
+    var lying = Math.abs(p[1] - q[1]) <= tol, ax = lying ? 0 : 1, lo = Math.min(p[ax], q[ax]), hi = Math.max(p[ax], q[ax]);
+    return segs.some(function (s) {
+      var c = s[0], d = s[1], up = Math.abs(c[0] - d[0]) < 0.01 && Math.abs(c[1] - d[1]) >= 0.01, ly = Math.abs(c[1] - d[1]) < 0.01 && Math.abs(c[0] - d[0]) >= 0.01;
+      if ((lying && !up) || (!lying && !ly)) return false;
+      var at = c[ax], span = [Math.min(c[1 - ax], d[1 - ax]), Math.max(c[1 - ax], d[1 - ax])];
+      return (inside ? at > lo + 0.5 && at < hi - 0.5 : at >= lo - tol && at <= hi + tol) && p[1 - ax] >= span[0] - tol && p[1 - ax] <= span[1] + tol;
+    });
+  };
+  Object.keys(pieces).forEach(function (cid) {
+    var runs = pieces[cid].map(function (r) { return r.map(function (p) { return [p[0], p[1]]; }); }), changed = false, again = true;
+    while (again && runs.length > 1) {
+      again = false;
+      var ends = [];
+      runs.forEach(function (r, i) {
+        [0, r.length - 1].forEach(function (w) {
+          var p = r[w], q = r[w === 0 ? 1 : r.length - 2];
+          if (Math.abs(p[1] - q[1]) <= tol && Math.abs(p[0] - q[0]) > tol) ends.push([i, w, p, 0, p[0] > q[0] ? 1 : -1]);
+          else if (Math.abs(p[0] - q[0]) <= tol && Math.abs(p[1] - q[1]) > tol) ends.push([i, w, p, 1, p[1] > q[1] ? 1 : -1]);
+        });
+      });
+      var bestPair = null;
+      for (var m = 0; m < ends.length; m++) for (var n = m + 1; n < ends.length; n++) {
+        var e1 = ends[m], e2 = ends[n], ax = e1[3];
+        if (ax !== e2[3] || e1[0] === e2[0] || Math.abs(e1[2][1 - ax] - e2[2][1 - ax]) > tol) continue;
+        var span = (e2[2][ax] - e1[2][ax]) * e1[4];
+        if (!(span > 0.5 && span <= 30) || (e1[2][ax] - e2[2][ax]) * e2[4] <= 0.5) continue;
+        if (!across(e1[2], e2[2], gone, true) || across(e1[2], e2[2], still, false)) continue;
+        if (!bestPair || span < bestPair[0]) bestPair = [span, e1, e2];
+      }
+      if (bestPair) {
+        var A = runs[bestPair[1][0]], B = runs[bestPair[2][0]];
+        var a2 = bestPair[1][1] === 0 ? A.slice().reverse() : A.slice(), b2 = bestPair[2][1] === 0 ? B.slice() : B.slice().reverse();
+        var joined = iwdieCbSimplify(a2.concat(b2));
+        runs = runs.filter(function (r, i) { return i !== bestPair[1][0] && i !== bestPair[2][0]; });
+        runs.push(joined);
+        changed = again = true;
+      }
+    }
+    if (changed) out[cid] = runs;
+  });
+  return out;
+}
+
+/** A thing's own ports (v1.113.0) - its symbol's in, out, branch, tip ... - or, for one with none, its four sides. */
+function iwdieCbOwnPorts(ports) {
+  var own = {};
+  Object.keys(ports || {}).forEach(function (k) { if (!/^(top|bottom|left|right)$/.test(k)) own[k] = ports[k]; });
+  return Object.keys(own).length ? own : ports || {};
+}
+
+/** The ports of a family the table does not measure, by what it is (v1.113.0): a vessel joined at its top and bottom, a
+ *  pump and a plain valve through from left to right. -> {port: [u, v, way]} | null */
+function iwdieCbPortsByName(name) {
+  var n = String(name || '');
+  if (/^(Beholder|Oljeutskiller|Akkumulator)/.test(n) || /^Tank(?!ITank)/.test(n)) return { 'in': [0.5, 0, 'up'], out: [0.5, 1, 'down'] };
+  if (/^(Pumpe|Ventil|Tilbakeslag)/.test(n)) return { 'in': [0, 0.5, 'left'], out: [1, 0.5, 'right'] };
+  return null;
+}
+
+/** The straight stretch of a pipe's runs a symbol is put on (v1.113.0): the one nearest `near` [x, y], else the longest;
+ *  and the point on it - the nearest to `near`, else its middle. -> {run, k, a, b, lying, at} | null */
+function iwdieCbOnSeg(runs, near) {
+  var best = null, bd = Infinity;
+  (runs || []).forEach(function (r, ri) {
+    for (var k = 1; k < r.length; k++) {
+      var a = r[k - 1], b = r[k], lying = Math.abs(a[1] - b[1]) < 0.05, upright = Math.abs(a[0] - b[0]) < 0.05;
+      if (!lying && !upright) continue;
+      var len = Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]), at, d;
+      if (near) {
+        at = lying ? [Math.max(Math.min(a[0], b[0]), Math.min(Math.max(a[0], b[0]), near[0])), a[1]] : [a[0], Math.max(Math.min(a[1], b[1]), Math.min(Math.max(a[1], b[1]), near[1]))];
+        d = Math.abs(at[0] - near[0]) + Math.abs(at[1] - near[1]);
+      } else { at = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; d = -len; }
+      if (d < bd) { bd = d; best = { run: ri, k: k, a: a, b: b, lying: lying, at: [Math.round(at[0] * 10) / 10, Math.round(at[1] * 10) / 10] }; }
+    }
+  });
+  return best;
+}
+
+/** Runs with one stretch cut between two points on it (v1.113.0) - a symbol's in and out ports, where it is put on the
+ *  pipe: that run split in two there. -> runs | null when the points do not lie within the stretch */
+function iwdieCbCutRuns(runs, seg, p1, p2) {
+  var r = runs[seg.run], ax = seg.lying ? 0 : 1, a = seg.a, b = seg.b;
+  var lo = Math.min(p1[ax], p2[ax]), hi = Math.max(p1[ax], p2[ax]), up = b[ax] >= a[ax];
+  if (Math.min(a[ax], b[ax]) - 0.5 > lo || Math.max(a[ax], b[ax]) + 0.5 < hi) return null;
+  var pt = function (v) { v = Math.round(v * 10) / 10; return seg.lying ? [v, a[1]] : [a[0], v]; };
+  var head = iwdieCbSimplify(r.slice(0, seg.k).concat([pt(up ? lo : hi)])), tail = iwdieCbSimplify([pt(up ? hi : lo)].concat(r.slice(seg.k)));
+  var real = function (x) { return x.length >= 2 && Math.abs(x[0][0] - x[x.length - 1][0]) + Math.abs(x[0][1] - x[x.length - 1][1]) > 0.05; };
+  return runs.slice(0, seg.run).concat([head, tail].filter(real), runs.slice(seg.run + 1));
+}
+
+/** What moves with a thing (v1.113.0): its tag's words above it (within 18 px, their middle over it), its values where
+ *  the drawing's own stand by that kind of symbol (facts.values, 8 px either way) with their pills and captions, and the
+ *  pipe ends that meet its box. `box` where it stood. -> {things: [item], ends: [{cid, run, end: 0 | -1}]} */
+function iwdieCbAttached(items, it, box, facts) {
+  var things = [], ends = [], cx = box.x + box.w / 2;
+  items.forEach(function (o) {
+    if (o === it || !o.box || o.kind !== 'text') return;
+    var ob = o.box;
+    if (ob.y + ob.h <= box.y + 2 && ob.y + ob.h >= box.y - 18 && Math.abs(ob.x + ob.w / 2 - cx) <= Math.max(6, box.w / 2)) things.push(o);
+  });
+  var fv = it.symbol && facts && (facts.values || []).filter(function (v) { return iwdieSymKey(v.symbol) === iwdieSymKey(it.symbol); })[0];
+  if (fv) {
+    var vx = box.x + fv.dx, vy = box.y + fv.dy;
+    items.forEach(function (o) {
+      if (o.kind !== 'object' || !/value/.test(o.role || '') || Math.abs(o.box.x - vx) > 8 || Math.abs(o.box.y - vy) > 8) return;
+      things.push(o);
+      var vc = [o.box.x + o.box.w / 2, o.box.y + o.box.h / 2];
+      items.forEach(function (q) {
+        if (q.kind === 'pill' && vc[0] >= q.box.x && vc[0] <= q.box.x + q.box.w && vc[1] >= q.box.y && vc[1] <= q.box.y + q.box.h) things.push(q);
+        else if (q.kind === 'text' && Math.abs(q.box.y + q.box.h / 2 - vc[1]) <= 8 && q.box.x + q.box.w <= o.box.x + 8 && q.box.x + q.box.w >= o.box.x - 14) things.push(q);
+      });
+    });
+  }
+  items.forEach(function (p) {
+    if (p.kind !== 'pipe' || !p.pts) return;
+    iwdieCbRunsOf(p).forEach(function (r, ri) {
+      [0, r.length - 1].forEach(function (w) {
+        var e = r[w];
+        if (e[0] >= box.x - 2.5 && e[0] <= box.x + box.w + 2.5 && e[1] >= box.y - 2.5 && e[1] <= box.y + box.h + 2.5) ends.push({ cid: p.cid, run: ri, end: w === 0 ? 0 : -1 });
+      });
+    });
+  });
+  return { things: things, ends: ends };
+}
+
+/** A flow arrow for a pipe (v1.113.0), where the house sets one (house-style.json placement): beside its middle run, 7 px
+ *  off it, pointing along the pipe from its first point to its last; `where` 'end' (or 'start') 10 px past that open end
+ *  on its axis. -> {name: 'PilLiten', box, k} | null */
+function iwdieCbArrow(pts, where) {
+  if (!pts || pts.length < 2) return null;
+  var W = 9.8, H = 5.5, seg, at, dir;
+  if (where === 'end' || where === 'start') {
+    var e = where === 'end' ? pts[pts.length - 1] : pts[0], f = where === 'end' ? pts[pts.length - 2] : pts[1];
+    var ux = Math.sign(e[0] - f[0]), uy = Math.sign(e[1] - f[1]);
+    at = [e[0] + ux * 10, e[1] + uy * 10];
+    dir = where === 'end' ? [ux, uy] : [-ux, -uy];
+  } else {
+    var best = 0;
+    for (var k = 1; k < pts.length; k++) { var l = Math.abs(pts[k][0] - pts[k - 1][0]) + Math.abs(pts[k][1] - pts[k - 1][1]); if (l > best) { best = l; seg = k; } }
+    var a = pts[seg - 1], b = pts[seg], lying = Math.abs(a[1] - b[1]) < 0.05;
+    dir = [Math.sign(b[0] - a[0]), Math.sign(b[1] - a[1])];
+    at = [(a[0] + b[0]) / 2 + (lying ? 0 : 7), (a[1] + b[1]) / 2 + (lying ? -7 : 0)];
+  }
+  // PilLiten points right at turn 0; a quarter turn clockwise points down
+  var k2 = dir[0] > 0 ? 0 : dir[1] > 0 ? 1 : dir[0] < 0 ? 2 : 3, w = k2 & 1 ? H : W, h = k2 & 1 ? W : H;
+  return { name: 'PilLiten', k: k2, box: { x: Math.round((at[0] - w / 2) * 10) / 10, y: Math.round((at[1] - h / 2) * 10) / 10, w: w, h: h } };
 }
 
 /** The points of path data that is straight runs only (M, L, H, V, Z; absolute or relative), or null for one with a
@@ -12759,6 +13059,53 @@ function iwdieCbPathPoints(d) {
     out.push([x, y]);
   }
   return out;
+}
+
+/** The straight runs of path data, one for each move-to (v1.113.0): a pipe the house breaks at a crossing is one path of
+ *  two or more runs. -> [[[x, y]...]...] | null for a curve */
+function iwdieCbPathRuns(d) {
+  var parts = String(d || '').split(/(?=[Mm])/).filter(function (s) { return s.trim(); }), runs = [], at = [0, 0];
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i].trim();
+    // a relative move-to goes from where the run before ended
+    if (/^m/.test(p) && runs.length) {
+      var nums = p.slice(1).match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) || [];
+      if (nums.length >= 2) {
+        var rest = p.slice(1).replace(/^\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?[\s,]*[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?[\s,]*/, '');
+        // pairs after a move-to are line-tos of the same kind
+        p = 'M' + (at[0] + parseFloat(nums[0])) + ' ' + (at[1] + parseFloat(nums[1])) + ' ' + (/^[-+.\d]/.test(rest) ? 'l' : '') + rest;
+      }
+    }
+    var pts = iwdieCbPathPoints(p);
+    if (!pts) return null;
+    if (pts.length) { runs.push(pts); at = pts[pts.length - 1]; }
+  }
+  return runs;
+}
+
+/** The quarter turn and mirror (k, as iwdieSymMatrix counts them) of a transform written on an element (v1.113.0):
+ *  rotate(90), matrix(0 1 -1 0 e f), scale(-1 1) and the like - a symbol turned by hand in VectorCraft. 0 for none or for
+ *  a turn that is no quarter. -> k */
+function iwdieCbTurnOf(transform) {
+  var t = String(transform || ''), m = [1, 0, 0, 1], re = /(matrix|rotate|scale)\s*\(([^)]*)\)/g, f;
+  var mul = function (a, b) { return [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1], a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3]]; };
+  while ((f = re.exec(t))) {
+    var v = f[2].split(/[\s,]+/).filter(Boolean).map(parseFloat), q = null;
+    if (f[1] === 'matrix' && v.length >= 4) q = [v[0], v[1], v[2], v[3]];
+    else if (f[1] === 'rotate' && v.length >= 1) { var r = v[0] * Math.PI / 180; q = [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r)]; }
+    else if (f[1] === 'scale' && v.length >= 1) q = [v[0], 0, 0, v.length > 1 ? v[1] : v[0]];
+    if (q) m = mul(m, q);
+  }
+  var n = function (x) { return Math.abs(x) < 1e-6 ? 0 : x > 0 ? 1 : -1; }, u = [n(m[0]), n(m[1]), n(m[2]), n(m[3])];
+  if (Math.abs(u[0]) + Math.abs(u[1]) !== 1 || Math.abs(u[2]) + Math.abs(u[3]) !== 1) return 0;
+  return iwdieSymK(u);
+}
+
+/** Whether a group's name names a house symbol or an arrangement (a copy dragged from Libraries: "Kompressor 2"). */
+function iwdieCbSymbolNamed(name) {
+  if (!name) return false;
+  var st = iwdieSymTable(), bare = String(name).replace(/[\s_-]+\d+$/, '');
+  return !!(st.families[st.byKey[iwdieSymKey(bare)]] || iwdieSymGroup(bare));
 }
 
 /** Whether two boxes ({x, y, w, h}) come closer than `gap`. */
@@ -12917,6 +13264,18 @@ function iwdieCbFacts(items, size) {
   var most = function (o) { var b = null; Object.keys(o).forEach(function (k) { if (b === null || o[k] > o[b]) b = k; }); return b; };
   var facts = { rows: lines('x'), columns: lines('y'), infoColumn: info, circuits: circuits, values: values,
     text: { size: most(sizes) ? +most(sizes) : null, colour: most(colours) } };
+  // (v1.113.0) the information column's rows of values: where they stand, their step, where the next goes
+  if (info) {
+    var col = items.filter(function (it) { return it.kind === 'object' && /value/.test(it.role || '') && it.box.x >= info.x && it.box.x < info.x + info.w; })
+      .sort(function (a, b) { return a.box.y - b.box.y; });
+    if (col.length) {
+      var gaps = [];
+      for (var g = 1; g < col.length; g++) { var d = col[g].box.y - col[g - 1].box.y; if (d > 5 && d < 60) gaps.push(d); }
+      var stepY = iwdieCbMedian(gaps) || 28;
+      facts.infoRows = { valueX: Math.round(iwdieCbMedian(col.map(function (v) { return v.box.x; }))), step: Math.round(stepY), rows: col.length,
+        next: Math.round(col[col.length - 1].box.y + stepY) };
+    }
+  }
   // an Oversikt (v1.84.0)
   var cases = items.filter(function (it) { return iwdieOvCaseKind(it); });
   if (cases.length) {
@@ -13004,9 +13363,13 @@ function iwdieCbCheck(items, size, opts) {
   items.forEach(function (it) {
     if (it.kind === 'pipe' && it.pts === null) add('warning', 'CB-R01', 'a pipe with a curve or a diagonal: pipes are straight runs', [it.cid]);
     if (it.kind === 'pipe' && it.pts) {
-      for (var k = 1; k < it.pts.length; k++) {
-        if (it.pts[k][0] !== it.pts[k - 1][0] && it.pts[k][1] !== it.pts[k - 1][1]) { add('warning', 'CB-R01', 'a pipe with a diagonal run: pipes are orthogonal', [it.cid]); break; }
-      }
+      // (v1.113.0) run by run: the gap of a crossing's break is no diagonal
+      (it.runs || [it.pts]).some(function (run) {
+        for (var k = 1; k < run.length; k++) {
+          if (Math.abs(run[k][0] - run[k - 1][0]) > 0.05 && Math.abs(run[k][1] - run[k - 1][1]) > 0.05) { add('warning', 'CB-R01', 'a pipe with a diagonal run: pipes are orthogonal', [it.cid]); return true; }
+        }
+        return false;
+      });
     }
     if (it.kind === 'text' && /^\s*[-+]?\d+([.,]\d+)?\s*(%|°c|°|bar|k|kw|kwh|rpm|hz|a|v)?\s*$|^\s*(on|off|auto|ok|alarm|running|stopped|av|på)\s*$/i.test(it.text || '')) {
       add('warning', 'CB-T01', 'drawn text "' + it.text + '" is a number or a state: an object shows those', [it.cid]);
@@ -13016,6 +13379,8 @@ function iwdieCbCheck(items, size, opts) {
       if (why) add('warning', 'CB-B01', why, [it.cid]);
     }
   });
+  // (v1.113.0) the geometry the report of 2026-11-04 found the check blind to
+  if (opts.geometry !== false) iwdieCbGeometryCheck(items, { w: W, h: H }, add);
   // an Oversikt (v1.84.0): each case its value; every name a label object (Thomas, 2026-10-16: "should have been object
   // text that is renamed instead"); the legend column
   var cases = items.filter(function (it) { return iwdieOvCaseKind(it); });
@@ -13042,6 +13407,132 @@ function iwdieCbCheck(items, size, opts) {
     add('warning', 'CB-F01', s.symbol + ' at (' + Math.round(s.box.x) + ', ' + Math.round(s.box.y) + ') is not on a pipe running its way: an arrow shows a pipe\'s flow', [s.cid]);
   });
   return out;
+}
+
+/** The findings of `after` that `before` had not (v1.113.0): one is new where it names a thing that rule did not name
+ *  before - a finding that sums many up (CB-O01, CB-R03) is new when it holds one more, not when its count changes.
+ *  -> [finding] */
+function iwdieCbNewFindings(before, after) {
+  var key = function (f, c) { return f.rule + ' ' + (c === undefined ? '| ' + f.what : c); }, had = {};
+  (before || []).forEach(function (f) { if (f.cids && f.cids.length) f.cids.forEach(function (c) { had[key(f, c)] = 1; }); else had[key(f)] = 1; });
+  return (after || []).filter(function (f) { return f.cids && f.cids.length ? f.cids.some(function (c) { return !had[key(f, c)]; }) : !had[key(f)]; });
+}
+
+/** A pipe's runs (v1.113.0): its own, or its points as one. -> [[[x, y]...]] */
+function iwdieCbRunsOf(it) {
+  return it.runs || (it.pts ? [it.pts] : []);
+}
+
+/** The house symbols no pipe runs through, only ends at a port of (v1.113.0): compressors and gas coolers. The house's
+ *  own racks draw a line through an oil separator, a receiver, an exchanger and what sits on a pipe. */
+var IWDIE_CB_BODIES = /^(Kompressor|Gaskjøler)/;
+
+/** What the geometry of a drawing gets wrong (v1.113.0), each found by `add(level, rule, what, cids)`:
+ *  CB-R02 a pipe running through equipment or through words; CB-R03 a pipe's end that meets nothing (info); CB-R04 two
+ *  pipes on each other; CB-R05 a jog under 3 px; CB-T02 words on words; CB-O03 something drawn under an IWMAC object;
+ *  CB-O04 symbols or pipes off the panel (info); CB-B02 new objects bound to nothing (info). */
+function iwdieCbGeometryCheck(items, size, add) {
+  var W = size.w, H = size.h, near = function (v, a, b, t) { return v >= Math.min(a, b) - t && v <= Math.max(a, b) + t; };
+  var pipes = items.filter(function (it) { return it.kind === 'pipe' && it.pts; });
+  var segs = [];
+  pipes.forEach(function (p) {
+    iwdieCbRunsOf(p).forEach(function (run) {
+      for (var k = 1; k < run.length; k++) segs.push({ cid: p.cid, a: run[k - 1], b: run[k], circuit: p.circuit || p.colour });
+    });
+  });
+  var inset = function (b, d) { return { x: b.x + d, y: b.y + d, w: b.w - 2 * d, h: b.h - 2 * d }; };
+  var crosses = function (s, b) {
+    // an orthogonal run through the inside of a box
+    if (b.w <= 0 || b.h <= 0) return false;
+    if (Math.abs(s.a[1] - s.b[1]) < 0.5) return s.a[1] > b.y && s.a[1] < b.y + b.h && Math.min(s.a[0], s.b[0]) < b.x && Math.max(s.a[0], s.b[0]) > b.x + b.w;
+    if (Math.abs(s.a[0] - s.b[0]) < 0.5) return s.a[0] > b.x && s.a[0] < b.x + b.w && Math.min(s.a[1], s.b[1]) < b.y && Math.max(s.a[1], s.b[1]) > b.y + b.h;
+    return false;
+  };
+  // CB-R02: through equipment, through words
+  items.forEach(function (it) {
+    var body = it.kind === 'symbol' && IWDIE_CB_BODIES.test(it.symbol || '') && !it.group, words = it.kind === 'text' && String(it.text || '').trim();
+    if (!body && !words) return;
+    var b = inset(it.box, body ? 3 : 1), hit = {};
+    segs.forEach(function (s) { if (!hit[s.cid] && crosses(s, b)) hit[s.cid] = 1; });
+    var by = Object.keys(hit);
+    if (by.length) add('warning', 'CB-R02', (body ? 'a pipe runs through ' + it.symbol + ' at (' + Math.round(it.box.x) + ', ' + Math.round(it.box.y) + '): end it at a port instead'
+      : 'a pipe runs through the words "' + String(it.text).slice(0, 30) + '": move them clear of it'), [it.cid].concat(by));
+  });
+  // CB-R03: an end that meets nothing - no pipe, no symbol, object, pill or words within 3 px, not the panel's edge
+  var things = items.filter(function (it) { return it.kind !== 'pipe' && it.kind !== 'group' && it.layer !== 'Bakgrunn' && it.box; });
+  var loose = [];
+  pipes.forEach(function (p) {
+    iwdieCbRunsOf(p).forEach(function (run) {
+      [run[0], run[run.length - 1]].forEach(function (e) {
+        if (!e) return;
+        var edge = e[0] <= 2 || e[1] <= 2 || e[0] >= W - 2 || e[1] >= H - 2;
+        var onPipe = segs.some(function (s) { return s.cid !== p.cid && near(e[0], s.a[0], s.b[0], 3) && near(e[1], s.a[1], s.b[1], 3) && (Math.abs(s.a[0] - s.b[0]) < 0.5 ? Math.abs(e[0] - s.a[0]) <= 3 : Math.abs(e[1] - s.a[1]) <= 3); });
+        var onThing = things.some(function (t) { return e[0] >= t.box.x - 3 && e[0] <= t.box.x + t.box.w + 3 && e[1] >= t.box.y - 3 && e[1] <= t.box.y + t.box.h + 3; });
+        if (!edge && !onPipe && !onThing) loose.push([p.cid, e]);
+      });
+    });
+  });
+  if (loose.length) add('info', 'CB-R03', loose.length + ' pipe end' + (loose.length > 1 ? 's meet' : ' meets') + ' nothing: ' + loose.slice(0, 6).map(function (l) { return l[0] + ' at ' + Math.round(l[1][0]) + ',' + Math.round(l[1][1]); }).join('; ') +
+    (loose.length > 6 ? '; …' : '') + ' - run each on to what it joins, or end it at a label or an arrow if it leaves the picture there', loose.map(function (l) { return l[0]; }));
+  // CB-R04: two pipes on each other along a run, more than 8 px
+  var told = {};
+  for (var i = 0; i < segs.length; i++) for (var j = i + 1; j < segs.length; j++) {
+    var s = segs[i], t = segs[j];
+    if (s.cid === t.cid || told[s.cid + ' ' + t.cid]) continue;
+    var sh = Math.abs(s.a[1] - s.b[1]) < 0.5, th = Math.abs(t.a[1] - t.b[1]) < 0.5, sv = Math.abs(s.a[0] - s.b[0]) < 0.5, tv = Math.abs(t.a[0] - t.b[0]) < 0.5;
+    var lap = 0;
+    if (sh && th && Math.abs(s.a[1] - t.a[1]) <= 1.5) lap = Math.min(Math.max(s.a[0], s.b[0]), Math.max(t.a[0], t.b[0])) - Math.max(Math.min(s.a[0], s.b[0]), Math.min(t.a[0], t.b[0]));
+    else if (sv && tv && Math.abs(s.a[0] - t.a[0]) <= 1.5) lap = Math.min(Math.max(s.a[1], s.b[1]), Math.max(t.a[1], t.b[1])) - Math.max(Math.min(s.a[1], s.b[1]), Math.min(t.a[1], t.b[1]));
+    if (lap > 8) {
+      told[s.cid + ' ' + t.cid] = 1;
+      add('warning', 'CB-R04', 'pipes ' + s.cid + ' and ' + t.cid + ' lie on each other for ' + Math.round(lap) + ' px: join the new one to the other instead (end it on it)', [s.cid, t.cid]);
+    }
+  }
+  // CB-R05: a jog under 3 px between two bends
+  pipes.forEach(function (p) {
+    iwdieCbRunsOf(p).some(function (run) {
+      for (var k = 2; k < run.length - 1; k++) {
+        var d = Math.abs(run[k][0] - run[k - 1][0]) + Math.abs(run[k][1] - run[k - 1][1]);
+        if (d > 0.05 && d < 3) { add('warning', 'CB-R05', 'a pipe jogs ' + (Math.round(d * 10) / 10) + ' px at (' + Math.round(run[k][0]) + ', ' + Math.round(run[k][1]) + '): line it up', [p.cid]); return true; }
+      }
+      return false;
+    });
+  });
+  // CB-T02: words on words
+  var texts = items.filter(function (it) { return it.kind === 'text' && it.box && String(it.text || '').trim(); });
+  for (var a = 0; a < texts.length; a++) for (var b2 = a + 1; b2 < texts.length; b2++) {
+    var A = texts[a].box, B = texts[b2].box;
+    var ix = Math.min(A.x + A.w, B.x + B.w) - Math.max(A.x, B.x), iy = Math.min(A.y + A.h, B.y + B.h) - Math.max(A.y, B.y);
+    if (ix > 1 && iy > 1 && ix * iy > 0.3 * Math.min(A.w * A.h, B.w * B.h)) {
+      add('warning', 'CB-T02', 'the words "' + String(texts[a].text).slice(0, 24) + '" and "' + String(texts[b2].text).slice(0, 24) + '" lie on each other', [texts[a].cid, texts[b2].cid]);
+    }
+  }
+  // CB-O03: something drawn under an IWMAC object (Thomas, 2026-10-15: the object draws itself) - not a value's pill
+  var objs = items.filter(function (it) { return it.kind === 'object'; });
+  items.forEach(function (it) {
+    if (!it.box || it.layer === 'Bakgrunn' || it.kind === 'group' || it.kind === 'pipe' || it.kind === 'text' || it.kind === 'object' || it.kind === 'image') return;
+    if (it.kind === 'symbol' && /^(Pil|PilLiten|PilSikksakk)$/.test(it.symbol || '')) return;
+    objs.forEach(function (o) {
+      if (it.kind === 'pill' && /^number_v3_(white_)?value_only$/.test(o.obj_id || '')) return;
+      if (/^number_v3_R_dummy_/.test(o.obj_id || '') || o.role === 'label' || o.role === 'value') return;
+      var ix2 = Math.min(it.box.x + it.box.w, o.box.x + o.box.w) - Math.max(it.box.x, o.box.x), iy2 = Math.min(it.box.y + it.box.h, o.box.y + o.box.h) - Math.max(it.box.y, o.box.y);
+      if (ix2 > 0 && iy2 > 0 && ix2 * iy2 > 0.5 * Math.min(o.box.w * o.box.h, it.box.w * it.box.h)) {
+        add('warning', 'CB-O03', (it.symbol || it.kind) + ' is drawn under ' + o.obj_id + ': the object draws itself - leave the drawing out there (Thomas, 2026-10-15)', [it.cid, o.cid]);
+      }
+    });
+  });
+  // CB-O04: symbols or pipes off the panel - said, as objects off it are (CB-O01)
+  var off = items.filter(function (it) {
+    if (!it.box || (it.kind !== 'symbol' && it.kind !== 'pipe')) return false;
+    var b = it.box;
+    return b.x < -0.5 || b.y < -0.5 || b.x + b.w > W + 0.5 || b.y + b.h > H + 0.5;
+  });
+  if (off.length) add('info', 'CB-O04', off.length + (off.length === 1 ? ' symbol or pipe runs' : ' symbols or pipes run') + ' off the ' + W + ' x ' + H + ' panel (' +
+    off.slice(0, 6).map(function (it) { return it.symbol || it.cid; }).join(', ') + (off.length > 6 ? ', …' : '') + '): allowed, if meant', off.map(function (it) { return it.cid; }));
+  // CB-B02: objects placed new and bound to nothing, of a kind that shows a parameter
+  var bare = objs.filter(function (o) { return !o.ref && !o.bind && /^(value|alarm|led|state|switch|pump|fan|compressor|valve)$/.test(o.role || ''); });
+  if (bare.length) add('info', 'CB-B02', bare.length + ' new object' + (bare.length > 1 ? 's are' : ' is') + ' bound to nothing (' + bare.slice(0, 6).map(function (o) { return o.obj_id; }).join(', ') +
+    (bare.length > 6 ? ', …' : '') + '): bind each to its row, or say which stay placeholders', bare.map(function (o) { return o.cid; }));
 }
 
 /** The flow arrows (Pil, PilLiten, PilSikksakk) of a drawing that lie on no pipe running their way (v1.64.2): an arrow
@@ -14184,8 +14675,54 @@ function iwdieCbPlan(ops, scene, ctx) {
   var thing = function (t) {
     if (!t) return null;
     if (t.ref !== undefined && refs[t.ref]) return refs[t.ref];
-    if (t.cid !== undefined && byCid[t.cid]) return { cid: t.cid, box: byCid[t.cid].box, symbol: byCid[t.cid].symbol, k: byCid[t.cid].k, item: byCid[t.cid] };
+    if (t.cid !== undefined && byCid[t.cid]) {
+      var bi = byCid[t.cid];
+      return { cid: t.cid, box: bi.box, symbol: bi.symbol, k: bi.k, item: bi, pipe: bi.kind === 'pipe' && bi.pts ? { runs: iwdieCbRunsOf(bi), circuit: bi.circuit || '', colour: bi.colour, cid: bi.cid } : null };
+    }
     return null;
+  };
+  // (v1.113.0) the pipes as they stand in this edit - the drawing's, less those deleted or redrawn, and those added so far
+  var gone = {}, redrawn = {};
+  var pipesNow = function () {
+    var out = [];
+    items.forEach(function (it) {
+      if (it.kind === 'pipe' && it.pts && !gone[it.cid]) out.push({ cid: it.cid, circuit: it.circuit || iwdieCbCircuitOfColour(it.colour) || '', colour: it.colour, runs: redrawn[it.cid] || iwdieCbRunsOf(it) });
+    });
+    steps.forEach(function (st) { if (st['do'] === 'add' && st.kind === 'pipe') out.push({ step: st, circuit: st.circuit || '', colour: st.colour, runs: st.runs || [st.pts] }); });
+    return out;
+  };
+  var segsOf = function (pipes) { var out = []; pipes.forEach(function (p) { p.runs.forEach(function (r) { for (var k = 1; k < r.length; k++) out.push([r[k - 1], r[k]]); }); }); return out; };
+  // what a routed pipe keeps clear of: equipment, objects, words and pills, the drawing's and this edit's, less `skip`
+  var obstacles = function (skip) {
+    var out = [];
+    items.forEach(function (it) {
+      if (!it.box || it.layer === 'Bakgrunn' || skip.indexOf(it.box) >= 0 || gone[it.cid] || !/^(symbol|object|text|pill|case)$/.test(it.kind)) return;
+      if (it.kind === 'symbol' && /^(Pil|PilLiten|PilSikksakk)$/.test(it.symbol || '')) return;
+      out.push(it.box);
+    });
+    steps.forEach(function (st) { if (st['do'] === 'add' && st.box && st.kind !== 'pipe' && skip.indexOf(st.box) < 0) out.push(st.box); });
+    return out;
+  };
+  // the circuit of a pipe that touches `p` ({x, y}), within 3 px - a new pipe joining it takes its circuit
+  var circuitAt = function (p) {
+    var hit = null;
+    pipesNow().some(function (q) {
+      return q.runs.some(function (r) {
+        for (var k = 1; k < r.length; k++) {
+          var a = r[k - 1], b = r[k];
+          if (p.x >= Math.min(a[0], b[0]) - 3 && p.x <= Math.max(a[0], b[0]) + 3 && p.y >= Math.min(a[1], b[1]) - 3 && p.y <= Math.max(a[1], b[1]) + 3) { hit = q; return true; }
+        }
+        return false;
+      });
+    });
+    return hit && (hit.circuit || hit.colour) ? hit : null;
+  };
+  // a pipe changed in place: its runs drawn anew (a split, a heal, a carried end) - one step a pipe, the last kept
+  var repipe = function (target, runs, i) {
+    if (target.step) { target.step.runs = runs.length > 1 ? runs : undefined; target.step.pts = [].concat.apply([], runs); return; }
+    redrawn[target.cid] = runs;
+    var had = steps.filter(function (st) { return st['do'] === 'repipe' && st.cid === target.cid; })[0];
+    if (had) had.runs = runs; else steps.push({ 'do': 'repipe', cid: target.cid, runs: runs, op: i });
   };
   // a box of `w` x `h` placed as `at` says
   var place = function (at, w, h, i) {
@@ -14209,7 +14746,14 @@ function iwdieCbPlan(ops, scene, ctx) {
     // the size as the library draws it, to the hundredth: a symbol so placed is drawn at 1:1
     var box = { x: r1(x), y: r1(y), w: Math.round(w * 100) / 100, h: Math.round(h * 100) / 100 };
     if (at.free) {
-      var f = iwdieCbFree(box, boxes, area, { gap: at.gap === undefined ? 6 : +at.gap });
+      // (v1.113.0) clear of pipes and words too, and out of the information column unless asked for there
+      var taken = boxes.slice();
+      items.forEach(function (it) { if (it.kind === 'text' && it.box && !gone[it.cid]) taken.push(it.box); });
+      steps.forEach(function (st) { if (st['do'] === 'add' && st.kind === 'text' && isFinite(st.x)) taken.push({ x: st.x - 2, y: st.y - (st.size || 12) * 0.8, w: 4, h: st.size || 12 }); });
+      segsOf(pipesNow()).forEach(function (sg) { taken.push({ x: Math.min(sg[0][0], sg[1][0]) - 1, y: Math.min(sg[0][1], sg[1][1]) - 1, w: Math.abs(sg[1][0] - sg[0][0]) + 2, h: Math.abs(sg[1][1] - sg[0][1]) + 2 }); });
+      var col = ctx.facts && ctx.facts.infoColumn, keepOut = [];
+      if (col && box.x + box.w <= col.x) keepOut.push({ x: col.x, y: 0, w: col.w, h: size.h });
+      var f = iwdieCbFree(box, taken, area, { gap: at.gap === undefined ? 6 : +at.gap, keepOut: keepOut });
       if (!f) { fail(i, 'no free place near (' + box.x + ', ' + box.y + ')'); return null; }
       box.x = f.x; box.y = f.y;
     }
@@ -14223,6 +14767,28 @@ function iwdieCbPlan(ops, scene, ctx) {
   // (v1.111.0) the words in the drawing's own size and colour, else the house's: 12 px in #3c505e (IWDIE_CB_HOUSE)
   var textSize = function () { return (ctx.facts && ctx.facts.text && ctx.facts.text.size) || IWDIE_CB_HOUSE.size; };
   var textColour = function () { return (ctx.facts && ctx.facts.text && ctx.facts.text.colour) || IWDIE_CB_HOUSE.colour; };
+  // (v1.113.0) a pipe step: its runs broken at other circuits' pipes when `breaks: "auto"`, its flow arrow when `arrow`
+  // (mid, start, end), its ref a pipe the ops after it can join. -> its ref record
+  var addPipe = function (o, i, pts, c) {
+    var st = { 'do': 'add', kind: 'pipe', pts: pts, colour: o.colour || (c ? c.colour : IWDIE_CB_HOUSE.grey), width: +o.width || (c && c.width) || 2,
+      circuit: c ? c.name : (o.circuit || ''), ref: o.ref, op: i };
+    if (o.breaks === 'auto') {
+      var mineC = st.circuit || st.colour, others = pipesNow().filter(function (p) { return (p.circuit || p.colour) !== mineC; });
+      var br = iwdieCbBreakRuns(pts, [].concat.apply([], others.map(function (p) { return p.runs; })));
+      if (br.runs.length > 1) st.runs = br.runs;
+      if (br.whole.length) notes.push('op ' + (i + 1) + ': ' + br.whole.length + ' crossing(s) too near a bend or an end to break, kept whole: ' + br.whole.slice(0, 4).map(function (p) { return r1(p[0]) + ',' + r1(p[1]); }).join(' '));
+    } else if (o.breaks !== undefined && o.breaks !== false) fail(i, 'breaks is "auto": the pipe broken where it crosses another circuit\'s, as the house draws it');
+    steps.push(st);
+    if (o.arrow) {
+      var ar = iwdieCbArrow(pts, o.arrow);
+      if (ar) { steps.push({ 'do': 'add', kind: 'symbol', name: ar.name, box: ar.box, k: ar.k, op: i }); boxes.push(ar.box); }
+    }
+    var xs = pts.map(function (p) { return p[0]; }), ys = pts.map(function (p) { return p[1]; });
+    var rec = { box: { x: Math.min.apply(null, xs), y: Math.min.apply(null, ys), w: Math.max.apply(null, xs) - Math.min.apply(null, xs), h: Math.max.apply(null, ys) - Math.min.apply(null, ys) },
+      pipe: { runs: st.runs || [pts], circuit: st.circuit, colour: st.colour, step: st } };
+    keep(o.ref, rec);
+    return rec;
+  };
   // (v1.111.0) the circuit a pipe op names; one no circuit is called: said, and the pipe drawn grey as before
   var circuitOf = function (o, i) {
     if (!o.circuit) return null;
@@ -14244,6 +14810,14 @@ function iwdieCbPlan(ops, scene, ctx) {
       if (typeof gsc === 'string') { fail(i, gsc); return null; }
       want = (k & 1) ? { w: grp.h * gsc, h: grp.w * gsc } : { w: grp.w * gsc, h: grp.h * gsc };
     }
+    // (v1.113.0) on a pipe: turned along the run it is put on, unless a turn is given
+    var onPipe = at && at.on ? thing(at.on) : null;
+    if (at && at.on) {
+      if (!onPipe || !onPipe.pipe) { fail(i, 'at.on needs a pipe on the drawing or placed earlier in this edit: {cid} or {ref}'); return null; }
+      var seg0 = iwdieCbOnSeg(onPipe.pipe.runs, at.point);
+      if (!seg0) { fail(i, 'that pipe has no straight run to put it on'); return null; }
+      if (o.turn === undefined) k = (seg0.lying ? 0 : 1) | (k & 4);
+    }
     var sz = iwdieCbSymbolBox(ctx.sizes, o.name, k, want);
     if (!sz) {
       // not in the kept library: placed all the same, at the size asked or a guess, and drawn as a box until it is
@@ -14252,7 +14826,27 @@ function iwdieCbPlan(ops, scene, ctx) {
       notes.push('op ' + (i + 1) + ': ' + (fam || grp).name + ' is not in the kept library; Insert-like expansion draws a red dashed box');
       sz = grp ? ((k & 1) ? { w: grp.h, h: grp.w } : { w: grp.w, h: grp.h }) : { w: +o.w || 40, h: +o.h || 40 };
     }
-    var box = place(at, sz.w, sz.h, i);
+    var box = null;
+    if (onPipe) {
+      // its in and out ports on the run's line, their middle at the place asked (the run's middle by default); the pipe
+      // cut between them
+      var own = iwdieCbPorts(o.name, { x: 0, y: 0, w: sz.w, h: sz.h }, k), pin = own['in'] || own[seg0.lying ? 'left' : 'top'], pout = own.out || own[seg0.lying ? 'right' : 'bottom'];
+      var mid = seg0.at, ox = (pin.x + pout.x) / 2, oy = (pin.y + pout.y) / 2;
+      box = { x: r1(seg0.lying ? mid[0] - ox : seg0.a[0] - ox), y: r1(seg0.lying ? seg0.a[1] - oy : mid[1] - oy), w: Math.round(sz.w * 100) / 100, h: Math.round(sz.h * 100) / 100 };
+      var cut = iwdieCbCutRuns(onPipe.pipe.runs, seg0, [box.x + pin.x, box.y + pin.y], [box.x + pout.x, box.y + pout.y]);
+      if (cut) repipe(onPipe.pipe.step ? onPipe.pipe : { cid: onPipe.cid || onPipe.pipe.cid, step: onPipe.pipe.step }, cut, i);
+    } else if (at && at.port) {
+      // (v1.113.0) by a port: its own port `as` (else the one facing it) on the port given, `gap` further out
+      var tp = thing(at.port), tps = tp ? iwdieCbPorts(tp.symbol, tp.box, tp.k) : null, T = tps && tps[at.port.port || ''];
+      if (!T) { fail(i, 'at.port needs {cid or ref, port}: ' + (tps ? Object.keys(tps).join(', ') : 'nothing there')); return null; }
+      var mine = iwdieCbPorts(o.name, { x: 0, y: 0, w: sz.w, h: sz.h }, k), back = { up: 'down', down: 'up', left: 'right', right: 'left' }[T.dir];
+      var asName = at.as || Object.keys(mine).filter(function (nm) { return mine[nm].dir === back && !/^(top|bottom|left|right)$/.test(nm); })[0] ||
+        Object.keys(mine).filter(function (nm) { return mine[nm].dir === back; })[0];
+      var M = mine[asName];
+      if (!M) { fail(i, o.name + ' has no port "' + at.as + '": ' + Object.keys(mine).join(', ')); return null; }
+      var dv = IWDIE_CB_DIRS[T.dir] || [0, 0], gp = +at.gap || 0;
+      box = { x: r1(T.x + dv[0] * gp - M.x), y: r1(T.y + dv[1] * gp - M.y), w: Math.round(sz.w * 100) / 100, h: Math.round(sz.h * 100) / 100 };
+    } else box = place(at, sz.w, sz.h, i);
     if (!box) return null;
     // (v1.110.0) a house-named component by its name as the library writes it
     var st2 = iwdieSymTable(), real = (st2.families[st2.byKey[iwdieSymKey(o.name)]] || grp || {}).name || sz.name || o.name;
@@ -14375,9 +14969,22 @@ function iwdieCbPlan(ops, scene, ctx) {
       }
       case 'pill':
       case 'value': {
-        var pill = place(o.at, 40, 20, i);
+        // (v1.113.0) `for` a symbol: where the drawing's own values stand by that kind of symbol (facts.values), else below
+        // it; at {info: true}: the information column's next row
+        var vat = o.at;
+        if (o['for'] && !vat) {
+          var fs2 = thing(o['for']), fv = fs2 && ctx.facts && (ctx.facts.values || []).filter(function (v) { return fs2.symbol && iwdieSymKey(v.symbol) === iwdieSymKey(fs2.symbol); })[0];
+          if (!fs2) { fail(i, 'for: needs a symbol on the drawing'); break; }
+          vat = fv ? { x: fs2.box.x + fv.dx + 5, y: fs2.box.y + fv.dy } : { near: o['for'], side: 'below', gap: 6 };
+        } else if (vat && vat.info) {
+          var ir = ctx.facts && ctx.facts.infoRows;
+          if (!ir) { fail(i, 'the drawing has no information column with rows to go on from'); break; }
+          var used = steps.filter(function (st) { return st.infoRow; }).length;
+          vat = { x: ir.valueX + 5, y: ir.next + used * ir.step };
+        }
+        var pill = place(vat, 40, 20, i);
         if (!pill) break;
-        steps.push({ 'do': 'add', kind: 'pill', box: pill, dark: !!o.dark, op: i });
+        steps.push({ 'do': 'add', kind: 'pill', box: pill, dark: !!o.dark, infoRow: !!(o.at && o.at.info) || undefined, op: i });
         boxes.push(pill);
         if (o.op === 'value') {
           var id = o.obj_id || (o.dark ? 'number_v3_white_value_only' : 'number_v3_value_only'), vs = objSize(id) || { w: 50, h: 20 };
@@ -14397,25 +15004,78 @@ function iwdieCbPlan(ops, scene, ctx) {
       case 'pipe': {
         var pts = Array.isArray(o.points) ? o.points.map(function (p) { return [+p[0], +p[1]]; }) : iwdieCbPathPoints(o.d);
         if (!pts || pts.length < 2 || pts.some(function (p) { return !isFinite(p[0]) || !isFinite(p[1]); })) { fail(i, 'a pipe needs points [[x, y]...] or straight-run path data'); break; }
-        var c = circuitOf(o, i);
-        steps.push({ 'do': 'add', kind: 'pipe', pts: iwdieCbSimplify(pts), colour: o.colour || (c ? c.colour : IWDIE_CB_HOUSE.grey), width: +o.width || (c && c.width) || 2,
-          circuit: c ? c.name : (o.circuit || ''), ref: o.ref, op: i });
+        var c = circuitOf(o, i), spts = iwdieCbSimplify(pts);
+        // (v1.113.0) no circuit given: the one of the pipe its start or its end joins
+        var joins = !o.circuit && !o.colour ? circuitAt({ x: spts[0][0], y: spts[0][1] }) || circuitAt({ x: spts[spts.length - 1][0], y: spts[spts.length - 1][1] }) : null;
+        if (joins) c = iwdieCbCircuit(joins.circuit) || { name: joins.circuit || '', colour: joins.colour };
+        addPipe(o, i, spts, c);
         break;
       }
+      case 'tee':
       case 'connect': {
         var a = thing(o.from), z = thing(o.to);
-        if (!a || !z) { fail(i, 'connect needs from and to, each a {cid}, {ref}, {object} or {find} on the drawing'); break; }
-        var pa = iwdieCbPorts(a.symbol, a.box, a.k), pz = iwdieCbPorts(z.symbol, z.box, z.k);
-        // the ports asked for, else the facing sides
-        var face = function (p, q) {
-          var dx = (q.box.x + q.box.w / 2) - (p.box.x + p.box.w / 2), dy = (q.box.y + q.box.h / 2) - (p.box.y + p.box.h / 2);
-          return Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top');
-        };
-        var sa = o.from.port || face(a, z), sz2 = o.to.port || face(z, a);
-        if (!pa[sa] || !pz[sz2]) { fail(i, 'no port "' + (!pa[sa] ? sa : sz2) + '": ' + Object.keys(!pa[sa] ? pa : pz).join(', ')); break; }
+        if (!a || !z) { fail(i, o.op + ' needs from and to, each a {cid}, {ref}, {object} or {find} on the drawing'); break; }
+        if (a.pipe && z.pipe) { fail(i, 'two pipes: give one end a port on a symbol, or draw the pipe with points'); break; }
+        // (v1.113.0) a pipe at either end: a tee onto it, from the other end's port
+        var flip = !!a.pipe, A = flip ? z : a, Z = flip ? a : z, pA = flip ? o.to : o.from, pZ = flip ? o.from : o.to;
+        var portsA = iwdieCbPorts(A.symbol, A.box, A.k), ownA = iwdieCbOwnPorts(portsA);
+        var obst = obstacles([A.box, Z.pipe ? null : Z.box]), others = segsOf(pipesNow());
+        var tried = [], candA = pA.port ? [pA.port] : Object.keys(ownA), candZ = [null];
+        var portsZ = Z.pipe ? null : iwdieCbPorts(Z.symbol, Z.box, Z.k);
+        if (!Z.pipe) candZ = pZ.port ? [pZ.port] : Object.keys(iwdieCbOwnPorts(portsZ));
+        var badA = candA.filter(function (n) { return !portsA[n]; })[0], badZ = Z.pipe ? null : candZ.filter(function (n) { return !portsZ[n]; })[0];
+        if (badA || badZ) { fail(i, 'no port "' + (badA || badZ) + '": ' + Object.keys(badA ? portsA : portsZ).join(', ')); break; }
+        candA.forEach(function (na) {
+          candZ.forEach(function (nz) {
+            var P = portsA[na], Q = Z.pipe ? iwdieCbTee(Z.pipe.runs, { x: P.x + (IWDIE_CB_DIRS[P.dir] || [0, 0])[0] * 8, y: P.y + (IWDIE_CB_DIRS[P.dir] || [0, 0])[1] * 8 }) : portsZ[nz];
+            if (!Q) return;
+            var route = iwdieCbRoute2(P, Q, { stub: o.stub, obstacles: obst, pipes: others });
+            var len = 0;
+            for (var q2 = 1; q2 < route.length; q2++) len += Math.abs(route[q2][0] - route[q2 - 1][0]) + Math.abs(route[q2][1] - route[q2 - 1][1]);
+            tried.push({ na: na, nz: nz, pts: route, cost: len + 16 * Math.max(0, route.length - 2) });
+          });
+        });
+        if (!tried.length) { fail(i, 'no way to join them'); break; }
+        tried.sort(function (u, v) { return u.cost - v.cost; });
+        var won = tried[0], rpts = flip ? won.pts.slice().reverse() : won.pts;
+        if (!pA.port || (!Z.pipe && !pZ.port)) notes.push('op ' + (i + 1) + ': joined ' + (A.symbol || A.cid || 'it') + '.' + won.na + ' to ' + (Z.pipe ? 'the pipe ' + (Z.cid || Z.pipe.cid || '') + ' (a tee)' : (Z.symbol || Z.cid || 'it') + '.' + won.nz));
         var cc = circuitOf(o, i);
-        steps.push({ 'do': 'add', kind: 'pipe', pts: iwdieCbRoute(pa[sa], pz[sz2], o.stub), colour: o.colour || (cc ? cc.colour : IWDIE_CB_HOUSE.grey), width: +o.width || (cc && cc.width) || 2,
-          circuit: cc ? cc.name : (o.circuit || ''), ref: o.ref, op: i });
+        // no circuit given: the pipe it tees onto, else one its ends touch
+        if (!cc && !o.colour) {
+          var jn = Z.pipe && (Z.pipe.circuit || Z.pipe.colour) ? Z.pipe : circuitAt({ x: rpts[0][0], y: rpts[0][1] }) || circuitAt({ x: rpts[rpts.length - 1][0], y: rpts[rpts.length - 1][1] });
+          if (jn) cc = iwdieCbCircuit(jn.circuit) || { name: jn.circuit || '', colour: jn.colour };
+          else notes.push('op ' + (i + 1) + ': no circuit given, and none where it joins - drawn grey; give circuit');
+        }
+        addPipe(o, i, rpts, cc);
+        break;
+      }
+      case 'header': {
+        // (v1.113.0) a header: one straight pipe at y (level) or x (upright), and a riser from each join's port onto it;
+        // it spans the risers, `from` and `to` widen it
+        var lev = o.y !== undefined, line = lev ? +o.y : +o.x;
+        if (!isFinite(line)) { fail(i, 'a header needs y (a level header) or x (an upright one)'); break; }
+        var hc = circuitOf(o, i), risers = [], lo = Infinity, hi = -Infinity, oops = '';
+        (o.joins || []).forEach(function (t, k2) {
+          var th = thing(t), ps = th ? iwdieCbPorts(th.symbol, th.box, th.k) : null;
+          if (!ps) { oops = oops || 'join ' + (k2 + 1) + ' is not on the drawing'; return; }
+          var want = lev ? (line < th.box.y ? 'up' : 'down') : (line < th.box.x ? 'left' : 'right');
+          var nm = t.port || Object.keys(iwdieCbOwnPorts(ps)).filter(function (n) { return ps[n].dir === want; })[0] || { up: 'top', down: 'bottom', left: 'left', right: 'right' }[want];
+          var P = ps[nm];
+          if (!P) { oops = oops || 'join ' + (k2 + 1) + ' has no port "' + nm + '": ' + Object.keys(ps).join(', '); return; }
+          var end = lev ? [P.x, line] : [line, P.y];
+          risers.push(P.dir === want ? [[P.x, P.y], end] : iwdieCbRoute2(P, { x: end[0], y: end[1], dir: lev ? (line < P.y ? 'down' : 'up') : (line < P.x ? 'right' : 'left') }, { obstacles: obstacles([th.box]), pipes: segsOf(pipesNow()) }));
+          lo = Math.min(lo, lev ? P.x : P.y); hi = Math.max(hi, lev ? P.x : P.y);
+        });
+        if (oops) { fail(i, oops); break; }
+        if (o.from !== undefined) lo = Math.min(lo, +o.from);
+        if (o.to !== undefined) hi = Math.max(hi, +o.to);
+        if (!(hi > lo)) { fail(i, 'a header needs two joins, or from and to'); break; }
+        if (!hc && !o.colour) {
+          var hj = circuitAt(lev ? { x: lo, y: line } : { x: line, y: lo }) || circuitAt(lev ? { x: hi, y: line } : { x: line, y: hi });
+          if (hj) hc = iwdieCbCircuit(hj.circuit) || { name: hj.circuit || '', colour: hj.colour };
+        }
+        addPipe(o, i, lev ? [[lo, line], [hi, line]] : [[line, lo], [line, hi]], hc);
+        risers.forEach(function (rp) { addPipe({ colour: o.colour, width: o.width, breaks: o.breaks }, i, iwdieCbSimplify(rp), hc); });
         break;
       }
       case 'text': {
@@ -14439,14 +15099,53 @@ function iwdieCbPlan(ops, scene, ctx) {
           if (!to) break;
           dx = to.x - m.box.x; dy = to.y - m.box.y;
         }
+        var mb0 = { x: m.box.x, y: m.box.y, w: m.box.w, h: m.box.h };
         steps.push({ 'do': 'move', cid: m.cid, dx: r1(dx), dy: r1(dy), op: i });
         m.box.x = r1(m.box.x + dx); m.box.y = r1(m.box.y + dy);
+        // (v1.113.0) and what is attached to it, unless carry: false
+        if (o.carry !== false && (dx || dy) && m.item && m.item.kind !== 'pipe') {
+          var carried = iwdieCbAttached(items, m.item, mb0, ctx.facts), moved = {};
+          moved[m.cid] = 1;
+          carried.things.forEach(function (it) {
+            if (moved[it.cid] || gone[it.cid]) return;
+            moved[it.cid] = 1;
+            steps.push({ 'do': 'move', cid: it.cid, dx: r1(dx), dy: r1(dy), op: i });
+            it.box.x = r1(it.box.x + dx); it.box.y = r1(it.box.y + dy);
+          });
+          carried.ends.forEach(function (e) {
+            var runs = (redrawn[e.cid] || iwdieCbRunsOf(byCid[e.cid])).map(function (r) { return r.map(function (p) { return [p[0], p[1]]; }); });
+            var run = runs[e.run], at2 = e.end === 0 ? 0 : run.length - 1, nb = e.end === 0 ? 1 : run.length - 2;
+            if (!run || run.length < 2) return;
+            var upright = Math.abs(run[at2][0] - run[nb][0]) < 0.05;
+            run[at2] = [r1(run[at2][0] + dx), r1(run[at2][1] + dy)];
+            // the run into it keeps its way: an upright one moves across with it, a level one up and down
+            if (upright) run[nb] = [r1(run[nb][0] + dx), run[nb][1]]; else run[nb] = [run[nb][0], r1(run[nb][1] + dy)];
+            runs[e.run] = iwdieCbSimplify(run);
+            repipe({ cid: e.cid }, runs, i);
+          });
+          if (carried.things.length || carried.ends.length) notes.push('op ' + (i + 1) + ': carried ' + [carried.things.length ? iwdieN(carried.things.length, 'thing', 'things') + ' with it' : '',
+            carried.ends.length ? iwdieN(carried.ends.length, 'pipe end', 'pipe ends') : ''].filter(Boolean).join(' and ') + ' (carry: false moves it alone)');
+        }
         break;
       }
       case 'delete': {
         var d = thing(o.target);
         if (!d || !d.cid) { fail(i, 'delete needs a target on the drawing: {cid}, {object} or {find}'); break; }
         steps.push({ 'do': 'delete', cid: d.cid, op: i });
+        gone[d.cid] = 1;
+        // (v1.113.0) a pipe taken out: the breaks other circuits' pipes made for it closed again, unless heal: false
+        if (d.pipe && o.heal !== false) {
+          var mineD = d.pipe.circuit || d.pipe.colour, rest = pipesNow().filter(function (p) { return p.cid; }), byC = {};
+          rest.forEach(function (p) { var key = p.circuit || p.colour || ''; if (key !== mineD) (byC[key] = byC[key] || []).push(p); });
+          var healed = 0;
+          Object.keys(byC).forEach(function (key) {
+            var pieces = {};
+            byC[key].forEach(function (p) { pieces[p.cid] = p.runs; });
+            var fixed = iwdieCbHeal(pieces, d.pipe.runs, [].concat.apply([], rest.filter(function (p) { return (p.circuit || p.colour || '') !== key; }).map(function (p) { return p.runs; })));
+            Object.keys(fixed).forEach(function (cid) { repipe({ cid: cid }, fixed[cid], i); healed++; });
+          });
+          if (healed) notes.push('op ' + (i + 1) + ': ' + iwdieN(healed, 'pipe', 'pipes') + ' broken for it joined again (heal: false keeps the breaks)');
+        }
         break;
       }
       case 'set_text': {
@@ -14662,6 +15361,9 @@ function iwdieCbClassify(d) {
   if ((d.tag === 'path' || d.tag === 'line' || d.tag === 'polyline') && (!fill || fill === 'none') && stroke && stroke !== 'none' && /^r(o|ø)r$/i.test(d.layer || '')) {
     it.kind = 'pipe'; it.colour = stroke; it.width = parseFloat(a['stroke-width']) || 1;
     it.pts = d.tag === 'path' ? iwdieCbPathPoints(a.d) : d.pts || null;
+    // (v1.113.0) its runs: a pipe broken at a crossing is one path of two runs or more
+    var runs = d.tag === 'path' ? iwdieCbPathRuns(a.d) : it.pts ? [it.pts] : null;
+    if (runs && runs.length > 1) it.runs = runs;
     if (d.circuit) it.circuit = d.circuit;
     return it;
   }
@@ -14779,7 +15481,7 @@ function iwdieCbMarkup(s, cid, looks, used) {
     return art ? art.replace(/^<g\b/, '<g' + c) : '';
   }
   if (s.kind === 'pipe') {
-    return '<path d="' + iwdieCbPathD(s.pts) + '" fill="none" stroke="' + esc(s.colour) + '" stroke-width="' + f(s.width) + '"' + c + '/>';
+    return '<path d="' + iwdieCbPathD(s.pts, s.runs) + '" fill="none" stroke="' + esc(s.colour) + '" stroke-width="' + f(s.width) + '"' + c + '/>';
   }
   if (s.kind === 'text') {
     return '<text x="' + f(s.x) + '" y="' + f(s.y) + '" font-family="Roboto, Arial, sans-serif" font-size="' + f(s.size) + '" fill="' + esc(s.colour) + '"' +
@@ -25400,14 +26102,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var root = doc.documentElement, vb = String(root.getAttribute('viewBox') || '').split(/[\s,]+/).map(parseFloat);
         var size = vb.length === 4 && vb.every(isFinite) && vb[2] > 0 ? { w: vb[2], h: vb[3] } : api.size();
         var cands = [];
+        // (v1.113.0) a group that only gathers things - a builder's "Value pills" or "MT compressors", a circuit, a circuit's
+        // own groups - is read inside, three levels down, its things listed as their own (the group too, `parent` on each);
+        // a symbol, an arrangement, an IWMAC object and Bakgrunn's walls stay whole, and so does a group of drawn art
+        var thingIn = function (el, depth) {
+          var nm = nameOf(el);
+          if (el.localName === 'use' && el.getAttribute('data-iwdie-symbol')) return true;
+          if (el.localName === 'text') return true;
+          if (el.localName === 'rect') { var rx = parseFloat(el.getAttribute('rx')); return rx >= 8; }
+          if (el.localName !== 'g') return false;
+          if (el.getAttribute('data-iwdie-symbol') || iwdieVcObjectId(nm) || iwdieVcPlaceholderName(nm, el.getAttribute('data-iwdie-obj')) || iwdieCbSymbolNamed(nm)) return true;
+          return depth > 0 && kids(el).some(function (c) { return thingIn(c, depth - 1); });
+        };
+        var gathers = function (el, ln, depth) {
+          if (el.localName !== 'g' || depth <= 0 || /^(bakgrunn|background|backround)$/i.test(ln || '')) return false;
+          var nm = nameOf(el);
+          if (el.getAttribute('data-iwdie-symbol') || iwdieVcObjectId(nm) || iwdieVcPlaceholderName(nm, el.getAttribute('data-iwdie-obj')) || iwdieCbSymbolNamed(nm)) return false;
+          return isRor(ln) || kids(el).some(function (c) { return thingIn(c, 2); });
+        };
+        var take = function (el, ln, circuit, depth, parent) {
+          if (gathers(el, ln, depth)) {
+            var me = { el: el, layer: ln, circuit: circuit, gathers: true, parent: parent };
+            cands.push(me);
+            kids(el).forEach(function (c) { take(c, ln, isRor(ln) && !circuit ? nameOf(el) : circuit, depth - 1, me); });
+          } else cands.push({ el: el, layer: ln, circuit: circuit, parent: parent });
+        };
         layersOf(root).forEach(function (L) {
           var ln = nameOf(L);
-          kids(L).forEach(function (el) {
-            // Rør's circuits are groups of pipes: their pipes are the things
-            if (isRor(ln) && el.localName === 'g' && !el.getAttribute('data-iwdie-symbol') && !iwdieVcObjectId(nameOf(el))) {
-              kids(el).forEach(function (p) { cands.push({ el: p, layer: ln, circuit: nameOf(el) }); });
-            } else cands.push({ el: el, layer: ln });
-          });
+          kids(L).forEach(function (el) { take(el, ln, undefined, 3, null); });
         });
         cands.forEach(function (c) {
           var have = c.el.getAttribute('data-iwdie-cid'), m = /^c(\d+)$/.exec(have || '');
@@ -25439,8 +26161,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           else if (c.el.localName === 'polyline') pts = String(c.el.getAttribute('points') || '').trim().split(/[\s]+/).map(function (p) { return p.split(',').map(Number); });
           var segs = /^(bakgrunn|background|backround)$/i.test(c.layer || '') && /^(g|path|line|polyline)$/.test(c.el.localName) ?
             iwdieOvWallSegs(c.el, { x: b.x, y: b.y, w: b.w, h: b.h }, null) : null;
-          items.push(iwdieCbClassify({ cid: c.el.getAttribute('data-iwdie-cid'), layer: c.layer, tag: c.el.localName, name: nameOf(c.el), attrs: at,
-            text: String(text || '').replace(/\s+/g, ' ').trim(), box: { x: b.x, y: b.y, w: b.w, h: b.h }, circuit: c.circuit, pts: pts, segs: segs }));
+          // (v1.113.0) a symbol turned by hand in VectorCraft: its turn read off its own transform
+          if (at['data-iwdie-k'] === undefined && get('transform')) { var tk = iwdieCbTurnOf(get('transform')); if (tk) at['data-iwdie-k'] = String(tk); }
+          var it = iwdieCbClassify({ cid: c.el.getAttribute('data-iwdie-cid'), layer: c.layer, tag: c.el.localName, name: nameOf(c.el), attrs: at,
+            text: String(text || '').replace(/\s+/g, ' ').trim(), box: { x: b.x, y: b.y, w: b.w, h: b.h }, circuit: c.circuit, pts: pts, segs: segs });
+          if (c.gathers) { it.kind = 'group'; it.gathers = true; }
+          if (c.parent) it.parent = c.parent.el.getAttribute('data-iwdie-cid');
+          items.push(it);
         });
         var out = new XMLSerializer().serializeToString(doc);
         if (!/^<\?xml/.test(out)) out = '<?xml version="1.0" encoding="UTF-8"?>\n' + out;
@@ -25631,6 +26358,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!tx) { notes.push(st.cid + ' has no text'); return; }
             while (tx.firstChild) tx.removeChild(tx.firstChild);
             tx.appendChild(doc.createTextNode(st.text));
+          } else if (st['do'] === 'repipe') {
+            // (v1.113.0) a pipe's runs drawn anew: split for a symbol on it, its breaks closed, an end carried
+            if (el.localName !== 'path' || el.getAttribute('transform') || !plain(el)) { notes.push(st.cid + ' is no plain path: its runs were left as they were'); return; }
+            el.setAttribute('d', iwdieCbPathD(null, st.runs));
           } else if (st['do'] === 'bind') {
             var pn = iwdieVcPlaceholderName(nameOf(el), el.getAttribute('data-iwdie-obj'));
             if (!pn) { notes.push(st.cid + ' is no IWMAC object'); return; }
@@ -25675,12 +26406,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             Object.keys(plan.refs).forEach(function (r) { placed[r] = iwdieCbBoxRow(plan.refs[r].box); });
             return { applied: false, dry_run: true, steps: counts, refs: placed, notes: plan.notes, errors: plan.errors, targets: plan.targets,
               plan: plan.steps.map(function (st) {
-                return [st['do'], st.kind || '', st.name || st.obj_id || st.text || st.cid || '', st.box ? iwdieCbBoxRow(st.box) : st.pts || (st.dx !== undefined ? [st.dx, st.dy] : [st.x, st.y])];
+                return [st['do'], st.kind || '', st.name || st.obj_id || st.text || st.cid || '', st.box ? iwdieCbBoxRow(st.box) : st.runs || st.pts || (st.dx !== undefined ? [st.dx, st.dy] : [st.x, st.y])];
               }) };
           }
           // (v1.111.0) what the check found before, so the one after says only what this edit brought (as Make it does)
           var had = null;
-          if (a.check !== false && from !== 'file') { had = {}; findings(s).forEach(function (x) { had[x.rule + ' ' + x.what] = 1; }); }
+          if (a.check !== false && from !== 'file') had = findings(s);
           var doc = new DOMParser().parseFromString(s.svg, 'image/svg+xml'), made = [];
           var notes = plan.notes.concat(apply(doc, plan.steps, made));
           var out = new XMLSerializer().serializeToString(doc);
@@ -25708,7 +26439,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               return [m.cid, it.kind, it.kind === 'symbol' ? it.symbol : it.kind === 'object' ? it.obj_id : it.kind === 'text' ? it.text : it.name || '', b[0], b[1], b[2], b[3], ref];
             });
             if (had) {
-              var now = findings(s2), fresh = now.filter(function (x) { return !had[x.rule + ' ' + x.what]; });
+              var now = findings(s2), fresh = iwdieCbNewFindings(had, now);
               summary.check = { found: fresh, before: now.length - fresh.length };
             }
             if (from !== 'file') {
@@ -25896,7 +26627,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // what the steps make, in words: "1 symbol, 1 caption, 1 pipe; 1 move, 1 caption changed"
       var WORDS = { 'add symbol': ['symbol', 'symbols'], 'add text': ['caption', 'captions'], 'add pipe': ['pipe', 'pipes'], 'add pill': ['pill', 'pills'],
         'add object': ['IWMAC object', 'IWMAC objects'], 'add box': ['box', 'boxes'], move: ['move', 'moves'], 'delete': ['removal', 'removals'],
-        text: ['caption changed', 'captions changed'], bind: ['relink', 'relinks'] };
+        text: ['caption changed', 'captions changed'], bind: ['relink', 'relinks'], repipe: ['pipe redrawn', 'pipes redrawn'] };
       var told = function (r) {
         var st = (r && r.steps) || {}, add = [], change = [];
         Object.keys(st).forEach(function (k) { var w = WORDS[k] || [k, k]; (/^add /.test(k) ? add : change).push(iwdieN(st[k], w[0], w[1])); });
@@ -25934,8 +26665,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (!p) return;
           api.note('Making <b>' + esc2(p.name) + '</b>…', false, true);
           // the check before and after: what the edit added is told apart from what the drawing had already
-          var had = {};
-          check().then(function (c0) { c0.findings.forEach(function (x) { had[x.rule + ' ' + x.what] = 1; }); }, function () {}).then(function () {
+          var had = [];
+          check().then(function (c0) { had = c0.findings; }, function () {}).then(function () {
             return edit({ ops: p.ops }, 'file');
           }).then(function (r) {
             if (!r || !r.applied) {
@@ -25943,7 +26674,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               return;
             }
             return check().then(function (c) {
-              var made = c.findings.filter(function (x) { return !had[x.rule + ' ' + x.what]; }), before = c.findings.length - made.length;
+              var made = iwdieCbNewFindings(had, c.findings), before = c.findings.length - made.length;
               var bad = made.filter(function (x) { return x.level === 'error'; }), warn = made.filter(function (x) { return x.level !== 'error'; });
               api.note('✓ <b>' + esc2(p.name) + '</b> is made, open as <b>' + esc2(r.document) + '</b>: ' + esc2(told(r)) + '.' +
                 (r.notes && r.notes.length ? '<br>' + listed(r.notes, 3) : '') +
@@ -31784,6 +32515,23 @@ if (typeof module !== 'undefined' && module.exports) {
     CB_CIRCUITS: IWDIE_CB_CIRCUITS,
     CB_CIRCUITS_MORE: IWDIE_CB_CIRCUITS_MORE,
     cbCircuitNames: iwdieCbCircuitNames,
+    cbPathRuns: iwdieCbPathRuns,
+    cbTurnOf: iwdieCbTurnOf,
+    cbSymbolNamed: iwdieCbSymbolNamed,
+    cbGeometryCheck: iwdieCbGeometryCheck,
+    cbNewFindings: iwdieCbNewFindings,
+    cbRunsOf: iwdieCbRunsOf,
+    cbRoute2: iwdieCbRoute2,
+    cbUnjog: iwdieCbUnjog,
+    cbTee: iwdieCbTee,
+    cbBreakRuns: iwdieCbBreakRuns,
+    cbHeal: iwdieCbHeal,
+    cbArrow: iwdieCbArrow,
+    cbOwnPorts: iwdieCbOwnPorts,
+    cbPortsByName: iwdieCbPortsByName,
+    cbOnSeg: iwdieCbOnSeg,
+    cbCutRuns: iwdieCbCutRuns,
+    cbAttached: iwdieCbAttached,
     CB_HOUSE: IWDIE_CB_HOUSE,
     CB_PILL_SYMBOLS: IWDIE_CB_PILL_SYMBOLS,
     cbTextWidth: iwdieCbTextWidth,
