@@ -531,6 +531,11 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### The script is text again (v1.114.1)
+
+1.114.0 carried one NUL byte, written where an escape was meant (the test of a bank's own refs in a dry run), so Git took
+the file for binary: no line-ending care and no diffs. The escape is written now; nothing else changed.
+
 ### Claude reuses: blocks filled, object banks, copies, stamps, ducts (v1.114.0, server 1.12.0)
 
 The fourth phase of the MCP analysis of 2026-11-04: place what exists whole instead of drawing it piece by piece.
