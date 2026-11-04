@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.113.0
+// @version      1.114.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.113.0';
+var IWDIE_VERSION = '1.114.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12933,6 +12933,41 @@ function iwdieCbHeal(pieces, removed, others) {
   return out;
 }
 
+/** The library's drawing of a symbol (v1.114.0): a house-named component by its name, a family's copy at turn 0. -> item */
+function iwdieCbLibItem(lib, name) {
+  var key = iwdieSymKey(name), best = null;
+  (lib || []).some(function (it) {
+    if (it && it.en && iwdieSymKey(it.name) === key) { best = it; return true; }
+    if (it && it.sym && iwdieSymKey(it.sym.name) === key && !best) best = it;
+    if (it && it.sym && iwdieSymKey(it.sym.name) === key && !it.sym.k) { best = it; return true; }
+    return false;
+  });
+  return best;
+}
+
+/** The pills of a block as its library drawing has them (v1.114.0): each rounded path 30 to 70 wide and 15 to 25 high (a
+ *  ring and its fill one pill), dark where its fill is, in reading order - rows 6 px apart, left to right. -> [{x, y,
+ *  w, h, dark}] in the drawing's own units */
+function iwdieCbBlockPills(item) {
+  var out = [];
+  iwdieSymLeaves(item.shapes || []).forEach(function (l) {
+    if (l.t !== 'd' || !/[Cc]/.test(l.d || '')) return;
+    var n = (String(l.d).match(/[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) || []).map(parseFloat);
+    if (n.length < 4) return;
+    var xs = [], ys = [];
+    for (var k = 0; k + 1 < n.length; k += 2) { xs.push(n[k]); ys.push(n[k + 1]); }
+    var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys), w = x1 - x0, h = y1 - y0;
+    if (w < 30 || w > 70 || h < 15 || h > 25) return;
+    var f = String((l.st && l.st.fill) || '').toLowerCase(), dark = false;
+    if (/^#[0-9a-f]{6}$/.test(f)) dark = 0.299 * parseInt(f.slice(1, 3), 16) + 0.587 * parseInt(f.slice(3, 5), 16) + 0.114 * parseInt(f.slice(5, 7), 16) < 140;
+    var same = out.filter(function (p) { return Math.abs(p.x - x0) < 3 && Math.abs(p.y - y0) < 3 && Math.abs(p.w - w) < 4; })[0];
+    if (same) { if (dark) same.dark = true; return; }
+    out.push({ x: x0, y: y0, w: w, h: h, dark: dark });
+  });
+  out.sort(function (a, b) { return Math.abs(a.y - b.y) <= 6 ? a.x - b.x : a.y - b.y; });
+  return out;
+}
+
 /** A thing's own ports (v1.113.0) - its symbol's in, out, branch, tip ... - or, for one with none, its four sides. */
 function iwdieCbOwnPorts(ports) {
   var own = {};
@@ -14858,6 +14893,24 @@ function iwdieCbPlan(ops, scene, ctx) {
     boxes.push(box);
     keep(ref, { box: box, symbol: real, k: k });
     addLabel(label, box, i);
+    // (v1.114.0) a block's pills filled: `values`, bind texts in its pills' reading order (null skips one) - a value on
+    // each, white on a dark pill, as the house's blocks show them
+    if (Array.isArray(o.values) && o.values.length) {
+      var li = iwdieCbLibItem(ctx.lib, real), pills = li ? iwdieCbBlockPills(li) : [];
+      if (!pills.length) notes.push('op ' + (i + 1) + ': ' + real + ' has no pills to put values on');
+      else if (k) notes.push('op ' + (i + 1) + ': values go on a block at turn 0 only; ' + real + ' turned got none');
+      else {
+        var sx = box.w / li.w, sy = box.h / li.h;
+        pills.forEach(function (pl, j) {
+          var bv = o.values[j];
+          if (bv === null || bv === undefined || bv === false) return;
+          var vid = pl.dark ? 'number_v3_white_value_only' : 'number_v3_value_only', pb = { x: box.x + pl.x * sx, y: box.y + pl.y * sy, w: pl.w * sx, h: pl.h * sy };
+          var vb2 = { x: r1(pb.x + (pb.w - 50) / 2), y: r1(pb.y + (pb.h - 20) / 2), w: 50, h: 20 };
+          steps.push({ 'do': 'add', kind: 'object', obj_id: vid, box: vb2, bind: typeof bv === 'string' ? bv : '', text: '', op: i });
+        });
+        if (o.values.length > pills.length) notes.push('op ' + (i + 1) + ': ' + real + ' has ' + pills.length + ' pills; the values past them are left out');
+      }
+    }
     // (v1.84.0) an arrangement's cases with their clusters: `cases` in the order of its names, each a name or {label,
     // roles, caption} (null leaves one out), or `clusters: true` under the template's names - their names and clusters
     // placed with every other case's, the names where the template writes them first
@@ -14921,14 +14974,19 @@ function iwdieCbPlan(ops, scene, ctx) {
     }
     return box;
   };
-  (ops || []).forEach(function (o, i) {
+  var planOne;
+  (ops || []).forEach(planOne = function (o, i) {
     if (skip[i] !== undefined) { fail(i, skip[i]); return; }
     if (!o || typeof o !== 'object') { fail(i, 'not an object'); return; }
     switch (o.op) {
       case 'symbol': symbolStep(o, i, o.at, o.ref, o.label); break;
       case 'bank': {
         var n = Math.max(1, Math.min(40, parseInt(o.count, 10) || 0)), axis = o.axis === 'y' ? 'y' : 'x';
-        var k = iwdieCbTurn(o.turn, o.flip), sz = iwdieCbSymbolBox(ctx.sizes, o.name, k, { w: o.w, h: o.h }) || { w: +o.w || 40, h: +o.h || 40 };
+        // (v1.114.0) native first: a bank of IWMAC objects (`object`: the Designer's compressor, fans, pumps) as well as of symbols
+        var bos = o.object ? objSize(o.object) : null;
+        if (o.object && !bos) { fail(i, 'no IWMAC object kind "' + o.object + '"'); break; }
+        if (!o.object && !o.name) { fail(i, 'a bank needs name (a house symbol) or object (an IWMAC object kind)'); break; }
+        var k = iwdieCbTurn(o.turn, o.flip), sz = bos ? { w: +o.w || bos.w, h: +o.h || bos.h } : iwdieCbSymbolBox(ctx.sizes, o.name, k, { w: o.w, h: o.h }) || { w: +o.w || 40, h: +o.h || 40 };
         var spacing = +o.spacing, lines = (ctx.facts && ctx.facts[axis === 'x' ? 'rows' : 'columns']) || [];
         var at0 = o.at, nearCid = at0 && at0.near ? at0.near.cid : undefined;
         // next to one of a row of the same symbol, along the row: the bank carries the row on
@@ -14938,7 +14996,7 @@ function iwdieCbPlan(ops, scene, ctx) {
           // the spacing of that row, or of a row of the same symbol on the drawing, else the house's: compressors 80 apart
           // (v1.111.0, the templates and rack.py), anything else its size and half again
           var same = row || lines.filter(function (r) { return iwdieSymKey(r.symbol) === iwdieSymKey(o.name); })[0];
-          spacing = same && same.spacing ? same.spacing : /^kompressor/.test(iwdieSymKey(o.name)) && axis === 'x' ? IWDIE_CB_HOUSE.bank
+          spacing = same && same.spacing ? same.spacing : (/^kompressor/.test(iwdieSymKey(o.name || '')) || (bos && bos.role === 'compressor')) && axis === 'x' ? IWDIE_CB_HOUSE.bank
             : Math.round((axis === 'x' ? sz.w : sz.h) * 2.5);
         }
         if (row && along && at0.gap === undefined) {
@@ -14951,9 +15009,47 @@ function iwdieCbPlan(ops, scene, ctx) {
         if (!first) break;
         // placed before the thing it stands by: the last of the bank is the one next to it
         if (along && (at0.side === 'left' || at0.side === 'above')) first[axis] = r1(first[axis] - (n - 1) * spacing);
+        var members = [], meta = bos ? iwdieVcObjectIndex()[o.object] : null;
+        // a header over the members: their tags beside them, clear of the risers (an object with a tag of its own shows it)
+        var hdrAbove = o.header && typeof o.header === 'object' && (axis === 'x' ? o.header.y !== undefined && +o.header.y < first.y : o.header.x !== undefined && +o.header.x < first.x);
+        var sideLabel = function (text, bx) {
+          if (!text) return;
+          steps.push({ 'do': 'add', kind: 'text', text: String(text), x: r1(bx.x - 4), y: r1(bx.y + bx.h / 2 + textSize() * 0.35), size: textSize(), anchor: 'end', colour: textColour(), op: i });
+        };
         for (var b = 0; b < n; b++) {
-          var at = { x: first.x + (axis === 'x' ? b * spacing : 0), y: first.y + (axis === 'y' ? b * spacing : 0) };
-          symbolStep({ name: o.name, turn: o.turn, flip: o.flip, w: sz.w, h: sz.h }, i, at, o.refs ? o.refs[b] : undefined, o.labels ? o.labels[b] : null);
+          var at = { x: first.x + (axis === 'x' ? b * spacing : 0), y: first.y + (axis === 'y' ? b * spacing : 0) }, mref = o.refs && o.refs[b] !== undefined ? o.refs[b] : '\u0000bank' + i + '.' + b;
+          var lab = o.labels ? o.labels[b] : null;
+          if (bos) {
+            var mb = { x: r1(at.x), y: r1(at.y), w: sz.w, h: sz.h }, tagged = !!(meta && meta.hasTag && lab);
+            steps.push({ 'do': 'add', kind: 'object', obj_id: o.object, box: mb, bind: o.binds && o.binds[b] ? String(o.binds[b]) : '', text: tagged ? String(lab) : o.texts && o.texts[b] ? String(o.texts[b]) : '',
+              ref: o.refs ? o.refs[b] : undefined, op: i });
+            boxes.push(mb);
+            keep(mref, { box: mb, obj_id: o.object });
+            if (!tagged) { if (hdrAbove) sideLabel(lab, mb); else addLabel(lab, mb, i); }
+          } else {
+            var sb = symbolStep({ name: o.name, turn: o.turn, flip: o.flip, w: sz.w, h: sz.h }, i, at, mref, hdrAbove ? null : lab);
+            if (hdrAbove && sb) sideLabel(lab, sb);
+          }
+          members.push(mref);
+        }
+        // (v1.114.0) a value per member: on its pill where the drawing's own stand by such a symbol (facts.values), else
+        // `value_at` {dx, dy} from the member's top left, else under it; its caption, if given, beside the pill
+        if (Array.isArray(o.values)) {
+          members.forEach(function (mr, b) {
+            var vb = o.values[b];
+            if (vb === null || vb === undefined || vb === false || !refs[mr]) return;
+            var mbx = refs[mr].box, fv = !bos && ctx.facts && (ctx.facts.values || []).filter(function (v) { return iwdieSymKey(v.symbol) === iwdieSymKey(o.name); })[0];
+            var vat = o.value_at ? { x: mbx.x + (+o.value_at.dx || 0), y: mbx.y + (+o.value_at.dy || 0) } : fv ? { x: mbx.x + fv.dx + 5, y: mbx.y + fv.dy }
+              : { x: mbx.x + (mbx.w - 40) / 2, y: mbx.y + mbx.h + 6 };
+            planOne({ op: 'value', bind: vb, at: vat, label: o.captions ? o.captions[b] : undefined, dark: o.dark }, i);
+          });
+        }
+        // (v1.114.0) and a header over (or under) them: each member's port onto it
+        if (o.header && typeof o.header === 'object') {
+          var hop = { op: 'header', circuit: o.header.circuit, colour: o.header.colour, breaks: o.header.breaks, from: o.header.from, to: o.header.to, ref: o.header.ref,
+            joins: members.map(function (mr) { return { ref: mr, port: o.header.port }; }) };
+          if (o.header.y !== undefined) hop.y = o.header.y; else hop.x = o.header.x;
+          planOne(hop, i);
         }
         break;
       }
@@ -15047,6 +15143,60 @@ function iwdieCbPlan(ops, scene, ctx) {
           else notes.push('op ' + (i + 1) + ': no circuit given, and none where it joins - drawn grey; give circuit');
         }
         addPipe(o, i, rpts, cc);
+        break;
+      }
+      case 'clone': {
+        // (v1.114.0) things copied by dx, dy - `targets`, or everything within `box` [x, y, w, h] - their placeholders new
+        // objects; rebind [[from, to]...] (or {from: to}) turns the words of their binds and texts
+        var src = [], dxc = +o.dx || 0, dyc = +o.dy || 0;
+        if (Array.isArray(o.box) && o.box.length === 4) {
+          var cb = { x: +o.box[0], y: +o.box[1], w: +o.box[2], h: +o.box[3] };
+          items.forEach(function (it) { if (it.box && it.layer !== 'Bakgrunn' && !gone[it.cid] && it.box.x >= cb.x - 0.5 && it.box.y >= cb.y - 0.5 && it.box.x + it.box.w <= cb.x + cb.w + 0.5 && it.box.y + it.box.h <= cb.y + cb.h + 0.5) src.push(it); });
+        } else (o.targets || []).forEach(function (t) { var th = thing(t); if (th && th.cid && byCid[th.cid]) src.push(byCid[th.cid]); });
+        if (!src.length) { fail(i, 'clone needs targets on the drawing, or a box with things inside it'); break; }
+        if (!dxc && !dyc) { fail(i, 'clone needs dx or dy: a copy on its original is no copy'); break; }
+        var inSrc = {};
+        src.forEach(function (it) { inSrc[it.cid] = 1; });
+        src = src.filter(function (it) { return !it.parent || !inSrc[it.parent]; });
+        var pairs = Array.isArray(o.rebind) ? o.rebind.filter(function (p) { return Array.isArray(p) && p.length === 2; }) : o.rebind && typeof o.rebind === 'object' ? Object.keys(o.rebind).map(function (kk) { return [kk, o.rebind[kk]]; }) : [];
+        src.forEach(function (it, k3) {
+          var nb = { x: r1(it.box.x + dxc), y: r1(it.box.y + dyc), w: it.box.w, h: it.box.h };
+          steps.push({ 'do': 'clone', cid: it.cid, dx: r1(dxc), dy: r1(dyc), rebind: pairs, kind: it.kind, box: nb, ref: o.refs ? o.refs[k3] : undefined, op: i });
+          if (it.kind !== 'pipe' && it.kind !== 'text') boxes.push(nb);
+          keep(o.refs ? o.refs[k3] : undefined, { box: nb, symbol: it.symbol, k: it.k });
+        });
+        break;
+      }
+      case 'duct': {
+        // (v1.114.0) a ventilation duct as the Designer's duct objects - pipes, elbows where it turns, connectors where it
+        // meets another - from its centre line, as Vectorize reads a drawn duct (iwdieVzDuctPieces): kind supply,
+        // extract (exhaust) or intake (fresh); `ducts` [{kind, points}] for several that meet
+        var fam = { supply: 0, tilluft: 0, extract: 1, exhaust: 1, avtrekk: 1, avkast: 1, intake: 2, fresh: 2, uteluft: 2 }, druns = [], dbad = '';
+        (Array.isArray(o.ducts) ? o.ducts : [{ kind: o.kind, points: o.points }]).forEach(function (dd, k4) {
+          var fi = fam[String(dd.kind || '').toLowerCase()];
+          if (fi === undefined) { dbad = dbad || 'duct ' + (k4 + 1) + ': kind is supply, extract, exhaust or intake'; return; }
+          var dp = Array.isArray(dd.points) ? iwdieCbSimplify(dd.points.map(function (p) { return [+p[0], +p[1]]; })) : null;
+          if (!dp || dp.length < 2) { dbad = dbad || 'duct ' + (k4 + 1) + ': points [[x, y]...] along its centre line'; return; }
+          for (var q4 = 1; q4 < dp.length; q4++) {
+            var pa4 = dp[q4 - 1], pb4 = dp[q4];
+            if (Math.abs(pa4[1] - pb4[1]) < 0.05) druns.push({ f: fi, way: 'h', axis: pa4[1], a: Math.min(pa4[0], pb4[0]), b: Math.max(pa4[0], pb4[0]) });
+            else if (Math.abs(pa4[0] - pb4[0]) < 0.05) druns.push({ f: fi, way: 'v', axis: pa4[0], a: Math.min(pa4[1], pb4[1]), b: Math.max(pa4[1], pb4[1]) });
+            else { dbad = dbad || 'duct ' + (k4 + 1) + ': level and upright runs only'; return; }
+          }
+        });
+        if (dbad) { fail(i, dbad); break; }
+        iwdieVzDuctPieces(druns).pieces.forEach(function (pc) {
+          var db2 = { x: pc.x, y: pc.y, w: pc.w, h: pc.h };
+          steps.push({ 'do': 'add', kind: 'object', obj_id: pc.kind, box: db2, bind: '', text: '', op: i });
+          boxes.push(db2);
+        });
+        break;
+      }
+      case 'stamp': {
+        // (v1.114.0) part of another panel's drawing placed here, moved by dx, dy (the server reads the export, turns its
+        // objects in the box into object ops, and sends the drawing as svg)
+        if (typeof o.svg !== 'string' || !Array.isArray(o.box) || o.box.length !== 4) { fail(i, 'stamp needs export (a panel file), box [x, y, w, h] in it and at {x, y}'); break; }
+        steps.push({ 'do': 'stamp', svg: o.svg, box: o.box.map(Number), dx: r1(+o.dx || 0), dy: r1(+o.dy || 0), op: i });
         break;
       }
       case 'header': {
@@ -26337,16 +26487,79 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var apply = function (doc, steps, cidOf) {
         var used = {}, notes = [];
         Array.prototype.forEach.call(doc.getElementsByTagName('*'), function (e) { var id = e.getAttribute('id'); if (id) used[id] = 1; });
+        // a ref the planner made for itself (a bank's members) is no ref of Claude's
+        var own = function (r) { return r === undefined || r === null || /^\u0000/.test(String(r)) ? undefined : r; };
+        // (v1.114.0) ids made unique, cids new, in a copy of drawing put on this one
+        var fresh = function (node) {
+          Array.prototype.forEach.call([node].concat(Array.prototype.slice.call(node.getElementsByTagName('*'))), function (e) {
+            var id = e.getAttribute && e.getAttribute('id');
+            if (id) { var nid = id, n2 = 2; while (used[nid]) nid = id + '_' + (n2++); used[nid] = 1; if (nid !== id) e.setAttribute('id', nid); }
+            if (e.removeAttribute) { e.removeAttribute('data-iwdie-cid'); e.removeAttribute('data-iwdie-ref'); e.removeAttribute('data-iwdie-job'); }
+          });
+        };
         steps.forEach(function (st) {
           if (st['do'] === 'add') {
             var cid = 'c' + (cidNext++), L = layer(doc, iwdieCbLayerOf(st));
-            cidOf.push({ ref: st.ref, cid: cid, kind: st.kind });
+            cidOf.push({ ref: own(st.ref), cid: cid, kind: st.kind });
             var host = st.kind === 'pipe' && st.circuit ? sub(doc, L, st.circuit) : L;
             host.appendChild(fragment(doc, iwdieCbMarkup(st, cid, api.looks, used)));
             return;
           }
+          if (st['do'] === 'stamp') {
+            // (v1.114.0) another panel's drawing within its box, each layer's things into the layer of that name here
+            var sd = new DOMParser().parseFromString(st.svg, 'image/svg+xml');
+            if (!sd || !sd.documentElement || sd.getElementsByTagName('parsererror').length) { notes.push('the stamp\'s drawing is not well-formed SVG: left out'); return; }
+            var sroot = sd.documentElement, svb = String(sroot.getAttribute('viewBox') || '').split(/[\s,]+/).map(parseFloat);
+            var ssize = svb.length === 4 && svb.every(isFinite) ? { w: svb[2], h: svb[3] } : api.size(), picked = [], from = [];
+            layersOf(sroot).forEach(function (Lz) {
+              if (/^iwmac-objekter$/i.test(nameOf(Lz))) return;
+              kids(Lz).forEach(function (e) { picked.push(e); from.push(nameOf(Lz)); });
+            });
+            var sb = picked.length ? vcMeasure(sd, picked, ssize) : [], n3 = 0;
+            picked.forEach(function (e, k5) {
+              var b5 = sb[k5];
+              if (!b5 || b5.hidden || b5.x < st.box[0] - 0.5 || b5.y < st.box[1] - 0.5 || b5.x + b5.w > st.box[0] + st.box[2] + 0.5 || b5.y + b5.h > st.box[1] + st.box[3] + 0.5) return;
+              var node = doc.importNode(e, true);
+              fresh(node);
+              var t5 = node.getAttribute('transform');
+              node.setAttribute('transform', 'translate(' + iwdieDrawFmt(st.dx) + ' ' + iwdieDrawFmt(st.dy) + ')' + (t5 ? ' ' + t5 : ''));
+              var c5 = 'c' + (cidNext++);
+              node.setAttribute('data-iwdie-cid', c5);
+              layer(doc, from[k5] || 'Former').appendChild(node);
+              cidOf.push({ cid: c5, kind: 'stamp' });
+              n3++;
+            });
+            notes.push(iwdieN(n3, 'thing', 'things') + ' of the stamp\'s drawing placed');
+            return;
+          }
           var el = byCid(doc, st.cid);
           if (!el) { notes.push(st.cid + ' is not on the drawing any more'); return; }
+          if (st['do'] === 'clone') {
+            // (v1.114.0) a copy beside it, moved; its placeholders new objects, the words of its binds and texts turned
+            var cp = el.cloneNode(true);
+            fresh(cp);
+            var swap = function (txt) {
+              var out = String(txt);
+              (st.rebind || []).forEach(function (pr) {
+                var re = new RegExp('(^|[^\\wæøåÆØÅ])' + String(pr[0]).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\wæøåÆØÅ])', 'g');
+                out = out.replace(re, function (m0, pre) { return pre + pr[1]; });
+              });
+              return out;
+            };
+            if ((st.rebind || []).length) {
+              Array.prototype.forEach.call([cp].concat(Array.prototype.slice.call(cp.getElementsByTagName('*'))), function (e) {
+                ['data-name', 'data-iwdie-bind', 'data-iwdie-label'].forEach(function (an) { var v = e.getAttribute(an); if (v) e.setAttribute(an, swap(v)); });
+                if (e.localName === 'text' || e.localName === 'tspan') Array.prototype.forEach.call(e.childNodes, function (tn) { if (tn.nodeType === 3) tn.nodeValue = swap(tn.nodeValue); });
+              });
+            }
+            var tc = cp.getAttribute('transform');
+            cp.setAttribute('transform', 'translate(' + iwdieDrawFmt(st.dx) + ' ' + iwdieDrawFmt(st.dy) + ')' + (tc ? ' ' + tc : ''));
+            var cc2 = 'c' + (cidNext++);
+            cp.setAttribute('data-iwdie-cid', cc2);
+            el.parentNode.insertBefore(cp, el.nextSibling);
+            cidOf.push({ ref: own(st.ref), cid: cc2, kind: st.kind });
+            return;
+          }
           if (st['do'] === 'move') {
             if (!plain(el)) notes.push(st.cid + ' sits in a scaled group: moved in its own units');
             var t = el.getAttribute('transform');
@@ -26396,14 +26609,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (!s.facts) s.facts = iwdieCbFacts(s.items, s.size);
           var L = library(), lib = L.lib, libItems = lib ? lib.items : [];
           var copy = s.items.map(function (it) { var c = {}; Object.keys(it).forEach(function (k) { c[k] = it[k]; }); c.box = { x: it.box.x, y: it.box.y, w: it.box.w, h: it.box.h }; return c; });
-          var plan = iwdieCbPlan(a.ops, { items: copy, size: s.size }, { sizes: L.sizes, facts: s.facts });
+          var plan = iwdieCbPlan(a.ops, { items: copy, size: s.size }, { sizes: L.sizes, facts: s.facts, lib: libItems });
           if (plan.errors.length && !a.partial) return { applied: false, errors: plan.errors, notes: plan.notes, targets: plan.targets, hint: 'nothing was changed; fix the ops, or send partial: true to make the rest' };
           var counts = {};
           plan.steps.forEach(function (st) { var k = st['do'] === 'add' ? 'add ' + st.kind : st['do']; counts[k] = (counts[k] || 0) + 1; });
           // planned only: where each would go, nothing made
           if (a.dry_run) {
             var placed = {};
-            Object.keys(plan.refs).forEach(function (r) { placed[r] = iwdieCbBoxRow(plan.refs[r].box); });
+            Object.keys(plan.refs).forEach(function (r) { if (!/^ /.test(r)) placed[r] = iwdieCbBoxRow(plan.refs[r].box); });
             return { applied: false, dry_run: true, steps: counts, refs: placed, notes: plan.notes, errors: plan.errors, targets: plan.targets,
               plan: plan.steps.map(function (st) {
                 return [st['do'], st.kind || '', st.name || st.obj_id || st.text || st.cid || '', st.box ? iwdieCbBoxRow(st.box) : st.runs || st.pts || (st.dx !== undefined ? [st.dx, st.dy] : [st.x, st.y])];
@@ -26627,7 +26840,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // what the steps make, in words: "1 symbol, 1 caption, 1 pipe; 1 move, 1 caption changed"
       var WORDS = { 'add symbol': ['symbol', 'symbols'], 'add text': ['caption', 'captions'], 'add pipe': ['pipe', 'pipes'], 'add pill': ['pill', 'pills'],
         'add object': ['IWMAC object', 'IWMAC objects'], 'add box': ['box', 'boxes'], move: ['move', 'moves'], 'delete': ['removal', 'removals'],
-        text: ['caption changed', 'captions changed'], bind: ['relink', 'relinks'], repipe: ['pipe redrawn', 'pipes redrawn'] };
+        text: ['caption changed', 'captions changed'], bind: ['relink', 'relinks'], repipe: ['pipe redrawn', 'pipes redrawn'], clone: ['copy', 'copies'], stamp: ['stamp', 'stamps'] };
       var told = function (r) {
         var st = (r && r.steps) || {}, add = [], change = [];
         Object.keys(st).forEach(function (k) { var w = WORDS[k] || [k, k]; (/^add /.test(k) ? add : change).push(iwdieN(st[k], w[0], w[1])); });
@@ -32520,6 +32733,8 @@ if (typeof module !== 'undefined' && module.exports) {
     cbSymbolNamed: iwdieCbSymbolNamed,
     cbGeometryCheck: iwdieCbGeometryCheck,
     cbNewFindings: iwdieCbNewFindings,
+    cbLibItem: iwdieCbLibItem,
+    cbBlockPills: iwdieCbBlockPills,
     cbRunsOf: iwdieCbRunsOf,
     cbRoute2: iwdieCbRoute2,
     cbUnjog: iwdieCbUnjog,

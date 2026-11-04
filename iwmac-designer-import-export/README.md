@@ -531,6 +531,33 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Claude reuses: blocks filled, object banks, copies, stamps, ducts (v1.114.0, server 1.12.0)
+
+The fourth phase of the MCP analysis of 2026-11-04: place what exists whole instead of drawing it piece by piece.
+
+- **A block's pills filled.** `symbol {…, values: [bind…]}` puts a value on each pill of a house block, in reading
+  order and white on a dark pill: InfoblokkKA1, VVKVBlokk, EnergimålingBlokk, GaskjølerInfo, and every pill. The
+  pills are read off the library's own drawing of the block (each rounded path 30 to 70 by 15 to 25 px).
+- **Banks of IWMAC objects, native first.**
+  - `bank {object: "V3_co2_compressor_31x35_nrm", count, …}` sets the Designer's own compressors 80 apart, each
+    showing its tag itself.
+  - `values` and `captions` add a value under each member, or where the drawing's own values stand by that symbol.
+  - `header {y, circuit}` draws a header over the members with a riser from each. A drawn symbol's tag then moves
+    beside it, clear of its riser.
+- **`clone`** copies targets, or everything within a box, beside themselves. Their placeholders become new objects,
+  and the words of their binds and texts are turned by `rebind` (MT3 to MT4).
+- **`stamp {export, box, at, units}`** places part of another panel here. The server reads its export and turns the
+  objects within the box into object ops, rebound to this plant's units (or, from the same plant, by driver id). The
+  tab takes the drawing within the box, layer by layer.
+- **`duct`** draws a ventilation duct from its centre line as the Designer's duct objects: pipes, an elbow where it
+  turns, a connector where it meets another. This is the reading Vectorize makes of a drawn duct
+  (`iwdieVzDuctPieces`).
+
+Run end to end in the stub host against the hosted VectorCraft, in one edit of 0.19 s: an information block with its
+first value bound by `{unit, alias}`; three compressors with a value and a header; a value copied and rebound to
+*Pgc reference*; a supply duct with its elbow; and part of a rack stamped, 6 things of its drawing and 4 objects.
+Not run in the live Designer.
+
 ### Claude's pipes the house way: routed, teed, broken, carried (v1.113.0, server 1.11.0)
 
 The third phase of the MCP analysis of 2026-11-04, the Maskin geometry. Claude placed symbols well and joined them

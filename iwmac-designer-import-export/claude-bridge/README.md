@@ -76,7 +76,10 @@ A place is `{x, y}`, `{cx, cy}` or `{near: target, side, gap, align}`, with `fre
 to slide to the nearest free spot; (1.11.0, userscript 1.113.0) a symbol's `{port, as?, gap?}` puts its own port on
 another's, `{on: pipe, point?}` puts it on a pipe, turned along it, the pipe cut. `connect` routes round what stands in
 the way and tees onto a pipe; `header` draws a header and its risers; `breaks: "auto"` breaks a pipe at the crossings of
-other circuits and a pipe deleted heals them; `arrow` sets its flow arrow; `move` carries what is attached. A bank placed next to one of a row of the same symbol
+other circuits and a pipe deleted heals them; `arrow` sets its flow arrow; `move` carries what is attached. (1.12.0,
+userscript 1.114.0) Reuse: a symbol's `values` fill a block's pills; a `bank` of IWMAC objects with a value, caption
+and header per member; `clone` with `rebind`; `stamp` places part of another panel's export here, rebound; `duct` a
+ventilation duct as the Designer's duct objects. A bank placed next to one of a row of the same symbol
 carries that row on, at its spacing. `connect` routes an orthogonal pipe between two
 ports (a compressor's `out` on top, a gas cooler's `in` on its left, a motor valve's at its
 knot) and colours it by circuit: HP, Liquid, MT suction, LT suction, Heat recovery; since 1.111.0 also the water and
