@@ -5096,8 +5096,8 @@ The hosted build carries none of this script's changes. The script only adds the
 catches the save while the page runs. Nothing leaves the browser: the editor is a static page,
 and the panel goes from tab to tab through Tampermonkey's storage.
 
-**The hosted copy.** It is VectorCraft 0.20.0 (since 2026-11-01; 0.17.0 from 2026-10-27, 0.14.0 from
-2026-10-22, 0.11.0 before), built from the official source at that release with its licences and notices. Until 2026-10-17 it was the official
+**The hosted copy.** It is VectorCraft 0.22.0 (since 2026-11-08; 0.20.0 from 2026-11-01, 0.17.0 from
+2026-10-27, 0.14.0 from 2026-10-22, 0.11.0 before), built from the official source at that release with its licences and notices. Until 2026-10-17 it was the official
 web build byte for byte (0.10.0 until 2026-10-15, 0.9.0 until 2026-10-12). Since then it differs in
 these ways:
 - **WebAssembly SIMD is on.** The official web release is built without it, so its canvas renderer
@@ -5105,11 +5105,6 @@ these ways:
   instead of 11.5 ms, and in 7.1 ms instead of 17.4 ms at 1920 × 1080. The pixels are the same.
 - **The ArtCraft name is taken out** (the repository's `build/debrand.py`): the Discord button,
   the Help menu's ArtCraft links, and from 0.20 Discord in the application menu.
-- **A fix its release does not have yet** (since 0.14.0, the repository's `build/patches/`). From
-  0.12.0 VectorCraft opens a stroked zigzag in an .ai, such as the Maskin template's heat exchanger,
-  as its bounding rectangle, and a sync would put that rectangle in the panel's picture. The PDF
-  reader's fix was closed upstream without being merged (2026-10-24); the build carries it until a
-  release has it.
 - **IWMAC objects of a fixed size cannot be resized** (since 2026-10-29, the repository's
   `build/patches/vectorcraft--iwdie-fixed-size.patch`, this script 1.107.0). An object marked
   `data-iwdie-fixed="1"` shows no handles when selected alone. A transform moves it by its centre and leaves its size and
@@ -5163,6 +5158,13 @@ menu bar, 12 px after Help. Two changes for anything that reads VectorCraft from
 - **The canvas is 15 px narrower**, so Fit Artboard in Window gives 65.86 % instead of 66.93 % at 1400 × 900. A
   document point's place on screen comes from `window.vectorcraft.inspect()` (`canvasRect`, `view`), not from fixed
   numbers.
+
+**VectorCraft 0.22.0 is hosted since 2026-11-08**; 0.21.0 and 0.21.1 were never hosted. It opens an .ai's stroked
+zigzag, such as the Maskin template's heat exchanger, as drawn by itself. From 0.12.0 to 0.20.0 VectorCraft had drawn it
+as its bounding rectangle, and the hosted build carried a fix for that (`build/patches/`, 0.14.0 to 0.20.0). On 0.22.0,
+in the stub host, script 1.115.0's syncs placed as many objects as on 0.20.0. An .ai opened from the card gave the same
+shapes, texts and synced picture. The first save was answered through VectorCraft's control channel, and the IWMAC
+title and menu stand as before.
 
 **Watch in later releases:** upstream has asked for an opened SVG or PDF to take its name from its own title
 metadata, or from its file stem, instead of its file name. This script waits for VectorCraft's window title to be
