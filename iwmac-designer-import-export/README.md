@@ -531,6 +531,27 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### An island end's value clears its rows' values (v1.115.2)
+
+Plant 10263's plug-in freezer islands have 21 px ends beside 50 x 21 rows, 2 px apart. The `case` op centred each
+end's value on its box, as it centres every value but an island column's, and those values lay 4 to 5 px on the values
+of the rows beside them. The kit's `oversikt.py` moves them since Part 249, and the `case` op now places them the same
+way:
+- **The value.** A standing end of an island whose centred value lies on the values of the lying rows beside it (4 px
+  or less away, as `iwdieOvStance` finds them; not a column, not a walk-in room) moves its value outward until it
+  clears them, touching at most (`iwdieOvEndShifts`, `iwdieOvClearOfRows`). Its centre stays on its box, and it never
+  moves onto a value on its other side. Where the end is too narrow for that, the plan says how many px are left on
+  the row's value.
+- **What hangs off it.** The bell and states hang off the moved value. The name at the house's place beside the end
+  (`end-L` 10 px left of its box, `end-R` 10 px right of it) moves by the same amount. A plug-in end's Plugg is placed
+  clear of the moved value (`iwdieOvPlugAt`) once every case of the edit is known.
+- **The house's islands are unchanged.** Their 29 px ends beside 69 px rows have centred values that clear the rows'
+  values already.
+
+The kit's parity test plans 10263's island, the same island with its ends as plug-ins, and one whose ends are as tall
+as two rows, in both: every value, bell, name and Plugg lands on the same pixel as `oversikt.py` puts it. Not run in
+the live Designer.
+
 ### A second edit keeps the pills where they are (v1.115.1)
 
 Thomas, of plant 3006's Maskin: a sync from VectorCraft got *all messed up*. Every bare-text value of the panel stood

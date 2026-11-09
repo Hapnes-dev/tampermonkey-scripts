@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.115.1
+// @version      1.115.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.115.1';
+var IWDIE_VERSION = '1.115.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -14145,10 +14145,70 @@ function iwdieOvOffsets(st, anatomy) {
 }
 
 /** Where a case's value goes (oversikt.py): an island's left column right in its box, its right column left, every other
- *  case in its middle. -> [x, y], its top left */
-function iwdieOvValueAt(box, st) {
+ *  case in its middle - (v1.115.2) an island's end `dx` px off it, outward, where iwdieOvEndShifts moves it. -> [x, y],
+ *  its top left */
+function iwdieOvValueAt(box, st, dx) {
   var x = box[0], y = box[1], w = box[2], h = box[3];
-  return [iwdieOvRhu(st === 'column-L' ? x + w - 42 : st === 'column-R' ? x : x + (w - 42) / 2), iwdieOvRhu(y + (h - 22) / 2)];
+  return [iwdieOvRhu(st === 'column-L' ? x + w - 42 : st === 'column-R' ? x : x + (w - 42) / 2) + (dx || 0), iwdieOvRhu(y + (h - 22) / 2)];
+}
+
+/** (v1.115.2) How far an island end's value moves outward, off the values of the rows beside it (oversikt.py's
+ *  clear_of_rows, kit Part 249): `box` [x, y, w, h] the end's standing box, its value centred on it; `values` the top
+ *  lefts [[x, y]] of the rows' 42 x 22 values. It moves away from those it lies on - left for rows on its right, right
+ *  for rows on its left - until it lies on none, touching at most, as a bell may touch a value; never so far that its
+ *  centre leaves its box, nor onto a value on its other side. -> [dx, short]: `short` px are left on a row's value then;
+ *  [0, 0] where its centred value lies on none (the house's 29 px ends beside 69 px rows) */
+function iwdieOvClearOfRows(box, values) {
+  var x = box[0], y = box[1], w = box[2], h = box[3], vw = 42, vh = 22;
+  var vx = iwdieOvRhu(x + (w - vw) / 2), vy = iwdieOvRhu(y + (h - vh) / 2);
+  var level = (values || []).filter(function (v) { return Math.min(vy + vh, v[1] + vh) - Math.max(vy, v[1]) > 0; });   // at its height
+  // how far each value reaches into it from its right and from its left (negative: the free px between them)
+  var right = level.filter(function (v) { return v[0] + vw / 2 > vx + vw / 2; }).map(function (v) { return vx + vw - v[0]; });
+  var left = level.filter(function (v) { return v[0] + vw / 2 <= vx + vw / 2; }).map(function (v) { return v[0] + vw - vx; });
+  var r = right.length ? Math.max.apply(null, right) : null, l = left.length ? Math.max.apply(null, left) : null, room, d;
+  if ((r || 0) > 0 && (l || 0) > 0) return [0, Math.max(r, l)];           // held from both sides: nowhere to go
+  if ((r || 0) <= 0 && (l || 0) <= 0) return [0, 0];
+  if ((r || 0) > 0) {                                                      // rows on its right: it goes left
+    room = Math.min(Math.floor(vx + vw / 2 - x), l !== null ? -l : r);
+    d = Math.max(0, Math.min(r, room));
+    return [d ? -d : 0, r - d];
+  }
+  room = Math.min(Math.floor(x + w - vx - vw / 2), r !== null ? -r : l);
+  d = Math.max(0, Math.min(l, room));
+  return [d, l - d];
+}
+
+/** (v1.115.2) {case key: [dx, short]} for the standing ends of the islands whose centred value lies on the values of the
+ *  lying rows beside it, 4 px or less away, each row's value centred on it (oversikt.py's end_shifts): iwdieOvClearOfRows'
+ *  move outward. Ends and rows count where they carry a value; an island's column (column-L, column-R) keeps its flush
+ *  value, a walk-in room its centred one. `cases` as iwdieOvPlace takes them, `all` [[key, box]] every case of the
+ *  drawing, for how each stands. */
+function iwdieOvEndShifts(cases, all) {
+  var valued = (cases || []).filter(function (c) { return !c.room && (c.roles || { value: null }).value !== undefined; });
+  var across = function (a0, a1, b0, b1) { return Math.min(a1, b1) - Math.max(a0, b0) > 2; }, out = {};
+  valued.forEach(function (c) {
+    var x = c.box[0], y = c.box[1], w = c.box[2], h = c.box[3];
+    if (w >= h) return;
+    var st = iwdieOvStance(c.key, c.box, all, c.wall);
+    if (st === 'column-L' || st === 'column-R') return;
+    var rows = valued.filter(function (o) {
+      var b = o.box, r = b[0] - (x + w), l = x - (b[0] + b[2]);
+      return o.key !== c.key && b[2] >= b[3] && across(y, y + h, b[1], b[1] + b[3]) && ((r >= 0 && r <= 4) || (l >= 0 && l <= 4));
+    }).map(function (o) { return [iwdieOvRhu(o.box[0] + (o.box[2] - 42) / 2), iwdieOvRhu(o.box[1] + (o.box[3] - 22) / 2)]; });
+    var m = iwdieOvClearOfRows(c.box, rows);
+    if (m[0] || m[1]) out[c.key] = m;
+  });
+  return out;
+}
+
+/** Where a plug-in case's Plugg goes, its top left (oversikt.py): past a lying case's right end, on a standing case's
+ *  wall side. (v1.107.6) Clear of the case's value, 42 wide in its middle, which overhangs a 29 px case by 6.5 px each
+ *  side - the live test's Iskrem case had its value on its Plugg - and (v1.115.2) of an island end's value where
+ *  iwdieOvEndShifts moved it, `dx` px. `box` {x, y, w, h}; `wall` the case's. -> [x, y], not rounded */
+function iwdieOvPlugAt(box, wall, dx) {
+  var vL = box.x + (box.w - 42) / 2 + (dx || 0), vR = vL + 42;
+  if (box.w >= box.h) return [Math.max(box.x + box.w + 10, vR + 3), box.y + box.h / 2 - 7];
+  return [wall !== 'left' ? Math.max(box.x + box.w + 4, vR + 3) : Math.min(box.x - 18, vL - 17), box.y + box.h / 2 - 10];
 }
 
 /** Where a case's name may go, first choice first (oversikt.py's candidates): by how it stands, `caption` (below, above,
@@ -14414,14 +14474,23 @@ function iwdieOvSweep(x, y, w, h, nw, sides) {
  *  `free` [{key, text, over?: [[x, y, w, h]], at?: [x, y]}] names of no single case, placed last (oversikt.py's labels);
  *  `all` [[key, box]] every case of the drawing for how each stands; `lay` an iwdieOvLayout with what the drawing has
  *  taken already. Every value first, then each arrangement's names where the template writes them, then the bells and
- *  states - each at the first spot clear of every other case, else of every other object - then the names.
+ *  states - each at the first spot clear of every other case, else of every other object - then the names. `ends`
+ *  (v1.115.2) iwdieOvEndShifts of these cases, where the caller has it already.
  *  -> {objects: [{key, role, obj_id, box: {x, y, w, h}, bind}], names: [{key, text, box}], gaps: [why]} */
-function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
+function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
   var objects = [], names = [], gaps = [], plan = [], reserved = {};
+  // (v1.115.2) an island's standing end moves its value outward off the values of the rows beside it (oversikt.py's
+  // end_shifts, kit Part 249): on 10263's plug-in islands - 21 px ends, 50 x 21 rows - the centred values lay 4 to 5 px
+  // on the rows'. Its bell and states hang off the value, and its name at the house's place moves with it
+  ends = ends || iwdieOvEndShifts(cases, all);
+  Object.keys(ends).forEach(function (k) {
+    if (ends[k][1]) gaps.push(k + ' value: ' + ends[k][1] + ' px on the value of the row beside it - the end is too narrow to clear it and keep its value on its box: give the cases room');
+  });
   (cases || []).forEach(function (c) {
-    var st = c.room ? 'room' : iwdieOvStance(c.key, c.box, all, c.wall), v = iwdieOvValueAt(c.box, st);
+    var dx = ends[c.key] ? ends[c.key][0] : 0;
+    var st = c.room ? 'room' : iwdieOvStance(c.key, c.box, all, c.wall), v = iwdieOvValueAt(c.box, st, dx);
     lay.take([v[0], v[1], v[0] + 42, v[1] + 22], 'value:' + c.key);
-    plan.push({ c: c, st: st, vx: v[0], vy: v[1] });
+    plan.push({ c: c, st: st, vx: v[0], vy: v[1], dx: dx });
   });
   // an arrangement's names where the template writes them, before the bells take their spots - unless one would lie on
   // its own bell's first spot: that name goes beside the case afterwards. (v1.107.8, Thomas, plant 8855) An island's row
@@ -14432,7 +14501,8 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free) {
     if ((c.caption || 'auto') !== 'auto') return;
     var text = c.label || c.key, nw = iwdieOvNameWidth(text);
     var x = c.box[0], y = c.box[1], w = c.box[2], h = c.box[3];
-    var house = { 'row-T': [x, y - 17], 'row-B': [x, y + h + 3], 'end-L': [x - 10 - nw, y + 1], 'end-R': [x + w + 10, y + 1] }[p.st];
+    // (v1.115.2) an end's value moved outward: its name keeps its distance from it
+    var house = { 'row-T': [x, y - 17], 'row-B': [x, y + h + 3], 'end-L': [x - 10 - nw + p.dx, y + 1], 'end-R': [x + w + 10 + p.dx, y + 1] }[p.st];
     var spots = [];
     if (c.nameAt && p.st !== 'end-L' && p.st !== 'end-R') {
       var n = c.nameAt, bell = null;
@@ -14677,8 +14747,18 @@ function iwdieOvFinish(ov, items, steps, boxes, size, notes) {
   ov.cases.forEach(function (c) {
     if (!lay.taken.some(function (t) { return t[4] === 'case:' + c.key; })) lay.take([c.box[0], c.box[1], c.box[0] + c.box[2], c.box[1] + c.box[3]], (c.room ? 'room:' : 'case:') + c.key);
   });
+  var every = all.concat(ov.all.filter(function (e) { return !all.some(function (a) { return a[0] === e[0]; }); }));
+  // (v1.115.2) an island end's value moved outward (iwdieOvEndShifts), now that every case is known: a plug-in end's
+  // Plugg, placed with its case, goes clear of the value where it is now, as oversikt.py places it
+  var ends = iwdieOvEndShifts(ov.cases, every);
+  ov.cases.forEach(function (c) {
+    if (!c.plug || !ends[c.key] || !ends[c.key][0]) return;
+    var b = c.plug.box;
+    b.x = iwdieOvRhu(iwdieOvPlugAt({ x: c.box[0], y: c.box[1], w: c.box[2], h: c.box[3] }, c.wall, ends[c.key][0])[0]);
+    c.plug.taken[0] = b.x; c.plug.taken[2] = b.x + b.w;
+  });
   ov.plugs.forEach(function (p) { lay.take(p.slice(0, 4), p[4]); });
-  var placed = iwdieOvPlace(ov.cases, ov.rooms, all.concat(ov.all.filter(function (e) { return !all.some(function (a) { return a[0] === e[0]; }); })), lay, ov.anatomy, ov.free);
+  var placed = iwdieOvPlace(ov.cases, ov.rooms, every, lay, ov.anatomy, ov.free, ends);
   var byKey = {};
   ov.cases.forEach(function (c) { byKey[c.key] = c; });
   ov.rooms.forEach(function (r) { byKey[r.key] = r; });
@@ -15426,19 +15506,19 @@ function iwdieCbPlan(ops, scene, ctx) {
           caseBox(mb, false);
           ov.plugs.push([mb.x, mb.y, mb.x + mb.w, mb.y + mb.h, (o.room ? 'room:' : 'case:') + key2]);
         });
+        var plug2 = null;
         if (o.plug) {
-          // the template's Plugg: a plug-in case with its own compressor - past a lying case's right end, on a standing
-          // case's wall side (oversikt.py). (v1.107.6) Clear of the case's value, 42 wide in the case's middle, which
-          // overhangs a 29 px case by 6.5 px each side: the live test's Iskrem case had its value on its Plugg
-          var lyingP = cbx.w >= cbx.h, vL = cbx.x + (cbx.w - 42) / 2, vR = vL + 42;
-          var ppx = lyingP ? Math.max(cbx.x + cbx.w + 10, vR + 3)
-            : (o.wall !== 'left' ? Math.max(cbx.x + cbx.w + 4, vR + 3) : Math.min(cbx.x - 18, vL - 17));
-          var ppy = lyingP ? cbx.y + cbx.h / 2 - 7 : cbx.y + cbx.h / 2 - 10;
-          var pb = symbolStep({ name: 'Plugg', turn: lyingP ? 0 : 90 }, i, { x: iwdieOvRhu(ppx), y: iwdieOvRhu(ppy) });
-          if (pb) ov.plugs.push([pb.x, pb.y, pb.x + pb.w, pb.y + pb.h, 'plug']);
+          // the template's Plugg: a plug-in case with its own compressor, clear of its value (iwdieOvPlugAt). (v1.115.2) An
+          // island end's moves with its value once every case is known (iwdieOvFinish)
+          var pp = iwdieOvPlugAt(cbx, o.wall, 0);
+          var pb = symbolStep({ name: 'Plugg', turn: cbx.w >= cbx.h ? 0 : 90 }, i, { x: iwdieOvRhu(pp[0]), y: iwdieOvRhu(pp[1]) });
+          if (pb) {
+            plug2 = { box: pb, taken: [pb.x, pb.y, pb.x + pb.w, pb.y + pb.h, 'plug'] };
+            ov.plugs.push(plug2.taken);
+          }
         }
         ov.cases.push({ key: key2, box: [cbx.x, cbx.y, cbx.w, cbx.h], roles: cro2, label: o.label, caption: o.caption, wall: o.wall,
-          room: !!o.room, op: i, ref: o.ref });
+          room: !!o.room, op: i, ref: o.ref, plug: plug2 });
         ov.all.push([key2, [cbx.x, cbx.y, cbx.w, cbx.h]]);
         if (o.anatomy && !ov.anatomy) ov.anatomy = o.anatomy;
         keep(o.ref, { box: cbx, ov: ck2 });
