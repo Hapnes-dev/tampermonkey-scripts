@@ -531,6 +531,25 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A second edit keeps the pills where they are (v1.115.1)
+
+Thomas, of plant 3006's Maskin: a sync from VectorCraft got *all messed up*. Every bare-text value of the panel stood
+about half way to the top left corner, and the pills under them were gone from the picture but one at that corner. It
+happened on an edit of a panel whose picture came from VectorCraft with Vectorize image's pills kept under its values:
+*Go on with the drawing* put each pill back into its value's placeholder without the group it had been kept in.
+VectorCraft keeps a group's transform in the SVG it saves, so a pill is kept as its placeholder left it - the
+placeholder's `translate(x y)` over the pill's own `translate(-x -y)` - and taken out alone it stood at its object's
+place less that place, near 0, 0. The sync then measured each value's placeholder from there to its own place, moved the
+value to the middle of that (368, 22 to 186, 11), and kept the pills at the corner.
+
+Now each piece of kept art goes back with the transforms of the groups it stood in (`iwdieVcGroupsAround`,
+`iwdieVcArtAround`). Two translates that cancel leave none, so the drawing does not grow by a group an edit, and a fit
+(v1.106.0) comes with the layer it is on, as before. Replayed without VectorCraft on 3006's kept drawing and its 134
+objects - the job built as *Go on* builds it, then measured and read back as a sync does: 1.115.0 moved all 48
+bare-text values and put their pills at the corner; 1.115.1 moves none, and every pill stays on its box. Not run in the
+live Designer. A panel saved after such a sync keeps the moved values: reload it without saving, or edit again from the
+picture (*Start again from the picture*).
+
 ### A picture's sample values and states are no labels (v1.115.0)
 
 Thomas, of plant 8682's Maskin converted from a picture of the panel as it ran: its CO2 alarm's *OK* and its room's

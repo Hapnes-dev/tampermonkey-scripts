@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.115.0
+// @version      1.115.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.115.0';
+var IWDIE_VERSION = '1.115.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -11011,14 +11011,15 @@ function iwdieVcTagJob(svg, id) {
  *  an earlier sync kept of the objects (v1.47.0: each piece with its box, data-iwdie-box) goes back
  *  into the placeholder of the object over it; the layer the last placeholders were on goes, or,
  *  holding more, is called IWMAC-rammer. `fit` (v1.106.0): the drawing was laid out at the panel's size
- *  (iwdieVcFitDrawing's m), so each piece taken out of it goes into its placeholder with that fit, its box
- *  on the panel as the drawing is. */
+ *  (iwdieVcFitDrawing's m), so each piece's box is mapped by that fit to find the object over it; the piece
+ *  itself takes the fit with the rest of what it stood in (v1.115.1, iwdieVcArtAround): the fit is on the
+ *  drawing's top-level layer, one of the groups it is taken out of. */
 function iwdieVcAddPanelObjects(svg, objects, looks, more, fit) {
   var s = String(svg || ''), at = s.lastIndexOf('</svg>'), used = {}, unders = {};
   // art cut afresh for some of them (v1.48.1, `more` by name: an older drawing mended)
   Object.keys(more || {}).forEach(function (nm) { unders[nm] = (more[nm] || []).slice(); });
   if (at < 0) return s;
-  var pieces = [], re = /<(\w+)\b[^>]*\sdata-iwdie-box="([^"]*)"[^>]*>/g, m;
+  var pieces = [], re = /<(\w+)\b[^>]*\sdata-iwdie-box="([^"]*)"[^>]*>/g, m, around = iwdieVcGroupsAround(s);
   while ((m = re.exec(s))) {
     var end = iwdieVcElementEnd(s, m.index, m[1]), b = m[2].split(' ').map(parseFloat);
     if (end < 0 || b.length !== 4 || !b.every(isFinite)) continue;
@@ -11026,13 +11027,12 @@ function iwdieVcAddPanelObjects(svg, objects, looks, more, fit) {
     if (fit) box = iwdieVcFitBox(fit, box);
     var name = iwdieVcUnderOf(box, objects);
     if (name && iwdieVcPanelPlaceholderSvg((objects || []).filter(function (ob) { return ob && String(ob.name) === name; })[0], null, {})) {
-      pieces.push({ from: m.index, to: end, name: name, box: box });
+      pieces.push({ from: m.index, to: end, name: name, box: box, around: around(m.index) });
     }
     re.lastIndex = end;
   }
   for (var i = pieces.length - 1; i >= 0; i--) {
-    var p = pieces[i], art = s.slice(p.from, p.to);
-    if (fit) art = '<g transform="' + iwdieVcMatrix(fit) + '">' + art + '</g>';
+    var p = pieces[i], art = iwdieVcArtAround(s.slice(p.from, p.to), p.around);
     (unders[p.name] = unders[p.name] || []).splice((more && more[p.name] || []).length, 0, { markup: art, box: p.box });
     s = s.slice(0, p.from) + s.slice(p.to);
   }
@@ -11047,6 +11047,53 @@ function iwdieVcAddPanelObjects(svg, objects, looks, more, fit) {
   used['IWMAC-objekter'] = 1;
   var layer = iwdieVcPanelObjectsLayer(objects, looks, used, unders);
   return layer ? s.slice(0, at) + layer + s.slice(at) : s;
+}
+
+/** The transforms of the groups open at places in SVG text `s` (v1.115.1), asked for in order: `around(at)` gives those
+ *  of the g, a and switch elements the element beginning at `at` stands in, outermost first, as one transform list - ''
+ *  when none of them has one. One pass over the text, however many places are asked for, each at or after the last. */
+function iwdieVcGroupsAround(s) {
+  var text = String(s || ''), re = /<(\/?)(?:g|a|switch)\b((?:[^>"']|"[^"]*"|'[^']*')*)>/g, open = [], m = re.exec(text);
+  return function (at) {
+    for (; m && m.index < at; m = re.exec(text)) {
+      if (m[1]) open.pop();
+      else if (!/\/\s*$/.test(m[2])) {
+        var t = /\stransform\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(m[2]);
+        open.push(t ? String(t[1] !== undefined ? t[1] : t[2]).trim() : '');
+      }
+    }
+    return open.filter(Boolean).join(' ');
+  };
+}
+
+/** A transform list that is one translate (v1.115.1): its [x, y], else null. */
+function iwdieVcTranslateOf(t) {
+  var n = '([-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:e[-+]?\\d+)?)';
+  var m = new RegExp('^\\s*translate\\(\\s*' + n + '(?:\\s*,?\\s*' + n + ')?\\s*\\)\\s*$', 'i').exec(String(t || ''));
+  return m ? [parseFloat(m[1]), m[2] === undefined ? 0 : parseFloat(m[2])] : null;
+}
+
+/** A piece of kept art (the markup of one element) where it stood in the drawing it was taken out of (v1.115.1):
+ *  `around` the transforms of the groups it stood in (iwdieVcGroupsAround). VectorCraft keeps a group's transform in
+ *  the SVG it saves, so the pill Vectorize image put under a value (a group) is kept as its placeholder left it - the
+ *  placeholder's translate(x y) over the pill's own translate(-x -y) - and the piece alone, without the group around
+ *  it, stood at its object's place less that object's place, near the top left corner: the next edit had every such
+ *  pill there, and its sync measured every bare-text value half way to it and moved it there (3006's Maskin,
+ *  2026-11-09). Where both are a translate, the piece takes their sum as its own (none where they cancel), so it does
+ *  not grow by two groups an edit; else it goes in a group of those transforms. */
+function iwdieVcArtAround(art, around) {
+  var a = String(art || ''), list = String(around || '').trim();
+  if (!list) return a;
+  var outer = iwdieVcTranslateOf(list), tag = /^<[\w:.-]+\b(?:[^>"']|"[^"]*"|'[^']*')*>/.exec(a);
+  var own = tag ? /\stransform\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(tag[0]) : null;
+  var inner = own ? iwdieVcTranslateOf(own[1] !== undefined ? own[1] : own[2]) : [0, 0];
+  if (outer && inner && tag) {
+    var dx = outer[0] + inner[0], dy = outer[1] + inner[1], f = iwdieDrawFmt;
+    var t = Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6 ? '' : ' transform="translate(' + f(dx) + ' ' + f(dy) + ')"';
+    var head = own ? tag[0].replace(own[0], function () { return t; }) : tag[0].replace(/^<[\w:.-]+/, function (nm) { return nm + t; });
+    return head + a.slice(tag[0].length);
+  }
+  return '<g transform="' + list.replace(/"/g, '&quot;') + '">' + a + '</g>';
 }
 
 /** Where the element whose tag (`tag`) opens at `from` in SVG text `s` ends: after its "/>" when it
@@ -32735,6 +32782,9 @@ if (typeof module !== 'undefined' && module.exports) {
     vcPanelSent: iwdieVcPanelSent,
     vcTagJob: iwdieVcTagJob,
     vcAddPanelObjects: iwdieVcAddPanelObjects,
+    vcGroupsAround: iwdieVcGroupsAround,
+    vcTranslateOf: iwdieVcTranslateOf,
+    vcArtAround: iwdieVcArtAround,
     vcRootAttr: iwdieVcRootAttr,
     vcViewFit: iwdieVcViewFit,
     vcFitMoves: iwdieVcFitMoves,
