@@ -531,6 +531,30 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### An island smaller than the house's names its cases at its outer edges (v1.115.3)
+
+Plant 10263's plug-in freezer islands have 21 px ends beside 50 x 21 rows, 40 px apart. Since v1.115.2 their ends'
+values move outward onto the island's corners, so the rows' bells hang centred in the aisles, and a 50 px row leaves
+8 px beside a 34 px bell. The names in the aisles came out under those bells. Thomas finished the islands by hand and
+confirmed the rule (2026-11-09). The kit's `oversikt.py` follows it since its Part 253, and the `case` op places them
+the same way:
+- **Which islands.** `iwdieOvSmallIslands`: the cases of an island (boxes 4 px or less apart, overlapping by more than
+  2 px) one of whose ends `iwdieOvEndShifts` moves. The house's islands (29 px ends, 69 px rows) move no value and are
+  unchanged, the template's frysetorg among them.
+- **They stand open.** On such an island `iwdieOvStance` takes no row or end as close (`shared` false): a row with
+  another case within 72 px is `row-T` or `row-B`, an end `end-L` or `end-R`.
+- **The names first, at the island's outer edges.** A row's rightmost case (`iwdieOvRightmostInRow`) above or below its
+  right end, every other case of the row at its left end; an end beside its value, outside, 2 px off it, at the value's
+  height. The house's place is the next spot.
+- **The bells.** The rightmost case's alarm spots are the mirror of the house's list, so it slides left off its name as
+  far as the house's slides right. On such an island a bell tries its own spots on another cluster's bell before the
+  ring round its value: in a narrow aisle the two facing rows' bells lie on each other.
+- **The drawing's own bells and states** are another cluster's members (`member:drawing:<cid>`): a new bell lies on
+  one only where nothing else is clear, a name never.
+
+Checked with the kit's parity test: two of 10263's islands across an aisle, and the island whose ends are as tall as
+two rows, whose ends' names now stand beside their values. Not run in the live Designer.
+
 ### An island end's value clears its rows' values (v1.115.2)
 
 Plant 10263's plug-in freezer islands have 21 px ends beside 50 x 21 rows, 2 px apart. The `case` op centred each

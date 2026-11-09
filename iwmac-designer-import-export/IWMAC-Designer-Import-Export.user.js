@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.115.2
+// @version      1.115.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.115.2';
+var IWDIE_VERSION = '1.115.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -14093,14 +14093,18 @@ function iwdieOvRhu(v) { return Math.floor(v + 0.5); }
  *  row (row-B). (v1.107.8) A standing end of an island - its lying rows beside it, 4 px or less away - is end-L with
  *  the island to its right, end-R with it to its left; a row with another case within IWDIE_OV_CLOSE px above it
  *  (row-T-close) or below it (row-B-close), and an end with one above it (the standing spots it had), share the room
- *  between them. `box` [x, y, w, h]; `all` [[key, [x, y, w, h]]] every case of the drawing in order, this one among
- *  them as `key`; `wall` top, left, right or bottom. -> lying | lying-bottom | row-T | row-B | row-T-close |
- *  row-B-close | upright | upright-right | column-L | column-R | end-L | end-R */
-function iwdieOvStance(key, box, all, wall) {
+ *  between them. (v1.115.3, Thomas, plant 10263) Not on an island smaller than the house's (`shared` false,
+ *  iwdieOvSmallIslands): its rows and ends stand as open ones there, their names at the island's outer edges and the
+ *  bells of two rows facing each other across the aisle on each other. `box` [x, y, w, h]; `all` [[key, [x, y, w, h]]]
+ *  every case of the drawing in order, this one among them as `key`; `wall` top, left, right or bottom. -> lying |
+ *  lying-bottom | row-T | row-B | row-T-close | row-B-close | upright | upright-right | column-L | column-R | end-L |
+ *  end-R */
+function iwdieOvStance(key, box, all, wall, shared) {
   var x = box[0], y = box[1], w = box[2], h = box[3];
   var across = function (a0, a1, b0, b1) { return Math.min(a1, b1) - Math.max(a0, b0) > 2; };
   var others = (all || []).filter(function (e) { return e[0] !== key; }).map(function (e) { return e[1]; });
   var close = function (up) {
+    if (shared === false) return false;
     return others.some(function (b) { var g = up ? y - (b[1] + b[3]) : b[1] - (y + h); return across(x, x + w, b[0], b[0] + b[2]) && g >= 0 && g <= IWDIE_OV_CLOSE; });
   };
   if (w >= h) {
@@ -14199,6 +14203,44 @@ function iwdieOvEndShifts(cases, all) {
     if (m[0] || m[1]) out[c.key] = m;
   });
   return out;
+}
+
+/** (v1.115.3, Thomas, plant 10263) The cases that stand in an island smaller than the house's (oversikt.py's
+ *  small_islands, kit Part 253): one of its standing ends has its value moved off the rows' values (`ends`,
+ *  iwdieOvEndShifts), as on 10263's plug-in islands of 21 px ends and 50 x 21 rows. An island is its cases' boxes joined
+ *  where one lies 4 px or less beside, above or below another, overlapping it by more than 2 px along that side; a
+ *  walk-in room stands in none. The house's islands (29 px ends, 69 px rows) move no value. -> {case key: true} */
+function iwdieOvSmallIslands(cases, ends) {
+  var across = function (a0, a1, b0, b1) { return Math.min(a1, b1) - Math.max(a0, b0) > 2; };
+  var list = (cases || []).filter(function (c) { return !c.room && c.box; }), parent = {}, out = {};
+  var root = function (k) { while (parent[k] !== k) { parent[k] = parent[parent[k]]; k = parent[k]; } return k; };
+  list.forEach(function (c) { parent[c.key] = c.key; });
+  list.forEach(function (a, i) {
+    list.slice(i + 1).forEach(function (b) {
+      var p = a.box, q = b.box, gx = [q[0] - (p[0] + p[2]), p[0] - (q[0] + q[2])], gy = [q[1] - (p[1] + p[3]), p[1] - (q[1] + q[3])];
+      var near = function (g) { return g.some(function (d) { return d >= 0 && d <= 4; }); };
+      if ((across(p[1], p[1] + p[3], q[1], q[1] + q[3]) && near(gx)) || (across(p[0], p[0] + p[2], q[0], q[0] + q[2]) && near(gy))) parent[root(a.key)] = root(b.key);
+    });
+  });
+  var small = {};
+  Object.keys(ends || {}).forEach(function (k) { if (parent[k] !== undefined) small[root(k)] = true; });
+  list.forEach(function (c) { if (small[root(c.key)]) out[c.key] = true; });
+  return out;
+}
+
+/** (v1.115.3) Whether a lying case is the rightmost of its island's row (oversikt.py's rightmost_in_row): another lying
+ *  case 4 px or less to its left, none to its right. On an island smaller than the house's it names itself at its right
+ *  end (C and E on 10263's islands), every other case of the row at its left end, the house's place. */
+function iwdieOvRightmostInRow(key, box, all) {
+  var x = box[0], y = box[1], w = box[2], h = box[3];
+  var across = function (a0, a1, b0, b1) { return Math.min(a1, b1) - Math.max(a0, b0) > 2; };
+  var lying = function (right) {
+    return (all || []).some(function (e) {
+      var b = e[1], g = right ? b[0] - (x + w) : x - (b[0] + b[2]);
+      return e[0] !== key && b[2] >= b[3] && across(y, y + h, b[1], b[1] + b[3]) && g >= 0 && g <= 4;
+    });
+  };
+  return lying(false) && !lying(true);
 }
 
 /** Where a plug-in case's Plugg goes, its top left (oversikt.py): past a lying case's right end, on a standing case's
@@ -14478,7 +14520,7 @@ function iwdieOvSweep(x, y, w, h, nw, sides) {
  *  (v1.115.2) iwdieOvEndShifts of these cases, where the caller has it already.
  *  -> {objects: [{key, role, obj_id, box: {x, y, w, h}, bind}], names: [{key, text, box}], gaps: [why]} */
 function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
-  var objects = [], names = [], gaps = [], plan = [], reserved = {};
+  var objects = [], names = [], gaps = [], plan = [], reserved = {}, mirrored = {};
   // (v1.115.2) an island's standing end moves its value outward off the values of the rows beside it (oversikt.py's
   // end_shifts, kit Part 249): on 10263's plug-in islands - 21 px ends, 50 x 21 rows - the centred values lay 4 to 5 px
   // on the rows'. Its bell and states hang off the value, and its name at the house's place moves with it
@@ -14486,16 +14528,22 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
   Object.keys(ends).forEach(function (k) {
     if (ends[k][1]) gaps.push(k + ' value: ' + ends[k][1] + ' px on the value of the row beside it - the end is too narrow to clear it and keep its value on its box: give the cases room');
   });
+  // (v1.115.3, Thomas, plant 10263) an island smaller than the house's: its rows and ends stand as open ones, their names
+  // at the island's outer edges reserved before the bells, which slide off them and lie on each other in a narrow aisle
+  var small = iwdieOvSmallIslands(cases, ends);
   (cases || []).forEach(function (c) {
     var dx = ends[c.key] ? ends[c.key][0] : 0;
-    var st = c.room ? 'room' : iwdieOvStance(c.key, c.box, all, c.wall), v = iwdieOvValueAt(c.box, st, dx);
+    var st = c.room ? 'room' : iwdieOvStance(c.key, c.box, all, c.wall, !small[c.key]), v = iwdieOvValueAt(c.box, st, dx);
     lay.take([v[0], v[1], v[0] + 42, v[1] + 22], 'value:' + c.key);
     plan.push({ c: c, st: st, vx: v[0], vy: v[1], dx: dx });
   });
   // an arrangement's names where the template writes them, before the bells take their spots - unless one would lie on
   // its own bell's first spot: that name goes beside the case afterwards. (v1.107.8, Thomas, plant 8855) An island's row
   // or standing end, of an arrangement or not, keeps its name at the house's place on its outer side - above or below
-  // the case's left end, beside an end, 10 px off it - and its bell, centred on its value there, slides a few px off it
+  // the case's left end, beside an end, 10 px off it - and its bell, centred on its value there, slides a few px off it.
+  // (v1.115.3, Thomas, plant 10263) On an island smaller than the house's, the names stand at the island's outer edges:
+  // a row's rightmost case names itself above or below its right end (C and E), the others at their left end (B and D),
+  // and an end beside its value, outside, at the value's height (A and F); the house's place is the next spot
   plan.forEach(function (p) {
     var c = p.c;
     if ((c.caption || 'auto') !== 'auto') return;
@@ -14503,7 +14551,13 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
     var x = c.box[0], y = c.box[1], w = c.box[2], h = c.box[3];
     // (v1.115.2) an end's value moved outward: its name keeps its distance from it
     var house = { 'row-T': [x, y - 17], 'row-B': [x, y + h + 3], 'end-L': [x - 10 - nw + p.dx, y + 1], 'end-R': [x + w + 10 + p.dx, y + 1] }[p.st];
-    var spots = [];
+    var edge = null, right = false;
+    if (small[c.key] && house && !c.nameAt) {
+      right = (p.st === 'row-T' || p.st === 'row-B') && iwdieOvRightmostInRow(c.key, c.box, all);
+      edge = { 'row-T': [right ? x + w - nw : x, y - 17], 'row-B': [right ? x + w - nw : x, y + h + 3],
+        'end-L': [p.vx - 2 - nw, p.vy + (22 - 14) / 2], 'end-R': [p.vx + 42 + 2, p.vy + (22 - 14) / 2] }[p.st];
+    }
+    var spots = edge ? [[iwdieOvRhu(edge[0]), iwdieOvRhu(edge[1])]] : [];
     if (c.nameAt && p.st !== 'end-L' && p.st !== 'end-R') {
       var n = c.nameAt, bell = null;
       var bx = iwdieOvRhu(n.just === 'L' ? n.x : n.just === 'R' ? n.x - nw : n.x - nw / 2), by = iwdieOvRhu(n.y - 7);
@@ -14514,14 +14568,24 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
       }
       if (!bell || !lay.hit([bx, by, bx + nw, by + 14], bell)) spots.push([bx, by]);
     }
-    if (house && (c.nameAt || !spots.length)) spots.push([iwdieOvRhu(house[0]), iwdieOvRhu(house[1])]);
+    var home = house ? [iwdieOvRhu(house[0]), iwdieOvRhu(house[1])] : null;
+    if (home && (c.nameAt || !spots.length || edge) && !spots.some(function (s) { return s[0] === home[0] && s[1] === home[1]; })) spots.push(home);
     for (var i = 0; i < spots.length; i++) {
       var nb = [spots[i][0], spots[i][1], spots[i][0] + nw, spots[i][1] + 14];
-      if (lay.free(nb)) { lay.take(nb, 'label'); reserved[c.key] = spots[i]; break; }
+      if (lay.free(nb)) {
+        lay.take(nb, 'label'); reserved[c.key] = spots[i];
+        if (right && edge && i === 0) mirrored[c.key] = true;      // its name at its right end: its bell slides left off it
+        break;
+      }
     }
   });
   plan.forEach(function (p) {
     var c = p.c, roles = c.roles || { value: null, alarm: null }, spots = iwdieOvOffsets(p.st === 'room' ? 'lying' : p.st, anatomy), stateAt = null;
+    if (mirrored[c.key] && anatomy !== 'compact' && !(anatomy && typeof anatomy === 'object')) {
+      // (v1.115.3) a small island's rightmost row case, named at its right end, is the mirror of its leftmost: its bell's
+      // spots mirrored, so that it slides left off the name as far as the house's slides right (oversikt.py)
+      spots = { alarm: spots.alarm.map(function (d) { return [42 - d[0] - 34, d[1]]; }), cooling: spots.cooling, defrost: spots.defrost };
+    }
     var mine = ['case:' + c.key, 'room:' + c.key, 'value:' + c.key, 'member:' + c.key];
     IWDIE_OV_ROLES.forEach(function (role) {
       if (roles[role] === undefined) return;
@@ -14537,14 +14601,18 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
           var near = spots[role].map(function (d) { return iwdieOvOffValue(d[0], d[1], ow, oh); }), ring = iwdieOvRingSpots(ow, oh);
           var tries = [[near, mine.concat(['room', 'wall'])], [near, mine.concat(['case', 'room', 'wall'])],
             [ring, mine.concat(['case', 'room', 'wall'])], [near.concat(ring), mine.concat(['case', 'room', 'wall', 'member'])]];
+          // (v1.115.3, Thomas, plant 10263) on an island smaller than the house's a bell keeps to its own spots, slid off
+          // the names, and lies on another cluster's bell there - the facing row's across a narrow aisle, or the
+          // drawing's own - before it wanders round its value
+          if (small[c.key]) tries.splice(2, 0, [near, mine.concat(['case', 'room', 'wall', 'member'])]);
           var hitAt = null;
-          tries.some(function (t, n) {
+          tries.some(function (t) {
             t[0].some(function (d) {
               var b = [p.vx + d[0], p.vy + d[1], p.vx + d[0] + ow, p.vy + d[1] + oh];
               if (lay.free(b, t[1]) && !lay.onValue(b)) { hitAt = [b[0], b[1]]; return true; }
               return false;
             });
-            if (hitAt && n === 3) gaps.push(c.key + ' ' + role + ": no room clear of the other clusters; it lies on another cluster's bell or state, never on a value");
+            if (hitAt && t[1].indexOf('member') >= 0) gaps.push(c.key + ' ' + role + ": no room clear of the other clusters; it lies on another cluster's bell or state, never on a value");
             return !!hitAt;
           });
           if (!hitAt) {
@@ -14730,7 +14798,14 @@ function iwdieOvFinish(ov, items, steps, boxes, size, notes) {
     if (it.box.w >= 0.6 * size.w || it.box.h >= 0.8 * size.h) return;
     var kind = iwdieOvCaseKind(it);
     if (kind) { lay.take(tb(it.box), 'case:' + it.cid); all.push([it.cid, [it.box.x, it.box.y, it.box.w, it.box.h]]); return; }
-    if (it.kind === 'object') { lay.take(tb(it.box), /^number_v3_label_/.test(it.obj_id || '') ? 'label' : 'obj:' + it.cid); return; }
+    // (v1.115.3, Thomas, plant 10263) a bell or state of the drawing is another cluster's: a new bell or state lies on it
+    // only where nothing else is clear, as on a new cluster's ("kan overlappe hverandre dersom det ikke er nok plass"),
+    // and a name never does (oversikt.py's --base)
+    if (it.kind === 'object') {
+      lay.take(tb(it.box), /^number_v3_label_/.test(it.obj_id || '') ? 'label'
+        : /^V3_R_\d+px_circular_(alarm|cooling|defrost)/.test(it.obj_id || '') ? 'member:drawing:' + it.cid : 'obj:' + it.cid);
+      return;
+    }
     if (it.kind === 'text') { lay.take(tb(it.box), 'label'); return; }
     if (/^bakgrunn$/i.test(it.layer || '')) { lay.take(tb(it.box), 'room'); return; }
     lay.take(tb(it.box), 'case:s' + it.cid);
