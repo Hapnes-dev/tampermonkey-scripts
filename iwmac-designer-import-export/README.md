@@ -546,9 +546,9 @@ Now each piece of kept art goes back with the transforms of the groups it stood 
 `iwdieVcArtAround`). Two translates that cancel leave none, so the drawing does not grow by a group an edit, and a fit
 (v1.106.0) comes with the layer it is on, as before. Replayed without VectorCraft on 3006's kept drawing and its 134
 objects - the job built as *Go on* builds it, then measured and read back as a sync does: 1.115.0 moved all 48
-bare-text values and put their pills at the corner; 1.115.1 moves none, and every pill stays on its box. Not run in the
-live Designer. A panel saved after such a sync keeps the moved values: reload it without saving, or edit again from the
-picture (*Start again from the picture*).
+bare-text values and put their pills at the corner; 1.115.1 moves none, and every pill stays on its box. Checked live
+the same day: Thomas updated to 1.115.1 and synced 3006's Maskin again, and it works. A panel saved after such a sync
+keeps the moved values: reload it without saving, or edit again from the picture (*Start again from the picture*).
 
 ### A picture's sample values and states are no labels (v1.115.0)
 
