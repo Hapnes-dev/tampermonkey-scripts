@@ -531,6 +531,40 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Edit in VectorCraft lays the picture out as the Designer draws it, at its own size from the top left (v1.115.4)
+
+Thomas, on plant 10268's Maskin (2026-11-10): after Edit in VectorCraft every placeholder stood 20 to 30 px left of its
+pill or part, while the Designer showed the same panel aligned. The bridge reported the document as 1440 x 750; the
+panel's picture is 1400 x 750.
+- **The canvas is the plant's layout, not the picture.** The Designer page sets `#main_image` to `get_layoutSize()` at
+  load: 1440 x 750 on 10268, 1400 x 750 on 10263, 4728 and 10266, 1400 x 755 on 3006, 1280 x 1024 on 8682. It draws a
+  panel's picture there at the picture's own pixel size from the top left: `iw_set_base_image` sets no background size,
+  and a picture larger than the canvas is cut at its edge.
+- **Edit in VectorCraft scaled it.** It laid the document out at the canvas's size, then stretched a picture of pixels to
+  it (`iwdieVcSvg`), or fitted a drawing kept in a PNG into it and centred it (`iwdieVcFitDrawing`, v1.106.0). Insert
+  draws a file's drawing into a PNG at the file's size, so 10268's 1400 x 750 drawing came out 20 px right of every
+  object, and a picture stretched to 1440 put its x 1050 at 1080.
+- **Now the document is still the canvas's size, and what it shows lies where the Designer draws it:**
+  - a picture of pixels at its own pixel size from the top left. `iwdieImagePixelSize` reads a PNG's, GIF's or JPEG's
+    header; a picture whose size cannot be read is stretched as before.
+  - a drawing kept in a PNG fitted into that PNG's own size, as `vcRenderPng` drew it there, with the PNG at its own
+    size from the top left. Plant 8769's picture (v1.106.0) is the canvas's size, because Insert drew a drawing at the
+    canvas's size then, so its drawing is fitted and centred exactly as before.
+  - an SVG background (Insert before v1.65.0) as CSS draws it: at its root's size, or as large as its viewBox's ratio
+    fits, from the top left (`iwdieVcSvgPictureBox`).
+  - Claude's `iwmac_open` of a panel file: its drawing as Insert would draw it, at the file's size; the drawing its
+    picture keeps, at that picture's size. VectorCraft by itself does the same.
+- **The sync is unchanged.** VectorCraft saves its artboard, the canvas, as the viewBox, so `vcMeasure` measures every
+  placeholder one to one, and `vcRenderPng` draws the save at the canvas's size. Insert is unchanged too.
+- **A picture larger than the canvas** (a 1400 x 750 picture on 8682's 1280 x 1024) now opens past the artboard's
+  edge. The opening toast says that the Designer does not show that part and that a sync leaves it out.
+
+Replayed in Chrome on 10268's two deliveries, at 1440 x 750 and on a 1280 x 1024 canvas. The Designer's composition
+(the picture as `#main_image`'s background) and the job VectorCraft opens, drawn without its placeholders as a sync draws
+it, are pixel-identical for the picture, and differ in 14 anti-aliased pixels of text for the drawing. With 1.115.3,
+46 787 and 33 903 pixels differed. The sync's own `vcMeasure` gives every placeholder its object's place, so no object
+moves. 8769's case comes out as it did with 1.115.3. Not run in the live Designer.
+
 ### Claude links an SLV 105N plug-in's value and alarm (server 1.15.0)
 
 The kit's Part 256 (2026-11-10, plant 10268) made an SLV 105N plug-in's cluster its value and its alarm: 1 448 of the

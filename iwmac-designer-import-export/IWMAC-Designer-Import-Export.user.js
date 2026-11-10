@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.115.3
+// @version      1.115.4
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.115.3';
+var IWDIE_VERSION = '1.115.4';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -149,6 +149,39 @@ function iwdieImageHeaderSize(dataUrl) {
   }
   if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) {                  // GIF, little-endian
     return { width: b[6] | (b[7] << 8), height: b[8] | (b[9] << 8) };
+  }
+  return null;
+}
+
+/** A picture's own pixel size (v1.115.4), from its header: `src` a data URL or the bytes themselves, a PNG, GIF or JPEG.
+ *  The Designer draws a panel's picture at this size from the top left of its canvas - iw_set_base_image sets no size - so
+ *  Edit in VectorCraft places it so too. A JPEG's frame header is found by walking its segments, in at most its first
+ *  megabyte. -> {w, h}, or null for a picture whose size cannot be read so */
+function iwdieImagePixelSize(src) {
+  var b = src;
+  if (typeof src === 'string') {
+    var m = /^data:[^;,]*;base64,([A-Za-z0-9+/=]+)/.exec(src);
+    if (!m) return null;
+    b = iwdieBase64Head(m[1], /^\/9j\//.test(m[1]) ? 1048576 : 32);
+  }
+  if (!b || typeof b.length !== 'number' || b.length < 10) return null;
+  var ok = function (w, h) { return w > 0 && h > 0 ? { w: w, h: h } : null; };
+  if (b.length >= 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    return ok((b[16] << 24 | b[17] << 16 | b[18] << 8 | b[19]) >>> 0, (b[20] << 24 | b[21] << 16 | b[22] << 8 | b[23]) >>> 0);
+  }
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return ok(b[6] | (b[7] << 8), b[8] | (b[9] << 8));
+  if (b[0] !== 0xff || b[1] !== 0xd8) return null;
+  for (var i = 2; i + 8 < b.length;) {
+    if (b[i] !== 0xff) return null;
+    var mk = b[i + 1];
+    if (mk === 0xff) { i++; continue; }                                       // a fill byte
+    if (mk === 0x01 || (mk >= 0xd0 && mk <= 0xd8)) { i += 2; continue; }      // a marker without a length
+    if (mk === 0xd9 || mk === 0xda) return null;                              // the image ends, or its data begins, first
+    // a frame header, SOF0 to SOF15 but DHT, JPG and DAC: its height, then its width
+    if (mk >= 0xc0 && mk <= 0xcf && mk !== 0xc4 && mk !== 0xc8 && mk !== 0xcc) return ok(b[i + 7] << 8 | b[i + 8], b[i + 5] << 8 | b[i + 6]);
+    var len = b[i + 2] << 8 | b[i + 3];
+    if (len < 2) return null;
+    i += 2 + len;
   }
   return null;
 }
@@ -8947,9 +8980,17 @@ function iwdieVcSvg(o) {
   var defs = iwdieDrawDefsSvg(shapes);
   if (defs) out.push('  <defs>' + defs + '</defs>');
   var picOk = function (u) { return !!u && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+\/=]+$/.test(u); };
+  // a picture at its own pixel size from the top left (v1.115.4), as the Designer draws a panel's picture: 10268's 1400 x 750
+  // Maskin on its canvas of 1440 x 750 ends 40 px short of the right edge, and one larger than the canvas runs past it.
+  // Stretched to the canvas, its objects stood up to 30 px off their pills (Thomas, 2026-11-10). Stretched as before only
+  // when its size cannot be read.
+  var image = function (u) {
+    var z = iwdieImagePixelSize(u);
+    return '<image width="' + (z ? z.w : W) + '" height="' + (z ? z.h : H) + '" preserveAspectRatio="none" xlink:href="' + u + '"/>';
+  };
   if (picOk(o.original)) {
     out.push('  <g id="Bakgrunn_original" data-name="Bakgrunn (original)" display="none">');
-    out.push('    <image width="' + W + '" height="' + H + '" preserveAspectRatio="none" xlink:href="' + o.original + '"/>');
+    out.push('    ' + image(o.original));
     out.push('  </g>');
   }
   // which version read the picture (v1.48.0): an edit of a later one may read it again
@@ -8964,7 +9005,7 @@ function iwdieVcSvg(o) {
   var vecOf = function (name) { for (var k = 0; k < vec.length; k++) if (vec[k].name === name) return vec[k].svg; return ''; };
   if (vec.length) { if (vecOf('Bakgrunn')) out.push(vecOf('Bakgrunn')); }
   else if (o.picture && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+\/=]+$/.test(o.picture)) {
-    out.push('    <image width="' + W + '" height="' + H + '" preserveAspectRatio="none" xlink:href="' + o.picture + '"/>');
+    out.push('    ' + image(o.picture));
   }
   out.push('  </g>');
   [['Rør', 'Ror'], ['Former', 'Former'], ['Tekst', 'Tekst']].forEach(function (lr) {
@@ -9069,19 +9110,35 @@ function iwdieVcMatrix(m) {
  *  into the panel, moving every one as well. Here the root becomes the panel's - width,
  *  height, viewBox 0 0 W H - and each thing at its top takes the fit as a transform of its own, which VectorCraft's
  *  import bakes into its art: a layer stays a layer. VectorCraft's own copy of the document goes, as it no longer matches.
- *  -> {svg, m: the fit, or null where only the root's size changed, from: {w, h}: the drawing's size}, or null for a
- *  drawing at the panel's size already, or no SVG */
-function iwdieVcFitDrawing(svg, size) {
+ *  (v1.115.4) Laid out in the picture it is kept in, not in the panel: `at` {x, y, w, h} - x and y 0 when left out - is
+ *  the box that picture covers on the panel, and the drawing lies in it as vcRenderPng drew it there, its viewBox fitted
+ *  into the picture's size. The Designer draws a picture at its own pixel size from the top left of its canvas, whose size
+ *  is the plant's layout, not the picture's (iw_set_base_image sets none); and Insert draws a file's drawing at the file's
+ *  size. 10268's 1400 × 750 Maskin, on a canvas of 1440 × 750, came out fitted into the canvas and centred, 20 px right of
+ *  every object over it (Thomas, 2026-11-10). 8769's picture is the panel's size, as Insert drew a drawing at the canvas's
+ *  size then, so it is fitted and centred as before. Without `at`, the picture is taken to fill the panel, as before.
+ *  -> {svg, m: the fit, or null where only the root's size changed, from: {w, h}: the drawing's size, at: the picture's
+ *  box}, or null for a drawing at the panel's size already, or no SVG */
+function iwdieVcFitDrawing(svg, size, at) {
   var s = String(svg || ''), open = /<svg\b[^>]*>/i.exec(s), close = s.lastIndexOf('</svg>');
   var W = Math.round(size && size.w || 0), H = Math.round(size && size.h || 0);
   if (!open || close < open.index + open[0].length || !(W > 0) || !(H > 0)) return null;
-  var tag = open[0], fit = iwdieVcViewFit(iwdieVcRootAttr(tag, 'viewBox'), iwdieVcRootAttr(tag, 'preserveAspectRatio'), size);
+  var pic = { x: at && isFinite(at.x) ? +at.x : 0, y: at && isFinite(at.y) ? +at.y : 0, w: at && at.w > 0 ? +at.w : W, h: at && at.h > 0 ? +at.h : H };
+  var tag = open[0], fit = iwdieVcViewFit(iwdieVcRootAttr(tag, 'viewBox'), iwdieVcRootAttr(tag, 'preserveAspectRatio'), { w: pic.w, h: pic.h });
   var len = function (a) { var v = iwdieVcRootAttr(tag, a), n = v === null || /%/.test(v) ? NaN : parseFloat(v); return isFinite(n) && n > 0 ? n : null; };
   var w0 = len('width'), h0 = len('height');
   // VectorCraft opens a root of another width or height at that size, the viewBox fitted into it: so that too
   var sized = (w0 === null || Math.abs(w0 - W) < 0.5) && (h0 === null || Math.abs(h0 - H) < 0.5);
-  var m = fit && iwdieVcFitMoves(fit.m) ? fit.m : null;
-  if (!m && sized) return null;
+  // the drawing's units on the panel: fitted into its picture, at the picture's place; without a viewBox, the picture's
+  // pixels from its top left
+  var fm = fit ? fit.m.slice() : [1, 0, 0, 1, 0, 0];
+  fm[4] += pic.x;
+  fm[5] += pic.y;
+  var m = iwdieVcFitMoves(fm) ? fm : null;
+  // nothing to lay out only where the root as it is draws into the canvas one to one: a root of the canvas's size whose
+  // viewBox is a picture's of another size (an SVG background, sized to the canvas) would still be fitted into it
+  var asIs = iwdieVcViewFit(iwdieVcRootAttr(tag, 'viewBox'), iwdieVcRootAttr(tag, 'preserveAspectRatio'), size);
+  if (!m && sized && !(asIs && iwdieVcFitMoves(asIs.m))) return null;
   var root = tag.replace(/\s(?:width|height|viewBox|preserveAspectRatio)\s*=\s*(?:"[^"]*"|'[^']*')/g, '')
     .replace(/^<svg\b/i, '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '"');
   var body = s.slice(open.index + tag.length, close);
@@ -9102,7 +9159,29 @@ function iwdieVcFitDrawing(svg, size) {
     }
   }
   return { svg: iwdieVcStripEditing(s.slice(0, open.index) + root + body + s.slice(close)), m: m,
-    from: fit ? { w: fit.from.w, h: fit.from.h } : { w: w0 || W, h: h0 || H } };
+    from: fit ? { w: fit.from.w, h: fit.from.h } : { w: w0 || pic.w, h: h0 || pic.h }, at: pic };
+}
+
+/** Where the Designer draws a background that is an SVG (v1.115.4): as a CSS background of no size of its own
+ *  (iw_set_base_image), from the top left - at the size its root gives in pixels, a missing one by its viewBox's ratio; with
+ *  neither, as large as that ratio fits in the canvas (`size` {w, h}), and with no ratio either, the canvas. -> {x, y, w, h} */
+function iwdieVcSvgPictureBox(svg, size) {
+  var tag = (/<svg\b[^>]*>/i.exec(String(svg || '')) || [''])[0], W = Math.round(size && size.w || 0), H = Math.round(size && size.h || 0);
+  var px = function (a) {
+    var v = /^\s*([\d.]+)\s*(px|pt|pc|in|cm|mm)?\s*$/i.exec(iwdieVcRootAttr(tag, a) || ''), n = v ? parseFloat(v[1]) : NaN;
+    var u = { px: 1, pt: 4 / 3, pc: 16, 'in': 96, cm: 96 / 2.54, mm: 96 / 25.4 }[(v && v[2] || 'px').toLowerCase()];
+    return isFinite(n) && n > 0 ? n * u : null;
+  };
+  var vb = String(iwdieVcRootAttr(tag, 'viewBox') || '').trim().split(/[\s,]+/).map(parseFloat);
+  var r = vb.length === 4 && vb[2] > 0 && vb[3] > 0 ? vb[2] / vb[3] : null, w = px('width'), h = px('height');
+  if (w && !h && r) h = w / r;
+  if (h && !w && r) w = h * r;
+  if (!w || !h) {
+    var k = r && W > 0 && H > 0 ? Math.min(W / vb[2], H / vb[3]) : 0;
+    w = k ? vb[2] * k : w || W;
+    h = k ? vb[3] * k : h || H;
+  }
+  return { x: 0, y: 0, w: w, h: h };
 }
 
 /** An SVG made fit for a browser to draw (v1.58.0). VectorCraft's style sheets give font sizes and letter spacing
@@ -26253,14 +26332,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       say('Opening <b>' + esc2(fileName) + '</b>…', false, true);
       // as Insert takes it: the file's drawing with its hidden original back and the symbols it names drawn; else the
       // drawing its picture keeps, else that picture
-      var parsed = bg ? iwdieParseDataUrl(bg) : null;
+      var parsed = bg ? iwdieParseDataUrl(bg) : null, keptIn = null;
       (drawn ? vcOriginalBack(doc).then(function (svg) {
         var kept = libForVc();
         if (iwdieSymRefs(svg).length) svg = iwdieSymExpand(svg, kept ? kept.items : []).svg;
         return iwdieVcAuthored(svg, size);
-      }) : parsed && parsed.bytes ? vcDocumentOf(parsed.bytes) : Promise.resolve(null)).then(function (svg) {
-        // laid out at the panel's size, as the Designer shows a drawing of another size (v1.106.0)
-        var fit = svg ? iwdieVcFitDrawing(svg, size) : null;
+      }) : parsed && parsed.bytes ? vcDocumentOf(parsed.bytes).then(function (d) {
+        if (d) keptIn = iwdieImagePixelSize(parsed.bytes);
+        return d;
+      }) : Promise.resolve(null)).then(function (svg) {
+        // laid out at the panel's size, as the Designer shows a drawing of another size (v1.106.0) - (v1.115.4) in the
+        // picture it is kept in, at that picture's own size from the top left
+        var fit = svg ? iwdieVcFitDrawing(svg, size, keptIn) : null;
         if (svg) return { svg: iwdieVcAddPanelObjects(fit ? fit.svg : svg, objects, looks, null, fit ? fit.m : null), authored: !!drawn };
         return { svg: iwdieVcSvg({ width: size.w, height: size.h, plate: '#e5e7ea', picture: bg || null, objects: objects, looks: looks, title: title }), authored: false };
       }).then(function (got) {
@@ -26984,13 +27067,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         var own = !api.job.solo && String(doc.plant_id == null ? '' : doc.plant_id) === String(api.job.plant || '') && samePanel(doc.panel_name, api.job.panel);
         var bg = typeof doc.image_data === 'string' && /^data:image\/(png|jpeg)[;,]/i.test(doc.image_data) ? doc.image_data : '';
         var authored = typeof doc.image_svg === 'string' && doc.image_svg && !iwdieKeepsOwnPicture(doc);
-        var parsed = bg ? iwdieParseDataUrl(bg) : null;
+        var parsed = bg ? iwdieParseDataUrl(bg) : null, keptIn = null;
+        // (v1.115.4) the drawing in the picture it is, or would be, kept in, at that picture's own size from the top left of
+        // the canvas: the file's drawing as Insert draws it, at the file's size; the one a picture keeps, at the picture's
+        var drawnAt = iwdiePanelSizeOf(doc) || size;
         return current().then(function (s) {
           return (authored ? vcOriginalBack(doc).then(function (svg) {
             if (iwdieSymRefs(svg).length) { var L = library(); svg = iwdieSymExpand(svg, L.lib ? L.lib.items : []).svg; }
-            return iwdieVcAuthored(svg, size);
-          }) : parsed && parsed.bytes ? vcDocumentOf(parsed.bytes) : Promise.resolve(null)).then(function (svg) {
-            var fit = svg ? iwdieVcFitDrawing(svg, size) : null, out;
+            keptIn = { x: 0, y: 0, w: drawnAt.w, h: drawnAt.h };
+            return iwdieVcAuthored(svg, drawnAt);
+          }) : parsed && parsed.bytes ? vcDocumentOf(parsed.bytes).then(function (d) {
+            if (d) keptIn = iwdieImagePixelSize(parsed.bytes);
+            return d;
+          }) : Promise.resolve(null)).then(function (svg) {
+            var fit = svg ? iwdieVcFitDrawing(svg, size, keptIn) : null, out;
             if (svg) out = iwdieVcAddPanelObjects(fit ? fit.svg : svg, objects, api.looks, null, fit ? fit.m : null);
             else out = iwdieVcSvg({ width: size.w, height: size.h, plate: '#e5e7ea', picture: bg || null, objects: objects, looks: api.looks, title: fileName });
             // another panel's objects are new ones here; this panel's stay its own, as this edit knows them
@@ -27263,14 +27353,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var shapes = info.found ? info.found.drawing.shapes : [];
       var base = info.found ? info.found.base : (info.bg ? { mime: info.bg.mime, bytes: info.bg.bytes } : null);
       var nObj = (info.sent || []).length;
+      // (v1.115.4) with the picture it is kept in, whose own size it is laid out in (info.keptIn)
       var build = vcDocumentOf(info.bg && info.bg.bytes).then(function (doc) {
-        return doc || (info.found && info.found.base ? vcDocumentOf(info.found.base.bytes) : null);
+        if (doc) { info.keptIn = iwdieImagePixelSize(info.bg.bytes); return doc; }
+        return info.found && info.found.base ? vcDocumentOf(info.found.base.bytes).then(function (d) {
+          if (d) info.keptIn = iwdieImagePixelSize(info.found.base.bytes);
+          return d;
+        }) : null;
       }).then(function (doc) {
         // a drawing given as SVG (v1.62.0): an agent's panel.image_svg, which Insert set as the background - opened as the
-        // vectors it is, its groups VectorCraft's layers, nothing locked
+        // vectors it is, its groups VectorCraft's layers, nothing locked; (v1.115.4) where the Designer draws it, at its own size
         if (!doc && info.bg && iwdieSniffMime(info.bg.bytes) === 'image/svg+xml') {
-          var given = iwdieVcAuthored(iwdieUtf8Decode(info.bg.bytes), size);
-          if (given) { info.authored = true; return given; }
+          var text = iwdieUtf8Decode(info.bg.bytes), given = iwdieVcAuthored(text, size);
+          if (given) { info.authored = true; info.keptIn = iwdieVcSvgPictureBox(text, size); return given; }
         }
         // a drawing Insert made the panel's picture (v1.65.0) is given all the same: opened as it is, nothing locked
         if (doc && iwdieVcIsGiven(doc)) info.authored = true;
@@ -27304,9 +27399,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
       }).then(function (doc) {
         // laid out at the panel's size (v1.106.0): a drawing of another size as the Designer shows it, so the panel's objects
-        // stand on it in VectorCraft as they do on the panel, and a sync measures them where they are
-        var fit = doc ? iwdieVcFitDrawing(doc, size) : null;
-        if (fit) { doc = fit.svg; info.fitted = fit.from; }
+        // stand on it in VectorCraft as they do on the panel, and a sync measures them where they are - (v1.115.4) in the
+        // picture it is kept in, at that picture's own size from the top left
+        var fit = doc ? iwdieVcFitDrawing(doc, size, info.keptIn) : null;
+        if (fit) { doc = fit.svg; info.fitted = { from: fit.from, at: fit.at, scaled: !!fit.m && (Math.abs(fit.m[0] - 1) > 1e-9 || Math.abs(fit.m[3] - 1) > 1e-9) }; }
         // the panel's objects on top, as placeholders that know which object they are (v1.46.0)
         if (doc) {
           vc = true;
@@ -27441,9 +27537,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           (nObj ? '. The ' + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter, over the rest' : '');
         if (info.authored) what = 'The panel’s drawing, given as SVG, as the vectors it is: its groups as VectorCraft’s layers, nothing locked, to edit' +
           (nObj ? '; the ' + iwdieN(nObj, 'IWMAC object', 'IWMAC objects') + ' of the panel as placeholders on the layer IWMAC-objekter, over the rest' : '');
-        // (v1.106.0) a drawing of another size, laid out as the panel shows it
-        if (info.fitted) what += ' - drawn at ' + Math.round(info.fitted.w) + ' × ' + Math.round(info.fitted.h) + ', laid out at the panel’s ' +
-          Math.round(size.w) + ' × ' + Math.round(size.h) + ', scaled and centred as the Designer shows it';
+        // (v1.106.0) a drawing of another size, laid out as the panel shows it - (v1.115.4) in its picture, which the Designer
+        // draws at its own size from the top left of the canvas, and cuts at the canvas's edge
+        var fz = info.fitted, dim = function (w, h) { return Math.round(w) + ' × ' + Math.round(h); };
+        var aside = !!fz && (Math.abs(fz.at.w - size.w) > 0.5 || Math.abs(fz.at.h - size.h) > 0.5);
+        var past = !!fz && (fz.at.x + fz.at.w > size.w + 0.5 || fz.at.y + fz.at.h > size.h + 0.5);
+        if (fz && (fz.scaled || aside)) what += ' - drawn at ' + dim(fz.from.w, fz.from.h) + (fz.scaled ? ', scaled into its picture of ' + dim(fz.at.w, fz.at.h) : '') +
+          (aside ? ', which the Designer shows at its own size from the top left of the panel’s ' + dim(size.w, size.h) : ', the panel’s size, as the Designer shows it') +
+          (past ? '; what lies past the panel’s edge the Designer does not show, and a sync leaves it out' : '');
         outcomeToast({
           tone: 'good', title: 'Opening in VectorCraft',
           lines: (got ? ['Found in the picture in ' + got.seconds + ' s: ' + [got.count ? iwdieN(got.count, 'component', 'components') + ' of your library (' + got.summary + ')' : '',
@@ -32945,6 +33046,8 @@ if (typeof module !== 'undefined' && module.exports) {
     vcFitMoves: iwdieVcFitMoves,
     vcFitBox: iwdieVcFitBox,
     vcFitDrawing: iwdieVcFitDrawing,
+    vcSvgPictureBox: iwdieVcSvgPictureBox,
+    imagePixelSize: iwdieImagePixelSize,
     vcOwnSize: iwdieVcOwnSize,
     vcFixedAttr: iwdieVcFixedAttr,
     vcObjectChanges: iwdieVcObjectChanges,
