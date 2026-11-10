@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.117.1
+// @version      1.118.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.117.1';
+var IWDIE_VERSION = '1.118.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -19124,6 +19124,109 @@ function iwdieVzShowsNoState(def) {
   return list.length >= 2 && list.every(function (p) { return p === list[0]; });
 }
 
+/* ===================== A status pill's word says which state picture it is (v1.118.0) =====================
+   The house draws its Maskin template's CO2 alarm as a green pill with "OK" on it, in the green of the Designer's
+   61x21_State_Running.png, not in the paler green of its ok.png, and the two pills' outlines are alike. The closest
+   objects then took Running for it on 10268's, 8682's and 3694's Maskin: on 10268's and 8682's the words step had read
+   "OK" and taken its letters out, so the bare pill was weighed; on 3694's it read the picture in a font "OK" is not read
+   in, and the pill's shape and colours still fitted Running best. Of the house template's 70 Maskin panels in the fleet
+   (65 plants), 58 stand V3_ok_alarm_nrm there (54 plants), 1 V3_ok_alarm_inv and none a running/stopped kind. Its word
+   tells the two apart: the one read on it, or the letters left in it. */
+
+/** The colour words a state picture's name may carry beside its state (v1.118.0): state_ready_grey.png, red_closed.png. */
+var IWDIE_VZ_COLOUR_WORDS = ['grey', 'gray', 'green', 'red', 'yellow', 'blue', 'white', 'orange', 'black'];
+
+/** The state a status object's state picture writes (v1.118.0), lower case as IWDIE_TX_STATES has it, or '': its file's
+ *  name less a size, "State" and a colour, where that is a state - 61x21_State_Running.png 'running', ok.png 'ok',
+ *  alarm.png 'alarm', 81x21_State_Enabled.png 'enabled', danfoss/state_ready_grey.png 'ready', normal_control.png
+ *  'normal control'. 24 of the Designer's 1 065 pictures are named so; a bell's anim_alarm_24.gif is not, nor an LED's
+ *  13px_circ_grey.png. -> string */
+function iwdieVzPictureWord(pic) {
+  var name = String(pic || '').replace(/^.*\//, '').replace(/\.[a-z0-9]+$/i, '').toLowerCase();
+  var w = name.split(/[_\-\s]+/).filter(function (t) {
+    return t && !/^\d+x\d+$/.test(t) && t !== 'state' && IWDIE_VZ_COLOUR_WORDS.indexOf(t) < 0;
+  }).join(' ');
+  return w && IWDIE_TX_STATES.indexOf(w) >= 0 ? w : '';
+}
+
+/** The words a picture's words step read that are states (v1.118.0, IWDIE_TX_STATES), for the closest objects
+ *  (iwdieVzClosest's `opts.words`): `labels` [{text, x, y, w, h}] -> [{x, y, w, h, word}], the word lower case. */
+function iwdieVzStateWords(labels) {
+  return (labels || []).map(function (l) {
+    var s = l ? String(l.text || '').replace(/\s+/g, ' ').trim().toLowerCase() : '';
+    var box = l ? [+l.x, +l.y, +l.w, +l.h] : [];
+    return s && IWDIE_TX_STATES.indexOf(s) >= 0 && box.every(isFinite) && box[2] > 0 && box[3] > 0 ?
+      { x: box[0], y: box[1], w: box[2], h: box[3], word: s } : null;
+  }).filter(Boolean);
+}
+
+/** A state picture's letters (v1.118.0): the pixels inside its outline - 3 px or more from any of its clear pixels
+ *  (alpha under 128) and from its edge - that differ from its fill there (the commonest colour inside, to 8 levels) by
+ *  more than 60, red, green and blue summed: a status pill's word, never its rim. With `pic` (RGBA, W x H) and (px, py),
+ *  the picture's letters where `t` stands there, against the picture's own fill, whether they are ink or not - so a pill
+ *  drawn in another green is read alike. `t` {w, h, rgba}; `inner` the picture's inside, when had already. -> {inner,
+ *  m: Uint8Array(w * h), n} */
+function iwdieVzLetters(t, pic, W, H, px, py, inner) {
+  var w = t.w, h = t.h, n = w * h, u, v, k, dx, dy;
+  if (!inner) {
+    inner = new Uint8Array(n);
+    for (v = 3; v < h - 3; v++) for (u = 3; u < w - 3; u++) {
+      var clear = false;
+      for (dy = -3; dy <= 3 && !clear; dy++) for (dx = -3; dx <= 3; dx++) if (t.rgba[((v + dy) * w + u + dx) * 4 + 3] < 128) { clear = true; break; }
+      if (!clear) inner[v * w + u] = 1;
+    }
+  }
+  var at = function (q) {
+    if (!pic) return [t.rgba[q * 4], t.rgba[q * 4 + 1], t.rgba[q * 4 + 2]];
+    var X = px + q % w, Y = py + ((q / w) | 0);
+    if (X < 0 || Y < 0 || X >= W || Y >= H) return null;
+    var j = (Y * W + X) * 4;
+    return [pic[j], pic[j + 1], pic[j + 2]];
+  };
+  var tally = {}, top = null, m = new Uint8Array(n), cnt = 0;
+  for (k = 0; k < n; k++) {
+    if (!inner[k]) continue;
+    var c = at(k);
+    if (!c) continue;
+    var key = (c[0] >> 3) + ',' + (c[1] >> 3) + ',' + (c[2] >> 3), e = tally[key] || (tally[key] = { n: 0, r: 0, g: 0, b: 0 });
+    e.n++; e.r += c[0]; e.g += c[1]; e.b += c[2];
+    if (!top || e.n > top.n) top = e;
+  }
+  if (!top) return { inner: inner, m: m, n: 0 };
+  var f = [top.r / top.n, top.g / top.n, top.b / top.n];
+  for (k = 0; k < n; k++) {
+    if (!inner[k]) continue;
+    var c2 = at(k);
+    if (c2 && Math.abs(c2[0] - f[0]) + Math.abs(c2[1] - f[1]) + Math.abs(c2[2] - f[2]) > 60) { m[k] = 1; cnt++; }
+  }
+  return { inner: inner, m: m, n: cnt };
+}
+
+/** How well a state picture's letters lie on a picture's where it stands (v1.118.0, iwdieVzLetters): `t` {w, h, rgba}
+ *  placed at (px, py) on `pic` (RGBA, W x H), `tl` its own letters when had already. -> F, the harmonic mean of the share
+ *  of its letters within a pixel of the picture's and of theirs within a pixel of its; 0 where either has under 12 letter
+ *  pixels - a pill whose letters the words step took out has none. On 3694's Maskin, where the words step left the CO2
+ *  alarm's "OK" in its pill, the Designer's ok.png fitted at 0.90, alarm.png at 0.57 and 61x21_State_Running.png at
+ *  0.46. */
+function iwdieVzLetterFit(pic, W, H, t, px, py, tl) {
+  var w = t && t.w, h = t && t.h;
+  if (!(w > 6 && h > 6) || !t.rgba) return 0;
+  var mine = tl || iwdieVzLetters(t), theirs = iwdieVzLetters(t, pic, W, H, px, py, mine.inner);
+  if (mine.n < 12 || theirs.n < 12) return 0;
+  var near = function (m, q) {
+    var x0 = q % w, y0 = (q / w) | 0;
+    for (var yy = Math.max(0, y0 - 1); yy <= Math.min(h - 1, y0 + 1); yy++) for (var xx = Math.max(0, x0 - 1); xx <= Math.min(w - 1, x0 + 1); xx++) if (m[yy * w + xx]) return true;
+    return false;
+  };
+  var p = 0, r = 0;
+  for (var i = 0; i < w * h; i++) {
+    if (mine.m[i] && near(theirs.m, i)) p++;
+    if (theirs.m[i] && near(mine.m, i)) r++;
+  }
+  var P = p / mine.n, R = r / theirs.n;
+  return P + R ? 2 * P * R / (P + R) : 0;
+}
+
 /** The kinds the found pictures of a picture stand for, one each (v1.77.0). One picture may be several kinds' -
  *  a grey LED is three LEDs' "off", "Running" four AK-PC kinds' - so each look carries its `kinds`; the one taken is the
  *  kind the panel uses already (the most of them), else the one whose own picture it is (`main`: the kind's default
@@ -21737,7 +21840,12 @@ function iwdieVzLacks(pic, W, mine, lx0, ly0, bw, bh, t, px, py) {
  *  lines of 12 pixels or more (iwdieVzLacks: a receiver's coil, a pill's words; a sensor's lead may run on): what the
  *  component cannot draw stays drawn. A big element nothing fits (2 000 px of box or
  *  more) is weighed again in its parts, its own commonest colour then its ground: a panel with things on it. An element
- *  of under 10 pixels with no other within 4 px is a speck - what came out left it. `opts.until` ends it.
+ *  of under 10 pixels with no other within 4 px is a speck - what came out left it. (v1.118.0) A state picture that writes
+ *  a word (a template's `word`, iwdieVzPictureWord) is not weighed on an element where the words step read another word
+ *  that one of the templates writes (`opts.words` [{x, y, w, h, word}], iwdieVzStateWords: the word's middle in the
+ *  element's box): a status pill is the state its word says. Where none was read and the best writes one, the word whose
+ *  pictures' letters lie best on the letters left in the element (iwdieVzLetterFit, F 0.6 or more and 0.2 or more over the
+ *  best's own word) says it the same way. `opts.until` ends it.
  *  -> {found: [{k, turn, x, y, w, h, f, iou, col, hole: {x, y, w, h, rgba}: the element's ink and a pixel round it}],
  *  specks: [{x, y, w, h}]} */
 function iwdieVzClosest(pic, W, H, templates, opts) {
@@ -21871,9 +21979,13 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
         for (var ey = 0; ey <= 2; ey++) for (var ex = 0; ex <= 2; ex++) near[(ty + ey) * (t.w + 2) + tx + ex] = 1;
       }
       T.push({ k: t0.k, turn: tq, w: t.w, h: t.h, m: m, solid: solid, near: near, rgba: t.rgba, cnt: tc, shape: t0.shape == null ? !!opts.shape : !!t0.shape, still: !!t0.still,
-        faint: faint, fc: fc, core: [cx0, cy0, cx1, cy1], sc: solid.reduce(function (a2, b2) { return a2 + b2; }, 0) });
+        faint: faint, fc: fc, core: [cx0, cy0, cx1, cy1], sc: solid.reduce(function (a2, b2) { return a2 + b2; }, 0),
+        word: t0.word ? String(t0.word) : '' });
     }
   });
+  // (v1.118.0) the words the templates write: a word read on an element that one of them writes says which it is
+  var writes = {};
+  T.forEach(function (t) { if (t.word) writes[t.word] = 1; });
   // the template that fits an element best, or null
   var weigh = function (e) {
     var ew = e.x1 - e.x0 + 1, eh = e.y1 - e.y0 + 1;
@@ -21909,7 +22021,19 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
       if (!blob && sx1 >= 0 && sx1 - sx0 < 6 && sy1 - sy0 < 6 && (ew - (sx1 - sx0 + 1) >= 4 || eh - (sy1 - sy0 + 1) >= 4)) blob = true;
       return blob;
     };
-    T.forEach(function (t) {
+    // (v1.118.0) the word the words step read on it (`opts.words`, its middle in the element's box) where a template writes
+    // that word - none where two such words are: a state picture that writes another is not it. 10268's CO2 alarm, the
+    // house's green pill with "OK" on it, its letters out: the bare pill fitted the Designer's Running, whose green is the
+    // house's, better than its paler OK
+    var said = '';
+    (opts.words || []).forEach(function (wd) {
+      if (said === null || !wd || !wd.word || !writes[wd.word]) return;
+      var cx = wd.x + wd.w / 2, cy = wd.y + wd.h / 2;
+      if (cx < e.x0 || cx > e.x1 + 1 || cy < e.y0 || cy > e.y1 + 1) return;
+      said = said === '' || said === wd.word ? wd.word : null;
+    });
+    var weighOne = function (t) {
+      if (said && t.word && t.word !== said) return;
       // (v1.82.3) one with a lead (the house's sensor) only for an element with a dot
       if (t.fc && !hasBlob()) return;
       var okW = Math.abs(t.w - ew) <= Math.max(3, 0.25 * ew), okH = Math.abs(t.h - eh) <= Math.max(3, 0.25 * eh);
@@ -21975,7 +22099,28 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
           best = { score: score, k: t.k, turn: t.turn, x: px, y: py, w: t.w, h: t.h, f: F, iou: iou, col: col, shape: t.shape, still: t.still, r: Rr, fc: !!t.fc, tpl: t };
         }
       }
-    });
+    };
+    T.forEach(weighOne);
+    // (v1.118.0) no word read on it, and the best a state picture that writes one: its letters, where the words step left
+    // them in it, say which - the word whose state pictures' letters lie best on them (iwdieVzLetterFit; of those as big as
+    // it as above, within 3 px of its middle), at F 0.6 or more and 0.2 or more over the best's own word: Running's and
+    // Stopped's letters lie on each other's at 0.96, so only a word plainly another overrules the shape. 3694's CO2 alarm
+    // kept its "OK", read in no font its picture's words were read in: by its shape the pill fitted Running, by its
+    // letters OK, 0.90 against 0.44
+    if (said === '' && best && best.tpl.word) {
+      var fits = {}, lw = '', lf = 0;
+      T.forEach(function (t) {
+        if (!t.word || !t.still || Math.abs(t.w - ew) > Math.max(3, 0.25 * ew) || Math.abs(t.h - eh) > Math.max(3, 0.25 * eh)) return;
+        var tl = t.lt || (t.lt = iwdieVzLetters(t));
+        if (tl.n < 12) return;
+        for (var oy = -3; oy <= 3; oy++) for (var ox = -3; ox <= 3; ox++) {
+          var lfit = iwdieVzLetterFit(pic, W, H, t, e.x0 + ((ew - t.w) >> 1) + ox, e.y0 + ((eh - t.h) >> 1) + oy, tl);
+          if (!(fits[t.word] >= lfit)) fits[t.word] = lfit;
+        }
+      });
+      Object.keys(fits).forEach(function (wd) { if (fits[wd] > lf) { lf = fits[wd]; lw = wd; } });
+      if (lw && lw !== best.tpl.word && lf >= 0.6 && lf >= (fits[best.tpl.word] || 0) + 0.2) { said = lw; best = null; T.forEach(weighOne); }
+    }
     // (v1.82.0) an IWMAC object's own picture (`opts.shape`): its colours may differ further where the shapes fit closely -
     // its state picture is its own (a valve's white port on another side, green for running)
     if (!best || best.f < (e.cnt < 30 ? 0.95 : 0.85) || !(best.col <= 60 || (best.col <= 80 && best.f >= 0.95 && best.iou >= 0.7) ||
@@ -29899,9 +30044,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             // (v1.82.1) the shape's say over the colours only for the mechanical objects, whose state pictures differ in their
             // parts' colours: an LED or a status symbol is a disc, each of its states a picture looked for
             var mech = ['valve', 'pump', 'compressor', 'fan', 'damper', 'coil', 'filter'];
-            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn, iwdieVzLacks], [data, w, h, tpl.map(function (t) {
-              return { k: t.k, w: t.w, h: t.h, rgba: t.rgba, still: true, shape: mech.indexOf(iwdieVzFolderRole(t.pic)) >= 0 };
-            }), { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {}).then(function (res) {
+            // (v1.118.0) each state picture with the word it writes, and the states the words step read: a status pill is the
+            // state its word says (iwdieVzPictureWord, iwdieVzStateWords)
+            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn, iwdieVzLacks, iwdieVzLetters, iwdieVzLetterFit], [data, w, h, tpl.map(function (t) {
+              return { k: t.k, w: t.w, h: t.h, rgba: t.rgba, still: true, shape: mech.indexOf(iwdieVzFolderRole(t.pic)) >= 0, word: iwdieVzPictureWord(t.pic) };
+            }), { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS, words: iwdieVzStateWords(got.labels) }], function () {}).then(function (res) {
               var byK = {}, holes3 = [], list = [];
               tpl.forEach(function (t) { byK[t.k] = t; });
               ((res && res.found) || []).forEach(function (m) {
@@ -29965,7 +30112,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           if (paper.skipped()) return null;
           paper.say('the rest weighed against the house’s components by their shapes…', 0.46);
           return vcComponentTemplates(items, 3).then(function (all) {
-            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn, iwdieVzLacks], [data, w, h, all, { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {})
+            return vcOffPageSay(iwdieVzClosest, [iwdieVcTurn, iwdieVzLacks, iwdieVzLetters, iwdieVzLetterFit], [data, w, h, all, { pipes: IWDIE_VZ_PIPE_COLOURS, until: Date.now() + IWDIE_VZ_CLOSEST_MS }], function () {})
               .then(function (res) {
                 var byK = {}, names2 = iwdieVcComponentNames(items), holes2 = [];
                 all.forEach(function (t) { byK[t.k] = t; });
@@ -33436,6 +33583,11 @@ if (typeof module !== 'undefined' && module.exports) {
     vzDesignerPicture: iwdieVzDesignerPicture,
     vzShownAlike: iwdieVzShownAlike,
     vzShowsNoState: iwdieVzShowsNoState,
+    vzPictureWord: iwdieVzPictureWord,
+    vzStateWords: iwdieVzStateWords,
+    vzLetters: iwdieVzLetters,
+    vzLetterFit: iwdieVzLetterFit,
+    VZ_COLOUR_WORDS: IWDIE_VZ_COLOUR_WORDS,
     vzTwinKind: iwdieVzTwinKind,
     vzObjectsSeen: iwdieVzObjectsSeen,
     vcFoundPlaceholderSvg: iwdieVcFoundPlaceholderSvg,

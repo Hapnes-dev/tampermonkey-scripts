@@ -531,6 +531,40 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A status pill is the state its word says: the Maskin's CO2 alarm is the Designer's OK (v1.118.0)
+
+The house's CO2 booster template draws its CO2 alarm at 1170,87 as a green pill with "OK" on it. Vectorize image (and
+the Copilot kit's `optimise.py` with it) made it `V3_61x21_runn_stoped_nrm`, a running/stopped button, on plants 10268's,
+8682's and 3694's Maskin.
+- **Why that was wrong.** The template's panels have `V3_ok_alarm_nrm` there: 58 of its 70 Maskin panels in the fleet
+  (54 of 65 plants), 1 `V3_ok_alarm_inv`, none a running/stopped kind.
+- **Why it happened.** The pill is drawn in the green of the Designer's `61x21_State_Running.png`, not the paler green of
+  its `ok.png`, and the two outlines are alike. The closest objects by shape weighed each state picture against the pill:
+  - on 10268's and 8682's the words step had read "OK" and taken its letters out first, so the bare pill fitted Running
+    (on 10268's IoU 0.75, colours 49 apart) better than OK (0.74, 59);
+  - on 3694's the words step read the picture in Segoe UI, in which "OK" is not read, and with its letters still in it
+    the pill fitted Running by its outline (0.97 against 0.89).
+  The kind choice for a picture (`iwdieVzTwinKind`) was not the cause: Running's picture is one kind's.
+- **What it does now** (`iwdieVzClosest`):
+  - Each state picture says the word it writes (`iwdieVzPictureWord`): its file's name less a size, `State` and a
+    colour, where that is a state the words step knows (`IWDIE_TX_STATES`). 24 of the Designer's 1 065 pictures are
+    named so: the 61x21 run/stop and OK/alarm pills, 81x21 Enabled, the AK-PC state icons and the old 60x20 status
+    pictures. A bell's or an LED's picture says none.
+  - The words the words step read that are states (`iwdieVzStateWords`) go to the search. On a pill where it read one
+    that a state picture writes, a state picture that writes another is not weighed.
+  - Where no word was read, the search takes the shape's best as before. Where that best writes a word and the pill's
+    letters are still in it, each word's pictures are laid on them (`iwdieVzLetters`, `iwdieVzLetterFit`). A word
+    whose letters lie on the pill's at F 0.6 or more, and 0.2 or more over the best's own word, says which state the
+    pill is. Running's and Stopped's letters lie on each other's at 0.96, so they never overrule each other. On 3694's
+    pill, OK's letters fitted at 0.90, Running's at 0.44.
+  - The two helpers run in the closest search's worker, beside `iwdieVcTurn` and `iwdieVzLacks`.
+- **Measured.** Before and after on 31 local panels, 28 of which have something to make:
+  - the CO2 alarm on 10268's, 8682's and 3694's Maskin is `V3_ok_alarm_nrm` (z 375, as the fleet's; 3694's at 1170,86,
+    where 46 of the 58 stand), and nothing else changed on them;
+  - the other 25 came out unchanged: objects, drawing and every step's picture byte for byte;
+  - the 3 with nothing to make still have nothing.
+  - Not run in the live Designer.
+
 ### Export's Illustrator document puts a kept drawing where the Designer shows it (v1.117.1)
 
 Export's *Illustrator document (.ai)* card, for a background that is a drawing, fitted the drawing's viewBox into the
