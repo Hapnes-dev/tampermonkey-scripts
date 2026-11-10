@@ -118,7 +118,12 @@ example plans every value, bell, cooling and defrost state and name lands on the
   row (an AK-CC's `u56 Display air`, `--- High t.alarm` but not its B section's, `u58 Comp1/LLSV`,
   `u60 Def. relay`). (1.14.0) An ING_EXT node (unit_id `ING_EXT…`, or a logger with the probe's
   rows) takes `Temperature (External)` and `High external temperature`, never its own `Temperature`,
-  `High temperature` or a limit: Thomas's fixed rule of 2026-11-10. `not_cases` names the other
+  `High temperature` or a limit: Thomas's fixed rule of 2026-11-10. (1.15.0) An SLV 105N plug-in, a
+  unit with a value row of an SLV's own name (`Actual Temperature Tact`, `T act °C`, `Actual
+  temperature`, `Temp Display`), takes that value and its alarm (`High temperature alarm`, `High temp
+  alarm`, `E20 High temp. alarm`) and nothing more, as the house draws a plug-in: `plug_ins` names
+  those units, and a `case` or `cluster` op binds a plug-in's cooling or `Defrost State` only where
+  its `roles` give them. `not_cases` names the other
   units. The rows come for the units linked on the
   panel and those ticked in the Parameter Selector, so for a new Oversikt tick the case
   controllers first.

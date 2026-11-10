@@ -25,7 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.14.0', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.15.0', PROTOCOL = 1;
 // the userscript that answers an edit's check and preview in the same call, and says whether its tab shows; and (1.10.0)
 // the one that opens a file and gives the drawing as a panel file
 const TAB_MIN = '1.111.0', OPEN_MIN = '1.112.0';
@@ -430,8 +430,31 @@ function extNode(P, u) {
   const rows = (P && P.rows && P.rows[u]) || [];
   return /^ing[\s_]*ext/i.test(String(u)) || rows.some(x => String(x[0]).trim() === 'Temperature (External)');
 }
+// (1.15.0) An SLV 105N plug-in's cluster is its value and its alarm, as the kit's oversikt.py, vc_edits and fleet.py
+// (CLUSTER_ROLES) place it since its Part 256: 1 448 of the fleet's 1 720 SLV clusters are just those two, and
+// Thomas's own plug-in clusters carry no defrost. Its cooling and its Defrost State are bound only where the op's roles
+// name them. The patterns are the kit's fleet-patterns.json, case_controllers.role_patterns["SLV 105N"], value and
+// alarm. A plug-in is told by its rows, as an ING_EXT node is, since the context gives no model: a value row of an
+// SLV's own name (Actual Temperature Tact, T act °C, Actual temperature, Temp Display ...). The kit's value list also
+// holds ^u56, AK-CC's own name, which is left out here so that it never tells a plug-in. On the 2026-10-21 harvest's
+// 22 855 units with rows, this takes 2 242 of its 2 244 SLV 105N units (by driver or model; the other 2 carry neither
+// row), 4 AK-PC units whose rows name an "Actual temperature", and none of its 13 267 AK-CC or 483 ING_EXT units.
+// Before, the AK-CC patterns gave 1 363 of those plug-ins nothing, 780 their alarm alone and 99 an S4 row for a value.
+const PLUG_ROLE_RE = {
+  value: [/^actual\s*temp(erature)?(\s*tact)?$/i, /^t\s*act\b/i, /^temp\.?\s*display$/i, /^t\s*display$/i, /^actual\s*.{1,2}c$/i, /^display\s*.{1,2}c$/i],
+  alarm: [/^high\s*temp(erature|\.)?\s*alarm$/i, /^high\s*temp(erature|\.)?\s*alarm\b/i, /^e20\b.*high/i, /^-+\s*high\s*t\.alarm/i,
+    /^h.{1,3}y\s*temperatur\s*alarm/i, /^high\s*alarm\s*limit/i]
+};
+function plugIn(P, u) {
+  const rows = (P && P.rows && P.rows[u]) || [];
+  return rows.some(x => PLUG_ROLE_RE.value.some(re => re.test(String(x[0]).trim())));
+}
+/** The patterns a unit's cluster is picked by: an ING_EXT node's, an SLV plug-in's (value and alarm), else AK-CC's. */
+function caseTable(P, u) {
+  return extNode(P, u) ? EXT_ROLE_RE : plugIn(P, u) ? PLUG_ROLE_RE : ROLE_RE;
+}
 function caseRoles(P, u) {
-  const rows = (P && P.rows && P.rows[u]) || [], out = {}, table = extNode(P, u) ? EXT_ROLE_RE : ROLE_RE;
+  const rows = (P && P.rows && P.rows[u]) || [], out = {}, table = caseTable(P, u);
   Object.keys(table).forEach(role => {
     for (const re of table[role]) {
       const r = rows.find(x => re.test(String(x[0]).trim()));
@@ -518,16 +541,19 @@ function find(a) {
     if (!P || !P.rows) return { rows: [], note: 'no parameter rows came with this edit (see iwmac_status): tick the case controllers in the Parameter Selector, then Edit in VectorCraft again; or read an Export JSON with iwmac_export' };
     const name = {};
     (P.units || []).forEach(x => { name[x[0]] = x[1]; });
-    const out = [], other = [];
+    const out = [], other = [], plugs = [];
     Object.keys(P.rows).forEach(u => {
       if (q && !hits(u + ' ' + (name[u] || ''), q)) return;
       const r = caseRoles(P, u);
       if (!r.value && !r.alarm) { other.push(name[u] || u); return; }
       out.push([name[u] || u, u].concat(['value', 'alarm', 'cooling', 'defrost'].map(k => r[k] ? r[k][1] : '')));
+      // (1.15.0) a plug-in's empty cooling and defrost are left out on purpose, not missing: said
+      if (caseTable(P, u) === PLUG_ROLE_RE) plugs.push(name[u] || u);
     });
     return { cols: ['unit', 'unit_id', 'value', 'alarm', 'cooling', 'defrost'], rows: out.slice(0, limit), more: Math.max(0, out.length - limit),
-      not_cases: other.length ? other.slice(0, 40) : undefined,
-      note: 'a case op with unit: <unit_id or name> takes these; an empty cell is a role that unit has no row for, left out' };
+      not_cases: other.length ? other.slice(0, 40) : undefined, plug_ins: plugs.length ? plugs.slice(0, 40) : undefined,
+      note: 'a case op with unit: <unit_id or name> takes these; an empty cell is a role that unit has no row for, left out' +
+        (plugs.length ? '; plug_ins are SLV 105N plug-ins, whose cluster is their value and alarm: their cooling and Defrost State rows are left out on purpose - bind one by hand in the op\'s roles' : '') };
   }
   if (what === 'ports') {
     const p = (c.ports || {})[a.query] || portsByName(a.query) || null;

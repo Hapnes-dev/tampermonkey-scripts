@@ -531,6 +531,27 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Claude links an SLV 105N plug-in's value and alarm (server 1.15.0)
+
+The kit's Part 256 (2026-11-10, plant 10268) made an SLV 105N plug-in's cluster its value and its alarm: 1 448 of the
+fleet's 1 720 SLV clusters are just those two, and Thomas's own plug-in clusters on 10263 and 6216 carry no defrost.
+Claude's live `case` op now does the same.
+- **Linked to:** the value row of the plug-in's template (`Actual Temperature Tact`, `Actual temperature`, `T act °C`,
+  `T act`, `Temp Display`, `Actual °C`) and its alarm (`High temperature alarm`, `High temp alarm`, `E20 High temp.
+  alarm`, `High temp. alarm`). The patterns are the kit's, `fleet-patterns.json`'s
+  `case_controllers.role_patterns["SLV 105N"]`.
+- **Left out:** its cooling and its `Defrost State`. A `case` or `cluster` op binds one only where its `roles` give it
+  by hand. `iwmac_find cases` names the plug-ins in `plug_ins` and says their empty cells are left out on purpose.
+- **Which units.** A unit with a value row of an SLV's own name, since the edit's context gives no model. AK-CC's
+  `u56`, which the kit's list also holds, never makes one.
+- **Measured** on the 2026-10-21 harvest's 22 855 units with rows, old server against new: 2 242 of its 2 244 SLV 105N
+  units now take their value and alarm. Before, the AK-CC patterns gave 1 363 of them nothing, 780 their alarm alone
+  and 99 an `S4` row (`S4 Sensor error`, `S4 Temperature`) for their value. The other 2 carry neither row. 4 AK-PC
+  units with an `Actual temperature` row take it as their value. Its 13 267 AK-CC and 483 ING_EXT units are linked
+  exactly as before.
+
+The userscript is unchanged. Claude Code takes the server at its next start.
+
 ### Claude links an ING_EXT node to its probe (server 1.14.0)
 
 Thomas's fixed rule for ING_EXT nodes (2026-11-10, plant 3249): an INGICS logger read through its external probe
