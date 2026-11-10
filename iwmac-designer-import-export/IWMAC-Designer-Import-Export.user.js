@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.116.0
+// @version      1.117.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.116.0';
+var IWDIE_VERSION = '1.117.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -1154,13 +1154,18 @@ function iwdieOptimisedNote(made) {
   if (m.kept) out.kept = n(m.kept);
   // (v1.115.0) the values and states the picture showed where objects show them live, made no labels (iwdieTxSamplesOff)
   if (m.samples) out.samples = n(m.samples);
+  // (v1.117.0) the three-way valves drawn on a picture that is no ventilation picture, kept as drawing (iwdieVzHouseValves)
+  if (m.valves) out.valves = n(m.valves);
   var parts = [out.labels ? iwdieN(out.labels, 'label', 'labels') + ' with its words' : '', out.objects ? iwdieN(out.objects, 'IWMAC object', 'IWMAC objects') : '',
     out.boxes ? iwdieN(out.boxes, 'box the Designer draws', 'boxes the Designer draws') : ''].filter(Boolean);
   out.what = (parts.length ? 'Made by this export from the picture, as Edit in VectorCraft and a save there make them: ' + parts.join(', ') +
     (out.names ? ' - ' + out.names + ' in single_objects, after the panel\'s own, unlinked' : '') : 'No object made from the picture') +
     '. The panel\'s own objects are as it has them.' +
     (out.samples ? ' The ' + iwdieN(out.samples, 'value or state', 'values and states') + ' it showed on a pill or an IWMAC object ' +
-      'made no label: the objects show them live.' : '');
+      'made no label: the objects show them live.' : '') +
+    (out.valves ? ' The ' + iwdieN(out.valves, 'three-way valve', 'three-way valves') + ' it draws ' + (out.valves > 1 ? 'stay' : 'stays') +
+      ' drawing, as the house draws them: the LED (' + IWDIE_VZ_VALVE_LED[0] + ') on a valve\'s motor shows its state, linked to the valve\'s ' +
+      'state row; no valve object.' : '');
   return out;
 }
 
@@ -19094,6 +19099,20 @@ function iwdieVzShownAlike(def) {
   return norm(iwdieVzDesignerPicture(def)) === norm(iwdieVzRestPicture(def));
 }
 
+/** Whether a kind shows no state (v1.117.0): two or more states, every one the same picture. The Designer's
+ *  v3_3w_valve_up_right_inv is one - its 0 and its 1 both the ON picture - so it never shows the valve's state. Its
+ *  picture while designed is its rest picture, so iwdieVzShownAlike calls it alike, and the closest objects by shape made
+ *  the house's drawn valves on 8682's and 10268's Maskin of it (Thomas, 2026-11-10). Among the Designer's 1 769 kinds it
+ *  is the only one of a role that shows a state with such states: the others are navigation buttons and pictures of
+ *  rooms. -> boolean */
+function iwdieVzShowsNoState(def) {
+  var sa = def && def.status_array;
+  if (!sa || typeof sa !== 'object') return false;
+  var list = (Array.isArray(sa) ? sa : Object.keys(sa).map(function (k) { return sa[k]; }))
+    .filter(function (p) { return typeof p === 'string' && p; }).map(function (p) { return p.replace(/^\/+/, ''); });
+  return list.length >= 2 && list.every(function (p) { return p === list[0]; });
+}
+
 /** The kinds the found pictures of a picture stand for, one each (v1.77.0). One picture may be several kinds' -
  *  a grey LED is three LEDs' "off", "Running" four AK-PC kinds' - so each look carries its `kinds`; the one taken is the
  *  kind the panel uses already (the most of them), else the one whose own picture it is (`main`: the kind's default
@@ -20065,6 +20084,125 @@ function iwdieVzVent(pic, W, H, opts) {
     for (var q = 0; q < W * H; q++) if (M[q]) { pic[q * 4] = gr[0]; pic[q * 4 + 1] = gr[1]; pic[q * 4 + 2] = gr[2]; pic[q * 4 + 3] = 255; }
   } else iwdieVcEraseMask(pic, W, H, M);
   res.runs = runs.length;
+  return res;
+}
+
+/* ===================== A three-way valve drawn on a picture that is no ventilation picture (v1.117.0) =====================
+   Thomas, 2026-11-10, on plant 10268's Maskin, the house's CO2 booster template: the closest objects by shape read the
+   house's drawn TreveisMotorventil at V3hr - an m in its motor's circle - as the Designer's v3_3w_valve_up_right_inv,
+   whose 0 and 1 are both the ON picture, and missed V3gc's, whose motor's lead runs on into its value's pill. The house
+   keeps its three-way valves drawn (Thomas, 2026-10-16; the kit's component map, its three-way valve, and SK-N03), and
+   its panels show a drawn valve's state as a 13 px LED on its motor: of the house template's 133 Maskin panels in the
+   fleet with heat recovery, 102 stand one on V3hr's motor and 1 a valve object; of its 65 with V3gc's value, 26 stand
+   one on V3gc's and 1 a valve object. None of the fleet's 226 Maskin panels has an inverted valve. So on a Maskin
+   picture (iwdieVzMaskinPanel) each three-way valve the ventilation step's templates find drawn with its motor - they
+   leave the motor's disc out - stays in the picture, for the house symbols and the trace, and gets that LED on its
+   motor; the closest objects take nothing over it. A ventilation picture's valves are still the Designer's
+   (iwdieVzVent), and every other picture is read as before: the fleet's VGV, Varme and comfort cooling panels carry
+   the Designer's valve objects as often as LEDs (VGV: 10 of 32 panels valve objects, 9 a 13 px LED). */
+
+/** Whether a panel is a Maskin, a picture of a refrigeration pack (v1.117.0): its name says so as the Copilot kit's
+ *  route.py names one - Maskin or chiller, a rack's page (KA1, KB2, TK1, KFA3, K1 & K2, KB-modul, Advansor, HECU) - and
+ *  not a heat recovery, condensing system or energy page; or `objects` - the panel's own, and those found in its picture
+ *  so far - hold a pack's AK-PC status or a CO2 compressor. -> boolean */
+function iwdieVzMaskinPanel(name, objects) {
+  var n = String(name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  var other = /(^|[^a-zæøå])vgv([^a-zæøå]|$)|varmegjenvinning|akkumul|kondenssystem|hydroloop|waterloop|sn[øo]smelt|t[øo]rrkj[øo]l|beredersystem|dry cooler|energi|energy/;
+  if (!other.test(n) && (/maskin|chiller/.test(n) || /^(ka|kb|tk|kfa)\d+\b|^k\d( & k\d)?$|^kb-modul|^advansor|^hecu /.test(n))) return true;
+  return (objects || []).some(function (o) { return /^V3_akpc_|^V3_co2_compressor_/.test(String((o && (o.obj_id || o.kind)) || '')); });
+}
+
+/** The LED a drawn three-way valve's state is shown by, on its motor (v1.117.0): [kind, w, h, its picture at rest]. */
+var IWDIE_VZ_VALVE_LED = ['V3_led_13px_circ_grey_green', 13, 13, 'V3/indicators/13x13_cir_led_grey.png'];
+
+/** A three-way valve's template's actuator disc (v1.117.0): its light pixels in the half its actuator stands in - those
+ *  iwdieVzPartTemplate compares the picture by none of - and their middle. `t` the template. -> {px: [[x, y]], cx, cy},
+ *  or null for a template of no three-way valve */
+function iwdieVzValveDisc(t) {
+  var side = t && t.role === 'valve' ? (/^v3_3w_valve_([a-z]+)_/.exec(String(t.kind || '')) || [0, ''])[1] : '';
+  if (!side || !t.rgba) return null;
+  var px = [], sx = 0, sy = 0;
+  for (var y = 0; y < t.h; y++) for (var x = 0; x < t.w; x++) {
+    var i = (y * t.w + x) * 4;
+    if (t.rgba[i + 3] < 128 || t.rgba[i] + t.rgba[i + 1] + t.rgba[i + 2] <= 420) continue;
+    if (!(side === 'right' ? x * 2 >= t.w + 1 : side === 'left' ? x * 2 < t.w - 1 : side === 'down' ? y * 2 >= t.h + 1 : y * 2 < t.h - 1)) continue;
+    px.push([x, y]);
+    sx += x + 0.5;
+    sy += y + 0.5;
+  }
+  return px.length ? { px: px, cx: sx / px.length, cy: sy / px.length } : null;
+}
+
+/** Whether a three-way valve found by its template (`f` {x, y, t}, iwdieVzVentParts) is drawn there with its motor
+ *  (v1.117.0): the inner pixels of its body in the body's own colour, each within 60 - no blend - for 80 % of them or
+ *  more; its actuator's disc light inside (red, green and blue over 420) for 80 % or more - the house's white disc with
+ *  its m, or the Designer's in its state's colour; and, given the panel's colour `gr` [r, g, b], that disc set apart
+ *  from it (more than 36 off) for half of it or more. Measured on the Maskin pictures of 10268, 10214, 2349, 10264,
+ *  3530, 3694 and 8682 and the VGV pictures of 2313 and 2349: each of their 24 motor valves 100 %, 94 to 98 % and 76 to
+ *  94 %; what the template also met there - a dark pill (its disc 0 to 6 % light), the information column's grey
+ *  header bars (their body 0 %), a valve drawn without its motor on 2313's VGV (its disc the panel's grey, 4 % off) -
+ *  none. -> boolean */
+function iwdieVzDrawnValve(pic, W, H, f, gr) {
+  var t = f && f.t, disc = iwdieVzValveDisc(t);
+  if (!disc || !t.px) return false;
+  var inner = 0, solid = 0, light = 0, off = 0, at = function (x, y) { return x >= 0 && y >= 0 && x < W && y < H ? (y * W + x) * 4 : -1; };
+  t.px.forEach(function (p) {
+    var j = p[6] ? at(f.x + p[0], f.y + p[1]) : -1;
+    if (j < 0) return;
+    inner++;
+    if (Math.abs(pic[j] - p[2]) + Math.abs(pic[j + 1] - p[3]) + Math.abs(pic[j + 2] - p[4]) <= 60) solid++;
+  });
+  disc.px.forEach(function (q) {
+    var j = at(f.x + q[0], f.y + q[1]);
+    if (j < 0) return;
+    if (pic[j] + pic[j + 1] + pic[j + 2] > 420) light++;
+    if (gr && Math.abs(pic[j] - gr[0]) + Math.abs(pic[j + 1] - gr[1]) + Math.abs(pic[j + 2] - gr[2]) > 36) off++;
+  });
+  return inner > 0 && solid >= 0.8 * inner && light >= 0.8 * disc.px.length && (!gr || off >= 0.5 * disc.px.length);
+}
+
+/** Whether box `b` ({x, y, w, h}) lies on one of `boxes` (the same, or a panel object's posLeft, posTop, posWidth,
+ *  posHeight) over half the smaller of the two or more (v1.117.0). -> the one, or null */
+function iwdieVzOnValve(b, boxes) {
+  var num = function (o, k, k2) { return parseFloat(o[k] != null ? o[k] : o[k2]); };
+  for (var i = 0; i < (boxes || []).length; i++) {
+    var o = boxes[i];
+    if (!o || !b) continue;
+    var x = num(o, 'x', 'posLeft'), y = num(o, 'y', 'posTop'), w = num(o, 'w', 'posWidth'), h = num(o, 'h', 'posHeight');
+    if (![x, y, w, h].every(isFinite) || !(w > 0) || !(h > 0)) continue;
+    var ix = Math.min(b.x + b.w, x + w) - Math.max(b.x, x), iy = Math.min(b.y + b.h, y + h) - Math.max(b.y, y);
+    if (ix > 0 && iy > 0 && ix * iy >= 0.5 * Math.min(b.w * b.h, w * h)) return o;
+  }
+  return null;
+}
+
+/** The three-way valves drawn on a Maskin picture, and an LED on each one's motor (v1.117.0).
+ *  `opts.templates` the ventilation step's (iwdieVzPartTemplate): its three-way valves' are looked for as that step
+ *  looks for them (iwdieVzVentParts) and kept where one is drawn with its motor (iwdieVzDrawnValve). `opts.objects` the panel's own and
+ *  `opts.found` those found in the picture so far: a valve or its motor one of them stands on (iwdieVzOnValve) has its
+ *  object, and gets no LED - an LED of the panel's there is that LED shown again (`twice`). Each LED
+ *  (IWDIE_VZ_VALVE_LED) is centred on the motor's disc as the template places it, in whole pixels rounded half up, as
+ *  the Designer places an object. Nothing is taken out of the picture: the valve stays for the house symbols and the
+ *  trace, its motor under the LED, as the fleet's pictures have it. `opts.ground` the panel's colour, `opts.until` a time
+ *  it stops by. -> {valves: [{kind, x, y, w, h}], found: [{kind, x, y, w, h}], twice, late} */
+function iwdieVzHouseValves(pic, W, H, opts) {
+  opts = opts || {};
+  var res = { valves: [], found: [], twice: 0, late: false };
+  var templates = (opts.templates || []).filter(function (t) { return t && t.role === 'valve' && /^v3_3w_valve_/.test(String(t.kind || '')); });
+  if (!templates.length) return res;
+  var parts = iwdieVzVentParts(pic, W, H, templates, opts.ground, opts.until), L = IWDIE_VZ_VALVE_LED;
+  res.late = !!parts.late;
+  var others = (opts.objects || []).filter(Boolean).concat(opts.found || []);
+  parts.forEach(function (p) {
+    if (!iwdieVzDrawnValve(pic, W, H, p, opts.ground)) return;
+    var v = { kind: p.kind, x: p.x, y: p.y, w: p.w, h: p.h }, disc = iwdieVzValveDisc(p.t);
+    res.valves.push(v);
+    var led = { kind: L[0], x: Math.floor(p.x + disc.cx - L[1] / 2 + 0.5), y: Math.floor(p.y + disc.cy - L[2] / 2 + 0.5), w: L[1], h: L[2] };
+    var on = others.filter(function (o) { return iwdieVzOnValve(v, [o]) || iwdieVzOnValve(led, [o]); });
+    if (on.some(function (o) { return iwdieRoleOf(String(o.obj_id || o.kind || '')) === 'led'; })) { res.twice++; return; }
+    if (on.length) return;
+    res.found.push(led);
+  });
   return res;
 }
 
@@ -27748,7 +27886,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 iwdieN(n.boxes, 'box', 'boxes')].join(', ') + ' · ' + (Math.round(drawing.length / 1024)) + ' kB of drawing', 0.96);
               return { svg: ph.svg, objects: made.objects,
                 made: { version: IWDIE_VERSION, labels: n.labels, objects: n.objects, boxes: n.boxes, kept: made.already, symbols: (vz.symbols || []).length,
-                  pipes: vz.pipes || 0, font: vz.textFont || '', loose: !!vz.textLoose, ms: vz.ms, names: [], samples: vz.samples || 0 } };
+                  pipes: vz.pipes || 0, font: vz.textFont || '', loose: !!vz.textLoose, ms: vz.ms, names: [], samples: vz.samples || 0,
+                  valves: (vz.valves || []).length } };
             });
           });
         });
@@ -28446,6 +28585,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // square there, an evaporator's state icon as a defrost drop. No kind shows a status symbol alike in both, so a
         // legend keeps its symbols in the drawing
         if (at >= own && !iwdieVzShownAlike(def)) return;
+        // (v1.117.0) nor one whose states are all one picture (iwdieVzShowsNoState): made from a picture, it would never
+        // show its state - the Designer's v3_3w_valve_up_right_inv, which 8682's and 10268's drawn valves became
+        if (at >= own && iwdieVzShowsNoState(def)) return;
         var pics = list.filter(function (p, i) { return typeof p === 'string' && /\.(png|gif|jpe?g)$/i.test(p) && !/(^|\/)transp\.gif$/i.test(p) && list.indexOf(p) === i; });
         var w = parseFloat(def.width), h = parseFloat(def.height), k = known[id];
         if (!(w >= 8) && k) w = k.w;
@@ -28505,7 +28647,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     var vcVentPics = null;
     function vcVentTemplates() {
       if (vcVentPics) return vcVentPics;
-      var want = IWDIE_VZ_VENT_PARTS.map(function (p) { return p[1]; }).concat(iwdieVzDuctKinds().map(function (k) { return k[1]; }));
+      var want = IWDIE_VZ_VENT_PARTS.map(function (p) { return p[1]; }).concat(iwdieVzDuctKinds().map(function (k) { return k[1]; }), [IWDIE_VZ_VALVE_LED[3]]);
       var kept = null;
       try { kept = GM_getValue(IWDIE_VC_STATES_KEY, null); } catch (e) { kept = null; }
       var fresh = !!(kept && kept.v === 1 && kept.pics && kept.at > Date.now() - 7 * 864e5), pics = fresh ? kept.pics : {};
@@ -28538,6 +28680,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             looks[q[0]] = { src: c.toDataURL('image/png'), iw: q[2], ih: q[3] };
           });
           iwdieVzDuctKinds().forEach(function (k) { if (pics[k[1]]) looks[k[0]] = { src: pics[k[1]].src, iw: pics[k[1]].w, ih: pics[k[1]].h }; });
+          // (v1.117.0) the LED a drawn three-way valve gets on its motor, as it shows unlinked
+          var led = IWDIE_VZ_VALVE_LED, lp = pics[led[3]];
+          if (lp) looks[led[0]] = { src: lp.src, iw: lp.w, ih: lp.h };
           return { templates: templates, looks: looks };
         });
       });
@@ -29703,7 +29848,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Ventilasjon template draws them (iwdieVzVent) - before the closest objects and the house symbols take them for others
         got.vent = null;
         if (info && info.findObjects === false) { paper.none('vent', 'not looked for: switched off on the card'); return null; }
-        if (!iwdieVzVentPanel(info && info.panel, objects)) { paper.none('vent', 'not a ventilation panel'); return null; }
+        // (v1.117.0) on a Maskin picture its drawn three-way valves stay drawing, each with an LED on its motor
+        // (iwdieVzHouseValves), and the closest objects take nothing over them
+        got.valves = [];
+        if (!iwdieVzVentPanel(info && info.panel, objects) && !iwdieVzMaskinPanel(info && info.panel, objects.concat(got.found))) {
+          paper.none('vent', 'not a ventilation panel'); return null;
+        }
+        if (!iwdieVzVentPanel(info && info.panel, objects)) {
+          paper.step('vent', 'a Maskin: three-way valves drawn…', 0.21, 0.22);
+          return vcVentTemplates().then(function (tv) {
+            return paper.breath().then(function () {
+              var r = iwdieVzHouseValves(data, w, h, { templates: tv.templates, objects: objects, found: got.found, ground: ground, until: Date.now() + IWDIE_VZ_OBJECT_MS });
+              r.found.forEach(function (f) { f.look = tv.looks[f.kind] || null; });
+              got.found = got.found.concat(r.found); got.twice += r.twice; got.valves = r.valves;
+              paper.done(r.valves.length ? iwdieN(r.valves.length, 'three-way valve', 'three-way valves') + ' drawn, kept as drawing' +
+                (r.found.length ? '; ' + iwdieN(r.found.length, 'LED', 'LEDs') + ' on their motors' : '') : 'a Maskin; no three-way valve drawn', 0.22);
+            });
+          }, function () { paper.done('a Maskin; its valves not looked for: the Designer’s pictures of them could not be had', 0.22); });
+        }
         paper.step('vent', 'ducts, coils, valves and the exchanger…', 0.21, 0.22);
         return vcVentTemplates().then(function (tv) {
           return paper.breath().then(function () {
@@ -29734,6 +29896,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
               ((res && res.found) || []).forEach(function (m) {
                 var t = byK[m.k];
                 if (!t) return;
+                // (v1.117.0) nothing over a three-way valve drawn on a picture that is no ventilation picture: it stays drawing
+                if (iwdieVzOnValve(m, got.valves)) return;
                 list.push({ kind: iwdieVzTwinKind(t.kinds, st.main, objects, t.pic, st.kinds), x: m.x, y: m.y, w: m.w, h: m.h, look: st.pics[t.pic] ? { src: st.pics[t.pic].src, iw: st.pics[t.pic].w, ih: st.pics[t.pic].h } : null, m: m, t: t });
               });
               var seen = iwdieVzObjectsSeen(list, objects), at = function (o) { return o.kind + '@' + o.x + ',' + o.y; }, take = {};
@@ -33257,6 +33421,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vzRestPicture: iwdieVzRestPicture,
     vzDesignerPicture: iwdieVzDesignerPicture,
     vzShownAlike: iwdieVzShownAlike,
+    vzShowsNoState: iwdieVzShowsNoState,
     vzTwinKind: iwdieVzTwinKind,
     vzObjectsSeen: iwdieVzObjectsSeen,
     vcFoundPlaceholderSvg: iwdieVcFoundPlaceholderSvg,
@@ -33308,6 +33473,12 @@ if (typeof module !== 'undefined' && module.exports) {
     vzDuctPieces: iwdieVzDuctPieces,
     vzDuctArrow: iwdieVzDuctArrow,
     vzVent: iwdieVzVent,
+    VZ_VALVE_LED: IWDIE_VZ_VALVE_LED,
+    vzValveDisc: iwdieVzValveDisc,
+    vzDrawnValve: iwdieVzDrawnValve,
+    vzOnValve: iwdieVzOnValve,
+    vzMaskinPanel: iwdieVzMaskinPanel,
+    vzHouseValves: iwdieVzHouseValves,
     vzBoxTemplate: iwdieVzBoxTemplate,
     vzBoxKind: iwdieVzBoxKind,
     vzFolderRole: iwdieVzFolderRole,

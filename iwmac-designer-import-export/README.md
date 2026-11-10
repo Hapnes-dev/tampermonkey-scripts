@@ -531,6 +531,35 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A Maskin's drawn three-way valves stay drawing, an LED on each motor (v1.117.0)
+
+Plant 10268's Maskin is the house's CO2 booster template. Vectorize image (and the Copilot kit's `optimise.py` with it)
+read the house's drawn TreveisMotorventil at V3hr, an m in its motor's circle, as the Designer's
+`v3_3w_valve_up_right_inv`. It missed V3gc's valve, whose motor's lead runs on into its value's pill. Plant 8682's
+Maskin got two such valves on 2026-11-04.
+- **Why that was wrong.** The Designer's `v3_3w_valve_up_right_inv` shows the ON picture in both its states, so it never
+  shows the valve's state. The house keeps its three-way valves drawn (Thomas, 2026-10-16). The fleet's Maskin panels
+  show a drawn valve's state as a 13 px LED on its motor: V3hr's on 102 of the template's 133 panels with heat
+  recovery, V3gc's on 26 of 65, a valve object on 1 each, and an inverted valve on none of 226.
+- **What it does now.**
+  - On a Maskin (`iwdieVzMaskinPanel`: its name, as the kit's route names one, or an AK-PC's states or a CO2
+    compressor on it or in its picture), the ventilation step's valve templates find each three-way valve drawn with
+    its motor (`iwdieVzHouseValves`). They leave the motor's disc out.
+  - A valve is drawn there when its body is its own colour and its disc is light and stands apart from the panel's
+    colour (`iwdieVzDrawnValve`). A dark pill, a grey header bar or a valve without its motor is none.
+  - Each such valve stays in the picture for the house symbols and the trace, and gets a `V3_led_13px_circ_grey_green`
+    centred on its motor. The closest objects by shape take nothing over it (`iwdieVzOnValve`).
+  - Where the panel has an LED of its own there already, that LED is counted and no second one is placed.
+- **Never a kind that shows no state.** The Designer's whole list no longer offers a kind whose states are all one
+  picture (`iwdieVzShowsNoState`). Of its kinds whose pictures are an object's, `v3_3w_valve_up_right_inv` is the only
+  one.
+- **Unchanged.** A ventilation picture's valves are still the Designer's (`iwdieVzVent`). VGV, Varme and other pictures
+  are read as before: the fleet's VGV panels carry the Designer's valve objects as often as LEDs.
+- **Measured.** Before and after on 16 local panels:
+  - 8 of 10 Maskin pictures lost their 9 valve objects (3 inverted, 6 `_nrm`) and gained 12 LEDs on the motors.
+  - The other two Maskin pictures, and the VGV, Varme, Oversikt, KA1 and ventilation pictures, came out unchanged.
+  - Not run in the live Designer.
+
 ### A Maskin picture read as it was drawn: sensors, pills, pipes and the exchanger (v1.116.0)
 
 Thomas saw 10268's Maskin after the edit skill's converter had read it (2026-11-10): "connectors and pipes a little
