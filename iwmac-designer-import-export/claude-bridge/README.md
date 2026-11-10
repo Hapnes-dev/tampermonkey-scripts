@@ -116,7 +116,10 @@ example plans every value, bell, cooling and defrost state and name lands on the
 - `iwmac_find {what: 'cases'}` lists the case controllers whose rows came with the edit, one row
   each: `[unit, unit_id, value, alarm, cooling, defrost]`, every cell the bind text of that role's
   row (an AK-CC's `u56 Display air`, `--- High t.alarm` but not its B section's, `u58 Comp1/LLSV`,
-  `u60 Def. relay`). `not_cases` names the other units. The rows come for the units linked on the
+  `u60 Def. relay`). (1.14.0) An ING_EXT node (unit_id `ING_EXT…`, or a logger with the probe's
+  rows) takes `Temperature (External)` and `High external temperature`, never its own `Temperature`,
+  `High temperature` or a limit: Thomas's fixed rule of 2026-11-10. `not_cases` names the other
+  units. The rows come for the units linked on the
   panel and those ticked in the Parameter Selector, so for a new Oversikt tick the case
   controllers first.
 - `iwmac_edit` takes `case` (the case, its cluster and its name as a label object), `room` (a grey

@@ -531,6 +531,25 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Claude links an ING_EXT node to its probe (server 1.14.0)
+
+Thomas's fixed rule for ING_EXT nodes (2026-11-10, plant 3249): an INGICS logger read through its external probe
+shows the probe.
+- **Linked to:** the temperature value is `Temperature (External)`, and the bell is `High external temperature`, the
+  boolean signal.
+- **Never linked to:** the logger's own `Temperature` or `High temperature`, which measure its housing. On 3249 those
+  read +17 to +32 °C beside −24 to −35 °C in the freezers. A bell never goes on `High external temperature alarm
+  limit`, which is a limit, not a signal.
+
+`iwmac_find cases` and a `case` or `cluster` op with `unit` fill such a unit's value and alarm from those two rows.
+- **Which units.** A unit whose id begins `ING_EXT`, or one that carries `Temperature (External)`. Only the IBS03TP
+  template has that row, and the edit's context gives no model.
+- **Before.** The bridge's AK-CC patterns found no row on a logger, so its cluster was placed unbound.
+- **Also in the kit.** Its `oversikt.py` and `wireless.py` take the probe, and `check.py` says SK-X01 to SK-X06 on
+  every type (its Part 254).
+
+The userscript is unchanged. Claude Code takes the server at its next start.
+
 ### An island smaller than the house's names its cases at its outer edges (v1.115.3)
 
 Plant 10263's plug-in freezer islands have 21 px ends beside 50 x 21 rows, 40 px apart. Since v1.115.2 their ends'

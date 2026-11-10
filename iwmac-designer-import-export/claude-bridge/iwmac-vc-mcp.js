@@ -25,7 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.13.0', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.14.0', PROTOCOL = 1;
 // the userscript that answers an edit's check and preview in the same call, and says whether its tab shows; and (1.10.0)
 // the one that opens a file and gives the drawing as a panel file
 const TAB_MIN = '1.111.0', OPEN_MIN = '1.112.0';
@@ -420,10 +420,20 @@ const ROLE_RE = {
   cooling: [/^u58\b/i, /\bllsv\b/i, /comp\s*1\b/i],
   defrost: [/^u60\b/i, /def(rost)?\.?\s*relay/i]
 };
+// (1.14.0) Thomas's fixed rule, "kobling av ING_EXT-noder" (2026-11-10): an ING_EXT node shows its external probe - its
+// value "Temperature (External)", its bell "High external temperature", the boolean signal. Never the logger's own
+// Temperature or High temperature (they measure its housing), never a bell on the alarm limit. A node by its unit_id
+// (ING_EXT...: 483 units on 75 plants), or a logger that carries its probe's rows (the IBS03TP template's; the edit's
+// context gives no model). The kit's oversikt.py and check.py (SK-X01..X06) hold the same rule since its Part 254.
+const EXT_ROLE_RE = { value: [/^temperature\s*\(external\)$/i], alarm: [/^high\s*external\s*temperature$/i] };
+function extNode(P, u) {
+  const rows = (P && P.rows && P.rows[u]) || [];
+  return /^ing[\s_]*ext/i.test(String(u)) || rows.some(x => String(x[0]).trim() === 'Temperature (External)');
+}
 function caseRoles(P, u) {
-  const rows = (P && P.rows && P.rows[u]) || [], out = {};
-  Object.keys(ROLE_RE).forEach(role => {
-    for (const re of ROLE_RE[role]) {
+  const rows = (P && P.rows && P.rows[u]) || [], out = {}, table = extNode(P, u) ? EXT_ROLE_RE : ROLE_RE;
+  Object.keys(table).forEach(role => {
+    for (const re of table[role]) {
       const r = rows.find(x => re.test(String(x[0]).trim()));
       if (r) { out[role] = [String(r[0]).trim(), bindOf(P, u, r)]; break; }
     }
