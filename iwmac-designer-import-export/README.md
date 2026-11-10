@@ -531,6 +531,41 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A Maskin picture read as it was drawn: sensors, pills, pipes and the exchanger (v1.116.0)
+
+Thomas saw 10268's Maskin after the edit skill's converter had read it (2026-11-10): "connectors and pipes a little
+off" and "wrong object". Measured against his picture, seven spots were misread by the reading steps that Vectorize
+image and Copilot's `optimise.py` share:
+- **A dot without its own lead is no sensor.** The closest search took a template with a faint lead, which the element
+  may have or not, even where the element had none of it.
+  - Shp's and Pgc's dots sit on the riser, and their level leads are pale dots that the pipes' blends took. So the dot
+    alone was the element, and the house's `Føler` fitted it standing, drawing its lead down the riser.
+  - Prec's dot on the receiver's corner took the corner's arc for a lead. The `Føler` moved its dot and cut the outline.
+  - Two plain dark pills took `PilleMørkKoblingTopp`, which drew a lead under each.
+  - Now such a template is taken only where the element carries its lead: three pixels or more on it, and that the most
+    of what the element has past the template's solid ink. These spots stay the picture's, traced. The house's own
+    `Føler` and pill with a lead, drawn as the house draws them, are still found.
+- **A pipe that drifts is one line.** The HP main drifts a quarter pixel at a time along its 750 px. Its pieces either
+  side of the tee at 502 came out half a pixel apart, with a step at the tee. `iwdieVcFindLines` now joins pieces end to
+  end within half a pixel (a quarter before), at their length-weighted middle.
+- **A pipe's edge is not a pipe.** A 2 px liquid line lies across three rows, the outer two half covered (#ddcf88 beside
+  #eed243). That colour was a pipe colour of its own, so each line came out as a core and two edge lines. A pipe colour
+  that is a commoner one mixed with the ground is now that pipe's edge.
+- **A turned symbol stands where its template stood.** A template is drawn on whole pixels from its top left and turned
+  as pixels, so a symbol of a fractional size lies off the found box's top left once turned. The exchanger (26.25 x
+  60.5, a quarter turn) stood half a pixel off, leaving a white gap inside its right wall. `iwdieVcSymbolSvg` now adds
+  what the turn brought round.
+- **A stroke between two pills is a line.** The pale 2 px stroke from Ref down to Pgc's pill came out as a wedge,
+  thinner than drawn, and the strokes' ends were lost where the pills' rings come out of the picture.
+  - `iwdieVzPillLinks` reads such a stroke between two pills as a line of the pills' grey, as wide as the colour covers
+    it, from inside one pill's edge to inside the other's.
+  - An outline 2 px across or less is now fitted as straight lines at once: its two corners a pixel apart folded into
+    one.
+
+Checked on his picture: the conversion drawn by Chrome against his PNG outside the objects' boxes. Each spot now matches
+it, as shown in the kit's change log (Part 257) and its node test `test-maskin-10268.js`. The HP main is now one straight
+line, so along its ends it differs from his line's drift by a quarter to half a pixel. Not run in the live Designer.
+
 ### Edit in VectorCraft lays the picture out as the Designer draws it, at its own size from the top left (v1.115.4)
 
 Thomas, on plant 10268's Maskin (2026-11-10): after Edit in VectorCraft every placeholder stood 20 to 30 px left of its

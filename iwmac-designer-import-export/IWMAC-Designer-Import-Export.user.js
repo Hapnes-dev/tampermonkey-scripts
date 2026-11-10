@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.115.4
+// @version      1.116.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.115.4';
+var IWDIE_VERSION = '1.116.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12494,7 +12494,8 @@ function iwdieVcPipeColours(palette) {
  *  - Along each row and column, a run of one colour no more than 5 px across, followed while it
  *    stays so, is a piece of a line: its middle and width, from how much of the colour each pixel
  *    across holds, the median along it; a piece whose middle wanders more than a pixel is no line.
- *  - Pieces of one line broken by a pixel or two are one. A line of 12 px or more is a pipe; a
+ *  - Pieces of one line broken by a pixel or two are one, their middles within half a pixel (v1.116.0: a quarter before)
+ *    and its middle theirs, weighed by their lengths. A line of 12 px or more is a pipe; a
  *    shorter piece only in line with one across a dot (8 px), or ending at one (a corner, a branch).
  *  - Two lines whose ends meet at the same point turn a corner there, as one; an end at another
  *    line's length is taken to its middle.
@@ -12571,7 +12572,9 @@ function iwdieVcFindLines(pic, W, H, bg, colours) {
     var into = null;
     for (var j2 = 0; j2 < merged.length && !into; j2++) {
       var m2 = merged[j2];
-      if (m2.dir === bd.dir && m2.col === bd.col && Math.abs(m2.at - bd.at) < 0.25 && bd.a - m2.b <= 2 && bd.b > m2.a) into = m2;
+      // (v1.116.0) end to end within half a pixel: 10268's HP main drifts a quarter pixel at a time along its 750 px, and its
+      // pieces either side of a tee, half a pixel apart, came out at two heights with a step at the tee
+      if (m2.dir === bd.dir && m2.col === bd.col && Math.abs(m2.at - bd.at) <= 0.5 && bd.a - m2.b <= 2 && bd.b > m2.a) into = m2;
     }
     if (into) {
       var l1 = into.b - into.a, l2 = bd.b - bd.a;
@@ -18202,7 +18205,8 @@ function iwdieVzBezier(pts, t1, t2, tol) {
  *  corners - where it turns 40° or more within a pixel either way - made sharp again, where the straight runs on both
  *  sides meet; a straight run (within `lineTol`, 0.35 px) a line, level or upright where it is within 2° of that; the
  *  rest Bézier curves within `tol` (0.3 px). Should that miss the outline's area by more than an eighth (a stroke thinner
- *  than the corners' reach folds), the outline simplified to lines within a quarter pixel instead.
+ *  than the corners' reach folds), the outline simplified to lines within a quarter pixel instead - and (v1.116.0) an
+ *  outline 2 px across or less so at once: its fold can keep the area and still reach past its end.
  *  -> {d: path data (absolute, two decimals), nodes} | null for a speck */
 function iwdieVzFit(pts, opts) {
   opts = opts || {};
@@ -18254,6 +18258,33 @@ function iwdieVzFit(pts, opts) {
         ' C' + fmt([cx + kk, cy - sg * rad]) + ' ' + fmt([cx + rad, cy - sg * kk]) + ' ' + fmt([cx + rad, cy]) + ' Z', nodes: 4, circle: true };
     }
   }
+  // the outline simplified to lines within a quarter pixel (Douglas-Peucker), cut at its two farthest points (v1.116.0: for
+  // the two cases below)
+  var asLines = function () {
+    var keep = new Uint8Array(n), dp = function (lo, hi) {
+      var A2 = P[lo], B2 = P[hi % n], ex = B2[0] - A2[0], ey = B2[1] - A2[1], EL = Math.sqrt(ex * ex + ey * ey) || 1e-9, md = -1, mk = -1;
+      for (var k5 = lo + 1; k5 < hi; k5++) {
+        var Q = P[k5 % n], dd = Math.abs((Q[0] - A2[0]) * ey - (Q[1] - A2[1]) * ex) / EL;
+        if (dd > md) { md = dd; mk = k5; }
+      }
+      if (md > 0.25) { keep[mk % n] = 1; dp(lo, mk); dp(mk, hi); }
+    };
+    var f0 = 0, fd2 = -1, k6, count = 0;
+    for (k6 = 0; k6 < n; k6++) { var ddx2 = P[k6][0] - P[0][0], ddy2 = P[k6][1] - P[0][1], d6 = ddx2 * ddx2 + ddy2 * ddy2; if (d6 > fd2) { fd2 = d6; f0 = k6; } }
+    keep[0] = 1;
+    keep[f0] = 1;
+    dp(0, f0);
+    dp(f0, n);
+    var d2 = '', first = true;
+    for (k6 = 0; k6 < n; k6++) if (keep[k6]) { d2 += (first ? 'M' : ' L') + fmt(P[k6]); first = false; count++; }
+    return { d: d2 + ' Z', nodes: count, lines: true };
+  };
+  // (v1.116.0) a stroke 2 px across or less is those lines at once: a pixel wide, its two corners at an end lie a pixel
+  // apart and fold into one, and the sides beside them meet beyond it - 10268's 2 px connector between two pills, its
+  // half covered columns read as a pixel between them, came out a wedge reaching a pixel past its end, its area alike
+  var tx0 = Infinity, ty0 = Infinity, tx1 = -Infinity, ty1 = -Infinity;
+  for (i = 0; i < n; i++) { tx0 = Math.min(tx0, P[i][0]); tx1 = Math.max(tx1, P[i][0]); ty0 = Math.min(ty0, P[i][1]); ty1 = Math.max(ty1, P[i][1]); }
+  if (Math.min(tx1 - tx0, ty1 - ty0) <= 2) return asLines();
   // the point `d` px of arc back or on from point i0
   var along = function (i0, d) {
     var k = i0, walked = 0, step = d > 0 ? 1 : -1, guard = 0;
@@ -18386,26 +18417,7 @@ function iwdieVzFit(pts, opts) {
     q.forEach(function (p2) { fa2 += cur[0] * p2[1] - p2[0] * cur[1]; cur = p2; });
   });
   fa2 /= 2;
-  if (Math.abs(fa2 - area) > 0.125 * Math.abs(area) + 0.5) {
-    // lines within a quarter pixel (Douglas-Peucker), cut at its two farthest points
-    var keep = new Uint8Array(n), dp = function (lo, hi) {
-      var A2 = P[lo], B2 = P[hi % n], ex = B2[0] - A2[0], ey = B2[1] - A2[1], EL = Math.sqrt(ex * ex + ey * ey) || 1e-9, md = -1, mk = -1;
-      for (var k5 = lo + 1; k5 < hi; k5++) {
-        var Q = P[k5 % n], dd = Math.abs((Q[0] - A2[0]) * ey - (Q[1] - A2[1]) * ex) / EL;
-        if (dd > md) { md = dd; mk = k5; }
-      }
-      if (md > 0.25) { keep[mk % n] = 1; dp(lo, mk); dp(mk, hi); }
-    };
-    keep[0] = 1;
-    keep[far0()] = 1;
-    function far0() { var fi = 0, fd2 = -1; for (var k6 = 0; k6 < n; k6++) { var ddx2 = P[k6][0] - P[0][0], ddy2 = P[k6][1] - P[0][1], d6 = ddx2 * ddx2 + ddy2 * ddy2; if (d6 > fd2) { fd2 = d6; fi = k6; } } return fi; }
-    var f0 = far0();
-    dp(0, f0);
-    dp(f0, n);
-    var d2 = '', first = true;
-    for (i = 0; i < n; i++) if (keep[i]) { d2 += (first ? 'M' : ' L') + fmt(P[i]); first = false; nodes++; }
-    return { d: d2 + ' Z', nodes: nodes, lines: true };
-  }
+  if (Math.abs(fa2 - area) > 0.125 * Math.abs(area) + 0.5) return asLines();
   var d = 'M' + fmt(at[0]);
   segs.forEach(function (sg3) { d += sg3.length === 1 ? ' L' + fmt(sg3[0]) : ' C' + fmt(sg3[0]) + ' ' + fmt(sg3[1]) + ' ' + fmt(sg3[2]); nodes++; });
   return { d: d + ' Z', nodes: nodes };
@@ -18434,6 +18446,64 @@ function iwdieVzSample(pts, sign) {
   return [mx + nx * 0.5, my + ny * 0.5];
 }
 
+/** The strokes joining two pills in a picture of pixels (v1.116.0) - the house's PilleMørkKoblingTopp, a dark pill over a
+ *  value's, a pale lead 2 px wide between them. Two of `pills` (iwdieVcFindPills) one over the other, or side by side,
+ *  1 to 12 px apart and facing over 8 px or more: in the gap, a run 1 to 3 px across whose every pixel the whole way
+ *  differs from the ground round the pills by more than 24, plain ground either side of it, its pixels each a blend of
+ *  the ground and one of the two pills' fill or ring colours (within 30). Each is a line of that colour, as wide as the
+ *  colour covers it across, from a pixel inside one pill's outer edge to a pixel inside the other's - drawn over both,
+ *  it gives their joins' blends again; traced, a pale stroke 2 px wide came out a wedge, or a pixel short at each end
+ *  where the pills' edges came out of the picture. Its pixels in `work` (the picture without the pills' rings) are set
+ *  to the ground. -> [{x0, y0, x1, y1, colour, width}] */
+function iwdieVzPillLinks(pic, work, W, H, pills) {
+  var out = [], seen = {};
+  var far = function (j, c) { return Math.abs(pic[j] - c[0]) + Math.abs(pic[j + 1] - c[1]) + Math.abs(pic[j + 2] - c[2]); };
+  for (var a = 0; a < pills.length; a++) for (var b = 0; b < pills.length; b++) {
+    if (a === b) continue;
+    var A = pills[a], B = pills[b], oa = A.outer || A, ob = B.outer || B, G = A.beyond || [204, 204, 204];
+    for (var ax = 0; ax < 2; ax++) {
+      // ax 0: A over B, the stroke upright; 1: A left of B, level. u runs across the stroke, v along it
+      var aEnd = ax ? oa.x + oa.w : oa.y + oa.h, bStart = ax ? ob.x : ob.y, gap = bStart - aEnd;
+      if (!(gap >= 1 && gap <= 12)) continue;
+      var lo = Math.max(ax ? oa.y : oa.x, ax ? ob.y : ob.x), hi = Math.min(ax ? oa.y + oa.h : oa.x + oa.w, ax ? ob.y + ob.h : ob.x + ob.w);
+      var v0 = Math.ceil(aEnd), v1 = Math.floor(bStart) - 1;
+      if (hi - lo < 8 || v1 < v0) continue;
+      var at = function (u, v) { return ax ? (u * W + v) * 4 : (v * W + u) * 4; };
+      var all = function (u, ink) {
+        if (ax ? u < 0 || u >= H : u < 0 || u >= W) return !ink;
+        for (var v = v0; v <= v1; v++) if ((far(at(u, v), G) > 24) !== ink) return false;
+        return true;
+      };
+      for (var u = Math.ceil(lo) + 1; u < Math.floor(hi) - 1; u++) {
+        if (!all(u, true) || !all(u - 1, false)) continue;
+        var u1 = u;
+        while (u1 - u < 3 && all(u1 + 1, true)) u1++;
+        if (u1 - u > 2 || !all(u1 + 1, false)) { u = u1; continue; }
+        var best = null;
+        [A.fill, A.stroke, B.fill, B.stroke].forEach(function (c) {
+          if (!c || Math.abs(c[0] - G[0]) + Math.abs(c[1] - G[1]) + Math.abs(c[2] - G[2]) <= 60) return;
+          var off = 0, cov = 0, mid = 0;
+          for (var v = v0; v <= v1; v++) for (var w = u; w <= u1; w++) {
+            var j = at(w, v), mx = iwdieVcMix([pic[j], pic[j + 1], pic[j + 2]], c, G);
+            off = Math.max(off, mx.off); cov += mx.t; mid += mx.t * (w + 0.5);
+          }
+          if (cov > 0 && (!best || off < best.off)) best = { c: c, off: off, cov: cov, mid: mid / cov };
+        });
+        if (!best || best.off > 30) { u = u1; continue; }
+        var key = ax + ':' + Math.round(best.mid * 4) + ':' + v0;
+        if (seen[key]) { u = u1; continue; }
+        seen[key] = 1;
+        var from = aEnd - 1, to = bStart + 1;
+        out.push({ x0: ax ? from : best.mid, y0: ax ? best.mid : from, x1: ax ? to : best.mid, y1: ax ? best.mid : to, colour: best.c.slice(0, 3),
+          width: Math.round(best.cov / (v1 - v0 + 1) * 100) / 100 });
+        for (var v2 = v0; v2 <= v1; v2++) for (var w2 = u; w2 <= u1; w2++) { var jj = at(w2, v2); work[jj] = G[0]; work[jj + 1] = G[1]; work[jj + 2] = G[2]; work[jj + 3] = 255; }
+        u = u1;
+      }
+    }
+  }
+  return out;
+}
+
 /** A picture (RGBA, W x H, opaque) as vector shapes for VectorCraft (v1.61.0): its colours (iwdieVzPalette); its pills
  *  as rounded rectangles and its pipes as lines (iwdieVcFindPills, iwdieVcFindLines), taken out of it first; each
  *  colour's outlines (iwdieVzLabels,
@@ -18443,7 +18513,8 @@ function iwdieVzSample(pts, sign) {
  *  v1.79.0: `opts.circuits` [[name, colour]] - the house's (IWDIE_CB_CIRCUITS) - puts each pipe of a circuit's colour in
  *  that circuit's group on Rør, in its colour exactly. v1.82.8: `opts.reach` [[x, y, w, h]], what draws over a pipe (an
  *  object that draws itself, a house symbol): a pipe's straight end 6 px or less short of one, on its line, runs on 2 px
- *  into it.
+ *  into it. v1.116.0: the strokes joining two pills as lines over them (iwdieVzPillLinks), and no pipe colour that is a
+ *  commoner one's edge.
  *  `say({phase, i, n})` hears how far it is. -> {layers: [{name, svg}], colours, pills, pipes, shapes, letters, words, nodes, ms} */
 function iwdieVzTrace(pic, W, H, opts, say) {
   opts = opts || {};
@@ -18482,11 +18553,26 @@ function iwdieVzTrace(pic, W, H, opts, say) {
       }
     });
   }
+  // (v1.116.0) the strokes joining two pills, as lines from ring to ring, out of the picture (iwdieVzPillLinks)
+  var pillLinks = pills.length > 1 ? iwdieVzPillLinks(pic, work, W, H, pills) : [];
   // the pipes as lines, and out of the picture: their pixels set to the ground
   var find = opts.findLines || (typeof iwdieVcFindLines === 'function' ? iwdieVcFindLines : null), lines = [];
   if (find && opts.pipes !== false) {
     say({ phase: 'pipes' });
-    var pipeCols = cols.map(function (c) { return c.slice(0, 3); }).filter(function (c) { return Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]) >= 45; });
+    var hued = cols.filter(function (c) { return Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]) >= 45; });
+    // (v1.116.0) an edge's colour is no pipe's: one that is a commoner pipe colour mixed with the ground, a fifth to most of
+    // the way (within 12), is that pipe's edge and read with it. 10268's 2 px liquid lines lie across three rows, the
+    // outer two half covered - #ddcf88 beside the #eed243 - and that palette colour of their own drew each a core line
+    // and two edge lines beside it
+    var pipeCols = hued.filter(function (c) {
+      return !hued.some(function (o) {
+        if (o === c || !((o[3] || 0) > (c[3] || 0))) return false;
+        var d0 = o[0] - ground[0], d1 = o[1] - ground[1], d2 = o[2] - ground[2], dd = d0 * d0 + d1 * d1 + d2 * d2;
+        if (dd < 400) return false;
+        var t = ((c[0] - ground[0]) * d0 + (c[1] - ground[1]) * d1 + (c[2] - ground[2]) * d2) / dd;
+        return t >= 0.2 && t <= 0.85 && Math.abs(c[0] - ground[0] - t * d0) + Math.abs(c[1] - ground[1] - t * d1) + Math.abs(c[2] - ground[2] - t * d2) <= 12;
+      });
+    }).map(function (c) { return c.slice(0, 3); });
     var got = pipeCols.length ? find(work, W, H, ground, pipeCols) : { lines: [] };
     lines = got.lines || [];
     if (lines.length && got.mask) {
@@ -18678,6 +18764,10 @@ function iwdieVzTrace(pic, W, H, opts, say) {
   pills.forEach(function (pl) {
     out[2].push('<rect x="' + f2(pl.x) + '" y="' + f2(pl.y) + '" width="' + f2(pl.w) + '" height="' + f2(pl.h) + '" rx="' + f2(pl.h / 2) + '" ry="' + f2(pl.h / 2) +
       '" fill="' + hex(pl.fill) + '"' + (pl.stroke && pl.sw > 0 ? ' stroke="' + hex(pl.stroke) + '" stroke-width="' + f2(pl.sw) + '"' : '') + '/>');
+  });
+  // (v1.116.0) the strokes joining two pills, over them
+  pillLinks.forEach(function (lk) {
+    out[2].push('<path d="M' + f2(lk.x0) + ' ' + f2(lk.y0) + ' L' + f2(lk.x1) + ' ' + f2(lk.y1) + '" fill="none" stroke="' + hex(lk.colour) + '" stroke-width="' + f2(lk.width) + '" stroke-linecap="butt"/>');
   });
   figures.forEach(function (t) {
     var list = byTop.get(t);
@@ -21325,7 +21415,11 @@ function iwdieVcSymbolSvg(c, used) {
   var f = iwdieDrawFmt, esc = iwdieDrawEsc, name = String(c.name || '').trim() || 'Symbol', id = iwdieVcSvgId(name, used);
   var q = (c.turn || 0) & 3, m = iwdieSymMatrix(q), w = +c.w0 || 0, h = +c.h0 || 0, bw = q & 1 ? h : w, bh = q & 1 ? w : h;
   var stands = iwdieSymThen((+c.sk || 0) & 7, q);
-  var tf = 'translate(' + f(c.x + bw / 2) + ' ' + f(c.y + bh / 2) + ')' + (q ? ' matrix(' + m.join(' ') + ' 0 0)' : '') + ' translate(' + f(-w / 2) + ' ' + f(-h / 2) + ')';
+  // (v1.116.0) where its template lay: drawn from its top left on whole pixels (ceil w x ceil h) and turned as pixels
+  // (iwdieVcTurn), so turned it lies off the found box's top left by what the turn brought round - 10268's exchanger,
+  // 26.25 x 60.5 turned a quarter, stood half a pixel left of the picture's, a white gap inside its right wall
+  var tw = Math.ceil(w), th = Math.ceil(h), ox = q === 1 ? th - h : q === 2 ? tw - w : 0, oy = q === 2 ? th - h : q === 3 ? tw - w : 0;
+  var tf = 'translate(' + f(c.x + ox + bw / 2) + ' ' + f(c.y + oy + bh / 2) + ')' + (q ? ' matrix(' + m.join(' ') + ' 0 0)' : '') + ' translate(' + f(-w / 2) + ' ' + f(-h / 2) + ')';
   var defs = iwdieDrawDefsSvg(c.shapes);
   return '<g id="' + esc(id) + '" data-name="' + esc(name) + '"' + (c.sym !== false ? ' data-iwdie-symbol="' + esc(name) + '"' : '') + ' transform="' + tf + '"' +
     (c.sym !== false ? ' data-iwdie-k="' + stands + '"' : '') + '>' + (defs ? '<defs>' + defs + '</defs>' : '') +
@@ -21484,7 +21578,9 @@ function iwdieVzLacks(pic, W, mine, lx0, ly0, bw, bh, t, px, py) {
  *  arrow from a left one, and an oval from a box - less what their colours differ past 40 where both have solid ink. The best is taken at F 0.85 or more (0.95 under 30 pixels of ink) with its
  *  (v1.82.3) A template's faint pixels apart from its solid ink are ink the element may have or not (the house's sensor
  *  draws its lead faint): within a pixel of them counts, on them overlaps, and the element may be as long as its solid ink,
- *  the whole, or between. The best is taken at F 0.85 or more as above, its
+ *  the whole, or between - (v1.116.0) but has some of them: three pixels or more on them, and those three quarters of
+ *  what it has past the solid ink (a dot alone is no sensor, a plain pill no pill with a lead). The best is taken at F
+ *  0.85 or more as above, its
  *  colours within 60 - or 80 where it fits wholly (F 0.95, IoU 0.7), or (`opts.shape`, an object's own pictures - v1.82.1:
  *  or a template's own `shape`) 130 where it fits closely (F 0.95, IoU 0.6); an object's picture (`still`, v1.82.1) only
  *  where it covers the element half or more (IoU 0.5). (v1.82.7) Never a house component with under 85 % of the element's
@@ -21703,14 +21799,24 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
             }
           }
         }
+        var inCore = 0;
         for (v = 0; v < bh; v++) for (u = 0; u < bw; u++) {
           if (!mine[v * bw + u]) continue;
           var tu = lx0 + u - px + 1, tv = ly0 + v - py + 1;
           if (tu >= 0 && tv >= 0 && tu < t.w + 2 && tv < t.h + 2 && t.near[tv * (t.w + 2) + tu]) hitE++;
+          // (v1.116.0) within a pixel of the box of its solid ink (the near grid is a pixel in)
+          if (t.fc && tu >= t.core[0] && tu <= t.core[2] + 2 && tv >= t.core[1] && tv <= t.core[3] + 2) inCore++;
         }
         // (v1.82.3) one with a lead: its solid ink - the sensor's dot - half of it inked fully in the element at least: the dot
         // on the dot (a step before may have taken a row of it)
         if (t.fc && strong < 0.5 * t.sc) continue;
+        // (v1.116.0) and its lead in the element: three of the element's pixels or more on the template's faint ink, and
+        // that the most of what the element has past its solid ink (three quarters). A dot alone is no sensor, nor a plain
+        // pill one with a lead. 10268's Maskin: the level leads to Shp's and Pgc's pills ran from the dot as pale dots that
+        // the pipes' blends took, so the dot alone was the element, and the house's Føler fitted it standing, its lead drawn
+        // down the riser; Prec's dot on its receiver's corner had the corner's arc for a lead; two dark pills with no lead
+        // took PilleMørkKoblingTopp's, which drew one under each. They stay the picture's, traced
+        if (t.fc && (exactF < 3 || exactF < 0.75 * (e.cnt - inCore))) continue;
         var Pp = hitT / t.cnt, Rr = hitE / e.cnt, F = Pp + Rr ? 2 * Pp * Rr / (Pp + Rr) : 0, iou = (exact + exactF) / (t.cnt + e.cnt - exact), col = cn ? cd / cn : 999;
         // the exact overlap counts the more, the more ink: a big shape is told by its outline (an oval from a box)
         // (v1.82.0) an object's own picture (`opts.shape`, v1.82.1 or the picture's own `shape`): its colours count half - its
@@ -32929,6 +33035,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vzBezier: iwdieVzBezier,
     vzFit: iwdieVzFit,
     vzSample: iwdieVzSample,
+    vzPillLinks: iwdieVzPillLinks,
     vzTrace: iwdieVzTrace,
     vzPillOwner: iwdieVzPillOwner,
     vzObjectPills: iwdieVzObjectPills,
