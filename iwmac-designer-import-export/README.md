@@ -5200,19 +5200,21 @@ The hosted build carries none of this script's changes. The script only adds the
 catches the save while the page runs. Nothing leaves the browser: the editor is a static page,
 and the panel goes from tab to tab through Tampermonkey's storage.
 
-**The hosted copy.** It is VectorCraft 0.22.0 (since 2026-11-08; 0.20.0 from 2026-11-01, 0.17.0 from
-2026-10-27, 0.14.0 from 2026-10-22, 0.11.0 before), built from the official source at that release with its licences and notices. Until 2026-10-17 it was the official
+**The hosted copy.** It is VectorCraft 0.23.0 (since 2026-11-10; 0.22.0 from 2026-11-08, 0.20.0 from 2026-11-01,
+0.17.0 from 2026-10-27, 0.14.0 from 2026-10-22, 0.11.0 before), built from the official source at that release with its licences and notices. Until 2026-10-17 it was the official
 web build byte for byte (0.10.0 until 2026-10-15, 0.9.0 until 2026-10-12). Since then it differs in
 these ways:
-- **WebAssembly SIMD is on.** The official web release is built without it, so its canvas renderer
-  runs scalar code. With SIMD, VectorCraft draws a frame of a drag on 10214's Maskin in 5.0 ms
-  instead of 11.5 ms, and in 7.1 ms instead of 17.4 ms at 1920 × 1080. The pixels are the same.
+- **WebAssembly SIMD** was the first difference, from 2026-10-17 to 0.22.0: the official web release was built
+  without it, and its canvas renderer ran scalar code. With SIMD, VectorCraft draws a frame of a drag on 10214's
+  Maskin in 5.0 ms instead of 11.5 ms, and in 7.1 ms instead of 17.4 ms at 1920 × 1080, with the same pixels. From
+  0.23.0 the official release has SIMD itself, and the hosted copy is as fast as it.
 - **The ArtCraft name is taken out** (the repository's `build/debrand.py`): the Discord button,
   the Help menu's ArtCraft links, and from 0.20 Discord in the application menu.
 - **IWMAC objects of a fixed size cannot be resized** (since 2026-10-29, the repository's
   `build/patches/vectorcraft--iwdie-fixed-size.patch`, this script 1.107.0). An object marked
   `data-iwdie-fixed="1"` shows no handles when selected alone. A transform moves it by its centre and leaves its size and
-  turn. Every release keeps this change; 0.20.0 moved the code it edits, and it was carried over by hand.
+  turn. Every release keeps this change; 0.20.0 and 0.23.0 moved the code it edits, and it was carried over by hand.
+  From 0.23.0 the shape tools can turn a selection from outside a corner, and such a selection has no such zone either.
 - **The wasm ships gzipped** (since 2026-11-02, the repository's `build/compress-wasm.py`). GitHub refuses a file of
   100 MiB, and VectorCraft's wasm passed 80 MiB in 0.20.0. The page unpacks it as it downloads, and starts it only
   once its SHA-384 is the one the page was built with. A browser downloads what it did before (Pages already sent
@@ -5232,6 +5234,9 @@ bridge without breaking anything else. It relies on these:
 - **A dropped file opens** on `#vectorcraft_canvas` (`vcDropFile`).
 - **A save is a blob download.** The script catches it by an `<a download>` click.
 - **Ctrl+S saves straight away** once the document has a format, and the first save opens Save As (`vcSaveSync`).
+- **The page's control channel answers Save As** (since 1.107.7): `window.vectorcraft.request` with
+  `ui.dialog.set` (the format, SVG) and `ui.dialog.confirm`, nothing tapped (`answerSaveAs`: `byControl`). The clicks
+  and keys below are for a build without the channel, or another dialog in front.
 - **Save As takes clicks** (since 1.83.2): *Format ▾*, *SVG* and *OK* at fixed places round the window's centre, then
   Enter in SVG Options. If not, the keys: Tab, Space, five Tabs to SVG, Space, Enter (`answerSaveAs`: `byClicks`,
   `byKeys`).
@@ -5269,6 +5274,14 @@ as its bounding rectangle, and the hosted build carried a fix for that (`build/p
 in the stub host, script 1.115.0's syncs placed as many objects as on 0.20.0. An .ai opened from the card gave the same
 shapes, texts and synced picture. The first save was answered through VectorCraft's control channel, and the IWMAC
 title and menu stand as before.
+
+**VectorCraft 0.23.0 is hosted since 2026-11-10.** Its official build has WebAssembly SIMD, as the hosted one had
+before it. On 0.23.0, in the stub host, script 1.115.3's syncs placed as many objects as on 0.22.0, and the first save
+was answered through the control channel. An .ai opened from the card gave the same shapes and texts, and its colours
+moved by up to 29 in a channel: VectorCraft changed how it turns an .ai's CMYK colours into screen colours. They now
+sit nearer Illustrator's own. On 2349's Maskin, against the plant's picture, the mean difference fell from 6 to 4, and
+nearly every changed pixel came nearer. The next sync of a panel drawn from an .ai therefore shifts its colours a
+little, towards the house's pictures. The IWMAC title and menu stand as before.
 
 **Watch in later releases:** upstream has asked for an opened SVG or PDF to take its name from its own title
 metadata, or from its file stem, instead of its file name. This script waits for VectorCraft's window title to be
