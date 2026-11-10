@@ -563,7 +563,7 @@ image and Copilot's `optimise.py` share:
     one.
 
 Checked on his picture: the conversion drawn by Chrome against his PNG outside the objects' boxes. Each spot now matches
-it, as shown in the kit's change log (Part 257) and its node test `test-maskin-10268.js`. The HP main is now one straight
+it, as shown in the kit's change log (Part 258) and its node test `test-maskin-10268.js`. The HP main is now one straight
 line, so along its ends it differs from his line's drift by a quarter to half a pixel. Not run in the live Designer.
 
 ### Edit in VectorCraft lays the picture out as the Designer draws it, at its own size from the top left (v1.115.4)
