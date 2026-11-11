@@ -531,6 +531,23 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Export's Illustrator document puts a kept drawing where the Designer shows it (v1.117.1)
+
+Export's *Illustrator document (.ai)* card, for a background that is a drawing, fitted the drawing's viewBox into the
+canvas and centred it (`iwdieSvgAiLayers`). The Designer draws the picture that keeps the drawing at its own size from
+the top left, and v1.115.4 made Edit in VectorCraft do the same. So on 10268's Maskin (a 1400 x 750 drawing on a
+1440 x 750 canvas) the .ai's drawing stood 20 px right of the panel's objects layer and of its own *Bilde* layer.
+- **Now** `iwdieSvgAiLayers` takes the box of the picture the drawing is kept in (`at`): the PNG's own size, or where CSS
+  draws an SVG background (`iwdieVcSvgPictureBox`). It fits the viewBox into that box, as `vcRenderPng` drew it into the
+  PNG, from the top left. A drawing without a viewBox is its picture's pixels, unscaled, instead of stretched to the
+  canvas. Without the box (VectorCraft's own .ai save, the Oversikt legend), nothing changes.
+- **Unchanged:** the *SVG — the drawing itself* card already wrote the drawing at its own size, as its picture shows it.
+  8769's drawing, kept in a PNG of the canvas's size, comes out exactly as before.
+
+Measured on the live 10268 drawing: its high-pressure pipe at x 812, as in the drawing and in the Designer, against 832
+before. Chrome draws an SVG background where `iwdieVcSvgPictureBox` says, in all five cases tried (its own size, one side
+and its ratio, a viewBox only, contained on 1280 x 1024, and 100 %). Not run in the live Designer.
+
 ### A Maskin's drawn three-way valves stay drawing, an LED on each motor (v1.117.0)
 
 Plant 10268's Maskin is the house's CO2 booster template. Vectorize image (and the Copilot kit's `optimise.py` with it)

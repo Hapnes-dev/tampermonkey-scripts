@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.117.0
+// @version      1.117.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.117.0';
+var IWDIE_VERSION = '1.117.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -8470,8 +8470,13 @@ var IWDIE_SVG_UNDRAWN = { defs: 1, symbol: 1, clipPath: 1, mask: 1, marker: 1, p
  *   approx: {gradient, marker, clip, mask, filter, picture, use, unknown}} - `items` are Draw shapes in panel coordinates
  *  ({t: 'd' | 'text' | 'group' | 'image'}), which iwdieSvgAiLayerLines writes. Top-level groups are the layers (named
  *  by data-name, inkscape:label or id); what stands at the top outside one goes on a layer of its own. null when it is
- *  no SVG. */
-function iwdieSvgAiLayers(svg, size) {
+ *  no SVG.
+ *  (v1.117.1) `at` {x, y, w, h}, x and y 0 when left out: the box on the panel that the picture keeping the drawing covers.
+ *  The viewBox is then fitted into that picture's own size, as vcRenderPng drew it there, and the picture stands where the
+ *  Designer draws it, at its own size from the top left - as Edit in VectorCraft lays it out (iwdieVcFitDrawing's `at`).
+ *  Fitted into the canvas and centred, Export's .ai of 10268's 1400 × 750 drawing on its 1440 × 750 canvas stood 20 px
+ *  right of every object over it. Without `at`, as before. */
+function iwdieSvgAiLayers(svg, size, at) {
   var root = iwdieSvgTree(svg);
   if (!root) return null;
   var W = Math.max(1, Number(size && size.w) || 0) || 1400, H = Math.max(1, Number(size && size.h) || 0) || 750;
@@ -8485,7 +8490,13 @@ function iwdieSvgAiLayers(svg, size) {
   var rules = iwdieSvgCssRules(sheet);
   // the root's viewBox onto the panel: preserveAspectRatio's xMidYMid meet unless it says none
   var vb = iwdieSvgNums(root.a.viewBox), base = [1, 0, 0, 1, 0, 0];
-  if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
+  if (at && at.w > 0 && at.h > 0) {
+    // (v1.117.1) into its picture, as preserveAspectRatio says; without a viewBox, its units are the picture's pixels
+    var pf = iwdieVcViewFit(root.a.viewBox, root.a.preserveAspectRatio, { w: at.w, h: at.h });
+    base = pf ? pf.m.slice() : [1, 0, 0, 1, 0, 0];
+    base[4] += isFinite(at.x) ? +at.x : 0;
+    base[5] += isFinite(at.y) ? +at.y : 0;
+  } else if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
     var none = /^\s*none/i.test(root.a.preserveAspectRatio || ''), kx = W / vb[2], ky = H / vb[3], k = Math.min(kx, ky);
     base = none ? [kx, 0, 0, ky, -vb[0] * kx, -vb[1] * ky] : [k, 0, 0, k, (W - vb[2] * k) / 2 - vb[0] * k, (H - vb[3] * k) / 2 - vb[1] * k];
   } else {
@@ -31182,7 +31193,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
           .then(function (drawing) { return { bg: bg, drawing: drawing }; });
       }).then(function (got) {
         var bg = got.bg, drawing = got.drawing, conv = null;
-        try { conv = drawing ? iwdieSvgAiLayers(drawing, size) : null; } catch (e) { conv = null; }
+        // (v1.117.1) where the Designer shows the drawing: in its picture, at that picture's own size from the top left - an
+        // SVG background where CSS draws it, the drawing a PNG keeps at the PNG's size - as Edit in VectorCraft lays it out
+        var keptIn = !drawing ? null : iwdieSniffMime(bg.bytes) === 'image/svg+xml' ? iwdieVcSvgPictureBox(drawing, size) : iwdieImagePixelSize(bg.bytes);
+        try { conv = drawing ? iwdieSvgAiLayers(drawing, size, keptIn) : null; } catch (e) { conv = null; }
         if (conv && !conv.layers.length) conv = null;
         var names = conv ? conv.layers.map(function (L) { return L.name; }) : [];
         var found = (bg && iwdieSniffMime(bg.bytes) === 'image/png') ? iwdieDrawExtract(bg.bytes) : null;
