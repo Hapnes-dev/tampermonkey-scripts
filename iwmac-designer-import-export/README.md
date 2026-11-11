@@ -531,6 +531,45 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A v6 Oversikt's TT names read whole, and a crowded standing island laid out as Thomas lays one (v1.119.0)
+
+Plant 4684's v6 Oversikt writes its cases' names (TT10 to TT42) in the picture, in the house's text grey. Vectorize image
+(and the edit skill's `optimise.py`, which runs these functions) read "TT36" and "TT34" as a pipe bend (Rørbøy) plus
+"l 36" and "l 34", "TT15" as "TT1 5", and left TT28, TT27 and TT26 as traced glyphs. Measured on the picture:
+- **The words trace took letters for pipes.** It takes pipes out before it groups letters into words, and a pipe
+  colour's pixels are that colour mixed with the ground. The picture's palette held a blue-grey of 12 flat pixels, and the
+  letters' greys passed for it, 25.9 off where 26 is allowed. Two T's whose crossbars touch made a 14 to 16 px line, their
+  stems lines ending at it. Now, where words are read, a line shorter than 18 px whose pixels are mostly the picture's
+  other flat colours (within 10 of one) is no pipe (`iwdieVcFindLines`' `own`, given by `iwdieVzTrace` with
+  `opts.words`). Longer ones stay pipes: the v6 Oversikt draws thin outlines in that blue-grey, 19 to 50 px on 2313's and
+  10214's, and taken out of the words' way they let 2313's K18 and K19 read. The drawing's own trace is unchanged.
+- **A code's number read in two pieces is one word** (`iwdieTxCodeJoin`): TT15's 1 and 5 stand four columns apart, and
+  the run, read in pieces, joined them as two words. Three digits at most, and only the whole reading: *TT 15*, *PI 151*,
+  *LV 1* and *Rad 1 5* stay.
+- **A code's B suffix is its 8 where its family on the picture writes a digit there** (`iwdieTxFamilyDigits`, once
+  every run is read): TT28 read as TT2B, 0.1222 against 0.1223 - at 11 px B and 8 are one shape - among 28 TT codes with
+  no suffix, nearly all of two digits. A family is five or more codes of the prefix, none with a capital suffix, four in
+  five a digit longer; and the 8 must read the ink as well (0.003 more at most). 3694's KM24B, whose family writes
+  KM15A and KR39B, stays.
+
+All 31 of the picture's TT names are labels now, at their places (TT36, TT35 and TT34 at x 557, 28 wide), and no house
+symbol stands in its words. Of 30 other local panels read before and after, 26 come out the same (labels, objects and
+drawing) and 3 make nothing either way; 2313's Oversikt gains its F7, a name the old reading left as glyphs. The
+synthetic panels the converter is held to read as before.
+
+The same day, Thomas finished 4684's new frysetorg by hand: two FrysØy3Stående islands at the house's size, 66 px
+apart, between wall rows whose bells and names stood in the aisles. The kit's builder had hung the islands' names and
+bells round the wall rows' bells (four names under them). Thomas's layout is now the case op's, where a standing island's
+outer spots are taken - the first spot of a column's bell beside its value on the outer side lies on the drawing's
+objects, another case or value, or a facing island's first spot across a narrow aisle (`iwdieOvTightIslands`):
+- each end's name centred over or under it, its bell beside its value on the island's outside;
+- each column's name on its outer side, at the top of its row, else beside its value's lower part;
+- each column's bell on its own case, under its value, and over it in the last row.
+
+The names are placed first (`iwdieOvTightNameSpots`, `iwdieOvTightBellSpots`), as the kit's `oversikt.py` places them
+(kit Part 266). An island whose outer spots are free keeps the house's places. Checked against the kit's tests and the
+4684 conversion. Not run in the live Designer.
+
 ### An exported drawing, edited and inserted again, stands where it stood (v1.118.1)
 
 Export JSON hands the drawing a PNG keeps over as `panel.image_svg`, and it writes the canvas - the plant's layout - as

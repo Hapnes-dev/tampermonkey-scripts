@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.118.1
+// @version      1.119.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.118.1';
+var IWDIE_VERSION = '1.119.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12538,11 +12538,18 @@ function iwdieVcPipeColours(palette) {
  *    shorter piece only in line with one across a dot (8 px), or ending at one (a corner, a branch).
  *  - Two lines whose ends meet at the same point turn a corner there, as one; an end at another
  *    line's length is taken to its middle.
+ *  - (v1.119.0) `own`, where given ([[r, g, b], ...], the picture's other flat colours): a line shorter than 18 px whose
+ *    pixels are mostly within 10 of one of them is no pipe but strokes of that colour. The words trace gives them: on
+ *    plant 4684's v6 Oversikt the letters' greys of "TT36" (136,151,159 and 168,178,184, 259 and 177 flat pixels) passed
+ *    for a blue-grey of 12 mixed with the ground, two T's touching crossbars made a 14 to 16 px pipe and their stems its
+ *    branches, and the words step read "l 36". A longer line stays a pipe whatever its pixels: the v6 Oversikt's thin
+ *    outlines in that blue-grey, 19 to 50 px, so taken out of the words' way, let 2313's K18 and K19 beside them read.
  *  -> {lines: [{pts: [[x, y], ...], colour, width}], mask: Uint8Array of the pixels they cover} */
-function iwdieVcFindLines(pic, W, H, bg, colours) {
+function iwdieVcFindLines(pic, W, H, bg, colours, own) {
   var n = W * H, idx = new Int8Array(n), cov = new Float32Array(n), i, c;
   for (i = 0; i < n; i++) idx[i] = -1;
   if (!colours || !colours.length) return { lines: [], mask: new Uint8Array(n) };
+  var foreign = own && own.length ? new Uint8Array(n) : null;
   for (i = 0; i < n; i++) {
     var r = pic[i * 4], g = pic[i * 4 + 1], b = pic[i * 4 + 2];
     if (Math.abs(r - bg[0]) + Math.abs(g - bg[1]) + Math.abs(b - bg[2]) < 18) continue;
@@ -12555,7 +12562,14 @@ function iwdieVcFindLines(pic, W, H, bg, colours) {
       var off = Math.abs(r - bg[0] - t * d0) + Math.abs(g - bg[1] - t * d1) + Math.abs(b - bg[2] - t * d2);
       if (off < bo) { bo = off; best = c; bt = Math.min(1, t); }
     }
-    if (best >= 0) { idx[i] = best; cov[i] = bt; }
+    if (best >= 0) {
+      idx[i] = best; cov[i] = bt;
+      // (v1.119.0) a pixel of one of the picture's other flat colours, taken for this one mixed with the ground
+      for (c = 0; foreign && c < own.length && !foreign[i]; c++) {
+        var dr = r - own[c][0], dg = g - own[c][1], db = b - own[c][2];
+        if (dr * dr + dg * dg + db * db <= 100) foreign[i] = 1;
+      }
+    }
   }
   var at = function (X, Y) { return X >= 0 && Y >= 0 && X < W && Y < H ? Y * W + X : -1; };
   var bands = [];
@@ -12621,6 +12635,19 @@ function iwdieVcFindLines(pic, W, H, bg, colours) {
       into.at = (into.at * l1 + bd.at * l2) / (l1 + l2);
       into.a = Math.min(into.a, bd.a); into.b = Math.max(into.b, bd.b);
     } else merged.push({ dir: bd.dir, col: bd.col, at: bd.at, w: bd.w, a: bd.a, b: bd.b });
+  });
+  // (v1.119.0) where `own` is given, a line shorter than 18 px whose pixels are mostly the picture's other colours is
+  // strokes of those - two touching T crossbars, 14 to 16 px, and their stems - not a pipe; a longer one is a pipe
+  if (foreign) merged = merged.filter(function (bd) {
+    if (bd.b - bd.a >= 18) return true;
+    var all = 0, theirs = 0, half = bd.w / 2 + 1;
+    for (var v3 = bd.a; v3 < bd.b; v3++) for (var u3 = Math.floor(bd.at - half); u3 <= Math.ceil(bd.at + half); u3++) {
+      var q5 = bd.dir ? at(u3, v3) : at(v3, u3);
+      if (q5 < 0 || idx[q5] !== bd.col) continue;
+      all++;
+      if (foreign[q5]) theirs++;
+    }
+    return !(all && 2 * theirs > all);
   });
   var strong = merged.filter(function (bd) { return bd.b - bd.a >= 12; });
   merged = merged.filter(function (bd) {
@@ -14364,6 +14391,113 @@ function iwdieOvRightmostInRow(key, box, all) {
   return lying(false) && !lying(true);
 }
 
+/** (v1.119.0, kit Part 266, Thomas's hand finish of plant 4684's frysetorg) The stances of a standing island's cases: its
+ *  columns, two standing boxes side by side, and its ends, lying rows above and below them. */
+var IWDIE_OV_COLUMNS = ['column-L', 'column-R'], IWDIE_OV_TIGHT_ENDS = ['row-T', 'row-B', 'row-T-close', 'row-B-close'];
+
+/** (v1.119.0) The standing islands of the house's size whose outer spots are taken, and the side each hangs its ends'
+ *  bells on (oversikt.py's tight_islands). An island is the plan's cases joined where one lies 4 px or less beside, above
+ *  or below another, two or more of them its columns and the rest its lying ends; one smaller than the house's is none
+ *  (`small`). Its outer spots are taken where the first house spot of a column's bell, beside its value on the island's
+ *  outer side, is not clear: a wall row's bells or names beside it, as on 4684, another case or value, or the first spot
+ *  of a facing island's column across a narrow aisle (4684's two islands stand 66 px apart). Such an island
+ *  is laid out as Thomas laid out 4684's two by hand, its names first (iwdieOvTightNameSpots, iwdieOvTightBellSpots). The
+ *  outside is the side away from another such island beside it, else the left. -> {key: 'left' | 'right'} */
+function iwdieOvTightIslands(plan, small, lay, anatomy) {
+  if (anatomy === 'compact' || (anatomy && typeof anatomy === 'object')) return {};
+  var across = function (a0, a1, b0, b1) { return Math.min(a1, b1) - Math.max(a0, b0) > 2; };
+  var within = function (g) { return g >= 0 && g <= 4; };
+  var entries = (plan || []).filter(function (p) { return p.st !== 'room' && !small[p.c.key]; });
+  var parent = {};
+  entries.forEach(function (p) { parent[p.c.key] = p.c.key; });
+  var root = function (i) { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  entries.forEach(function (pa, k) {
+    var a = pa.c.box;
+    entries.slice(k + 1).forEach(function (pb) {
+      var b = pb.c.box;
+      var beside = across(a[1], a[1] + a[3], b[1], b[1] + b[3]) && (within(b[0] - (a[0] + a[2])) || within(a[0] - (b[0] + b[2])));
+      var stacked = across(a[0], a[0] + a[2], b[0], b[0] + b[2]) && (within(b[1] - (a[1] + a[3])) || within(a[1] - (b[1] + b[3])));
+      if (beside || stacked) parent[root(pa.c.key)] = root(pb.c.key);
+    });
+  });
+  var order = [], islands = {};
+  entries.forEach(function (p) {
+    var r = root(p.c.key);
+    if (!islands[r]) { islands[r] = []; order.push(r); }
+    islands[r].push(p);
+  });
+  var standing = order.map(function (r) { return islands[r]; }).filter(function (isl) {
+    return isl.filter(function (p) { return IWDIE_OV_COLUMNS.indexOf(p.st) >= 0; }).length >= 2
+      && isl.every(function (p) { return IWDIE_OV_COLUMNS.indexOf(p.st) >= 0 || IWDIE_OV_TIGHT_ENDS.indexOf(p.st) >= 0; });
+  });
+  var extent = function (isl) {
+    return [Math.min.apply(null, isl.map(function (p) { return p.c.box[0]; })), Math.min.apply(null, isl.map(function (p) { return p.c.box[1]; })),
+      Math.max.apply(null, isl.map(function (p) { return p.c.box[0] + p.c.box[2]; })), Math.max.apply(null, isl.map(function (p) { return p.c.box[1] + p.c.box[3]; }))];
+  };
+  // the first house spot of each column's bell, beside its value on the island's outer side: [{key, bell}]
+  var spots = standing.map(function (isl) {
+    return isl.filter(function (p) {
+      var roles = p.c.roles || { value: null, alarm: null };
+      return IWDIE_OV_COLUMNS.indexOf(p.st) >= 0 && roles.alarm !== undefined;
+    }).map(function (p) {
+      var a0 = iwdieOvOffsets(p.st, anatomy).alarm[0], a = iwdieOvOffValue(a0[0], a0[1], 34, 34);
+      return { key: p.c.key, bell: [p.vx + a[0], p.vy + a[1], p.vx + a[0] + 34, p.vy + a[1] + 34] };
+    });
+  });
+  var out = {};
+  standing.forEach(function (isl, k) {
+    // taken: by what stands there (the drawing's objects, a case, a value), or by the bell of a facing island's column,
+    // whose own first spot lies on it across a narrow aisle (two islands 66 px apart, as 4684's)
+    var crowded = spots[k].some(function (s) {
+      var mine = ['case:' + s.key, 'room:' + s.key, 'value:' + s.key, 'member:' + s.key];
+      return !lay.free(s.bell, mine.concat(['room', 'wall'])) || lay.onValue(s.bell)
+        || spots.some(function (theirs, j) { return j !== k && theirs.some(function (t) { return lay.hit(s.bell, t.bell); }); });
+    });
+    if (!crowded) return;
+    var e = extent(isl), nearL = null, nearR = null;
+    standing.forEach(function (other) {
+      if (other === isl) return;
+      var o = extent(other);
+      if (!across(e[1], e[3], o[1], o[3])) return;
+      if (o[2] <= e[0]) nearL = nearL === null ? e[0] - o[2] : Math.min(nearL, e[0] - o[2]);
+      else if (o[0] >= e[2]) nearR = nearR === null ? o[0] - e[2] : Math.min(nearR, o[0] - e[2]);
+    });
+    var outside = nearL !== null && (nearR === null || nearL < nearR) ? 'right' : 'left';
+    isl.forEach(function (p) { out[p.c.key] = outside; });
+  });
+  return out;
+}
+
+/** (v1.119.0) Where a tight standing island's case names itself (oversikt.py's tight_name_spots), first first: an end
+ *  centred over it (the top end) or under it (the bottom end); a column on its outer side - at the top of its row, 7 px
+ *  off its case, where its value does not reach and the bell of the row above, 5 px over the case's edge, leaves it
+ *  clear; then beside its value, 2 px off it, at its lower part, where the neighbours' bells and names leave a band free;
+ *  then at its middle and its upper part. `box` [x, y, w, h]. -> [[x, y], ...] */
+function iwdieOvTightNameSpots(st, box, vx, vy, nw) {
+  var x = box[0], y = box[1], w = box[2], h = box[3], R = iwdieOvRhu;
+  if (st === 'row-T' || st === 'row-T-close') return [[R(x + w / 2 - nw / 2), R(y - 17)]];
+  if (st === 'row-B' || st === 'row-B-close') return [[R(x + w / 2 - nw / 2), R(y + h + 3)]];
+  if (IWDIE_OV_COLUMNS.indexOf(st) < 0) return [];
+  var left = st === 'column-L', top = left ? x - 7 - nw : x + w + 7, byValue = left ? vx - 2 - nw : vx + 42 + 2;
+  return [[R(top), R(y + 1)]].concat([20, 18, 22, 16, 24, 4, -12].map(function (d) { return [R(byValue), R(vy + d)]; }));
+}
+
+/** (v1.119.0) A tight standing island's bell spots (oversikt.py's tight_bell_spots), from its value's top left, in the
+ *  order they are tried, each set clear first, then on another bell: an end's beside its value at its height on the
+ *  island's outside - 2 px higher where the name at the top of the first row is right under it, and on a neighbour's
+ *  bell there before the inside, as Thomas hung 4684's F98 on TT30's - then on its inside; a column's on its own case, flush with the case's inner edge, under its value, else over it - over it in the
+ *  last row, where under it would lie on the end's value. -> [[[dx, dy], ...], ...] */
+function iwdieOvTightBellSpots(st, box, vx, vy, outside) {
+  var x = box[0], w = box[2];
+  if (IWDIE_OV_TIGHT_ENDS.indexOf(st) >= 0) {
+    var left = [[-34, -6], [-34, -8]], right = [[42, -6], [42, -8]];
+    return outside === 'left' ? [left, right] : [right, left];
+  }
+  if (IWDIE_OV_COLUMNS.indexOf(st) < 0) return [];
+  var dx = st === 'column-L' ? x + w - 34 - vx : x - vx;
+  return [[[dx, 22 + 2], [dx, -36]]];
+}
+
 /** Where a plug-in case's Plugg goes, its top left (oversikt.py): past a lying case's right end, on a standing case's
  *  wall side. (v1.107.6) Clear of the case's value, 42 wide in its middle, which overhangs a 29 px case by 6.5 px each
  *  side - the live test's Iskrem case had its value on its Plugg - and (v1.115.2) of an island end's value where
@@ -14658,6 +14792,10 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
     lay.take([v[0], v[1], v[0] + 42, v[1] + 22], 'value:' + c.key);
     plan.push({ c: c, st: st, vx: v[0], vy: v[1], dx: dx });
   });
+  // (v1.119.0, kit Part 266) a standing island of the house's size whose columns' outer spots are taken - the bells and
+  // names of the wall rows beside it on the drawing - is laid out as Thomas laid out 4684's frysetorg by hand: its names
+  // first, its bells on its own cases (iwdieOvTightIslands, oversikt.py's tight_islands)
+  var tight = iwdieOvTightIslands(plan, small, lay, anatomy);
   // an arrangement's names where the template writes them, before the bells take their spots - unless one would lie on
   // its own bell's first spot: that name goes beside the case afterwards. (v1.107.8, Thomas, plant 8855) An island's row
   // or standing end, of an arrangement or not, keeps its name at the house's place on its outer side - above or below
@@ -14670,6 +14808,15 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
     if ((c.caption || 'auto') !== 'auto') return;
     var text = c.label || c.key, nw = iwdieOvNameWidth(text);
     var x = c.box[0], y = c.box[1], w = c.box[2], h = c.box[3];
+    if (tight[c.key]) {
+      // (v1.119.0) a tight standing island's name at its own spots (iwdieOvTightNameSpots), else the house's below
+      var at = null;
+      iwdieOvTightNameSpots(p.st, c.box, p.vx, p.vy, nw).some(function (sp) {
+        if (lay.free([sp[0], sp[1], sp[0] + nw, sp[1] + 14])) { at = sp; return true; }
+        return false;
+      });
+      if (at) { lay.take([at[0], at[1], at[0] + nw, at[1] + 14], 'label'); reserved[c.key] = at; return; }
+    }
     // (v1.115.2) an end's value moved outward: its name keeps its distance from it
     var house = { 'row-T': [x, y - 17], 'row-B': [x, y + h + 3], 'end-L': [x - 10 - nw + p.dx, y + 1], 'end-R': [x + w + 10 + p.dx, y + 1] }[p.st];
     var edge = null, right = false;
@@ -14726,6 +14873,17 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
           // the names, and lies on another cluster's bell there - the facing row's across a narrow aisle, or the
           // drawing's own - before it wanders round its value
           if (small[c.key]) tries.splice(2, 0, [near, mine.concat(['case', 'room', 'wall', 'member'])]);
+          if (role === 'alarm' && tight[c.key]) {
+            // (v1.119.0) a tight standing island's bell (iwdieOvTightBellSpots): an end's beside its value on the island's
+            // outside, a column's on its own case, under its value or over it, each set clear first, then on another bell,
+            // before anywhere else
+            var own = [];
+            iwdieOvTightBellSpots(p.st, c.box, p.vx, p.vy, tight[c.key]).forEach(function (set) {
+              var at2 = set.map(function (d) { return iwdieOvOffValue(d[0], d[1], ow, oh); });
+              own.push([at2, mine.concat(['case', 'room', 'wall'])], [at2, mine.concat(['case', 'room', 'wall', 'member'])]);
+            });
+            tries = own.concat(tries);
+          }
           var hitAt = null;
           tries.some(function (t) {
             t[0].some(function (d) {
@@ -18612,7 +18770,12 @@ function iwdieVzTrace(pic, W, H, opts, say) {
         return t >= 0.2 && t <= 0.85 && Math.abs(c[0] - ground[0] - t * d0) + Math.abs(c[1] - ground[1] - t * d1) + Math.abs(c[2] - ground[2] - t * d2) <= 12;
       });
     }).map(function (c) { return c.slice(0, 3); });
-    var got = pipeCols.length ? find(work, W, H, ground, pipeCols) : { lines: [] };
+    // (v1.119.0, kit Part 266) where its words are read, a short line of the picture's other flat colours - a letter's
+    // grey - is no pipe: 4684's "TT36" lost its crossbars to a 12-pixel blue-grey and read "l 36"
+    var others = opts.words ? cols.filter(function (c) {
+      return !pipeCols.some(function (q) { return q[0] === c[0] && q[1] === c[1] && q[2] === c[2]; });
+    }).map(function (c) { return c.slice(0, 3); }) : null;
+    var got = pipeCols.length ? find(work, W, H, ground, pipeCols, others) : { lines: [] };
     lines = got.lines || [];
     if (lines.length && got.mask) {
       if (work === pic) work = new Uint8ClampedArray(pic);
@@ -21200,9 +21363,12 @@ function iwdieTxBowl(ink, w, h, x0, x1, y0, y1) {
 }
 
 /** A case's code read with a space in it, without (v1.93.0): a letter alone before its number (8921's F 70, 8522's F 2b)
- *  or a suffix alone after it (6339's k7 b). Only the whole reading: LV 1 and PI 151, two letters, are written so. */
+ *  or a suffix alone after it (6339's k7 b). Only the whole reading: LV 1 and PI 151, two letters, are written so.
+ *  (v1.119.0, kit Part 266) And its number in two, three digits at most - plant 4684's TT15, its 1's stem and its 5 four
+ *  columns apart, read as the pieces TT1 and 5. */
 function iwdieTxCodeJoin(s) {
-  return String(s || '').replace(/^([A-ZÆØÅÄÖ]) (\d{1,3}[a-f]?)$/, '$1$2').replace(/^([A-Za-zÆØÅÄÖ]{1,2}\d{1,3}) ([a-f])$/, '$1$2');
+  return String(s || '').replace(/^([A-ZÆØÅÄÖ]) (\d{1,3}[a-f]?)$/, '$1$2').replace(/^([A-Za-zÆØÅÄÖ]{1,2}\d{1,3}) ([a-f])$/, '$1$2')
+    .replace(/^([A-ZÆØÅÄÖ]{1,3}-?)(\d) (\d{1,2}[a-f]?)$/, '$1$2$3').replace(/^([A-ZÆØÅÄÖ]{1,3}-?)(\d\d) (\d[a-f]?)$/, '$1$2$3');
 }
 
 function iwdieTxPieces(I, gapMin) {
@@ -21392,7 +21558,8 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
           q.text += ' ' + p.text; q.x1 = p.x1; q.cost = Math.max(q.cost, p.cost); q.known = q.known && p.known;
         } else if (!p.unit) joined.push(p);
       });
-      joined.forEach(function (p) { delete p.space; delete p.unit; delete p.near; });
+      // (v1.119.0) a case's code whose number came in two pieces is one word (iwdieTxCodeJoin): 4684's TT1 5
+      joined.forEach(function (p) { p.text = iwdieTxCodeJoin(p.text); delete p.space; delete p.unit; delete p.near; });
       res = joined.length ? joined : null;
     }
     // (v1.92.0) a small run that reads as no words: a unit alone - 11087's %s split from Run Cap. by the tracer, (kWh) -
@@ -21417,6 +21584,42 @@ function iwdieTxReadAll(runs, banks, vocab, opts, say) {
     return res;
   });
   return out;
+}
+
+/** (v1.119.0, kit Part 266) A case's code read with a B suffix whose family on the picture writes a digit there, read
+ *  with the 8: plant 4684's TT2B among TT10 to TT42 (at 11 px B and 8 are one shape: 0.1222 against 0.1223). Its family
+ *  is the picture's other codes of its prefix: five or more, none with a capital suffix, four in five with one digit
+ *  more than it has before its B. 3694's KM24B, whose family writes KM15A and KR39B, stays. Only a run read as that one
+ *  code, and only where the 8 explains its ink as well (0.003 more at most), forced at its size and baseline. `items`
+ *  [{I, labels}], each run's ink and readings (iwdieTxReadAll's); `banks` by size. Changes the readings in place.
+ *  -> [[run, from, to]] */
+function iwdieTxFamilyDigits(items, banks, opts) {
+  var CODE = /^([A-ZÆØÅÄÖ]{1,3}-?)(\d{1,3})([A-F]?)$/, fam = {}, done = [];
+  (items || []).forEach(function (it) {
+    ((it && it.labels) || []).forEach(function (l) {
+      var m = CODE.exec(String(l.text || ''));
+      if (m) (fam[m[1]] = fam[m[1]] || []).push({ n: m[2].length, suffix: m[3] });
+    });
+  });
+  (items || []).forEach(function (it, k) {
+    if (!it || !it.I || !it.labels || it.labels.length !== 1) return;
+    var l = it.labels[0], m = /^([A-ZÆØÅÄÖ]{1,3}-?)(\d{1,2})B$/.exec(String(l.text || ''));
+    if (!m) return;
+    var mine = fam[m[1]] || [], others = [], skipped = false;
+    mine.forEach(function (f) { if (!skipped && f.n === m[2].length && f.suffix === 'B') { skipped = true; return; } others.push(f); });
+    if (others.length < 5 || others.some(function (f) { return !!f.suffix; })) return;
+    if (others.filter(function (f) { return f.n === m[2].length + 1; }).length < 0.8 * others.length) return;
+    var bank = banks && banks[l.size];
+    if (!bank) return;
+    var to = m[1] + m[2] + '8', C = iwdieTxCrop(it.I, Math.max(0, l.x0 - 2), Math.min(it.I.w, l.x1 + 2));
+    var gains = iwdieTxGains(C.ink, C.w, C.h, l.base, bank);
+    var was = iwdieTxForce(C.ink, C.w, C.h, l.base, bank, gains, C.total, l.text, opts);
+    var now = iwdieTxForce(C.ink, C.w, C.h, l.base, bank, gains, C.total, to, opts);
+    if (!was || !now || now.cost > was.cost + 0.003) return;
+    done.push([k, l.text, to]);
+    l.text = to;
+  });
+  return done;
 }
 
 /** Labels read from runs that overlap, kept once (v1.78.0) - an icon's run grown over the words beside it reads them
@@ -29196,12 +29399,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!best) return scores.some(function (sc) { return sc.trusted; }) ? { none: 'no run of it reads as words' } : { none: 'none of the fonts here reads it as words', fonts: labels };
             // not the picture's own: the words the panel, plant and house know carry more
             var loose = !best.trusted;
+            var readBanks = null;      // (v1.119.0) the glyphs its runs were read with, for iwdieTxFamilyDigits
             step('font', best.f.label);
             // every run, shared among up to four workers, each with every size's glyphs: a run's pieces are lower than it
             var n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1, R.length)), parts = [], i;
             for (i = 0; i < n; i++) parts.push([]);
             R.map(function (x, k) { return k; }).sort(function (a, b) { return R[b].I.w - R[a].I.w; }).forEach(function (k, j) { parts[j % n].push(k); });
             return banksFor(best.f.family, R, false).then(function (banks) {
+              readBanks = banks;
               var got = {}, count = 0;
               return Promise.all(parts.map(function (ks) {
                 var mine = ks.map(function (k) { return R[k]; });
@@ -29214,6 +29419,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 return R.map(function (x, k) { return { k: k, labels: got[k] || null }; });
               });
             }).then(function (all) {
+              // (v1.119.0, kit Part 266) a code's B suffix its family on the picture writes as a digit: the 8 (TT2B is TT28)
+              iwdieTxFamilyDigits(all.map(function (got) { return { I: R[got.k].I, labels: got.labels }; }), readBanks, loose ? { loose: true } : {});
               var bankCap = vcTxBank(best.f.family, 12).cap, out = [], left = 0, read = [];
               all.forEach(function (got) {
                 if (!got.labels) { left++; return; }
@@ -33634,6 +33841,7 @@ if (typeof module !== 'undefined' && module.exports) {
     txPieces: iwdieTxPieces,
     txBowl: iwdieTxBowl,
     txCodeJoin: iwdieTxCodeJoin,
+    txFamilyDigits: iwdieTxFamilyDigits,
     txTries: iwdieTxTries,
     txSizes: iwdieTxSizes,
     txReadAll: iwdieTxReadAll,
