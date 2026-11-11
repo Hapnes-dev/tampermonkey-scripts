@@ -531,6 +531,31 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A placeholder moved and moved back puts its object where it was (v1.119.1)
+
+The live check on 2349's Maskin (script 1.119.0, VectorCraft 0.24.0) nudged the value `object_0` ten pixels right from
+588, 357 and synced: the Designer put it at 599. Ctrl+Z and Ctrl+S put it at 589, not 588. The sync had measured its
+placeholder at least half a pixel right of where it stood. Every placeholder carries its dashed frame, and VectorCraft's
+replays of that edit put the frame exactly at 598 and then 588. That holds for the job dropped on the canvas and for the
+drawing opened with the objects pasted in place, as Edit in VectorCraft opens it, and the sync's `vcMeasure` measures
+both exactly. Where the half pixel came from in the live tab is not known. A box measured within a pixel of its object's
+place reads as that place, so such an offset shows only once a placeholder is moved. Then `Math.round` of the box puts
+the object a pixel off, and it stays a pixel off when it is moved back.
+- **One within a pixel of where it was sent stands exactly there** (`iwdieVcObjectChanges`). A placeholder of one of the
+  panel's own objects whose box is within a pixel of its `data-iwdie-at`, in all four values, gives its object that
+  place, not the rounded box. Moved and moved back, the object is where it was, whatever the offset.
+- **The offset the unmoved ones share comes off the moved ones** (`iwdieVcSentShift`). It is the median of the panel's
+  placeholders that stand within a pixel of where they were sent. At least three must have been measured, and at least
+  half of them must agree to a twentieth of a pixel. It comes off a placeholder that moved by whole pixels from where it
+  was sent, as a nudge moves one. One set to a place of its own, typed or by the Designer's Ctrl+S, keeps that place.
+  With the live check's offset, the nudged value goes to 598, and back to 588.
+- **Unchanged:** a placeholder that stands exactly where it was sent (as in the replays), new placeholders, and objects
+  the Designer draws at their own size, which keep that size and move by their middle.
+
+Checked in Chrome with the script's own `vcMeasure` on the replay's saves, the layer of placeholders offset by 0.6 and
+-0.1 px: 1.119.0 places the value at 599 and then 589, and 1.119.1 at 598 and then 588, the other 56 objects as they
+were. Without the offset both place 598 and then 588. Not run in the live Designer.
+
 ### A v6 Oversikt's TT names read whole, and a crowded standing island laid out as Thomas lays one (v1.119.0)
 
 Plant 4684's v6 Oversikt writes its cases' names (TT10 to TT42) in the picture, in the house's text grey. Vectorize image

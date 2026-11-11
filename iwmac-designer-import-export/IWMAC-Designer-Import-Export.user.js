@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.0
+// @version      1.119.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.119.0';
+var IWDIE_VERSION = '1.119.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -11248,11 +11248,40 @@ function iwdieVcFixedAttr(id) {
   return iwdieVcOwnSize(id) ? ' data-iwdie-fixed="1"' : '';
 }
 
+/** The offset the panel's own placeholders that were not moved share (v1.119.1): how far from where they were sent
+ *  (`at`) the sync measures them, alike. Each one within a pixel of its `at`, its size within a pixel too, counts; the
+ *  median of them on each axis is the offset where at least three were measured and at least half of them lie within a
+ *  twentieth of a pixel of it, else 0. On 2349's Maskin (live check, 2026-11-11) a placeholder nudged 10 px right was
+ *  synced to 599, not 598, and nudged back to 589, not 588: the sync measured it at least half a pixel right of where it
+ *  was sent and of where it was moved. VectorCraft's replays of that edit, the drawing dropped and the objects pasted in
+ *  place alike, put it exactly at 588 and 598, and the sync measures those exactly, so where the half pixel came from is
+ *  not known. A box measured within a pixel of its object's place reads as that place (iwdieVcObjectChanges), so an
+ *  offset shared by them all shows only once one of them is moved. `found`: iwdieVcTakePlaceholders' found. -> {x, y} */
+function iwdieVcSentShift(found) {
+  var dx = [], dy = [];
+  (found || []).forEach(function (f) {
+    var a = f && f.ref ? f.at : null;
+    if (!a || !(Math.abs(f.w - a.w) <= 1 && Math.abs(f.h - a.h) <= 1)) return;
+    var x = f.x - a.x, y = f.y - a.y;
+    if (Math.abs(x) <= 1 && Math.abs(y) <= 1) { dx.push(x); dy.push(y); }
+  });
+  var common = function (v) {
+    if (v.length < 3) return 0;
+    var s = v.slice().sort(function (a, b) { return a - b; }), n = s.length;
+    var m = n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+    return s.filter(function (t) { return Math.abs(t - m) <= 0.05; }).length * 2 >= n ? m : 0;
+  };
+  return { x: common(dx), y: common(dy) };
+}
+
 /** What a sync's placeholders ask of the panel. A placeholder that stands for one of its objects
  *  (`ref`: that object's name; else, should the names have changed, the object of its obj_id where
  *  it was, `at`) changes that object when it was moved, resized or given another text (by more than
  *  a pixel) - one the Designer draws at its own size (iwdieVcOwnSize, v1.106.1) keeps that size, moved by
- *  its middle to its placeholder's, and is counted (`kept`); every other placeholder becomes a new object (iwdieVcDesignerObjects). The objects
+ *  its middle to its placeholder's, and is counted (`kept`). (v1.119.1) One of the panel's own placeholders is taken where
+ *  it stands less the offset its unmoved fellows share (iwdieVcSentShift), where it has moved by whole pixels from where it
+ *  was sent; one then within a pixel of where it was sent stands exactly there: moved and moved back, its object is where
+ *  it was. Every other placeholder becomes a new object (iwdieVcDesignerObjects). The objects
  *  sent as placeholders (`sent`: their names) whose placeholder came back as none are named
  *  (`missing`), for the sync to take off the panel. A placeholder of an object no longer on the panel
  *  (v1.46.1) places nothing. The objects an earlier sync of this edit placed (v1.47.0, `placed`:
@@ -11265,7 +11294,7 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
   var have = (existing || []).filter(function (e) { return e && typeof e === 'object' && e.name; });
   var taken = {}, claimed = {}, moves = [], fresh = [], same = 0, kept = 0, unmatched = [], orphans = [], news = [];
   var near = function (a, b) { var n = parseFloat(a); return isFinite(n) && Math.abs(n - b) <= 1; };
-  var known = iwdieVcObjectIndex();
+  var known = iwdieVcObjectIndex(), shift = iwdieVcSentShift(found);
   (found || []).forEach(function (f) {
     if (!f) return;
     if (!f.ref) { news.push(f); return; }
@@ -11317,12 +11346,20 @@ function iwdieVcObjectChanges(found, existing, sent, placed) {
 
   function change(f, e) {
     taken[e.name] = 1;
-    var x = Math.round(f.x), y = Math.round(f.y), w = Math.max(1, Math.round(f.w)), h = Math.max(1, Math.round(f.h));
+    // (v1.119.1) one of the panel's own: the offset its unmoved fellows share taken off where it shares it too - moved by
+    // whole pixels from where it was sent, as a nudge moves it, not set to a place of its own (typed, or the Designer's
+    // Ctrl+S) - and within a pixel of where it was sent, exactly there: not where Math.round puts a box a fraction off it
+    var a = f.ref ? f.at : null, bx = f.x, by = f.y, bw = f.w, bh = f.h;
+    var whole = function (v) { return Math.abs(v - Math.round(v)) <= 0.05; };
+    if (a && shift.x && whole(bx - shift.x - a.x)) bx -= shift.x;
+    if (a && shift.y && whole(by - shift.y - a.y)) by -= shift.y;
+    if (a && near(a.x, bx) && near(a.y, by) && near(a.w, bw) && near(a.h, bh)) { bx = a.x; by = a.y; bw = a.w; bh = a.h; }
+    var x = Math.round(bx), y = Math.round(by), w = Math.max(1, Math.round(bw)), h = Math.max(1, Math.round(bh));
     // (v1.106.1) a picture of its own size keeps it, to the pixel: never cut off by a smaller box. Resized there, its middle
     // goes where its placeholder's is
     var ew = parseFloat(e.posWidth), eh = parseFloat(e.posHeight);
     if (ew > 0 && eh > 0 && iwdieVcOwnSize(e.obj_id)) {
-      if (!(near(ew, w) && near(eh, h))) { x = Math.round(f.x + f.w / 2 - ew / 2); y = Math.round(f.y + f.h / 2 - eh / 2); kept++; }
+      if (!(near(ew, w) && near(eh, h))) { x = Math.round(bx + bw / 2 - ew / 2); y = Math.round(by + bh / 2 - eh / 2); kept++; }
       w = ew; h = eh;
     }
     var o = known[f.id], was = iwdieVcTagOf(e), text = String(f.text || '').replace(/\s+/g, ' ').trim();
@@ -33713,6 +33750,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcOwnSize: iwdieVcOwnSize,
     vcFixedAttr: iwdieVcFixedAttr,
     vcObjectChanges: iwdieVcObjectChanges,
+    vcSentShift: iwdieVcSentShift,
     vcKnownResolve: iwdieVcKnownResolve,
     vcDesignerPlan: iwdieVcDesignerPlan,
     vcRecoveryLeft: iwdieVcRecoveryLeft,
