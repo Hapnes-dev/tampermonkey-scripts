@@ -5412,8 +5412,8 @@ The hosted build carries none of this script's changes. The script only adds the
 catches the save while the page runs. Nothing leaves the browser: the editor is a static page,
 and the panel goes from tab to tab through Tampermonkey's storage.
 
-**The hosted copy.** It is VectorCraft 0.23.0 (since 2026-11-10; 0.22.0 from 2026-11-08, 0.20.0 from 2026-11-01,
-0.17.0 from 2026-10-27, 0.14.0 from 2026-10-22, 0.11.0 before), built from the official source at that release with its licences and notices. Until 2026-10-17 it was the official
+**The hosted copy.** It is VectorCraft 0.24.0 (since 2026-11-11; 0.23.0 from 2026-11-10, 0.22.0 from 2026-11-08,
+0.20.0 from 2026-11-01, 0.17.0 from 2026-10-27, 0.14.0 from 2026-10-22, 0.11.0 before), built from the official source at that release with its licences and notices. Until 2026-10-17 it was the official
 web build byte for byte (0.10.0 until 2026-10-15, 0.9.0 until 2026-10-12). Since then it differs in
 these ways:
 - **WebAssembly SIMD** was the first difference, from 2026-10-17 to 0.22.0: the official web release was built
@@ -5494,6 +5494,11 @@ moved by up to 29 in a channel: VectorCraft changed how it turns an .ai's CMYK c
 sit nearer Illustrator's own. On 2349's Maskin, against the plant's picture, the mean difference fell from 6 to 4, and
 nearly every changed pixel came nearer. The next sync of a panel drawn from an .ai therefore shifts its colours a
 little, towards the house's pictures. The IWMAC title and menu stand as before.
+
+**VectorCraft 0.24.0 is hosted since 2026-11-11.** Nothing in it needed a change here, and the hosted build's own
+change applied as it was. On 0.24.0, in the stub host, script 1.119.0's syncs placed as many objects as on 0.23.0. The
+first save was answered through the control channel. An .ai opened from the card gave the same results and the same
+synced picture, to the pixel. The IWMAC title and menu stand as before.
 
 **Watch in later releases:** upstream has asked for an opened SVG or PDF to take its name from its own title
 metadata, or from its file stem, instead of its file name. This script waits for VectorCraft's window title to be
