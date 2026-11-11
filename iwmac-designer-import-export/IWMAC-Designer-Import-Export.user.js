@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.118.0
+// @version      1.118.1
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.118.0';
+var IWDIE_VERSION = '1.118.1';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -3459,8 +3459,9 @@ function iwdieExportDrawing(svg) {
 
 /** A drawing Export handed over without its hidden original, with it again (v1.76.0): `href` - a PNG or JPEG data URL, the
  *  picture on the layer Bakgrunn (original) of the drawing the panel's picture keeps (iwdieVcOriginalPicture) - put back
- *  on the layer Export emptied and marked, over the drawing's whole size, as the edit first put it there. -> svg, as
- *  given when there is nothing to put back */
+ *  on the layer Export emptied and marked, over the drawing's whole size, as the edit first put it there. (v1.118.1) At the
+ *  picture's own size from the top left where its size can be read, as the edit puts it since v1.115.4: Export lays a
+ *  drawing out on the panel's size, which need not be its picture's. -> svg, as given when there is nothing to put back */
 function iwdieVcRestoreOriginal(svg, href) {
   var s = String(svg == null ? '' : svg), url = String(href == null ? '' : href);
   if (!/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+\/=]+$/.test(url)) return s;
@@ -3468,8 +3469,9 @@ function iwdieVcRestoreOriginal(svg, href) {
   if (!m || !root) return s;
   var end = m[0].slice(-2) === '/>' ? m.index + m[0].length : iwdieXmlEnd(s, m.index);
   if (end < 0) return s;
-  var vb = /\sviewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(root[0]);
-  var w = vb ? vb[1] : (/\swidth\s*=\s*"([\d.]+)/.exec(root[0]) || [])[1], h = vb ? vb[2] : (/\sheight\s*=\s*"([\d.]+)/.exec(root[0]) || [])[1];
+  var vb = /\sviewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(root[0]), own = iwdieImagePixelSize(url);
+  var w = own ? String(own.w) : vb ? vb[1] : (/\swidth\s*=\s*"([\d.]+)/.exec(root[0]) || [])[1];
+  var h = own ? String(own.h) : vb ? vb[2] : (/\sheight\s*=\s*"([\d.]+)/.exec(root[0]) || [])[1];
   if (!w || !h) return s;
   var open = m[0].replace(/\s+data-iwdie-original="image_data"/, '').replace(/\s*\/>$/, '>');
   var back = s.slice(0, m.index) + open + '<image width="' + w + '" height="' + h + '" preserveAspectRatio="none" xlink:href="' + url + '"/></g>' + s.slice(end);
@@ -3504,6 +3506,21 @@ function iwdieNormalizeTraceSvg(svg) {
   var s = String(svg == null ? '' : svg).trim();
   if (!s || iwdieValidateSvg(s).length > 0 || !/<\/svg>\s*$/i.test(s)) return null;
   return s;
+}
+
+/** A drawing Export hands over as panel.image_svg, laid out on the panel as the Designer shows it (v1.118.1). Insert draws
+ *  image_svg into a picture of the file's panel size, its viewBox fitted in (vcDrawingPicture), and Export writes the canvas
+ *  - the plant's layout - as panel_width and panel_height. The Designer draws a picture at its own size from the top left of
+ *  that canvas. So where the picture the drawing came from (`box` {x, y, w, h}: a PNG's own size, or where CSS draws an SVG
+ *  background) is not the panel's size, the drawing is laid out in that box on the panel (iwdieVcFitDrawing). Before, an
+ *  edited 10268 Maskin - a 1400 × 750 drawing exported from a 1440 × 750 canvas - came back from Insert 20 px right of every
+ *  object. -> svg: as given where its picture is the panel's size, or the panel's size is not known */
+function iwdieExportOnPanel(svg, panel, box) {
+  var size = iwdiePanelSizeOf(panel);
+  if (!svg || !size || !box || !(box.w > 0) || !(box.h > 0)) return svg;
+  if (Math.abs(box.w - size.w) < 0.5 && Math.abs(box.h - size.h) < 0.5 && !box.x && !box.y) return svg;
+  var fit = iwdieVcFitDrawing(svg, size, box), laid = fit ? fit.svg : null;
+  return laid && iwdieNormalizeTraceSvg(laid) ? laid : svg;
 }
 
 function iwdiePrepareExportTrace(env, deps) {
@@ -3575,6 +3592,12 @@ function iwdiePrepareExportTrace(env, deps) {
         (parts.length ? ', ' + parts.join(', ') + ' made from it' : '') };
     }
     if (drawing && drawing.length <= IWDIE_DRAWING_MAX) {
+      // (v1.118.1) laid out on the panel where the Designer shows its picture, so that an edit of it Insert draws again
+      // stands where it stood; stamped after, so that the drawing handed back unchanged still keeps its picture. Only a
+      // picture drawn from it at its root's size, as Insert and a sync draw one: a save whose artboard was changed was
+      // fitted into the canvas by its sync, and Insert fits it so again
+      var pic = iwdieImagePixelSize(bg), len = function (a) { var v = iwdieVcRootAttr(drawing, a); return v && !/%/.test(v) ? parseFloat(v) : NaN; };
+      if (pic && Math.abs(len('width') - pic.w) < 0.5 && Math.abs(len('height') - pic.h) < 0.5) drawing = iwdieExportOnPanel(drawing, panel, pic);
       panel.image_svg = iwdieSvgStamp(drawing);
       iwdieNoteArtworkInAiGuide(env, drawing, given);
       return { env: env, traceNote: ' + its own drawing (' + iwdieCountSvgShapes(drawing) + ' shapes)' };
@@ -33829,6 +33852,7 @@ if (typeof module !== 'undefined' && module.exports) {
     buildTraceWorkerPayload: iwdieBuildTraceWorkerPayload,
     traceWorkerInputs: iwdieTraceWorkerInputs,
     prepareExportTrace: iwdiePrepareExportTrace,
+    exportOnPanel: iwdieExportOnPanel,
     completeExport: iwdieCompleteExport,
     tracer: IWDIE_TRACER
   };

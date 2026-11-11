@@ -531,6 +531,30 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### An exported drawing, edited and inserted again, stands where it stood (v1.118.1)
+
+Export JSON hands the drawing a PNG keeps over as `panel.image_svg`, and it writes the canvas - the plant's layout - as
+`panel_width` and `panel_height`. Insert keeps the picture while the drawing comes back unchanged (its stamp). Once
+Copilot or Claude has edited the drawing, Insert draws it again into a picture of the file's panel size, with its viewBox
+fitted in and centred. On 10268 (a 1400 x 750 drawing on a 1440 x 750 canvas) that put the edited drawing 20 px right of
+every object, though the Designer had shown it at its own size from the top left.
+- **Now Export lays the drawing out on the panel** (`iwdieExportOnPanel`) where the Designer shows its picture: the root
+  is the panel's size, and the drawing lies at the picture's own pixels from the top left, as Edit in VectorCraft opens
+  it (v1.115.4). An unchanged drawing still keeps its picture: the stamp is made after the layout. Insert then draws an
+  edited one one to one.
+- **Only a picture drawn from the drawing at its root's size** is laid out so, as Insert and a sync draw one. A picture
+  of the panel's size (every sync, and 8769's), a save whose artboard was changed (its sync fitted it into the canvas, as
+  Insert does again), a stand-in, or a picture whose size cannot be read: the drawing goes over as before.
+- **Unchanged:** an SVG background goes over verbatim (*Authored artwork round-trips*), and so does an optimised
+  export's drawing, which is the canvas's size already.
+- **Insert's hidden original** (`iwdieVcRestoreOriginal`, the picture on *Bakgrunn (original)*) goes back at its own
+  size from the top left where its size can be read, not stretched to the drawing's viewBox.
+
+Replayed on 10268's live Maskin with the script's own Export and Insert steps, the drawing edited (an empty group added,
+which breaks the stamp) and drawn as the Designer shows it: 14 anti-aliased pixels of text differ from the live picture.
+With 1.118.0, 33 903 pixels differed, the drawing 20 px right. Exports made before this version, edited, still come
+back centred: export again first. Not run in the live Designer.
+
 ### A status pill is the state its word says: the Maskin's CO2 alarm is the Designer's OK (v1.118.0)
 
 The house's CO2 booster template draws its CO2 alarm at 1170,87 as a green pill with "OK" on it. Vectorize image (and
