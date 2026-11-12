@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.1
+// @version      1.119.2
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.119.1';
+var IWDIE_VERSION = '1.119.2';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -13566,8 +13566,9 @@ function iwdieCbFacts(items, size) {
 
 /** What is wrong with a drawing before it is synced (v1.64.0): an IWMAC object off the panel (v1.107.5: an info -
  *  allowed, Thomas 2026-11-01: "det går fint om noen objekter kommer utenfor panelet"), live objects on each
- *  other, a symbol the library lacked, a symbol an object should show, a value with no pill under it, symbols on each
- *  other, a pipe that is not straight runs, drawn text that is a number or a state, and - given `opts.resolve(bind)`,
+ *  other (v1.119.2: bells or states of two clusters an info, allowed where room is short), a symbol the library
+ *  lacked, a symbol an object should show, a value with no pill under it, symbols on each other, a pipe that is not
+ *  straight runs, drawn text that is a number or a state, and - given `opts.resolve(bind)`,
  *  which answers why a binding does not resolve or '' - a placeholder bound to nothing. An Oversikt (v1.84.0: two cases
  *  or more) also: a case with no value on it, a name drawn as text, no legend column. -> [{level, rule, what, cids}] */
 function iwdieCbCheck(items, size, opts) {
@@ -13602,14 +13603,34 @@ function iwdieCbCheck(items, size, opts) {
     if (ovBadge(a) && ovBadge(b)) { var va = ownValue(a); return !!va && va === ownValue(b); }
     return false;
   };
+  // (v1.119.2) bells or states of two clusters, each by a value of its own: Thomas allows them on each other where room
+  // is short (2026-11-01, "kan overlappe hverandre dersom det ikke er nok plass"), and the panel shows each only while it
+  // is active. The case op lays them so where its clear spots are taken: its last resort, and sooner in a small island's
+  // narrow aisle and on a crowded standing island's last two rows. CB-O05 says it once for all of them, an info, as the
+  // kit's own check calls them allowed (SK-OV7). One with no value of its own stays CB-O02.
+  var twoClusters = function (a, b) {
+    if (!ovBadge(a) || !ovBadge(b)) return false;
+    var va = ownValue(a), vb = ownValue(b);
+    return !!va && !!vb && va !== vb;
+  };
   var isValue = function (o) { return o.obj_id === IWDIE_OV_ROLE.value[0]; };
   // (v1.112.0) a bare-text value shows on its 40 px pill, centred in its 50 px box: two whose pills keep apart do not
   // lie on each other (the house's racks set value columns closer than the boxes)
   var shown = function (o) { return /^number_v3_(white_)?value_only$/.test(o.obj_id || '') && o.box.w > 10 ? { x: o.box.x + 5, y: o.box.y, w: o.box.w - 10, h: o.box.h } : o.box; };
+  var shared = [], pairs = 0;
   for (var i = 0; i < live.length; i++) for (var j = i + 1; j < live.length; j++) {
     if (!iwdieCbHit(shown(live[i]), shown(live[j]), -1) || oneCluster(live[i], live[j])) continue;
+    if (twoClusters(live[i], live[j])) {
+      pairs++;
+      [live[i].cid, live[j].cid].forEach(function (c) { if (shared.indexOf(c) < 0) shared.push(c); });
+      continue;
+    }
     var onTemp = (ovBadge(live[i]) && isValue(live[j])) || (ovBadge(live[j]) && isValue(live[i]));
     add('error', 'CB-O02', live[i].obj_id + ' and ' + live[j].obj_id + ' lie on each other' + (onTemp ? ': a bell or state never lies on a temperature value - move it beside the value' : ''), [live[i].cid, live[j].cid]);
+  }
+  if (pairs) {
+    add('info', 'CB-O05', (pairs === 1 ? 'a bell or state lies on another cluster\'s' : pairs + ' pairs of bells or states of two clusters lie on each other') +
+      ': allowed where room is short (Thomas, 2026-11-01) - the panel shows each only while it is active; never on a value (CB-O02)', shared);
   }
   var syms = items.filter(function (it) { return it.kind === 'symbol'; });
   syms.forEach(function (s) {

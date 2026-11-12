@@ -531,6 +531,22 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Two clusters' bells on each other are allowed where room is short (v1.119.2)
+
+Thomas, 2026-11-01: an Oversikt's bells and states *"kan overlappe hverandre dersom det ikke er nok plass"*, but never a
+temperature value. `iwmac_check` still called two clusters' bells or states on each other CB-O02, an error. Yet the
+`case` op lays them so itself where its clear spots are taken: as its last resort, and sooner in a small island's narrow
+aisle (v1.115.3) and on a crowded standing island's last two rows (v1.119.0). A drawing it had just laid out came back
+with errors, and fixing them would have undone the layout Thomas asked for.
+- **CB-O05, an info, said once for all of them:** a bell or state on another cluster's, each by a value of its own (the
+  nearest within 10 px). The kit's own check calls the same pairs allowed (SK-OV7).
+- **Still CB-O02, an error:** a bell or state on a value, its own too; two values on each other; a bell or state with no
+  value of its own on another; any other live objects on each other.
+
+Checked with the kit's `tests/test-claude-bridge.js`: a crowded island's last two rows give one CB-O05 for both pairs
+and no CB-O02, and a stray bell on a cluster's bell is still CB-O02. Against 1.119.1 the test fails. Not run in the live
+Designer.
+
 ### A placeholder moved and moved back puts its object where it was (v1.119.1)
 
 The live check on 2349's Maskin (script 1.119.0, VectorCraft 0.24.0) nudged the value `object_0` ten pixels right from

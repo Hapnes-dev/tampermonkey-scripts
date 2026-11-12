@@ -143,7 +143,9 @@ example plans every value, bell, cooling and defrost state and name lands on the
   CB-C01 (a case without a value), CB-C02 (a name drawn as text) and CB-C03 (no legend). Since 1.107.3 a
   walk-in room's (`case` with `room: true`) and a `room`'s box is read off the walls it nearly meets. The bell
   and the states of one cluster lie on each other by design and are no CB-O02; on a temperature value,
-  their own either, they are (1.107.2, Thomas: never on a temperature value).
+  their own either, they are (1.107.2, Thomas: never on a temperature value). Two clusters' bells or states
+  on each other, each by a value of its own, are CB-O05, one info for all of them (1.119.2): allowed where
+  room is short, as the `case` op lays them in a narrow aisle and on a crowded standing island.
 
 Checked end to end in the stub Designer with the local VectorCraft 0.11.0 build (2026-10-18): a
 blank Oversikt, three case controllers and the pack ticked; Claude drew the legend, 12 cases, a
