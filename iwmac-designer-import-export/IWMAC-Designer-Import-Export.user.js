@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.3
+// @version      1.119.4
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.119.3';
+var IWDIE_VERSION = '1.119.4';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9238,6 +9238,20 @@ function iwdieVcPictureLaid(svg, size, at) {
   var W = Math.round(size && size.w || 0), H = Math.round(size && size.h || 0);
   if (Math.abs(w - W) < 0.5 && Math.abs(h - H) < 0.5) return null;
   if (!iwdieVcSameSize({ w: w, h: h }, at)) return null;
+  return { w: Math.round(at.w), h: Math.round(at.h) };
+}
+
+/** The size Edit in VectorCraft works at (v1.119.4): the panel's picture's own where it runs past the canvas, else the
+ *  canvas, as before. The Designer draws the picture at its own size from the top left of a canvas of the plant's layout
+ *  size and cuts it at the canvas's edge, but the plant's page shows it whole. An edit made at the canvas's size cut it
+ *  there for good at the next sync: on 7195 and 8682, 1400 x 750 pictures on a layout of 1280 x 1024, the legend's right
+ *  edge and the objects past x 1280 stood on nothing (Thomas, 2026-11-12). At the picture's size, a sync lays the drawing
+ *  out there again (iwdieVcPictureLaid) and nothing of it is lost. `at` {x, y, w, h}: where the picture is
+ *  (iwdieVcPictureAt); `size` {w, h}: the canvas. -> {w, h} */
+function iwdieVcEditSize(at, size) {
+  var W = Math.round(size && size.w || 0), H = Math.round(size && size.h || 0);
+  if (!at || !(at.w > 0) || !(at.h > 0) || Math.abs(+at.x || 0) > 0.5 || Math.abs(+at.y || 0) > 0.5) return { w: W, h: H };
+  if (at.w <= W + 0.5 && at.h <= H + 0.5) return { w: W, h: H };
   return { w: Math.round(at.w), h: Math.round(at.h) };
 }
 
@@ -28047,6 +28061,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         info.found = (bg && iwdieSniffMime(bg.bytes) === 'image/png') ? iwdieDrawExtract(bg.bytes) : null;
         // (v1.119.3) where the Designer shows the picture: a plant's .ai of its size goes there (iwdieVcPictureLaid)
         try { info.pictureAt = iwdieVcPictureAt(bg && bg.bytes, info.size); } catch (e) { info.pictureAt = null; }
+        // (v1.119.4) a picture that runs past the canvas edited at its own size, so a sync cuts nothing of it (iwdieVcEditSize)
+        info.canvas = info.size;
+        info.size = iwdieVcEditSize(info.pictureAt, info.canvas);
         vcStartEdit(info, tab);
       }, function (e) {
         try { tab.close(); } catch (e2) {}
@@ -28276,6 +28293,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (fz && (fz.scaled || aside)) what += ' - drawn at ' + dim(fz.from.w, fz.from.h) + (fz.scaled ? ', scaled into its picture of ' + dim(fz.at.w, fz.at.h) : '') +
           (aside ? ', which the Designer shows at its own size from the top left of the panel’s ' + dim(size.w, size.h) : ', the panel’s size, as the Designer shows it') +
           (past ? '; what lies past the panel’s edge the Designer does not show, and a sync leaves it out' : '');
+        // (v1.119.4) at the picture's own size where it runs past the canvas
+        var cv = info.canvas;
+        if (cv && (cv.w !== size.w || cv.h !== size.h)) what += ' - at the picture’s own size, ' + dim(size.w, size.h) + ', which runs past the Designer’s canvas of ' +
+          dim(cv.w, cv.h) + ': a sync keeps it whole, as the plant’s page shows it';
         outcomeToast({
           tone: 'good', title: 'Opening in VectorCraft',
           lines: (got ? ['Found in the picture in ' + got.seconds + ' s: ' + [got.count ? iwdieN(got.count, 'component', 'components') + ' of your library (' + got.summary + ')' : '',
@@ -33823,6 +33844,7 @@ if (typeof module !== 'undefined' && module.exports) {
     vcSameSize: iwdieVcSameSize,
     vcPictureAt: iwdieVcPictureAt,
     vcPictureLaid: iwdieVcPictureLaid,
+    vcEditSize: iwdieVcEditSize,
     vcSvgPictureBox: iwdieVcSvgPictureBox,
     imagePixelSize: iwdieImagePixelSize,
     vcOwnSize: iwdieVcOwnSize,

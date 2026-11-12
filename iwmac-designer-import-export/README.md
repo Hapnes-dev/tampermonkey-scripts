@@ -531,6 +531,29 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A picture that runs past the canvas is edited at its own size, and a sync keeps it whole (v1.119.4)
+
+Thomas, 2026-11-12, after 1.119.3: *"ja fiks det også"*. On 7195 and 8682 the panel's picture is 1400 × 750 and the
+Designer's canvas, the plant's layout, 1280 × 1024. The Designer cuts the picture at the canvas's edge, but the plant's
+page shows it whole. Edit in VectorCraft built its document at the canvas's size, so the next sync cut the picture
+there for good. On 7195 that was the legend's right edge and the objects past x 1280, which stood on nothing.
+
+- Edit in VectorCraft now works at the picture's own size where the picture runs past the canvas (`iwdieVcEditSize`).
+  That covers its document, the picture painted into it, *Vectorize image* and the components found in it.
+- The sync lays the drawing out at that size, one to one from the top left (`iwdieVcPictureLaid`, 1.119.3). The canvas
+  becomes that size, as an upload of the picture makes it.
+- The toast that opens the edit says so.
+- **Unchanged:** a picture within the canvas (10268's 1400 × 750 on its old 1440 × 750, 8769's of the canvas's size),
+  one not at the top left, and none.
+
+Checked with the kit's `tests/test-vectorcraft-bridge.js`, whose new section fails against 1.119.3, and with the stub
+Designer replaying a plain edit of 7195's panel (*Vectorize image*, saved as it opened):
+- with 1.119.3, the document is 1280 × 1024 and so is the synced picture: none of the legend's 15 105 sampled pixels
+  past x 1280 is left;
+- with 1.119.4, the document and the picture are 1400 × 750, 15 072 of those pixels are kept, and no object moved.
+
+Not run in the live Designer.
+
 ### A plant's .ai of its picture's size stays where the picture is, on a canvas of another size (v1.119.3)
 
 Plant 7195, 2026-11-12: a colleague opened the panel's own .ai with *Open plant .ai…* and
