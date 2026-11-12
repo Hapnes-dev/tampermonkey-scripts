@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.2
+// @version      1.119.3
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.119.2';
+var IWDIE_VERSION = '1.119.3';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -9201,6 +9201,46 @@ function iwdieVcFitDrawing(svg, size, at) {
     from: fit ? { w: fit.from.w, h: fit.from.h } : { w: w0 || pic.w, h: h0 || pic.h }, at: pic };
 }
 
+/** Two sizes {w, h} the same to a pixel (v1.119.3): an artboard's and a picture's, an .ai's points read as pixels. */
+function iwdieVcSameSize(a, b) {
+  return !!a && !!b && Math.abs(+a.w - +b.w) <= 1 && Math.abs(+a.h - +b.h) <= 1;
+}
+
+/** Where the Designer shows a panel's picture (v1.119.3), from its bytes: a picture of pixels at its own size from the top
+ *  left of the canvas (iw_set_base_image sets no size), an SVG where CSS draws it (iwdieVcSvgPictureBox). `size` {w, h}: the
+ *  canvas. -> {x, y, w, h}, or null for none, or one whose size cannot be read */
+function iwdieVcPictureAt(bytes, size) {
+  if (!bytes || !bytes.length) return null;
+  if (iwdieSniffMime(bytes) === 'image/svg+xml') {
+    try { return iwdieVcSvgPictureBox(iwdieUtf8Decode(bytes), size); } catch (e) { return null; }
+  }
+  var px = iwdieImagePixelSize(bytes);
+  return px && px.w > 0 && px.h > 0 ? { x: 0, y: 0, w: px.w, h: px.h } : null;
+}
+
+/** The size a sync lays a drawing out at, where that is not the canvas's (v1.119.3): the panel's picture's own, for a
+ *  drawing of that picture's size. The Designer draws the picture at its own size from the top left of a canvas of the
+ *  plant's layout size, and a plant's .ai is the drawing its PNG was exported from, at the PNG's size. A sync fitted any
+ *  drawing of another size into the canvas, evenly scaled and centred (v1.106.0): on 7195, a 1400 x 750 picture on a
+ *  canvas of 1280 x 1024, Open plant .ai… and Ctrl+S put the .ai's drawing in at 0.914 and 169 px down, and every object
+ *  of the panel stood off its case (Thomas, 2026-11-12). Now such a drawing is drawn, measured and set at the picture's
+ *  size, one to one from the top left, and the objects stay on it. `size` {w, h}: the canvas; `at` {x, y, w, h}: where
+ *  the picture was when the edit began (iwdieVcPictureAt). -> {w, h}, or null: the canvas, as before - for a drawing of
+ *  the canvas's size, of a size neither's (fitted into the canvas), or a picture not at the top left */
+function iwdieVcPictureLaid(svg, size, at) {
+  if (!at || !(at.w > 0) || !(at.h > 0) || Math.abs(+at.x || 0) > 0.5 || Math.abs(+at.y || 0) > 0.5) return null;
+  var tag = (/<svg\b[^>]*>/i.exec(String(svg || '')) || [''])[0];
+  if (!tag) return null;
+  var vb = String(iwdieVcRootAttr(tag, 'viewBox') || '').trim().split(/[\s,]+/).map(parseFloat), w = NaN, h = NaN;
+  if (vb.length === 4 && vb.every(isFinite) && vb[2] > 0 && vb[3] > 0) { w = vb[2]; h = vb[3]; }
+  else { w = parseFloat(iwdieVcRootAttr(tag, 'width')); h = parseFloat(iwdieVcRootAttr(tag, 'height')); }
+  if (!(w > 0) || !(h > 0)) return null;
+  var W = Math.round(size && size.w || 0), H = Math.round(size && size.h || 0);
+  if (Math.abs(w - W) < 0.5 && Math.abs(h - H) < 0.5) return null;
+  if (!iwdieVcSameSize({ w: w, h: h }, at)) return null;
+  return { w: Math.round(at.w), h: Math.round(at.h) };
+}
+
 /** Where the Designer draws a background that is an SVG (v1.115.4): as a CSS background of no size of its own
  *  (iw_set_base_image), from the top left - at the size its root gives in pixels, a missing one by its viewBox's ratio; with
  *  neither, as large as that ratio fits in the canvas (`size` {w, h}), and with no ratio either, the canvas. -> {x, y, w, h} */
@@ -10036,6 +10076,9 @@ function iwdieVcStripHelpers(svg) {
  *  {w, h}, the artboard they go on when it is not the drawing's own (an .ai's, in points): the panel lies on it as the
  *  Designer lays a drawing of that artboard on the panel - evenly scaled, centred. `opts.under`: the pieces of the
  *  picture the panel's own placeholders carry (data-iwdie-under, v1.47.0) go along - not onto an .ai, which draws them.
+ *  (v1.119.3) `opts.at` {x, y, w, h}: where the panel's picture is (iwdieVcPictureAt). An artboard of that picture's size
+ *  lies there, one to one, as a sync then lays its drawing out (iwdieVcPictureLaid): a plant's .ai on a canvas of another
+ *  size (7195). Any other artboard lies on the whole panel, as before.
  *  -> {base: the drawing without them, its layer IWMAC-objekter last, holding an anchor (IWMAC-anker) for Select All to
  *  end on - which makes that layer the one pasted into; paste: the SVG to paste, '' with none; count} | null for a
  *  drawing that is no SVG */
@@ -10048,9 +10091,11 @@ function iwdieVcLiftObjects(svg, board, opts) {
   if (!src || !(src.w > 0) || !(src.h > 0)) return null;
   var to = board && board.w > 0 && board.h > 0 ? { w: +board.w, h: +board.h } : { w: src.w, h: src.h };
   var r4 = function (v) { return String(Math.round(v * 10000) / 10000); };
-  // from the drawing's units to the artboard's: the artboard lies on the panel scaled by k, centred
-  var k = Math.min(src.w / to.w, src.h / to.h), tx = (src.w - to.w * k) / 2, ty = (src.h - to.h * k) / 2;
-  var mx = [1 / k, 0, 0, 1 / k, -(src.x + tx) / k, -(src.y + ty) / k];
+  // from the drawing's units to the artboard's: the artboard lies on the panel scaled by k, centred - (v1.119.3) in the box
+  // of the panel's picture where it is that picture's size, one to one; on the whole drawing otherwise, as before
+  var at = opts && opts.at, into = at && at.w > 0 && at.h > 0 && iwdieVcSameSize(to, at) ? { x: +at.x || 0, y: +at.y || 0, w: +at.w, h: +at.h } : src;
+  var k = Math.min(into.w / to.w, into.h / to.h), tx = into.x + (into.w - to.w * k) / 2, ty = into.y + (into.h - to.h * k) / 2;
+  var mx = [1 / k, 0, 0, 1 / k, -tx / k, -ty / k];
   var moved = Math.abs(mx[0] - 1) > 1e-9 || Math.abs(mx[4]) > 1e-9 || Math.abs(mx[5]) > 1e-9;
   var matrix = 'matrix(' + mx.map(r4).join(' ') + ')';
   var attr = function (tag, a) { var x = new RegExp('\\s' + a + '\\s*=\\s*"([^"]*)"').exec(tag); return x ? x[1] : ''; };
@@ -26355,7 +26400,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             'drawing it from Illustrator’s own data in it…', false, true), vcAiDrawn(bytes).then(function (res) { drawn = res; return res; })) : Promise.resolve(null);
           return open.then(function (res) {
             var board = res ? { w: res.w, h: res.h } : iwdieAiArtboard(bytes, name), doc = res ? name.replace(/\.ai$/i, '') + '.svg' : name;
-            try { objs = syncer && source ? iwdieVcLiftObjects(source, board, { under: false }) : null; } catch (e) { objs = null; }
+            try { objs = syncer && source ? iwdieVcLiftObjects(source, board, { under: false, at: job.pictureAt || null }) : null; } catch (e) { objs = null; }
             // on the menu bar a file opens as a document; on a drawing it would be placed as art
             // (v1.99.0) its background layer locked as VectorCraft reads a layer's lock, from the PDF part (iwdieAiLockGround);
             // a drawing made of its own data leaves out what Illustrator hides, as its background often is
@@ -28000,6 +28045,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       }).then(function (bg) {
         info.bg = bg;
         info.found = (bg && iwdieSniffMime(bg.bytes) === 'image/png') ? iwdieDrawExtract(bg.bytes) : null;
+        // (v1.119.3) where the Designer shows the picture: a plant's .ai of its size goes there (iwdieVcPictureLaid)
+        try { info.pictureAt = iwdieVcPictureAt(bg && bg.bytes, info.size); } catch (e) { info.pictureAt = null; }
         vcStartEdit(info, tab);
       }, function (e) {
         try { tab.close(); } catch (e2) {}
@@ -28168,7 +28215,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         svg = iwdieVcTagJob(svg, id);
         var safe = String(info.panel || 'panel').replace(/[^A-Za-z0-9æøåÆØÅ._-]+/g, '-').replace(/^-+|-+$/g, '') || 'panel';
         var job = { id: id, svg: svg, name: 'iwmac-' + (info.plant || 'plant') + '-' + safe + '.svg', panel: info.panel || '', plant: info.plant || '', at: Date.now(), version: IWDIE_VERSION,
-          vector: !!info.vector, authored: !!info.authored, params: vcJobParams(info.params) };
+          vector: !!info.vector, authored: !!info.authored, params: vcJobParams(info.params), pictureAt: info.pictureAt || null };
         if (info.edits) job.edits = info.edits;
         // the .ai chosen instead of a trace (v1.51.0) goes along, in Tampermonkey's storage until the editor's tab takes it;
         // one slot, as the job's: a job without one clears one an earlier job's tab never took
@@ -30956,7 +31003,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return { key: String(e.key), name: String(e.name || ''), obj_id: String(e.obj_id || ''), x: +e.x, y: +e.y, w: +e.w, h: +e.h,
           tag: String(e.tag == null ? '' : e.tag), sent: !!e.sent, pending: !!e.pending, el: null };
       });
-      return (vcAdoptedInfo[id] = { job: id, plant: job.plant, panel: job.panel, known: known, record: !!kept, adopted: true });
+      return (vcAdoptedInfo[id] = { job: id, plant: job.plant, panel: job.panel, known: known, record: !!kept, adopted: true, pictureAt: job.pictureAt || null });
     }
 
     /* ---------- what an edit knows of the panel's objects (v1.72.1) ----------
@@ -31448,6 +31495,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       if (!vcShowing(info)) { vcTake(info.job, val, info); return Promise.resolve(); }
       ack('received');
       var size = exportPanelSize(), ph;
+      // (v1.119.3) a drawing of the size of the panel's picture - the plant's .ai, opened on a canvas of another size - drawn,
+      // measured and set at that size, one to one from the top left, where the Designer drew the picture: the panel's
+      // objects stay on it. The canvas becomes that size (imagesetValue below), as an upload of such a picture makes it
+      var canvas = size, laid = iwdieVcPictureLaid(svg, size, info.pictureAt);
+      if (laid) size = laid;
       // (v1.106.0) saved at another size than the panel - its artboard changed in VectorCraft: fitted in, and said so
       var drawnAt = iwdieVcViewFit(iwdieVcRootAttr(svg, 'viewBox'), iwdieVcRootAttr(svg, 'preserveAspectRatio'), size);
       if (drawnAt && !iwdieVcFitMoves(drawnAt.m)) drawnAt = null;
@@ -31545,6 +31597,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (drawnAt) lines.push('VectorCraft saved the drawing at ' + Math.round(drawnAt.from.w) + ' × ' + Math.round(drawnAt.from.h) + ', and the panel is ' +
           Math.round(size.w) + ' × ' + Math.round(size.h) + ': the picture and the objects are that drawing fitted into the panel, scaled and centred, as the ' +
           'Designer shows a drawing of another size. With its artboard at the panel’s size (Document Setup), they stay as drawn.');
+        if (laid) lines.push('VectorCraft saved the drawing at ' + laid.w + ' × ' + laid.h + ', the size of the panel’s picture, on a canvas of ' + canvas.w +
+          ' × ' + canvas.h + ': it is that picture now, at its own size from the top left as the Designer draws a picture, and the panel’s objects stay on it.');
         // the editor's tab told at once (v1.56.0): the background and the objects are set; the PNG still goes up
         var applied = { placed: objs.placed, already: objs.already, skipped: ph.skipped, stale: ph.stale || 0, objError: objs.error || mv.error || rm.error || rl.error,
           moved: mv.moved + rl.relinked, removed: rm.removed.length, held: (hold ? gone.length : 0) + lost.length,
@@ -33766,6 +33820,9 @@ if (typeof module !== 'undefined' && module.exports) {
     vcFitMoves: iwdieVcFitMoves,
     vcFitBox: iwdieVcFitBox,
     vcFitDrawing: iwdieVcFitDrawing,
+    vcSameSize: iwdieVcSameSize,
+    vcPictureAt: iwdieVcPictureAt,
+    vcPictureLaid: iwdieVcPictureLaid,
     vcSvgPictureBox: iwdieVcSvgPictureBox,
     imagePixelSize: iwdieImagePixelSize,
     vcOwnSize: iwdieVcOwnSize,

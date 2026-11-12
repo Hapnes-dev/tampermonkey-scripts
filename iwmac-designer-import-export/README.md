@@ -531,6 +531,42 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A plant's .ai of its picture's size stays where the picture is, on a canvas of another size (v1.119.3)
+
+Plant 7195, 2026-11-12: a colleague opened the panel's own .ai with *Open plant .ai…* and
+pressed Ctrl+S, and every object stood off its case. Thomas could not make it happen on his plants.
+
+- The Designer's canvas is the plant's layout size: on 7195, `schematic_underlay_size` 1280 × 1024. The panel's picture
+  is a 1400 × 750 PNG exported from `7195_oversikt_221207.ai`, and the Designer draws it at its own size from the top
+  left. Thomas's plants have a 1400 × 750 layout, the house's .ai size, so nothing there was fitted.
+- A sync fitted any drawing of another size than the canvas into it, evenly scaled and centred (v1.106.0). The .ai's
+  document, saved at its 1400 × 750 artboard, went in at 0.914 and 169 px down. The 194 objects without placeholders
+  (*Just the drawing*) stayed where they were, off their cases.
+- With *Add the IWMAC objects*, the lift fitted the artboard into the canvas the same way. Each placeholder stood 185 px
+  above its case in VectorCraft, went back to its old place on the sync, and the drawing still moved.
+
+Now:
+- **Edit in VectorCraft** notes where the panel's picture is (`iwdieVcPictureAt`): at its own size from the top left,
+  or where CSS draws an SVG background. The job hands that to the editor's tab, and a Designer tab that takes the edit
+  over gets it too.
+- **Open plant .ai…**, with the objects added, lifts them onto an artboard of the picture's size one to one
+  (`iwdieVcLiftObjects`, `opts.at`), so each placeholder stands on its case.
+- **A sync** draws, measures and sets a drawing of the picture's size at that size, one to one from the top left
+  (`iwdieVcPictureLaid`). The panel's objects stay on it, and the canvas becomes that size, as an upload of the picture
+  makes it. The toast says so.
+- **Unchanged:**
+  - a drawing at the canvas's size, which is every edit opened from the Designer;
+  - a drawing of a size neither the canvas's nor the picture's, still fitted into the canvas (8769: an agent's
+    1400 × 750 drawing on a picture of the canvas's size);
+  - an edit an older version began.
+
+Checked with the kit's `tests/test-vectorcraft-bridge.js`, whose new section fails against 1.119.2, and with the stub
+Designer replaying 7195's panel (its 234 objects, its picture and its .ai):
+- with 1.119.2, both choices give a 1280 × 1024 picture, and 131 of the 234 objects stand off their art;
+- with 1.119.3, both give a 1400 × 750 picture, with all 234 on their art.
+
+Not run in the live Designer.
+
 ### Two clusters' bells on each other are allowed where room is short (v1.119.2)
 
 Thomas, 2026-11-01: an Oversikt's bells and states *"kan overlappe hverandre dersom det ikke er nok plass"*, but never a
