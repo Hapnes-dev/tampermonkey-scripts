@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.81.1
+// @version      1.82.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -101,8 +101,12 @@
  *     the ticket with their message (v1.75.0). The message box shows what a
  *     message will be: an orange frame and bar for /reply (v1.76.0). A sent
  *     /reply shows a mark in place of the word - "Sent to the customer ·
- *     Zendesk #N", read from the ticket (v1.81.0). Off until turned on in
- *     this browser (button on chat pages, Tampermonkey menu); one tab runs it.
+ *     Zendesk #N", read from the ticket (v1.81.0). The "/" list offers
+ *     /reply, and where this browser sends the chat's messages the word
+ *     becomes an invisible mark, so no one sees "/reply"; a Zendesk message
+ *     comes in without its signature, and times are Norwegian, 24-hour
+ *     (v1.82.0). Off until turned on in this browser (button on chat pages,
+ *     Tampermonkey menu); one tab runs it.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -6101,7 +6105,7 @@
 
   /** The "/word" right before the caret, or null. "/" must start the text or follow whitespace, so a URL never matches. */
   function rlMacroToken(textBeforeCaret) {
-    const s = String(textBeforeCaret || "").replace(/[\u200B\u2060\uFEFF]/g, "");
+    const s = String(textBeforeCaret || "").replace(/[\u200B\u2060\u2063\uFEFF]/g, "");
     const m = s.match(/(?:^|\s)(\/([A-Za-z0-9_\-ÆØÅæøå]*))$/);
     return m ? { token: m[1], query: m[2] } : null;
   }
@@ -6119,7 +6123,7 @@
 
   /** The macro whose "/Name" is the whole message (any case), or null. */
   function rlMacroExact(text, macros) {
-    const s = String(text || "").replace(/[\u200B\u2060\uFEFF]/g, "").trim();
+    const s = String(text || "").replace(/[\u200B\u2060\u2063\uFEFF]/g, "").trim();
     const m = s.match(/^\/([A-Za-z0-9_\-ÆØÅæøå]+)$/);
     if (!m) return null;
     const want = m[1].toLowerCase();
@@ -6135,6 +6139,30 @@
 
   const RL_MC_POPUP_ID = "rlChatMacroPopup";
   const rlMc = { el: null, token: "", items: [], index: 0, dismissedEl: null, dismissedToken: "" };
+  // Entries other sections add to the list (the Zendesk sync's /reply, v1.82.0): each a function of the message box -
+  // { el, atStart: the "/word" is the start of the message } - giving an entry or null. An entry with `apply` is no
+  // text: picked, it does its own thing with the box - apply(el, token), the token null when the box holds the whole
+  // word. A `strict` entry matches only from the start of its name.
+  const RL_MC_EXTRA = [];
+  function rlMcAtStart(c, token) {
+    try {
+      const r = document.createRange();
+      r.setStart(c.el, 0);
+      r.setEnd(c.range.startContainer, c.range.startOffset);
+      return r.toString().replace(/[\u200B\u2060\u2063\uFEFF]/g, "").trim() === token;
+    } catch (_) { return false; }
+  }
+  function rlMcExtras(c, tok, atStart) {
+    const q = String((tok && tok.query) || "").toLowerCase();
+    const ctx = { el: c.el, atStart: atStart === true || (!!tok && !!c.range && rlMcAtStart(c, tok.token)) };
+    const out = [];
+    for (const f of RL_MC_EXTRA) {
+      let m = null;
+      try { m = f(ctx); } catch (_) { m = null; }
+      if (m && (m.strict ? String(m.name).toLowerCase().startsWith(q) : rlMacroFilter([m], q).length)) out.push(m);
+    }
+    return out;
+  }
 
   /** The chat message box `node` sits in (its CKEditor editable), or null. */
   function rlMcEditable(node) {
@@ -6165,6 +6193,8 @@
       #${RL_MC_POPUP_ID} .rlMcHead { padding: 6px 12px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: #64748b; border-bottom: 1px solid #f1f5f9; }
       #${RL_MC_POPUP_ID} .rlMcItem { display: flex; gap: 10px; align-items: baseline; padding: 7px 12px; cursor: pointer; }
       #${RL_MC_POPUP_ID} .rlMcItem.active { background: #eef2ff; }
+      #${RL_MC_POPUP_ID} .rlMcItem.reply .rlMcName { color: #c2410c; }
+      #${RL_MC_POPUP_ID} .rlMcItem.reply.active { background: #fff4ed; }
       #${RL_MC_POPUP_ID} .rlMcName { font-weight: 600; color: #3730a3; white-space: nowrap; }
       #${RL_MC_POPUP_ID} .rlMcTitle { color: #64748b; font-size: 12px; }
       #${RL_MC_POPUP_ID} .rlMcPreview { margin: 0; padding: 10px 12px; border-top: 1px solid #f1f5f9; background: #f8fafc; color: #334155; white-space: pre-wrap; font: inherit; max-height: 240px; overflow: auto; }
@@ -6200,11 +6230,11 @@
     box.textContent = "";
     const head = document.createElement("div");
     head.className = "rlMcHead";
-    head.textContent = "Macros";
+    head.textContent = rlMc.items.some((m) => typeof m.apply === "function") ? "Commands and macros" : "Macros";
     box.appendChild(head);
     rlMc.items.forEach((m, i) => {
       const row = document.createElement("div");
-      row.className = "rlMcItem" + (i === rlMc.index ? " active" : "");
+      row.className = "rlMcItem" + (m.kind ? " " + m.kind : "") + (i === rlMc.index ? " active" : "");
       row.setAttribute("role", "option");
       const name = document.createElement("span");
       name.className = "rlMcName";
@@ -6242,7 +6272,7 @@
     if (rlMc.dismissedEl === c.el && rlMc.dismissedToken === tok.token) return; // closed with Esc for this "/word"
     rlMc.dismissedEl = null;
     rlMc.dismissedToken = "";
-    const items = rlMacroFilter(RL_CHAT_MACROS, tok.query);
+    const items = rlMcExtras(c, tok).concat(rlMacroFilter(RL_CHAT_MACROS, tok.query));
     if (!items.length) { rlMcClose(); return; }
     const same = rlMc.el === c.el && rlMc.items.length === items.length && rlMc.items.every((m, i) => m === items[i]);
     rlMc.el = c.el;
@@ -6257,6 +6287,10 @@
     const el = rlMc.el;
     const token = rlMc.token;
     rlMcClose();
+    if (macro && typeof macro.apply === "function") {
+      try { macro.apply(el, token); } catch (e) { console.warn("[Rocketlane improvements] chat macro failed:", e?.message || e); }
+      return;
+    }
     const editor = el && el.ckeditorInstance;
     if (!editor || !macro) return;
     try {
@@ -6292,7 +6326,9 @@
   function rlMcExpandWhole(el, macro) {
     const editor = el.ckeditorInstance;
     try {
-      editor.setData(rlMacroHtml(macro));
+      // a reply's mark (the Zendesk sync, v1.82.0) stays at the start of the message
+      const html = rlMacroHtml(macro);
+      editor.setData(/^[\s\u200B\u2060\uFEFF]*\u2063/.test(el.textContent || "") ? html.replace(/^<p>/, "<p>\u2063") : html);
       editor.model.change((w) => w.setSelection(w.createPositionAt(editor.model.document.getRoot(), "end")));
       editor.editing.view.focus();
     } catch (e) {
@@ -6322,10 +6358,14 @@
       return;
     }
     if (ev.key === "Enter" && !ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
-      const macro = rlMacroExact(el.textContent, RL_CHAT_MACROS);
+      const macro = rlMacroExact(el.textContent, rlMcExtras({ el }, { token: "", query: "" }, true).concat(RL_CHAT_MACROS));
       if (!macro) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      if (typeof macro.apply === "function") {
+        try { macro.apply(el, null); } catch (e) { console.warn("[Rocketlane improvements] chat macro failed:", e?.message || e); }
+        return;
+      }
       rlMcExpandWhole(el, macro);
     }
   }
@@ -17136,6 +17176,10 @@
   //     message now records what it became (link.sent), and that settles its mark first; the ticket is read only for
   //     what no record settles, accepting a comment made through the session ("web") and a signature after a reply.
   //     "Not sent" is said only for a message written before the chat was linked; a missed match is "not confirmed".
+  //     v1.82.0: the "/" list in the message box offers /reply from the first letter, with what it will do. Where this
+  //     browser sends the chat's messages itself, "/reply" - typed or picked - becomes the reply mark, an invisible
+  //     separator the sync reads as the word, so the chat never shows "/reply", also to those without the script.
+  //     A Zendesk message comes in without its signature; every time shown is Norwegian time, 24-hour.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17169,10 +17213,18 @@
       return String(text).replace(/\n{3,}/g, "\n\n").split("\n").map((l) => (l.trim() ? "<p>" + esc(l) + "</p>" : "<p><br></p>")).join("");
     }
 
-    /** A chat message: a public reply to the customer when it starts with /reply, else an internal note. */
+    // The reply mark (v1.82.0): an invisible separator the message box puts at the start of a message in place of
+    // "/reply", so the word is never in the chat - with the script off, everyone saw it there (Thomas). It reads as the
+    // word does. Only a browser that sends the chat's messages itself writes it, so the sync that sends it knows it.
+    const REPLY_MARK = "\u2063";
+    const LEAD_RE = /^[\s\u00a0\u200B\u2060\uFEFF]*(?:\u2063[\s\u00a0\u200B\u2060\uFEFF]*(?:\/reply\b[ \t\u00a0:]*)?|\/reply\b[ \t\u00a0:]*)/i;
+
+    /** A chat message: a public reply to the customer when it starts with the reply mark or /reply, else an internal
+     *  note. The mark never goes to the ticket. */
     function parseChatMessage(text) {
-      const m = /^\s*\/reply\b[ \t:]*/i.exec(String(text || ""));
-      return m ? { isPublic: true, body: String(text).slice(m[0].length).trim() } : { isPublic: false, body: String(text || "").trim() };
+      const t = String(text || "");
+      const m = LEAD_RE.exec(t);
+      return { isPublic: !!m, body: (m ? t.slice(m[0].length) : t).split(REPLY_MARK).join("").trim() };
     }
 
     /** What a message being written will be on the ticket: "reply" when it starts with /reply (read as parseChatMessage
@@ -17186,15 +17238,15 @@
       if (w === "kunde" || w === "customer" || (w.length >= 3 && w[0] === "r" && editDistance(w, "reply") <= 2)) return { mode: "typo", word: "/" + m[1] };
       return { mode: "note", word: "" };
     }
-    /** The "/reply" a sent message starts with, as the chat shows its first paragraph (v1.81.0): `whole` when that
+    /** The "/reply" or reply mark a sent message starts with, as the chat shows its first paragraph (v1.81.0): `whole` when that
      *  paragraph holds nothing else - it is hidden - else how many characters to hide; null when it does not start
      *  with /reply as parseChatMessage reads it. The chat's own text is never changed, only how it is shown. */
     function replyLead(firstParagraph) {
       // measured on the text as it stands, zero-width marks and all, so the length cuts the very text it was read from
       const t = String(firstParagraph || "");
-      const m = /^[\s\u00A0\u200B\u2060\uFEFF]*\/reply\b[ \t\u00A0\u200B\u2060\uFEFF:]*/i.exec(t);
+      const m = /^[\s\u00A0\u200B\u2060\uFEFF]*(?:\u2063[ \t\u00A0\u200B\u2060\uFEFF]*(?:\/reply\b[ \t\u00A0\u200B\u2060\uFEFF:]*)?|\/reply\b[ \t\u00A0\u200B\u2060\uFEFF:]*)/i.exec(t);
       if (!m) return null;
-      return t.slice(m[0].length).replace(/[\u200B\u2060\uFEFF]/g, "").trim() ? { whole: false, length: m[0].length } : { whole: true, length: t.length };
+      return t.slice(m[0].length).replace(/[\u200B\u2060\u2063\uFEFF]/g, "").trim() ? { whole: false, length: m[0].length } : { whole: true, length: t.length };
     }
     function editDistance(a, b) {
       let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -17212,14 +17264,23 @@
         String(user.userName || user.name || "").trim();
     }
 
-    // a sign-off line ("Med vennlig hilsen", "Best regards,"): what follows it is a signature
-    const SIGN_OFF = /^(?:med\s+vennlig\s+hilsen|vennlig\s+hilsen|beste\s+hilsen|mvh\.?|hilsen|best\s+regards|kind\s+regards|with\s+kind\s+regards|regards|br)[\s,.!]*$/i;
+    // a sign-off ("Med vennlig hilsen", "Best regards,", "Mvh Markus Hassel"): it and all after it is a signature
+    const SIGN_OFF = /^(?:med\s+vennlig\s+hilsen|vennlig\s+hilsen|beste\s+hilsen|mvh|hilsen|best\s+regards|kind\s+regards|with\s+kind\s+regards|regards|br)\b[\s,.!:]*(.*)$/i;
+    /** Whether a line is a sign-off: the words alone, or a name after them - not a sentence that starts with one of
+     *  them ("Hilsen fra oss alle"). */
+    function isSignOff(line) {
+      const m = SIGN_OFF.exec(String(line || ""));
+      if (!m) return false;
+      const rest = m[1].replace(/[\s,.!]+$/, "");
+      return !rest || /^[A-ZÆØÅ][^\s\d@,;:]*(?:\s+[A-ZÆØÅ][^\s\d@,;:]*){0,3}$/.test(rest);
+    }
     // the header of a quoted earlier email, as Outlook writes it ("Fra: …" then "Sendt: …"), and other reply markers
     const QUOTE_FROM = /^(?:fra|from)\s*:\s*\S/i, QUOTE_NEXT = /^(?:sendt|sent|dato|date|til|to)\s*:/i;
     const QUOTE_LINE = /^(?:-{2,}\s*(?:original message|opprinnelig melding|videresendt melding|forwarded message)\s*-{2,}|on .{6,} wrote:|den .{6,} skrev .{0,80}:)$/i;
 
     /** A Zendesk comment's text made fit for a chat: entities decoded (plain_body keeps "&nbsp;"), lines trimmed, runs
-     *  of blank lines to one, a quoted earlier email cut, and a signature cut to its sign-off and the name under it. */
+     *  of blank lines to one, a quoted earlier email cut, and the signature cut, its sign-off too (v1.82.0: the chat
+     *  names who wrote it - Thomas: "we don't have to add the signature", as messages written in Rocketlane have none). */
     function tidyText(raw) {
       const lines = String(raw || "")
         .replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, "\"").replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&")
@@ -17229,12 +17290,7 @@
         const l = lines[i];
         if (QUOTE_LINE.test(l)) break;
         if (QUOTE_FROM.test(l) && lines.slice(i + 1, i + 5).some((x) => QUOTE_NEXT.test(x))) break;
-        if (SIGN_OFF.test(l)) {
-          out.push(l);
-          const name = lines.slice(i + 1).find((x) => x);
-          if (name && name.length <= 60 && !/@|\d{3}|https?:|www\./i.test(name)) out.push(name);
-          break;
-        }
+        if (isSignOff(l)) break;
         out.push(l);
       }
       return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -17328,7 +17384,7 @@
     // happened since (a page closed between posting and saving, a record from another time). So what a message would be
     // is looked for first: its mark, or its text.
     const norm = (v) => String(v || "").replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, "\"")
-      .replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&").replace(/[\s\u00a0]+/g, " ").trim();
+      .replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&").replace(/[\u200B\u2060\u2063\uFEFF]/g, "").replace(/[\s\u00a0]+/g, " ").trim();
     const viaApi = (z) => !!(z && z.via && z.via.channel === "api");
     const zdText = (z) => norm(z && (z.plain_body != null ? z.plain_body : textOfHtml(z.html_body || z.body || "")));
     /** What chat message `m` becomes on the ticket, in each form a browser running the sync gives it: plain from the
@@ -17363,8 +17419,11 @@
     /** What chat message `m` became on the ticket (v1.81.0): the oldest of the ticket's `comments` made of it - found
      *  by its text, so it holds whichever browser sent it - or null while there is none. */
     function sentAs(m, comments) {
-      const z = (Array.isArray(comments) ? comments : []).slice().sort((a, b) => Number(a.id) - Number(b.id))
-        .find((c) => isForwardOf(c, m) || looksLikeForwardOf(c, m));
+      // a reply's public comment first: a sync older than the reply mark may have sent the message as a note as well
+      const want = !!m && parseChatMessage(textOfHtml(m.content)).isPublic;
+      const list = (Array.isArray(comments) ? comments : []).slice().sort((a, b) => Number(a.id) - Number(b.id))
+        .filter((c) => isForwardOf(c, m) || looksLikeForwardOf(c, m));
+      const z = list.find((c) => (c.public !== false) === want) || list[0];
       return z ? { commentId: String(z.id), isPublic: z.public !== false, at: ms(z.created_at) } : null;
     }
     /** What became of chat message `m`, for its mark (v1.81.1): this browser's record of sending it (`e.sent`) first;
@@ -17437,13 +17496,27 @@
     }
 
     const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    /** A time as "20 Oct 2026 09:12", local. */
-    function when(v) {
+    // Times as in Norway: Europe/Oslo, 24-hour, whatever the computer's own settings (Thomas, v1.82.0)
+    const OSLO = (() => {
+      try { return new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Oslo", year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }); }
+      catch (_) { return null; }
+    })();
+    function osloParts(v) {
       const t = ms(v);
-      if (!t) return "";
-      const d = new Date(t), p = (n) => (n < 10 ? "0" : "") + n;
-      return d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear() + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+      if (!t) return null;
+      const d = new Date(t);
+      if (!OSLO) return { y: d.getFullYear(), mo: d.getMonth(), d: d.getDate(), h: d.getHours(), mi: d.getMinutes() };
+      const o = {};
+      for (const p of OSLO.formatToParts(d)) o[p.type] = p.value;
+      return { y: Number(o.year), mo: Number(o.month) - 1, d: Number(o.day), h: Number(o.hour) % 24, mi: Number(o.minute) };
     }
+    const two = (n) => (n < 10 ? "0" : "") + n;
+    /** A time of day as "09:21", Norwegian time. */
+    function clockOf(v) { const p = osloParts(v); return p ? two(p.h) + ":" + two(p.mi) : ""; }
+    /** A day as "13 Nov 2026", Norwegian time. */
+    function dayOf(v) { const p = osloParts(v); return p ? p.d + " " + MONTHS[p.mo] + " " + p.y : ""; }
+    /** A time as "20 Oct 2026 09:12", Norwegian time. */
+    function when(v) { return osloParts(v) ? dayOf(v) + " " + clockOf(v) : ""; }
 
     /** A ticket's earlier messages, oldest first, for the chat: each with who, what kind and when, then its text (each
      *  at most 3 000 characters), in as few chat messages as fit about 12 000 characters each. -> [{html, comments}] */
@@ -17639,7 +17712,9 @@
             // same words not yet known as sent: the same words written twice are two messages)
             const sources = sinceLink.filter((m) => isForwardOf(c, m));
             if (sources.length) {
-              const m = sources.find((x) => !e.rlSeen.includes(cidOf(x)));
+              // the message it came of counts as sent only as what it was meant to be, a reply as a public comment: a
+              // sync older than the reply mark sends a marked message as a note, and the reply must still go (v1.82.0)
+              const m = sources.find((x) => !e.rlSeen.includes(cidOf(x)) && (c.public !== false) === parseChatMessage(textOfHtml(x.content)).isPublic);
               if (m) { e.rlSeen = tail(e.rlSeen.concat(cidOf(m))); noteSent(e, cidOf(m), c); }
               e.ownZd = tail(e.ownZd.concat(String(c.id)));
               e.zdMax = Number(c.id);
@@ -17667,14 +17742,18 @@
             if (e.rlSeen.includes(id) || e.ownRl.includes(id)) continue;
             const mine = runner > 0 && Number((c.user && c.user.userId) || c.createdBy) === runner;
             if (ms(c.createdAt) < e.rlSince || (mine && OWN_RE.test(String(c.content || "")))) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
-            const msg = parseChatMessage(textOfHtml(c.content));
+            let msg = parseChatMessage(textOfHtml(c.content));
+            // sent as a reply from this browser, the mark gone from it on the way: still a reply, once (v1.82.0)
+            if (!msg.isPublic && msg.body && mine && deps.intents && deps.intents.take(key, norm(msg.body), ms(c.createdAt))) msg = { isPublic: true, body: msg.body };
             const files = rlFilesOf(c);
             if (!msg.body && !files.length) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
             // on the ticket already - sent from another browser, or before this one's record was saved: not again
             if (msg.body) {
               if (!recent) recent = ((((await deps.zd.getComments(e.ticketId)) || {}).comments) || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
               // the oldest such comment not yet known as another message's: the same words written twice go twice
-              const dup = recent.find((z) => !e.ownZd.includes(String(z.id)) && isForwardOf(z, c));
+              // a reply is on the ticket only as a public comment: a sync that does not know the reply mark sends the
+              // message as a note, and that must not keep the reply from going (v1.82.0)
+              const dup = recent.find((z) => !e.ownZd.includes(String(z.id)) && isForwardOf(z, c) && (z.public !== false) === msg.isPublic);
               if (dup) { e.ownZd = tail(e.ownZd.concat(String(dup.id))); e.rlSeen = tail(e.rlSeen.concat(id)); noteSent(e, id, dup); deps.store.save(st); continue; }
             }
             const who = authorName(c.user);
@@ -17712,7 +17791,7 @@
 
     function links() { return load().links; }
 
-    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, replyLead, sentAs, wentAs, beforeLink, isActive };
+    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, replyLead, sentAs, wentAs, beforeLink, isActive, clockOf, dayOf, when, replyMark: REPLY_MARK, normText: norm };
   }
   // @@ZDSYNC-ENGINE-END
 
@@ -17937,8 +18016,22 @@
       },
     };
 
+    // what this browser sent as a reply, kept ten minutes, should Rocketlane drop the reply mark from the message (v1.82.0)
+    const INTENT_KEY = "zdsync_reply_intents_v1", INTENT_MS = 10 * 60 * 1000;
+    const intents = () => (Array.isArray(get(INTENT_KEY, [])) ? get(INTENT_KEY, []) : []).filter((x) => x && Date.now() - Number(x.at) < INTENT_MS);
+    const replyIntents = {
+      take(key, text, at) {
+        const list = intents();
+        const i = list.findIndex((x) => x.key === key && x.text === text && Math.abs((Number(at) || Date.now()) - Number(x.at)) < INTENT_MS / 2);
+        if (i < 0) return false;
+        list.splice(i, 1);
+        set(INTENT_KEY, list);
+        return true;
+      },
+    };
+
     const sync = createZendeskChatSync({
-      rl: api.rl, zd: api.zd, files: api.files,
+      rl: api.rl, zd: api.zd, files: api.files, intents: replyIntents,
       store: { load: () => { try { return JSON.parse(get(STATE_KEY, "{}")) || {}; } catch (_) { return {}; } }, save: (s) => set(STATE_KEY, JSON.stringify(s)) },
     });
 
@@ -18096,6 +18189,7 @@
       ".mode{position:fixed;z-index:2147482999;pointer-events:none;max-width:72vw;padding:5px 12px;border-radius:7px;font:600 13px/1.4 Inter,'Segoe UI',Roboto,Arial,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
       ".mode.reply{background:#c2410c;color:#fff;box-shadow:0 2px 8px rgba(194,65,12,.35)}.mode.stop{background:#b42318;color:#fff}",
       ".mode.typo{background:#fffaeb;color:#93370d;border:1px solid #fdb022}.mode.note{background:#f2f4f7;color:#475467;font-weight:500;font-size:12px;padding:3px 10px}",
+      ".mode .x{pointer-events:auto;margin-left:10px;padding:0 7px;border:1px solid rgba(255,255,255,.6);border-radius:5px;background:transparent;color:inherit;font:inherit;font-weight:500;cursor:pointer}",
     ].join("\n");
     const pill = document.createElement("button");
     pill.className = "pill";
@@ -18116,7 +18210,8 @@
       const m = /^\/projects\/(\d+)\/chat\/(\d+)/.exec(location.pathname);
       return m ? { projectId: m[1], conversationId: m[2] } : null;
     }
-    const hhmm = (t) => (t ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+    // Norwegian time, 24-hour (v1.82.0)
+    const hhmm = (t) => (t ? sync.clockOf(t) : "");
 
     // the project's tickets in the queue, best match first, kept two minutes per project
     const ranked = new Map();
@@ -18200,7 +18295,7 @@
       top.append(el("b", null, "#" + t.id + " "), document.createTextNode(String(t.subject || "(no subject)")));
       const plant = got ? sync.plantOf(t, got.fieldId) : "";
       txt.append(top, el("span", "muted", statusLabel(t) + (plant ? " · Plant ID " + plant : "") +
-        (t.updated_at ? " · " + new Date(t.updated_at).toLocaleDateString() : "")));
+        (t.updated_at ? " · " + sync.dayOf(t.updated_at) : "")));
       card.append(txt);
       panel.append(card);
       panel.append(el("div", "muted", "Link this chat to the ticket? Its new messages then appear here as they come (earlier ones only if you ask, " +
@@ -18318,7 +18413,7 @@
         }
         pick.onchange = () => { set(INTERVAL_KEY, Number(pick.value)); loop(); };
         every.append("Checks Zendesk every ", pick, " while Rocketlane is open (at most once a minute in the background)" +
-          (e.lastRun ? ". Last check " + new Date(e.lastRun).toLocaleTimeString() + "." : "."));
+          (e.lastRun ? ". Last check " + hhmm(e.lastRun) + "." : "."));
         panel.append(every);
         return;
       }
@@ -18342,7 +18437,7 @@
         if (score >= 20) top.append(el("span", "match", "Plant ID " + num));
         else if (score >= 10) top.append(el("span", "match", "match"));
         const plant = sync.plantOf(t, got.fieldId);
-        txt.append(top, el("span", "muted", statusLabel(t) + (plant ? " · Plant ID " + plant : "") + (t.updated_at ? " · " + new Date(t.updated_at).toLocaleDateString() : "")));
+        txt.append(top, el("span", "muted", statusLabel(t) + (plant ? " · Plant ID " + plant : "") + (t.updated_at ? " · " + sync.dayOf(t.updated_at) : "")));
         const go = el("button", "b", "Link");
         go.onclick = () => {
           // asked once more: linking posts a note in the chat, and from then on both sides go across
@@ -18401,6 +18496,7 @@
       }).catch(() => requesters.set(ticketId, { name: "", copies: 0 }));
       return null;
     }
+    let modeWasReply = false;   // the box held a reply when last looked at (v1.82.0)
     function hideMode() { bar.hidden = true; frame.hidden = true; }
     function showMode() {
       const ids = chatIds();
@@ -18408,6 +18504,8 @@
       if (!c) return hideMode();
       const text = String(c.ed.innerText || c.ed.textContent || "");
       const mode = sync.composeModeOf(text);
+      if (modeWasReply && mode.mode !== "reply" && !blank(text)) forgetIntents(ids);
+      modeWasReply = mode.mode === "reply";
       const e = sync.linkOf(ids.projectId, ids.conversationId);
       // a quiet label only for this browser's own link, and only while the box is in use
       if (mode.mode === "note" && (!e || !(c.focused || text.trim()))) return hideMode();
@@ -18428,7 +18526,22 @@
       const r = c.box.getBoundingClientRect();
       if (!r.width || !r.height || r.bottom < 0 || r.top > window.innerHeight) return hideMode();
       bar.className = "mode " + cls;
-      bar.textContent = say;
+      const sig = cls + "|" + say;
+      if (bar.dataset.sig !== sig) {
+        // the same bar is kept while it says the same: a click on its ✕ must find the button it pressed (v1.82.0)
+        bar.dataset.sig = sig;
+        bar.textContent = say;
+        if (mode.mode === "reply") {
+          const x = document.createElement("button");
+          x.type = "button";
+          x.className = "x";
+          x.textContent = "✕";
+          x.title = "Make it an internal note instead";
+          x.addEventListener("mousedown", (ev) => ev.preventDefault());   // the caret stays in the box
+          x.addEventListener("click", () => { const c2 = composer(); if (c2 && toNote(c2.ed)) updateMode(); });
+          bar.append(x);
+        }
+      }
       bar.hidden = false;
       bar.style.left = Math.round(r.left) + "px";
       bar.style.maxWidth = Math.round(Math.max(240, r.width)) + "px";
@@ -18444,7 +18557,7 @@
       if (modeQueued) return;
       modeQueued = true;
       // a timer, not requestAnimationFrame: frames pause in a tab Chrome counts as hidden
-      setTimeout(() => { modeQueued = false; try { showMode(); } catch (_) { hideMode(); } }, 0);
+      setTimeout(() => { modeQueued = false; try { convertTyped(); } catch (_) {} try { showMode(); } catch (_) { hideMode(); } }, 0);
     }
     const inBox = (ev) => !!(ev.target && ev.target.closest && ev.target.closest(RTE));
     // CKEditor writes the box itself, so typing is followed by its keys and selection, as the chat macros do
@@ -18452,6 +18565,198 @@
     for (const t of ["keyup", "focusin", "focusout", "paste", "cut", "drop"]) document.addEventListener(t, (ev) => { if (inBox(ev)) updateMode(); }, true);
     document.addEventListener("scroll", () => { if (!bar.hidden) updateMode(); }, true);
     window.addEventListener("resize", () => { if (!bar.hidden) updateMode(); });
+
+    // ---- the reply mark in the message box (v1.82.0) ----
+    // Thomas: with the script off, a sent reply still showed "/reply" - the word was in the message itself, so everyone
+    // without the script saw it, the partner too. Where this browser sends the chat's messages itself (it holds the link,
+    // the sync on), the word never stays in the box: "/reply" typed at the start of a message, or picked in the "/" list,
+    // becomes the reply mark (an invisible separator), and the frame and bar say it is a reply. A browser that does not
+    // send them keeps the word: the one that does may be older, and would send a marked message as a note. ✕ on the bar,
+    // or Backspace at the start, makes it a note again.
+    const MARK_CH = sync.replyMark;
+    const SPACE_RE = /[\s\u00a0\u200B\u2060\uFEFF]/g;
+    const TYPED_RE = /^[\s\u00a0\u200B\u2060\uFEFF]*\/reply(?:[ \t\u00a0]+|[ \t\u00a0]*:[ \t\u00a0]*)/i;   // the word, finished
+    const FORCED_RE = /^[\s\u00a0\u200B\u2060\uFEFF]*\/reply\b[ \t\u00a0:]*/i;                         // the word, at a send
+    const MARKED_RE = /^[\s\u00a0\u200B\u2060\uFEFF]*\u2063/;
+    const LEAD_OUT_RE = /^[\s\u00a0\u200B\u2060\uFEFF]*(?:\u2063|\/reply\b[ \t\u00a0:]*)/i;
+    const blank = (v) => !String(v || "").replace(SPACE_RE, "");
+    const noLead = (v) => String(v || "").replace(/^[\s\u00a0\u200B\u2060\uFEFF]+/, "");
+    // Rocketlane's box is CKEditor 5: changed through its model, which counts an inline object as one character
+    const ckText = (p) => [...p.getChildren()].map((n) => (typeof n.data === "string" ? n.data : "\uFFFC")).join("");
+    function ckLead(editor) {
+      for (const p of editor.model.document.getRoot().getChildren()) {
+        if (typeof p.getChildren !== "function") continue;
+        const text = ckText(p);
+        if (!blank(text)) return { p, text };
+      }
+      return null;
+    }
+    /** The message box made a reply. `how`: { token } - the "/word" before the caret, picked in the list; { force } -
+     *  "/reply" at the start, finished or not (as it is sent); {} - "/reply" at the start with a space or ":" after it
+     *  (as it is typed). `literal` writes "/reply " instead of the mark. -> whether it changed */
+    function ckToReply(editor, how) {
+      let done = false;
+      editor.model.change((writer) => {
+        const lead = ckLead(editor);
+        const sel = editor.model.document.selection.getFirstPosition();
+        const word = how.literal ? "/reply " : MARK_CH;
+        if (how.token) {
+          const p = sel && sel.parent;
+          if (!p || !lead || lead.p !== p || noLead(ckText(p).slice(0, sel.offset)) !== how.token) return;
+          writer.remove(writer.createRange(writer.createPositionAt(p, 0), sel));
+          writer.insertText(word, writer.createPositionAt(p, 0));
+          writer.setSelection(writer.createPositionAt(p, word.length));
+          done = true;
+          return;
+        }
+        if (!lead || MARKED_RE.test(lead.text)) return;
+        const m = (how.force ? FORCED_RE : TYPED_RE).exec(lead.text);
+        if (!m) return;
+        const caret = sel && sel.parent === lead.p ? sel.offset : -1;
+        writer.remove(writer.createRange(writer.createPositionAt(lead.p, 0), writer.createPositionAt(lead.p, m[0].length)));
+        writer.insertText(word, writer.createPositionAt(lead.p, 0));
+        if (caret >= 0) writer.setSelection(writer.createPositionAt(lead.p, Math.max(word.length, caret - m[0].length + word.length)));
+        done = true;
+      });
+      return done;
+    }
+    function ckToNote(editor) {
+      let done = false;
+      editor.model.change((writer) => {
+        const lead = ckLead(editor);
+        const m = lead ? LEAD_OUT_RE.exec(lead.text) : null;
+        if (!m) return;
+        writer.remove(writer.createRange(writer.createPositionAt(lead.p, 0), writer.createPositionAt(lead.p, m[0].length)));
+        done = true;
+      });
+      return done;
+    }
+    // any other box (the tests' stand-in): the same on its first text
+    function firstText(ed) {
+      const w = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+      for (let t = w.nextNode(); t; t = w.nextNode()) if (!blank(t.nodeValue)) return t;
+      return null;
+    }
+    function domToReply(ed, how) {
+      const sel = window.getSelection();
+      const word = how.literal ? "/reply " : MARK_CH;
+      const t = firstText(ed);
+      if (!t) return false;
+      if (how.token) {
+        if (!sel || !sel.rangeCount || sel.anchorNode !== t || noLead(t.nodeValue.slice(0, sel.anchorOffset)) !== how.token) return false;
+        t.nodeValue = word + t.nodeValue.slice(sel.anchorOffset);
+        sel.collapse(t, word.length);
+        return true;
+      }
+      if (MARKED_RE.test(t.nodeValue)) return false;
+      const m = (how.force ? FORCED_RE : TYPED_RE).exec(t.nodeValue);
+      if (!m) return false;
+      const caret = sel && sel.rangeCount && sel.anchorNode === t ? sel.anchorOffset : -1;
+      t.nodeValue = word + t.nodeValue.slice(m[0].length);
+      if (caret >= 0) sel.collapse(t, Math.min(t.nodeValue.length, Math.max(word.length, caret - m[0].length + word.length)));
+      return true;
+    }
+    function domToNote(ed) {
+      const t = firstText(ed);
+      const m = t ? LEAD_OUT_RE.exec(t.nodeValue) : null;
+      if (!m) return false;
+      // the caret stays where it was: setting a text node's value would put it at the start
+      const sel = window.getSelection();
+      const caret = sel && sel.rangeCount && sel.anchorNode === t ? sel.anchorOffset : -1;
+      t.nodeValue = t.nodeValue.slice(m[0].length);
+      if (caret >= 0) sel.collapse(t, Math.max(0, caret - m[0].length));
+      return true;
+    }
+    const ckOf = (ed) => (ed && ed.ckeditorInstance && ed.ckeditorInstance.model ? ed.ckeditorInstance : null);
+    function toReply(ed, how) {
+      try { const ck = ckOf(ed); return ck ? ckToReply(ck, how || {}) : domToReply(ed, how || {}); }
+      catch (e) { try { console.warn("[zendesk-chat] the message could not be made a reply:", (e && e.message) || e); } catch (_) {} return false; }
+    }
+    function toNote(ed) {
+      try { const ck = ckOf(ed); return ck ? ckToNote(ck) : domToNote(ed); }
+      catch (e) { try { console.warn("[zendesk-chat] the message could not be made a note:", (e && e.message) || e); } catch (_) {} return false; }
+    }
+    /** The ticket a reply written in this chat goes to: this browser's link, or the one the sync's messages in the chat
+     *  name (where another browser sends them); "" when there is none. */
+    function replyTicket(ids) {
+      if (!ids || legacy()) return "";
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      return e ? String(e.ticketId) : ticketInChat(ids.conversationId);
+    }
+    /** Whether this browser sends this chat's messages itself - the link is here and the sync on: only then the mark. */
+    const canMark = (ids) => !!(ids && enabled() && sync.linkOf(ids.projectId, ids.conversationId));
+    let composing = false;   // an input method's word in progress is never touched
+    document.addEventListener("compositionstart", () => { composing = true; }, true);
+    document.addEventListener("compositionend", () => { composing = false; }, true);
+    /** "/reply" finished at the start of the message being written: the mark in its place, at once. */
+    function convertTyped() {
+      const ids = chatIds();
+      const c = ids && !composing && canMark(ids) ? composer() : null;
+      if (c && c.focused && toReply(c.ed, {})) updateMode();
+    }
+    /** A reply about to be sent from this browser, kept a while: the sync still knows it should the mark be lost. */
+    function noteIntent(ids, c) {
+      const msg = sync.parseChatMessage(String(c.ed.innerText || c.ed.textContent || ""));
+      if (!msg.isPublic || !msg.body) return;
+      set(INTENT_KEY, intents().slice(-19).concat([{ key: ids.projectId + ":" + ids.conversationId, text: sync.normText(msg.body), at: Date.now() }]));
+    }
+    // sent before that (Enter right after the word): the word goes as it is sent
+    window.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter" || ev.isComposing || !inBox(ev)) return;
+      const ids = chatIds();
+      const c = ids && canMark(ids) ? composer() : null;
+      if (!c) return;
+      toReply(c.ed, { force: true });
+      // Enter sends; Shift+Enter starts a new line
+      if (!ev.shiftKey) noteIntent(ids, c);
+    }, true);
+    // sent with the box's send button: the same
+    document.addEventListener("pointerdown", (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest('button[data-cy*="send" i], button[aria-label*="send" i]') : null;
+      const ids = btn ? chatIds() : null;
+      const c = ids && canMark(ids) ? composer() : null;
+      if (!c || !c.box.contains(btn)) return;
+      toReply(c.ed, { force: true });
+      noteIntent(ids, c);
+    }, true);
+    /** A reply made a note again while still written: nothing of this chat is kept as a reply any more - a note with
+     *  the same words must never go to the customer. */
+    function forgetIntents(ids) {
+      const key = ids.projectId + ":" + ids.conversationId;
+      if (intents().some((x) => x.key === key)) set(INTENT_KEY, intents().filter((x) => x.key !== key));
+    }
+
+    // ---- /reply in the message box's "/" list (v1.82.0) ----
+    // Thomas: "when typing /reply you should get a preview before the word is fully typed so you can click on it". From
+    // the "/" on, at the start of a message in a chat with a ticket, the list offers /reply and says what it will do;
+    // picking it - a click, Enter or Tab - makes the message a reply.
+    let replyItem = null, replyItemSig = "";
+    if (typeof net.addMacro === "function") net.addMacro((ctx) => {
+      const ids = chatIds();
+      const ticketId = ctx && ctx.atStart && ctx.el ? replyTicket(ids) : "";
+      if (!ticketId || MARKED_RE.test(String(ctx.el.innerText || ctx.el.textContent || ""))) return null;
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      const who = requesterOf(ticketId);
+      const to = who && who.name ? who.name + (who.copies ? " and " + who.copies + " in copy" : "") : "the customer";
+      const paragraphs = ["The message goes to Zendesk #" + ticketId + " as a public reply, emailed to " + to + "."];
+      if (e && !enabled()) paragraphs.push("The Zendesk sync is off in this browser: nothing is sent from here.");
+      else if (e && e.status === "paused") paragraphs.push("Zendesk #" + ticketId + " is not open: the reply waits until it is.");
+      paragraphs.push("Without /reply, a message goes to the ticket as an internal note.");
+      const literal = !canMark(ids);
+      const sig = [ticketId, literal ? "word" : "mark"].concat(paragraphs).join("|");
+      if (sig !== replyItemSig) {
+        replyItemSig = sig;
+        replyItem = {
+          name: "reply", title: "Reply to the customer · Zendesk #" + ticketId, paragraphs, kind: "reply", strict: true,
+          // picked: the "/word" typed so far becomes the mark (or the word, where this browser does not send); the box
+          // holding the word alone (Enter) the same
+          apply: (el, token) => {
+            if ((token && toReply(el, { token, literal })) || toReply(el, { force: true, literal })) updateMode();
+          },
+        };
+      }
+      return replyItem;
+    });
 
     // ---- a /reply in the chat: a mark saying what became of it, in place of the word (v1.81.0) ----
     // Thomas: "instead of the /reply be there after used the macro, can you just show a better marking that message
@@ -18477,7 +18782,7 @@
       (document.head || document.documentElement).appendChild(st);
     }
     // when it reached the ticket, with the date when that was not today - the section's own formats, as it runs on its own
-    const clockOf = (t) => (new Date(t).toDateString() === new Date().toDateString() ? "" : new Date(t).toLocaleDateString() + " ") + hhmm(t);
+    const clockOf = (t) => (sync.dayOf(t) === sync.dayOf(Date.now()) ? "" : sync.dayOf(t) + " ") + hhmm(t);
     /** The chat's messages that start with /reply, as shown: their commentId, text box and first paragraph. */
     function replyMessages() {
       const out = [];
@@ -18675,6 +18980,7 @@
         plantFieldId: rlZdGetPlantFieldId, pusher: rlCnPusher,
         zdFile: zendeskAttachmentBlob, rlUpload: gmRocketlaneUploadChatFile,
         rlFile: gmRocketlaneDownloadAttachmentBlob, zdUpload: zendeskUploadFile,
+        addMacro: (f) => RL_MC_EXTRA.push(f),
       });
     } catch (e) { console.warn("[Rocketlane improvements] Zendesk chat sync failed to start", e); }
   });

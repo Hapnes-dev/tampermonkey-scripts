@@ -6,6 +6,8 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+// the sync writes Norwegian time whatever the computer's zone (v1.82.0): run these in another zone, so that shows
+process.env.TZ = 'UTC';
 
 const src = fs.readFileSync(path.join(__dirname, '..', 'rocketlane-younium-status.user.js'), 'utf8');
 const a = src.indexOf('// @@ZDSYNC-ENGINE-START'), b = src.indexOf('// @@ZDSYNC-ENGINE-END');
@@ -288,17 +290,23 @@ test('a long history comes in parts, each message shortened past 3 000 character
   assert.deepStrictEqual(w.sync.historyHtml([], users, '1'), []);
 });
 
-test('an email reply tidied for the chat: no entities, no runs of blank lines, no quoted email, a short signature', () => {
+test('an email reply tidied for the chat: no entities, no runs of blank lines, no quoted email, no signature', () => {
   const w = world();
   const email = 'Hei,  \n \n&nbsp;\n \nFikk dere sett på dette?&nbsp;\n&nbsp;\n \n \nMed vennlig hilsen\n&nbsp;\nOla Kunde\nProsjektleder\n' +
     'Mobil: +47 900 00 000\nE-post: ola@example.no\n&nbsp;\nKunde AS\nGate 1, 0001 Oslo\n\nFra: Ola Kunde <ola@example.no>\nSendt: mandag 1. september 2026 10:00\n' +
     'Til: Support <support@example.com>\nEmne: Sak\n\nGammel tekst';
-  assert.strictEqual(w.sync.tidyText(email), 'Hei,\n\nFikk dere sett på dette?\n\nMed vennlig hilsen\nOla Kunde');
+  assert.strictEqual(w.sync.tidyText(email), 'Hei,\n\nFikk dere sett på dette?', 'the signature goes, its sign-off too (v1.82.0)');
   assert.strictEqual(w.sync.tidyText('Svar her.\n\nFra: Ola <ola@example.no>\nSendt: 1. sep\nTil: oss\n\nGammelt'), 'Svar her.', 'a quoted email without a sign-off');
   assert.strictEqual(w.sync.tidyText('Takk!\n\nOn Mon, 1 Sep 2026 at 10:00, Ola <ola@example.no> wrote:\n> gammelt'), 'Takk!');
   assert.strictEqual(w.sync.tidyText('Ok\n-----Original Message-----\nFrom: x'), 'Ok');
-  assert.strictEqual(w.sync.tidyText('Hei\n\nBest regards,\nThomas Kvalvåg\nIWMAC'), 'Hei\n\nBest regards,\nThomas Kvalvåg');
-  assert.strictEqual(w.sync.tidyText('Hei\nMvh\n+47 900 00 000'), 'Hei\nMvh', 'no phone number taken for a name');
+  assert.strictEqual(w.sync.tidyText('Hei\n\nBest regards,\nThomas Kvalvåg\nIWMAC'), 'Hei');
+  assert.strictEqual(w.sync.tidyText('Hei\nMvh\n+47 900 00 000'), 'Hei');
+  // Thomas's case (#210837): "Med vennlig hilsen / Markus Hassel" came into the chat under the message
+  assert.strictEqual(w.sync.tidyText('Hei\n\nHar dere status?\n\nMed vennlig hilsen\nMarkus Hassel'), 'Hei\n\nHar dere status?');
+  assert.strictEqual(w.sync.tidyText('Takk for svar.\n\nMvh. Markus Hassel\nFirma AS\nTlf 900 00 000'), 'Takk for svar.', 'a sign-off with the name after it');
+  assert.strictEqual(w.sync.tidyText('Takk\nHilsen Kari'), 'Takk');
+  assert.strictEqual(w.sync.tidyText('Hilsen fra oss alle.\nVi kommer i morgen.'), 'Hilsen fra oss alle.\nVi kommer i morgen.', 'a sentence that starts with a sign-off word stays');
+  assert.strictEqual(w.sync.tidyText('Brage kommer i morgen.'), 'Brage kommer i morgen.');
   assert.strictEqual(w.sync.tidyText('A &amp; B &lt;3 &quot;x&quot;'), 'A & B <3 "x"');
   assert.strictEqual(w.sync.tidyText('Fra: lageret\nNoe annet'), 'Fra: lageret\nNoe annet', 'a line that only looks like a header');
   // in the chat: a paragraph per line, one empty paragraph for a blank line
@@ -656,4 +664,78 @@ test('a message another browser sent is recorded when this one finds it on the t
   assert.strictEqual(r.forwarded, 0, 'not sent twice');
   const s = w.sync.wentAs(w.sync.linkOf(1481787, 12896932), m, null);
   assert.strictEqual(s.commentId, '9201', 'recorded as the comment it is');
+});
+
+// v1.82.0 - Thomas: "It also displays /reply when I disable the Tampermonkey script, which it shouldn't." The message box
+// writes the reply mark (U+2063, invisible) in place of the word, and the sync reads it as the word.
+test('the reply mark: a message that starts with it is a reply, and the mark never goes to the ticket', () => {
+  const { sync } = world();
+  const M = '\u2063';
+  assert.deepStrictEqual(sync.parseChatMessage(M + 'Hei Kari'), { isPublic: true, body: 'Hei Kari' });
+  assert.deepStrictEqual(sync.parseChatMessage(M + '\nHei'), { isPublic: true, body: 'Hei' }, 'the mark alone on the first line');
+  assert.deepStrictEqual(sync.parseChatMessage(' ' + M + '/reply Hei'), { isPublic: true, body: 'Hei' });
+  assert.deepStrictEqual(sync.parseChatMessage('Hei ' + M + 'der'), { isPublic: false, body: 'Hei der' }, 'in the middle: a note, the mark taken out');
+  assert.deepStrictEqual(sync.parseChatMessage('/reply Hei'), { isPublic: true, body: 'Hei' }, 'the word as before');
+  assert.strictEqual(sync.replyMark, M);
+  assert.strictEqual(sync.composeModeOf(M + 'Hei').mode, 'reply');
+  assert.strictEqual(sync.composeModeOf(M).mode, 'reply');
+  assert.deepStrictEqual(sync.replyLead(M + 'Hei'), { whole: false, length: 1 });
+  assert.deepStrictEqual(sync.replyLead(M), { whole: true, length: 1 }, 'the mark alone in its paragraph: the paragraph hidden');
+  assert.deepStrictEqual(sync.replyLead('\u200B' + M + ' Hei'), { whole: false, length: 3 });
+  assert.strictEqual(sync.replyLead('Hei' + M), null);
+});
+
+test('a message with the reply mark goes to the ticket as a public reply, without the mark, and its own mark says so', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const m = w.say(RUNNER, '<p>\u2063Hei Kari,</p><p>tekniker kommer i dag.</p>', 'Thomas');
+  const r = await w.sync.runOnce();
+  assert.strictEqual(r.forwarded, 1);
+  assert.deepStrictEqual(w.posted.zd, [{ ticketId: '53123', body: 'Hei Kari,\ntekniker kommer i dag.', isPublic: true }]);
+  const s = w.sync.wentAs(w.sync.linkOf(1481787, 12896932), m, null);
+  assert.strictEqual(s.isPublic, true);
+  assert.strictEqual(w.sync.sentAs(m, w.zdComments.get(53123)).isPublic, true, 'found on the ticket by its text');
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'once, and nothing back');
+});
+
+test('a marked reply an older sync sent as a note still goes to the customer, once', async () => {
+  const w = world();
+  await w.sync.link(1481787, 12896932, 53123);
+  const m = w.say(RUNNER, '<p>\u2063Svar til kunden</p>', 'Thomas');
+  // a browser on 1.81 does not know the mark: it sent the message as an internal note, the mark in its text
+  w.zdComments.get(53123).push({ id: 9301, author_id: ZD_RUNNER, public: false, plain_body: '\u2063Svar til kunden', created_at: new Date(w.tick()).toISOString(), attachments: [], via: { channel: 'api' } });
+  const r = await w.sync.runOnce();
+  assert.deepStrictEqual([r.mirrored, r.forwarded], [0, 1], 'the note is no message for the chat; the reply goes');
+  assert.deepStrictEqual(w.posted.zd, [{ ticketId: '53123', body: 'Svar til kunden', isPublic: true }]);
+  assert.strictEqual(w.sync.sentAs(m, w.zdComments.get(53123)).isPublic, true, 'the mark tells of the reply, not the note');
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 });
+});
+
+test('times are Norwegian, 24-hour, whatever the computer\'s own zone', () => {
+  const { sync } = world();
+  assert.strictEqual(process.env.TZ, 'UTC');
+  assert.strictEqual(sync.when('2026-10-27T08:00:00Z'), '27 Oct 2026 09:00', 'winter time, UTC+1');
+  assert.strictEqual(sync.when('2026-07-01T08:00:00Z'), '1 Jul 2026 10:00', 'summer time, UTC+2');
+  assert.strictEqual(sync.clockOf('2026-11-12T23:30:00Z'), '00:30', 'past midnight in Norway');
+  assert.strictEqual(sync.dayOf('2026-11-12T23:30:00Z'), '13 Nov 2026');
+  assert.strictEqual(sync.clockOf(Date.parse('2026-11-13T12:21:00Z')), '13:21', 'no AM or PM');
+  assert.strictEqual(sync.when(''), '');
+});
+
+test('a reply whose mark Rocketlane dropped still goes as a reply, from the browser that sent it, once', async () => {
+  const w = world();
+  const asked = [];
+  let kept = ['Svar til kunden'];
+  w.deps.intents = { take: (key, text) => { asked.push([key, text]); const i = kept.indexOf(text); if (i < 0) return false; kept.splice(i, 1); return true; } };
+  await w.sync.link(1481787, 12896932, 53123);
+  w.say(RUNNER, '<p>Svar til kunden</p>', 'Thomas');                  // stored without the mark
+  w.say(2, '<p>Svar til kunden</p>', 'Andreas', 'Sandnes');            // the same words from a colleague: a note
+  w.say(RUNNER, '<p>Bare et notat</p>', 'Thomas');                     // no reply kept for it: a note
+  await w.sync.runOnce();
+  assert.deepStrictEqual(w.posted.zd, [
+    { ticketId: '53123', body: 'Svar til kunden', isPublic: true },
+    { ticketId: '53123', body: 'Andreas Sandnes (Rocketlane):\nSvar til kunden', isPublic: false },
+    { ticketId: '53123', body: 'Bare et notat', isPublic: false },
+  ]);
+  assert.deepStrictEqual(asked, [['1481787:12896932', 'Svar til kunden'], ['1481787:12896932', 'Bare et notat']], 'asked only for the runner\'s own notes');
 });

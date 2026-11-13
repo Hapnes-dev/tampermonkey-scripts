@@ -16,6 +16,10 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'rocketlane-younium-statu
 const from = src.indexOf('  // @@ZDSYNC-ENGINE-START'), to = src.indexOf('  // @@ZDSYNC-END');
 assert.ok(from > 0 && to > from, 'the sync is in the userscript, between its markers');
 const SYNC = src.slice(from, to);
+// the "/" list of the message box (section 5d++), which the sync adds /reply to (v1.82.0)
+const mFrom = src.indexOf('  // @@rlChatMacroHelpers:start'), mTo = src.indexOf('\n  // ════', mFrom);
+assert.ok(mFrom > 0 && mTo > mFrom, 'the chat macros are in the userscript');
+const MACROS = src.slice(mFrom, mTo);
 // the Chat Bridge's hand-over (its 1.19.0), to see its links come over
 const bridge = fs.readFileSync(path.join(__dirname, '..', '..', 'rocketlane-chat-bridge', 'rocketlane-chat-bridge.user.js'), 'utf8').replace(/\r\n/g, '\n');
 const HANDOVER = bridge.slice(bridge.indexOf('  // @@ZDSYNC-HANDOVER-START'), bridge.indexOf('  // @@ZDSYNC-HANDOVER-END'));
@@ -34,8 +38,9 @@ const NET = `{
   rlUpload: (projectId, blob, name) => window.__rlUpload(projectId, blob, name),
   rlFile: (id) => window.__rlFile(id),
   zdUpload: (blob, name) => window.__zdUpload(blob, name),
+  addMacro: (f) => RL_MC_EXTRA.push(f),
 }`;
-const START = '(function(){' + SYNC + '\nstartZendeskChatSync(' + NET + ');})();';
+const START = '(function(){ function rlWhenDomReady(fn) { fn(); }\n' + MACROS + '\n' + SYNC + '\nstartZendeskChatSync(' + NET + ');})();';
 // a mirrored message's first line without its mark (the link to the Zendesk comment, since 1.80.0)
 const unmark = (h) => String(h).replace(/<a href="[^"]*#zd-comment-\d+"[^>]*>(Zendesk #\d+)<\/a>/g, '$1');
 
@@ -230,10 +235,13 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
       // D: a reply written before the chat was linked, which the sync never sends (v1.81.1)
       const d = { commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>/reply Gammelt svar.</p>', createdAt: Date.now() - 3600000, user: { userId: 1, firstName: 'Thomas' } };
       W.chat.unshift(d);
+      // E: a reply the message box wrote with the reply mark, no "/reply" in it (v1.82.0)
+      const e = { commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>\u2063Svar uten ordet.</p>', createdAt: Date.now() + 1, user: { userId: 1, firstName: 'Thomas' } };
+      W.chat.push(e);
       const board = document.createElement('div');
       board.id = 'reply-marks';
       board.style.cssText = 'position:fixed;left:40px;top:40px;width:640px;padding:12px 16px;background:#fff;border:1px solid #e0e0e0;border-radius:8px;font:14px/1.5 sans-serif';
-      for (const m of [a, b, c, d]) {
+      for (const m of [a, b, c, d, e]) {
         const w = document.createElement('div');
         w.setAttribute('data-spotlight', String(m.commentId));
         w.style.margin = '0 0 12px';
@@ -241,7 +249,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
         board.appendChild(w);
       }
       document.body.appendChild(board);
-      return { a: String(a.commentId), b: String(b.commentId), c: String(c.commentId), d: String(d.commentId) };
+      return { a: String(a.commentId), b: String(b.commentId), c: String(c.commentId), d: String(d.commentId), e: String(e.commentId) };
     });
     const markOf = (id) => page.evaluate((id) => {
       const box = document.querySelector('[data-spotlight="' + id + '"] .ck-content');
@@ -255,8 +263,8 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     }, [id, st], { timeout: 25000 });
     await stateIs(ids.a, 'sent');
     const ma = await markOf(ids.a);
-    // the time as this browser writes it ("10:14", "10.14" or "10:14 AM")
-    assert.match(ma.mark, /^✓ Sent to the customer · Zendesk #53123 · \d{1,2}[:.]\d\d(?:\s?[AP]M)?$/, 'sent, read from the ticket: ' + JSON.stringify(ma));
+    // Norwegian time, 24-hour (v1.82.0)
+    assert.match(ma.mark, /^✓ Sent to the customer · Zendesk #53123 · \d\d:\d\d$/, 'sent, read from the ticket: ' + JSON.stringify(ma));
     assert.match(ma.href, /\/agent\/tickets\/53123#zd-comment-\d+$/, 'the ticket, at the reply');
     assert.strictEqual(ma.shown, 'Hei Kari, vi sender en tekniker.', 'the word hidden, the text as written');
     await stateIs(ids.b, 'sending');
@@ -265,12 +273,17 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.deepStrictEqual(await markOf(ids.c), { state: null, mark: null, href: null, shown: 'Sjekk kompressor 2.', marks: 0 }, 'a note has no mark');
     await stateIs(ids.d, 'before');
     assert.strictEqual((await markOf(ids.d)).mark, '↩ Not sent · written before this chat was linked to Zendesk #53123', 'known from the link, never guessed');
+    await stateIs(ids.e, 'sending');
+    assert.strictEqual((await markOf(ids.e)).mark, '↩ Reply to the customer · Zendesk #53123 · being sent…', 'the reply mark reads as the word');
+    assert.strictEqual((await markOf(ids.e)).shown, 'Svar uten ordet.');
     await page.screenshot({ path: path.join(OUT, '2c-reply-sending.png') });
     // the sync sends B; its mark follows by itself
     await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
-    await page.waitForFunction(() => window.__world.puts.length === 3, null, { timeout: 15000 });
-    assert.deepStrictEqual((await page.evaluate(() => window.__world.puts))[2], { body: 'Hei\nKommer i morgen.', public: true });
+    await page.waitForFunction(() => window.__world.puts.length === 4, null, { timeout: 15000 });
+    assert.deepStrictEqual((await page.evaluate(() => window.__world.puts)).slice(2), [{ body: 'Hei\nKommer i morgen.', public: true }, { body: 'Svar uten ordet.', public: true }],
+      'the marked one as a reply too, without the mark');
     await stateIs(ids.b, 'sent');
+    await stateIs(ids.e, 'sent');
     assert.strictEqual((await markOf(ids.a)).marks, 1, 'one mark each, however often it is painted');
     assert.strictEqual(await page.evaluate(() => window.__world.chat.find((c) => c.content.startsWith('<p>/reply&nbsp;')).content), '<p>/reply&nbsp;</p><p>Hei</p><p>Kommer i morgen.</p>', 'the message itself unchanged');
     await page.screenshot({ path: path.join(OUT, '2d-reply-sent.png') });
@@ -286,7 +299,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click().catch(() => {});
     await page.waitForTimeout(1500);
     w = await page.evaluate(() => window.__world);
-    assert.deepStrictEqual([w.posts.length, w.puts.length], [2, 3], 'nothing twice, nothing echoed (the third: the marks step\'s reply)');
+    assert.deepStrictEqual([w.posts.length, w.puts.length], [2, 4], 'nothing twice, nothing echoed (the third and fourth: the marks step\'s replies)');
     // the ticket's earlier messages: only on request, from the panel
     await page.locator('#rl-zendesk-chat-sync >> text="Post earlier messages"').click();
     await page.waitForFunction(() => window.__world.posts.some((p) => /earlier messages/.test(p.content)), null, { timeout: 15000 });
@@ -370,15 +383,20 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
       box.style.cssText = 'position:fixed;left:40px;right:40px;bottom:20px;height:110px;border:1px solid #e0e0e0;border-radius:8px;background:#fff';
       box.innerHTML = '<span data-cy="messages-comment-rte"><div class="ck-editor__editable" contenteditable="true" style="min-height:50px;padding:10px;outline:none"><p></p></div></span>';
       document.body.appendChild(box);
+      // as Rocketlane's box carries its editor: the "/" list opens only in such a box
+      box.querySelector('.ck-editor__editable').ckeditorInstance = {};
     });
-    const mode = () => page.evaluate(() => {
+    // the bar's words, its ✕ aside
+    const barText = 'const t = [...b.childNodes].filter((n) => n.nodeType === 3).map((n) => n.nodeValue).join("");';
+    const mode = () => page.evaluate((barText) => {
       const r = document.querySelector('#rl-zendesk-chat-sync').shadowRoot, b = r.querySelector('.mode'), f = r.querySelector('.frame');
-      return { bar: b.hidden ? null : b.className.replace('mode ', '') + ': ' + b.textContent, frame: !f.hidden };
-    });
-    const barIs = (re) => page.waitForFunction((src) => {
+      return { bar: b.hidden ? null : b.className.replace('mode ', '') + ': ' + new Function('b', barText + ' return t;')(b), frame: !f.hidden };
+    }, barText);
+    const barIs = (re) => page.waitForFunction(([src, barText]) => {
       const b = document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.mode');
-      return !b.hidden && new RegExp(src).test(b.className.replace('mode ', '') + ': ' + b.textContent);
-    }, re.source, { timeout: 5000 });
+      return !b.hidden && new RegExp(src).test(b.className.replace('mode ', '') + ': ' + new Function('b', barText + ' return t;')(b));
+    }, [re.source, barText], { timeout: 5000 });
+    const boxText = () => page.evaluate(() => document.querySelector('#composer .ck-editor__editable').textContent);
     await page.locator('#composer .ck-editor__editable').click();
     await barIs(/^note: /);
     assert.deepStrictEqual(await mode(), { bar: 'note: Internal note to Zendesk #53123 · start with /reply to answer the customer', frame: false });
@@ -388,6 +406,9 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.keyboard.type('y Hei Kari');
     await barIs(/Kari Kunde/);
     assert.deepStrictEqual(await mode(), { bar: 'reply: ↩ Reply to the customer · Zendesk #53123 · emailed to Kari Kunde and 2 in copy', frame: true });
+    // the word itself gone from the box: the reply mark in its place (v1.82.0)
+    await page.waitForFunction(() => document.querySelector('#composer .ck-editor__editable').textContent === '\u2063Hei Kari');
+    assert.strictEqual(await boxText(), '\u2063Hei Kari', 'no "/reply" in the message');
     const [fr, bx] = await page.evaluate(() => [document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.frame').getBoundingClientRect().toJSON(),
       document.getElementById('composer').getBoundingClientRect().toJSON()]);
     assert.ok(fr.left < bx.left && fr.right > bx.right && fr.top < bx.top && fr.bottom > bx.bottom, 'the frame goes round the box');
@@ -404,6 +425,54 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.keyboard.press('Control+A');
     await page.keyboard.press('Backspace');
     await barIs(/^note: /);
+    // "/" lists /reply first, from the first letter, with what it will do; picked, the message is a reply - the mark,
+    // no word - and the ✕ on the bar makes it a note again (v1.82.0)
+    await page.keyboard.type('/re');
+    const popup = page.locator('#rlChatMacroPopup');
+    await popup.waitFor({ timeout: 5000 });
+    assert.deepStrictEqual(await popup.locator('.rlMcItem').allTextContents(), ['/replyReply to the customer · Zendesk #53123', '/Request_FeedbackAsk for a rating of the delivery']);
+    assert.strictEqual(await popup.locator('.rlMcHead').textContent(), 'Commands and macros');
+    assert.match(await popup.locator('.rlMcPreview').textContent(), /^The message goes to Zendesk #53123 as a public reply, emailed to Kari Kunde and 2 in copy\./);
+    await page.screenshot({ path: path.join(OUT, '5c-reply-in-list.png') });
+    await popup.locator('.rlMcItem').first().click();
+    await barIs(/^reply: /);
+    assert.strictEqual(await boxText(), '\u2063', 'the "/re" typed so far became the mark');
+    assert.strictEqual(await popup.count(), 0, 'the list closed');
+    await page.keyboard.type('Hei');
+    assert.strictEqual(await boxText(), '\u2063Hei');
+    await page.locator('#rl-zendesk-chat-sync >> .mode .x').click();
+    await barIs(/^note: /);
+    assert.strictEqual(await boxText(), 'Hei', '✕: a note again');
+    // not offered further into a message
+    await page.keyboard.type(' /re');
+    await page.waitForTimeout(300);
+    assert.strictEqual(await popup.locator('.rlMcItem').first().textContent().catch(() => ''), '/Request_FeedbackAsk for a rating of the delivery');
+    await page.keyboard.press('Escape');
+    // sent with Enter right after the word, before it was finished: the word goes as it is sent
+    await page.evaluate(() => {
+      const ed = document.querySelector('#composer .ck-editor__editable');
+      ed.innerHTML = '<p>/reply</p><p>Hei Kari</p>';
+      const t = ed.lastChild.firstChild, sel = getSelection();
+      sel.collapse(t, t.nodeValue.length);
+    });
+    await page.waitForTimeout(200);
+    assert.strictEqual(await page.evaluate(() => document.querySelector('#composer .ck-editor__editable').firstChild.textContent), '/reply', 'not before the send');
+    await page.keyboard.press('Enter');
+    assert.strictEqual(await page.evaluate(() => document.querySelector('#composer .ck-editor__editable').firstChild.textContent), '\u2063', 'at the send');
+    // kept a while as a reply this browser sent, should Rocketlane drop the mark from the message
+    assert.deepStrictEqual(await page.evaluate(() => GM_getValue('zdsync_reply_intents_v1', []).map((x) => [x.key, x.text])), [['1481787:12896932', 'Hei Kari']]);
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await barIs(/^note: /);
+    assert.strictEqual(await page.evaluate(() => GM_getValue('zdsync_reply_intents_v1', []).length), 1, 'emptied, as by a send: still kept');
+    // a reply made a note again while still written: nothing of this chat kept as a reply - a note never goes out
+    await page.keyboard.type('/reply Takk');
+    await barIs(/^reply: /);
+    await page.locator('#rl-zendesk-chat-sync >> .mode .x').click();
+    await barIs(/^note: /);
+    assert.deepStrictEqual(await page.evaluate(() => GM_getValue('zdsync_reply_intents_v1', [])), []);
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
     await page.mouse.click(5, 5);
     await page.waitForTimeout(300);
     assert.deepStrictEqual(await mode(), { bar: null, frame: false });

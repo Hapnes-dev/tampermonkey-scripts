@@ -13,7 +13,7 @@ One Tampermonkey userscript with eight independent improvements for `kiona.rocke
 10. **Project notes → Personal tasks** (v1.18.0) — every open project you own or are a member of that has a **Project notes** value gets one entry in the home page's Personal tasks widget (`<project>: <first line>`), renamed or removed as the note or the project changes. Runs a few seconds after load and every few minutes. Completed projects are never synced.
 11. **Project note panel** (v1.19.0) — a **Project note** card on the project plan, directly above the Categories overview, that edits the project's own **Project notes** field — the same column the Projects list view shows. It loads the current note, saves 800 ms after you stop typing (blur and **Ctrl+Enter** save at once) and shows *Saving… / Saved* beside the box. Because Rocketlane offers no version check, every save re-reads the field first: if someone else changed it in the meantime nothing is overwritten and you are offered **Load server** or **Overwrite**; after the write the field is read back and compared, and a failed save keeps your text with a **Retry** button. A verified save immediately updates that project's entry in the Personal tasks widget.
 8. **Home panels** — **v1.15.0:** *Project Owner* lists every open project in the tenant grouped by owner (an owner's count is their real count), *In progress* lists every project with status In progress grouped by owner (you included); each panel has its own pin and pins your own group first by default; **v1.15.1:** a **Delivery Cooling** toggle in both headers shows only the team's owners (Thomas Kvalvåg Håpnes, Andreas Sandnes, ivarhaga haga, Matthias Criel, Svein Olav Wahlberg — remembered), plus **Collapse all** / **Expand all** per panel (single groups still toggle by clicking their header); **v1.15.2:** a **search box** in both headers filters both panels by plant name, id, owner or status (every word must match; groups open while searching); **Ctrl+F** on the home page focuses it, **Esc** clears it; data is one server-filtered `lightV1` fetch (`status isNot Completed`, ~400 rows, two pages). Earlier: (v1.12.1) — on `https://kiona.rocketlane.com/` (`pathname === "/"`), PPT-style dark panel of **In progress** projects mounted **under the native Overdue** task section (Incomplete widgets stay). Cards show %, status/due pills, progress bar; owner groups with pin + Due/Progress sort. Data from `POST /projects/lightV1` filtered to Status=In progress (owner/member; exclude `[Tracker] Workload Sync`). (the `+ RL Project` button was removed in v1.15.3). **v1.14.2:** the result is cached in Tampermonkey storage, so the panels paint instantly from the last result and, since v1.14.4, refresh in the background on every visit (status line shows *updated HH:MM* or *refreshing…*); the fetch starts at document-start and pages lightV1 in one parallel round; **Refresh** forces a new fetch. **v1.14.3:** lightV1 is filtered server-side to the projects you own or are a member of (the same `filter` body the Rocketlane Projects grid sends), so one ~1.4 MB page replaces the five 3.7 MB pages of the full scan; the panels also wait for the Overdue card (up to 10 s) instead of mounting at the top and jumping down once it renders. **v1.14.6:** cards show the project **start date** (Starts / Started) instead of the overdue pill — the due date moved to the card tooltip — and the status chips are quiet outlined pills with a coloured dot rather than tinted buttons. **v1.14.21:** click a card's status chip to **change the project status** from the overview — the menu lists the tenant's Status options (Proposed, In Planning, To be Staffed, In progress, On Hold, Blocked, Completed, Cancelled), the pick is written with `PUT /projects/{id}` on the Status field, the card updates at once and the lists revalidate a moment later (a Completed project drops out).
-12. **Zendesk ⇄ General Chat** (v1.73.0; in *Rocketlane Chat Bridge* 1.16.0–1.18.0 before) — a project's General Chat linked to its ticket in the team's Zendesk queue: the ticket's messages come into the chat as private messages, and what is written in the chat goes to the ticket as an internal note, or as a public reply to the customer when it starts with `/reply`. The ticket's images and files come along as Rocketlane attachments (v1.74.0), and files attached in the chat go to the ticket (v1.75.0). Off until turned on in the browser that runs it. See section 7 below.
+12. **Zendesk ⇄ General Chat** (v1.73.0; in *Rocketlane Chat Bridge* 1.16.0–1.18.0 before) — a project's General Chat linked to its ticket in the team's Zendesk queue: the ticket's messages come into the chat as private messages, and what is written in the chat goes to the ticket as an internal note, or as a public reply to the customer when it starts with `/reply`, which the "/" list offers and which never shows in the chat (v1.82.0). The ticket's images and files come along as Rocketlane attachments (v1.74.0), and files attached in the chat go to the ticket (v1.75.0). Off until turned on in the browser that runs it. See section 7 below.
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 
@@ -348,8 +348,9 @@ v1.73.0.
   message that has any.
 - **Tidied text.** Email replies are cleaned for the chat. Entities such as `&nbsp;` are decoded, and runs of blank
   lines become one. A quoted earlier email ("Fra: …" / "Sendt: …", "-----Original Message-----", "On … wrote:") is
-  cut, and a signature is cut to its sign-off and the name under it. Each line is a paragraph, as Rocketlane writes
-  its own messages.
+  cut. The signature is cut too, its sign-off included ("Med vennlig hilsen", "Mvh Markus Hassel"): the first line
+  already names who wrote it, as messages written in Rocketlane have no signature either (v1.82.0; before, the sign-off
+  and the name under it stayed). Each line is a paragraph, as Rocketlane writes its own messages.
 - **From the chat to Zendesk.** Every message written in the chat goes to the ticket as an internal note. One that
   starts with **/reply** goes as a public reply, emailed to the customer. Messages are written with your Zendesk
   session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
@@ -364,6 +365,21 @@ v1.73.0.
   - The bar turns red and says nothing will be sent when the sync is off in this browser or the ticket is not open.
   - For someone whose browser does not run the sync, the reply bar and the warning show when the chat holds the
     sync's messages.
+- **/reply in the "/" list** (v1.82.0). Typing "/" at the start of a message in a chat with a ticket lists `/reply`
+  first, before the macros, from the first letter on ("/r", "/re", …). Its preview says what it will do: "The message
+  goes to Zendesk #… as a public reply, emailed to <requester> and N in copy." A click, Enter or Tab picks it.
+- **No "/reply" in the chat** (v1.82.0). Before, the word stayed in the message, and with the script off (for
+  colleagues without it, for the partner) the chat showed "/reply". Now, in a browser that sends the chat's messages
+  itself (the chat is linked there and the sync is on), the word never stays in the box. Typed with a space or ":"
+  after it, or picked in the list, it becomes an invisible reply mark at the start of the message. The orange frame
+  and bar show that the message is a reply. **✕** on the bar, or Backspace at the start, makes it a note again.
+  - The sync reads the mark as it reads the word. The mark never goes to the ticket.
+  - A browser that does not send the chat's messages keeps the word as before. The browser that sends them might run
+    an older version, which would send a marked message as an internal note.
+  - Should Rocketlane ever drop the mark from a stored message, the browser that sent it still sends it as a reply.
+    It keeps the message for ten minutes after Enter or the send button. Turning the reply back into a note while it
+    is still being written drops what was kept, so a note never goes to the customer.
+  - A reply that an older sync sent as an internal note still goes out as a reply, once.
 - **A sent reply** (v1.81.0). In the chat, a message written with `/reply` shows a mark in place of the word:
   - "✓ Sent to the customer · Zendesk #… · time" once the ticket has the reply (green). The ticket number is a link
     to the reply on the ticket.
@@ -375,8 +391,10 @@ v1.73.0.
     finds the reply by its text. After ten minutes with no such reply found, the mark says "not confirmed" (grey), not
     "not sent": it may still have gone out with other words. In a browser without a Zendesk session it only names the
     ticket.
-  - Only how the message is shown changes. Its text keeps the word, for colleagues and for the sync, which knows its
-    own messages on the ticket by their text.
+  - Only how the message is shown changes; a sent message is never rewritten. The mark works the same for a message
+    written with the reply mark (v1.82.0).
+- **Times** (v1.82.0). Every time the sync shows (the button, the panel, the marks, the earlier messages) is Norwegian
+  time, 24-hour ("09:21"), whatever the computer's own settings.
 - **Files from the chat** (v1.75.0). Files attached to a chat message go to the ticket with it. They are uploaded to
   Zendesk first and then carried by the internal note, or by the reply to the customer after `/reply`. A message with
   only files says their names. A file over 25 MB, or one that could not be read or that Zendesk refused, is named
