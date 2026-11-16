@@ -90,15 +90,15 @@ test('the queue: active tickets only, the project\'s best match first - its Plan
   const q = await w.sync.queue();
   assert.deepStrictEqual(q.map((t) => t.id), [53123, 53124, 53125], 'solved is not active');
   assert.deepStrictEqual(w.sync.rankTickets(q, '10263 - Extra Laksvollen: New store', w.PLANT).map((r) => [r.ticket.id, r.score]),
-    [[53124, 25], [53123, 14], [53125, 2]], 'Plant ID, then the number in the subject, then in the text, then a word of the name');
+    [[53124, 25], [53123, 16], [53125, 6]], 'Plant ID, then the number in the subject, then the store\'s own name - not the chain or "New store" (v1.83.0)');
   assert.deepStrictEqual(w.sync.rankTickets(q, '10263 - Extra Laksvollen: New store').map((r) => [r.ticket.id, r.score]),
-    [[53123, 14], [53124, 5], [53125, 2]], 'without the field known, the text alone');
+    [[53123, 16], [53125, 6], [53124, 5]], 'without the field known, the text alone: the store in the subject before the number somewhere in a mail');
   assert.deepStrictEqual(q.map((t) => w.sync.plantOf(t, w.PLANT)), ['', '10263', ''], 'none, a number, or only zeros');
   // a project whose ticket says another number in its subject: the Plant ID decides (8222 - Obs Harstad, "SV: 41584 OBS Harstad")
   const harstad = [{ id: 207248, subject: 'SV: 41584 OBS Harstad - Plug In på Iwmac', status: 'open', custom_fields: [{ id: w.PLANT, value: 8222 }] },
     { id: 210175, subject: 'INC000002790331 : 209753 - Joker Bjordal - 10250 -', status: 'open', custom_fields: [{ id: w.PLANT, value: 10250 }] }];
   const best = w.sync.rankTickets(harstad, '8222 - Obs Harstad: Ombygging', w.PLANT)[0];
-  assert.deepStrictEqual([best.ticket.id, best.score], [207248, 22]);
+  assert.deepStrictEqual([best.ticket.id, best.score, best.found, best.why], [207248, 26, true, ['Plant ID 8222', '“Harstad” in the subject']]);
 });
 
 test('linking: only an active ticket of the queue; the chat is told, and gets new messages only - the earlier ones on request; nothing old goes to Zendesk', async () => {
@@ -106,8 +106,8 @@ test('linking: only an active ticket of the queue; the chat is told, and gets ne
   await assert.rejects(w.sync.link(1481787, 12896932, 53126), /not an active ticket/);
   await assert.rejects(w.sync.link(1481787, 12896932, 99999), /not an active ticket/);
   const e = await w.sync.link(1481787, 12896932, 53123);
-  assert.strictEqual(e.ticketId, '53123');
-  assert.strictEqual(e.historyPosted, false);
+  assert.deepStrictEqual([e.main, e.tickets.map((t) => t.ticketId)], ['53123', ['53123']]);
+  assert.strictEqual(e.tickets[0].historyPosted, false);
   assert.strictEqual(w.posted.rl.length, 1, 'the notice only: no earlier messages by themselves');
   assert.strictEqual(w.posted.rl[0].html, '<p><a href="https://iwmac.zendesk.com/agent/tickets/53123" target="_blank" rel="noopener noreferrer">Zendesk #53123</a>' +
     ' is linked to this chat · 10263 Extra Laksvollen - alarm</p><p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>',
@@ -331,7 +331,7 @@ test('a ticket whose updated_at has not moved is not read again', async () => {
   stamp = '2026-10-28T10:30:00Z';
   const r = await w.sync.runOnce();
   assert.deepStrictEqual([fetched, r.mirrored], [2, 1], 'moved: read, and its new message comes in');
-  assert.deepStrictEqual(w.sync.links()['1481787:12896932'].zdUpdatedAt, '2026-10-28T10:30:00Z');
+  assert.deepStrictEqual(w.sync.links()['1481787:12896932'].tickets[0].zdUpdatedAt, '2026-10-28T10:30:00Z');
 });
 
 // a file of a Zendesk message, as Zendesk gives its address
@@ -402,7 +402,7 @@ test('the ticket\'s earlier messages, posted on request, bring their pictures an
   await w.sync.postHistory(1481787, 12896932);
   assert.deepStrictEqual(w.posted.rl.map((p) => p.attachments.map((a) => a.attachmentId)), [[], ['rl:A0.pdf']], 'the notice bare, the history with its files');
   assert.ok(!/Attachments:/.test(w.posted.rl[1].html));
-  assert.strictEqual(w.sync.linkOf(1481787, 12896932).filesPosted, true, 'nothing left for later');
+  assert.strictEqual(w.sync.linkOf(1481787, 12896932).tickets[0].filesPosted, true, 'nothing left for later');
 });
 
 test('a chat linked before files came along gets the earlier ones once, a message for each Zendesk message that has any', async () => {
@@ -410,7 +410,7 @@ test('a chat linked before files came along gets the earlier ones once, a messag
   await w.sync.link(1481787, 12896932, 53123);
   // as a link from before 1.74.0
   const st = JSON.parse(w.state.value);
-  delete st.links['1481787:12896932'].filesPosted;
+  delete st.links['1481787:12896932'].tickets[0].filesPosted;
   w.state.value = JSON.stringify(st);
   w.zdComments.get(53123)[0].attachments = [{ file_name: 'A0.pdf', content_url: ZF('pdf', 'A0.pdf') }];
   const c = w.reply(700, 'Bilde');
@@ -627,7 +627,7 @@ test('wentAs: a reply this browser sent before records were kept still counts as
   await w.sync.runOnce();
   const e = JSON.parse(JSON.stringify(w.sync.linkOf(1481787, 12896932)));
   delete e.sent;   // as a 1.81.0 link stood
-  assert.deepStrictEqual(w.sync.wentAs(e, m, null), { commentId: '', isPublic: true, at: 0 }, 'taken on by this browser: on the ticket');
+  assert.deepStrictEqual(w.sync.wentAs(e, m, null), { commentId: '', isPublic: true, at: 0, ticketId: '53123' }, 'taken on by this browser: on the ticket');
   // a message never taken on, and one from before the link, are not
   const later = { commentId: 999, messageType: 'USER_MESSAGE', content: '<p>/reply Til slutt.</p>', createdAt: Date.now() + 99999, user: { userId: 1 } };
   assert.strictEqual(w.sync.wentAs(e, later, null), null);
@@ -643,7 +643,7 @@ test('wentAs: the ticket\'s text settles it in another browser - through the ses
   const m = w.say(2, '<p>/reply Vi kommer i morgen.</p>', 'Andreas', 'Sandnes');
   const at = (d) => new Date(m.createdAt + d).toISOString();
   const web = { id: 9101, author_id: 800, public: true, plain_body: 'Vi kommer i morgen.\n\n— Andreas Sandnes', created_at: at(5000), via: { channel: 'web' } };
-  assert.deepStrictEqual(w.sync.wentAs(null, m, [web]), { commentId: '9101', isPublic: true, at: Date.parse(web.created_at) });
+  assert.deepStrictEqual(w.sync.wentAs(null, m, [web]), { commentId: '9101', isPublic: true, at: Date.parse(web.created_at), ticketId: '' });
   const signed = { id: 9102, author_id: 800, public: true, plain_body: 'Vi kommer i morgen.\n\n— Andreas Sandnes\n\nBest regards,\nAndreas Sandnes\nKiona', created_at: at(5000), via: { channel: 'web' } };
   assert.strictEqual(w.sync.wentAs(null, m, [signed]).commentId, '9102', 'the agent\'s signature after a public reply');
   const note = { id: 9103, author_id: 800, public: false, plain_body: 'Andreas Sandnes (Rocketlane):\nOk\n\nmer tekst', created_at: at(5000), via: { channel: 'web' } };
@@ -738,4 +738,241 @@ test('a reply whose mark Rocketlane dropped still goes as a reply, from the brow
     { ticketId: '53123', body: 'Bare et notat', isPublic: false },
   ]);
   assert.deepStrictEqual(asked, [['1481787:12896932', 'Svar til kunden'], ['1481787:12896932', 'Bare et notat']], 'asked only for the runner\'s own notes');
+});
+
+// ---- v1.83.0: more than one ticket in a chat ------------------------------------------------------------------------
+// Thomas: "can you also make it so i can link multiple zendesk cases to the chat?" Each ticket's new messages come in
+// under its own number; a message written in the chat goes to one ticket - the one it names at its start, else the one
+// whose message it answers (Rocketlane's Reply), else the chat's main ticket.
+
+const P = 1481787, C = 12896932;
+/** A Zendesk comment on any ticket of the world. */
+function replyOn(w, ticketId, authorId, text, isPublic = true) {
+  if (!w.zdComments.has(ticketId)) w.zdComments.set(ticketId, []);
+  const c = { id: 6000 + w.zdComments.get(ticketId).length + ticketId % 1000 * 10, author_id: authorId, public: isPublic, plain_body: text, created_at: new Date(w.tick()).toISOString(), attachments: [] };
+  w.zdComments.get(ticketId).push(c);
+  w.queue.find((t) => t.id === ticketId).updated_at = c.created_at;
+  return c;
+}
+async function twoTickets() {
+  const w = world();
+  w.zdComments.set(53125, []);
+  await w.sync.link(P, C, 53123);
+  await w.sync.link(P, C, 53125);
+  return w;
+}
+const toTicket = (w, id) => w.posted.zd.filter((p) => String(p.ticketId) === String(id)).map((p) => [p.body, p.isPublic]);
+
+test('a second ticket: linked too, the chat told where its messages go, the first one still the main', async () => {
+  const w = await twoTickets();
+  const e = w.sync.linkOf(P, C);
+  assert.deepStrictEqual([e.main, e.tickets.map((t) => t.ticketId)], ['53123', ['53123', '53125']]);
+  assert.strictEqual(unmark(w.posted.rl[1].html).replace(/<a [^>]*>(Zendesk #\d+)<\/a>/g, '$1'),
+    '<p>Zendesk #53125 is linked to this chat too · Laksvollen ny bruker</p><p>Messages here still go to Zendesk #53123. ' +
+    'To write to #53125, reply to one of its messages or start with #53125.</p>');
+  await w.sync.link(P, C, 53125);
+  assert.strictEqual(w.posted.rl.length, 2, 'linking it again does nothing');
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'nothing old, either way');
+});
+
+test('each ticket\'s new messages come in under its own number', async () => {
+  const w = await twoTickets();
+  w.reply(700, 'Alarm i fryserommet.');
+  replyOn(w, 53125, 700, 'Ny bruker til butikksjefen, takk.');
+  const r = await w.sync.runOnce();
+  assert.strictEqual(r.mirrored, 2);
+  const shown = w.posted.rl.slice(2).map((p) => unmark(p.html).replace('</p><p>', ' | ').replace(/<[^>]+>/g, ''));
+  assert.deepStrictEqual(shown.sort(), ['Zendesk #53123 · Kari Kunde (customer) | Alarm i fryserommet.', 'Zendesk #53125 · Kari Kunde (customer) | Ny bruker til butikksjefen, takk.']);
+  assert.deepStrictEqual(r.posted.map((p) => [p.ticketId, p.count]).sort(), [['53123', 1], ['53125', 1]]);
+});
+
+test('a message goes to the main ticket, to the ticket it names, or to the one whose message it answers', async () => {
+  const w = await twoTickets();
+  w.say(2, '<p>Sjekker fryseren.</p>', 'Andreas', 'Sandnes');
+  w.say(RUNNER, '<p>#53125 Brukeren er laget.</p>', 'Thomas');
+  w.say(RUNNER, '<p>/reply #53125 Hei Kari, brukeren er klar.</p>', 'Thomas');
+  // Rocketlane's Reply on one of the sync's messages from #53125
+  const answered = replyOn(w, 53125, 700, 'Takk!');
+  await w.sync.runOnce();
+  const quoted = w.chat.find((c) => /Zendesk #53125/.test(c.content) && /Takk!/.test(c.content));
+  const ans = w.say(2, '<p>Bare hyggelig.</p>', 'Andreas', 'Sandnes');
+  ans.commentMeta = { repliedTo: { commentId: quoted.commentId, content: quoted.content, user: { userId: RUNNER } } };
+  // a number that is no ticket of the chat is just text, and goes to the main ticket as written
+  w.say(RUNNER, '<p>#99999 er en annen sak.</p>', 'Thomas');
+  await w.sync.runOnce();
+  assert.ok(answered);
+  assert.deepStrictEqual(toTicket(w, 53123), [['Andreas Sandnes (Rocketlane):\nSjekker fryseren.', false], ['#99999 er en annen sak.', false]]);
+  assert.deepStrictEqual(toTicket(w, 53125), [['Brukeren er laget.', false], ['Hei Kari, brukeren er klar.', true], ['Andreas Sandnes (Rocketlane):\nBare hyggelig.', false]],
+    'the number that chose the ticket is not sent; the answer goes where the answered message came from');
+  const e = w.sync.linkOf(P, C);
+  const named = w.chat.find((c) => c.content === '<p>#53125 Brukeren er laget.</p>');
+  assert.strictEqual(w.sync.wentAs(e, named, null).ticketId, '53125', 'and the record says where each went');
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'nothing twice, nothing back');
+});
+
+test('routeOf and ticketNamedIn: the answered message must be one of the sync\'s, naming a ticket of the chat', () => {
+  const w = world();
+  const e = { main: '53123', tickets: [{ ticketId: '53123' }, { ticketId: '53125' }] };
+  const sync = w.sync;
+  assert.strictEqual(sync.ticketNamedIn('<p><b><a href="https://iwmac.zendesk.com/agent/tickets/53125#zd-comment-9">Zendesk #53125</a></b> · Kari</p>'), '53125');
+  assert.strictEqual(sync.ticketNamedIn('<p>Se Zendesk #53125 for det</p>'), '', 'only at the start, as the sync writes it');
+  assert.deepStrictEqual(sync.routeOf(e, sync.parseChatMessage('Hei', ['53123', '53125']), ''), { ticketId: '53123', why: 'main' });
+  assert.deepStrictEqual(sync.routeOf(e, sync.parseChatMessage('#53125 Hei', ['53123', '53125']), ''), { ticketId: '53125', why: 'named' });
+  assert.deepStrictEqual(sync.routeOf(e, sync.parseChatMessage('Hei', ['53123', '53125']), '<p>Zendesk #53125 · Kari</p>'), { ticketId: '53125', why: 'reply' });
+  assert.deepStrictEqual(sync.routeOf(e, sync.parseChatMessage('#53123 Hei', ['53123', '53125']), '<p>Zendesk #53125 · Kari</p>'), { ticketId: '53123', why: 'named' }, 'a named ticket before an answered one');
+  assert.deepStrictEqual(sync.routeOf(e, sync.parseChatMessage('Hei', ['53123', '53125']), '<p>Zendesk #77777 · Kari</p>'), { ticketId: '53123', why: 'main' }, 'a ticket no longer linked: the main one');
+});
+
+test('reading a message with the chat\'s tickets: the number after /reply, the mark, and a number that is no ticket', () => {
+  const { sync } = world();
+  const linked = ['53123', '53125'];
+  assert.deepStrictEqual(sync.parseChatMessage('/reply #53125 Hei Kari', linked), { isPublic: true, body: 'Hei Kari', ticket: '53125' });
+  assert.deepStrictEqual(sync.parseChatMessage('\u2063#53125: Hei', linked), { isPublic: true, body: 'Hei', ticket: '53125' }, 'the mark the "/" list writes');
+  assert.deepStrictEqual(sync.parseChatMessage('#53125\nHei', linked), { isPublic: false, body: 'Hei', ticket: '53125' });
+  assert.deepStrictEqual(sync.parseChatMessage('#4400 kunder', linked), { isPublic: false, body: '#4400 kunder' }, 'not a ticket of the chat');
+  assert.deepStrictEqual(sync.parseChatMessage('/reply #53125 Hei'), { isPublic: true, body: '#53125 Hei' }, 'without the chat\'s tickets, as before');
+  assert.deepStrictEqual(sync.parseChatMessage('#53125 /reply Hei', linked), { isPublic: false, body: '/reply Hei', ticket: '53125' }, '/reply after the number is no reply');
+  assert.deepStrictEqual(sync.composeModeOf('#53125 /reply Hei'), { mode: 'typo', word: '#53125 /reply', order: true }, 'and the box says so');
+  assert.deepStrictEqual(sync.replyLead('\u2063#53125 Hei', linked), { whole: false, length: 8 }, 'the mark and the number hidden, the mark names the ticket');
+  assert.deepStrictEqual(sync.replyLead('\u2063#53125 Hei'), { whole: false, length: 1 }, 'without the chat\'s tickets, the mark only');
+  assert.deepStrictEqual(sync.replyLead('/reply #53125', linked), { whole: true, length: 13 });
+});
+
+test('the main ticket can change; the chat is told, and messages go there from then on', async () => {
+  const w = await twoTickets();
+  await w.sync.setMain(P, C, 53125);
+  assert.strictEqual(w.sync.linkOf(P, C).main, '53125');
+  assert.match(unmark(w.posted.rl[2].html).replace(/<a [^>]*>(Zendesk #\d+)<\/a>/g, '$1'),
+    /^<p>Zendesk #53125 is now the main ticket of this chat · Laksvollen ny bruker<\/p><p>Messages here go to it\. To write to #53123, reply to one of its messages or start with #53123\.<\/p>$/);
+  w.say(RUNNER, '<p>Ok</p>', 'Thomas');
+  await w.sync.runOnce();
+  assert.deepStrictEqual([toTicket(w, 53123), toTicket(w, 53125)], [[], [['Ok', false]]]);
+  await assert.rejects(w.sync.setMain(P, C, 99999), /not linked/);
+});
+
+test('a solved ticket waits on its own: the others go on, and its messages go when it is opened again', async () => {
+  const w = await twoTickets();
+  w.queue.find((t) => t.id === 53125).status = 'solved';
+  w.say(RUNNER, '<p>#53125 Venter på kunden.</p>', 'Thomas');
+  w.say(RUNNER, '<p>Fryseren er ok.</p>', 'Thomas');
+  const r = await w.sync.runOnce();
+  assert.deepStrictEqual([r.forwarded, r.paused, r.errors], [1, 1, 0]);
+  assert.deepStrictEqual(toTicket(w, 53123), [['Fryseren er ok.', false]]);
+  const e = w.sync.linkOf(P, C);
+  assert.deepStrictEqual([e.status, e.tickets.map((t) => t.status)], ['active', ['active', 'paused']]);
+  assert.match(e.note, /^#53125: The ticket is solved/);
+  w.queue.find((t) => t.id === 53125).status = 'open';
+  await w.sync.runOnce();
+  assert.deepStrictEqual(toTicket(w, 53125), [['Venter på kunden.', false]], 'it waited, and went');
+});
+
+test('unlinking one ticket keeps the others; the main one\'s place goes to the next; the last unlinks the chat', async () => {
+  const w = await twoTickets();
+  await w.sync.unlink(P, C, 53123);
+  const e = w.sync.linkOf(P, C);
+  assert.deepStrictEqual([e.main, e.tickets.map((t) => t.ticketId)], ['53125', ['53125']]);
+  assert.strictEqual(unmark(w.posted.rl[2].html).replace(/<a [^>]*>(Zendesk #\d+)<\/a>/g, '$1'),
+    '<p>Zendesk #53123 is no longer linked to this chat</p><p>Messages here go to Zendesk #53125.</p>');
+  w.reply(700, 'Etter unlinking.');
+  await w.sync.runOnce();
+  assert.ok(!w.posted.rl.some((p) => /Etter unlinking/.test(p.html)), 'an unlinked ticket no longer comes in');
+  w.sync.unlink(P, C, 53125);
+  assert.strictEqual(w.sync.linkOf(P, C), null, 'the last one: the chat is not linked any more');
+  assert.strictEqual(w.posted.rl.length, 3, 'and that says nothing in the chat, as before');
+});
+
+test('a link as 1.82 kept it - one ticket on the link itself - is read as one of the new kind; nothing is posted again', async () => {
+  const w = world();
+  await w.sync.link(P, C, 53123);
+  w.say(RUNNER, '<p>Gammel og sendt</p>', 'Thomas');
+  await w.sync.runOnce();
+  const e = w.sync.linkOf(P, C), t = e.tickets[0];
+  const old = { projectId: e.projectId, conversationId: e.conversationId, ticketId: t.ticketId, subject: t.subject, linkedAt: t.linkedAt,
+    zdMax: t.zdMax, rlSince: e.rlSince, rlSeen: e.rlSeen, ownRl: e.ownRl, ownZd: t.ownZd, status: 'active', note: '', lastRun: e.lastRun,
+    historyPosted: false, filesPosted: true, zdUpdatedAt: t.zdUpdatedAt, sent: e.sent };
+  w.state.value = JSON.stringify({ links: { [P + ':' + C]: old } });
+  const up = w.sync.linkOf(P, C);
+  assert.deepStrictEqual([up.main, up.tickets.length, up.tickets[0].zdMax, up.tickets[0].filesPosted, up.rlSince], ['53123', 1, t.zdMax, true, e.rlSince]);
+  const before = [w.posted.rl.length, w.posted.zd.length];
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 });
+  assert.deepStrictEqual([w.posted.rl.length, w.posted.zd.length], before);
+  w.say(2, '<p>Ny etter oppgraderingen</p>', 'Andreas', 'Sandnes');
+  await w.sync.runOnce();
+  assert.deepStrictEqual(toTicket(w, 53123).slice(-1), [['Andreas Sandnes (Rocketlane):\nNy etter oppgraderingen', false]]);
+});
+
+test('a reply the sync sent is known on the ticket under the signature Zendesk puts there: never sent or brought back again', async () => {
+  // seen 2026-11-16: a reply the sync sent stood on the ticket as "<text> Best regards, Thomas Kvalvåg …"; a second
+  // browser running the sync - here: an older record of the link - knew it neither as sent nor as the chat's own
+  const w = world();
+  await w.sync.link(P, C, 53123);
+  const older = w.state.value;
+  w.say(RUNNER, '<p>/reply Hei</p><p>Når du har adressert plugin diskene kan du merke adressene på oversiktbildet?</p>', 'Thomas');
+  await w.sync.runOnce();
+  const sent = w.zdComments.get(53123).slice(-1)[0];
+  assert.strictEqual(sent.public, true);
+  sent.plain_body += ' \n Best regards,\n\nThomas Kvalvåg \n \n Technical System Engineer \n Office +47 982 50 007\n\n\n\nKiona';
+  w.queue.find((t) => t.id === 53123).updated_at = '2026-10-28T11:00:00Z';
+  w.state.value = older;
+  const r = await w.sync.runOnce();
+  assert.deepStrictEqual(counts(r), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'not to the customer twice, not into the chat');
+  assert.strictEqual(w.posted.zd.length, 1);
+});
+
+// ---- v1.83.0: which tickets suit a project ----------------------------------------------------------------------------
+// The cases are today's queue (2026-11-16), cut to what decides: two tickets the plant number could not find.
+
+const ccr = { name: '10257 - Bunnpris Vika: New store', company: 'CO2OLTEC Commercial Refrigeration Norway AS', domains: ['ccr.com'], emails: ['montor@ccr.com'] };
+const vika = { id: 211004, subject: 'bunnpris VIKA', status: 'open', description: 'Hei, vi trenger tilgang.', updated_at: '2026-11-10T08:00:00Z',
+  custom_fields: [{ id: 27741611, value: null }], _requester: { email: 'service@ccr.com' }, _org: { name: 'CCR - CO2OLtec (Teknisk Avdeling)' } };
+const trofors = { id: 210837, subject: 'Sv: 207394 - Extra Trofors Laksvollen', status: 'open', description: 'Se vedlegg', updated_at: '2026-11-03T08:00:00Z',
+  custom_fields: [{ id: 27741611, value: '0000' }], _requester: { email: 'pl@norddisk.no' }, _org: { name: 'Norddisk AS' } };
+const maere = { id: 213531, subject: '10259, Extra Mære (ny) - Tilganger i IWMAC', status: 'new', description: 'Anlegg 10259', updated_at: '2026-11-15T08:00:00Z',
+  custom_fields: [{ id: 27741611, value: '2191' }], _requester: { email: 'it@aneoretail.com' }, _org: { name: 'Ohmia Retail AS' } };
+
+test('suggestions: the store\'s own name with the project\'s contractor finds a ticket the plant number does not', () => {
+  const { sync } = world();
+  const [a] = sync.rankTickets([vika, trofors, maere], ccr, 27741611);
+  assert.deepStrictEqual([a.ticket.id, a.found, a.why], [211004, true, ['“Vika” in the subject', 'from CCR - CO2OLtec (Teknisk Avdeling)']]);
+  const lv = sync.rankTickets([vika, trofors, maere], { name: '10263 - Extra Laksvollen: New store', company: 'Norddisk AS', domains: ['norddisk.no'] }, 27741611);
+  assert.deepStrictEqual([lv[0].ticket.id, lv[0].found, lv[0].why], [210837, true, ['“Laksvollen” in the subject', 'from Norddisk AS']]);
+  // the contractor alone: another of Norddisk's stores
+  const betna = sync.rankTickets([trofors], { name: '10112 - Bunnpris Betna: Ny Butikk', company: 'Norddisk AS', domains: ['norddisk.no'] }, 27741611)[0];
+  assert.deepStrictEqual([betna.found, betna.score], [false, 2]);
+  // the store's name alone, written by someone else: listed first, but not asked about
+  const alone = sync.rankTickets([vika], { name: '10257 - Bunnpris Vika: New store' }, 27741611)[0];
+  assert.deepStrictEqual([alone.found, alone.score], [false, 6]);
+});
+
+test('suggestions: the number and the store in the subject, whatever its Plant ID says; a requester on the project', () => {
+  const { sync } = world();
+  const r = sync.rankTickets([maere], { name: '10259 - Extra Mære: Ombygging', company: 'Kelvin AS', domains: ['kelvinas.no'] }, 27741611)[0];
+  assert.deepStrictEqual([r.found, r.score, r.why], [true, 17, ['10259 in the subject', '“Mære” in the subject', 'Plant ID 2191, another plant']],
+    'asked about on its number in the subject, the old plant\'s Plant ID shown as the conflict it is');
+  // the store's name and the contractor, but a Plant ID naming another plant: listed, not asked about (live, 2026-11-16)
+  const kanda = { id: 212715, subject: '10270 Kanda As', status: 'open', updated_at: '2026-11-14T08:00:00Z', custom_fields: [{ id: 27741611, value: '10270' }],
+    _requester: { email: 'kontor@iac.no' }, _org: { name: 'IAC Vestcold' } };
+  const k = sync.rankTickets([kanda], { name: '3313 - Kanda: Utvidelse', company: 'Epta Norway AS', domains: ['epta-norway.com', 'iac.no'] }, 27741611)[0];
+  assert.deepStrictEqual([k.found, k.score, k.why], [false, 4, ['“Kanda” in the subject', 'from IAC Vestcold', 'Plant ID 10270, another plant']]);
+  const member = sync.rankTickets([Object.assign({}, vika, { _requester: { email: 'Montor@CCR.com' } })], ccr, 27741611)[0];
+  assert.deepStrictEqual([member.score, member.why], [10, ['“Vika” in the subject', 'requester is on the project']]);
+});
+
+test('suggestions: Norwegian letters fold, words must be whole, chains and kinds of project count for nothing', () => {
+  const { sync } = world();
+  const t = (subject) => ({ id: 1, subject, status: 'open', custom_fields: [] });
+  const score = (subject, name) => sync.rankTickets([t(subject)], name)[0].score;
+  assert.strictEqual(score('Fosnavaag - ny bruker', '8682 - Meny Fosnavåg: Ombygging'), 6);
+  assert.strictEqual(score('MAERE kjølerom', '10259 - Extra Mære: Ombygging'), 6);
+  assert.strictEqual(score('Extra Laksvollen alarm', '10267 - Extra Voll - Ny butikk'), 0, 'Voll is not in Laksvollen');
+  assert.strictEqual(score('Coop Extra - ny butikk', '10263 - Extra Laksvollen: New store'), 0, 'the chain and the kind of project say nothing');
+  assert.deepStrictEqual(sync.nameWords('10264 Coop Prix Stjørdal').map((w) => w.label), ['Stjørdal']);
+  assert.deepStrictEqual(sync.nameWords('3155 - Spar Sannerud - *AC Kampanje*').map((w) => w.label), ['Sannerud']);
+  assert.deepStrictEqual(sync.nameWords('Team Kulde Oppgaver'), []);
+});
+
+test('suggestions: the chat\'s own tickets are left out; one linked to another chat is marked, and never asked about', () => {
+  const { sync } = world();
+  const ranked = sync.rankTickets([vika, trofors], ccr, 27741611, { linkedHere: [210837], linkedElsewhere: { 211004: '1:2' } });
+  assert.deepStrictEqual(ranked.map((r) => [r.ticket.id, r.found, r.why.slice(-1)[0]]), [[211004, false, 'linked to another chat']]);
 });

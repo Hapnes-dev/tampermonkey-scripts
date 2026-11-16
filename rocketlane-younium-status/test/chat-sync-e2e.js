@@ -63,6 +63,8 @@ const W = window.__world = {
   queries: [],
   addZd(c) { W.zd.push(c); const t = W.queue.find((x) => x.id === 53123); if (t) t.updated_at = new Date(Date.now() + W.zd.length).toISOString(); },
   puts: [], posts: [], nextRl: 100, nextZd: 5000,
+  // a second ticket of the chat (v1.83.0): its comments and what was sent to it
+  zd2: [], puts2: [],
   // Zendesk's files by their token: pictures drawn at their size, a PDF as a few bytes
   files: { shot: { w: 1010, h: 842, type: 'image/png' }, icon: { w: 26, h: 26, type: 'image/png' }, logo: { w: 226, h: 88, type: 'image/png' }, pdf: { type: 'application/pdf' } },
   uploads: [], zdUploads: [],
@@ -100,7 +102,8 @@ window.GM_xmlhttpRequest = (o) => {
   }
   if (u.host === 'iwmac.zendesk.com') {
     if (o.method !== 'GET' && o.headers['X-CSRF-Token'] !== 'csrf-1') return setTimeout(() => o.onload({ status: 403, responseText: '' }), 10);
-    if (p === '/api/v2/views.json') return ok({ views: [{ id: 9, title: 'Annen kø' }, { id: 77, title: 'IWMAC Leveranse - Kulde' }], next_page: null });
+    // the view in a folder, as Zendesk lists it since 2026 ("Views (legacy)::…"): found by its title alone (v1.83.0)
+    if (p === '/api/v2/views.json') return ok({ views: [{ id: 9, title: 'Annen kø' }, { id: 77, title: 'Views (legacy)::IWMAC Leveranse - Kulde' }], next_page: null });
     // the view: new and open tickets only, as "IWMAC Leveranse - Kulde" (status less than pending, two groups)
     if (p === '/api/v2/views/77/tickets.json') return ok({ tickets: W.queue.filter((t) => t.status === 'new' || t.status === 'open'), next_page: null });
     if (p === '/api/v2/views/77.json') return ok({ view: { id: 77, conditions: {
@@ -114,6 +117,14 @@ window.GM_xmlhttpRequest = (o) => {
     if (p === '/api/v2/tickets/53123.json' && o.method === 'PUT') {
       const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [], via: { channel: 'api' } };
       W.addZd(c); W.puts.push(body.ticket.comment); return ok({ ticket: { id: 53123 }, audit: { events: [{ type: 'Comment', id: c.id }] } });
+    }
+    if (p === '/api/v2/tickets/53125/comments.json') return ok({ comments: W.zd2.slice().reverse(), users: [{ id: 701, name: 'Ola Butikk', role: 'end-user' }, { id: 900, name: 'Thomas', role: 'agent' }], next_page: null });
+    if (p === '/api/v2/tickets/53125.json' && o.method === 'GET') return ok({ ticket: { id: 53125, requester_id: 701, email_cc_ids: [] }, users: [{ id: 701, name: 'Ola Butikk' }] });
+    if (p === '/api/v2/tickets/53125.json' && o.method === 'PUT') {
+      const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [], via: { channel: 'api' } };
+      W.zd2.push(c); W.puts2.push(body.ticket.comment);
+      const t = W.queue.find((x) => x.id === 53125); if (t) t.updated_at = new Date(Date.now() + W.zd2.length).toISOString();
+      return ok({ ticket: { id: 53125 }, audit: { events: [{ type: 'Comment', id: c.id }] } });
     }
   }
   setTimeout(() => o.onload({ status: 404, responseText: '{}' }), 10);
@@ -181,8 +192,10 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.locator('#rl-zendesk-chat-sync >> text=Link the chat to a ticket in the queue').waitFor();
     await page.locator('#rl-zendesk-chat-sync >> .row').first().waitFor();
     const rows = await page.locator('#rl-zendesk-chat-sync >> .row .s').allTextContents();
-    assert.deepStrictEqual(rows, ['#53123 SV: 41584 Extra Laksvollen - alarmPlant ID 10263', '#53125 Laksvollen ny bruker', '#53130 Annen butikk', '#53131 Service på vent'],
+    assert.deepStrictEqual(rows, ['#53123 SV: 41584 Extra Laksvollen - alarm', '#53125 Laksvollen ny bruker', '#53130 Annen butikk', '#53131 Service på vent'],
       'every active status - waiting for the customer and on hold too, never solved - best match first');
+    assert.deepStrictEqual(await page.locator('#rl-zendesk-chat-sync >> .row').first().locator('.why .match').allTextContents(),
+      ['Plant ID 10263', '“Laksvollen” in the subject'], 'each with why it is where it is (v1.83.0)');
     assert.deepStrictEqual([...new Set((await page.evaluate(() => window.__world)).queries)],
       ['type:ticket status<solved group:360002360679 group:28952105 -tags:ny_kulde'], 'the view\'s groups and exclusions, at every active status');
     await page.screenshot({ path: path.join(OUT, '1c-queue.png') });
@@ -476,6 +489,122 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await page.mouse.click(5, 5);
     await page.waitForTimeout(300);
     assert.deepStrictEqual(await mode(), { bar: null, frame: false });
+
+    // ---- v1.83.0: a second ticket in the chat ----
+    // "Link another ticket" lists the queue without the chat's own ticket, each with why; "Yes, link #N too" links it
+    await page.mouse.click(5, 5);
+    // the panel an earlier "Sync now" opened again when its round ended: closed, so the button opens it afresh
+    await page.keyboard.press('Escape');
+    await pill.click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Link another ticket').click();
+    await page.locator('#rl-zendesk-chat-sync >> .row').first().waitFor();
+    assert.deepStrictEqual(await page.locator('#rl-zendesk-chat-sync >> .row .s').allTextContents(),
+      ['#53125 Laksvollen ny bruker', '#53130 Annen butikk', '#53131 Service på vent'], 'the chat\'s own ticket left out');
+    assert.deepStrictEqual(await page.locator('#rl-zendesk-chat-sync >> .row').first().locator('.why .match').allTextContents(), ['“Laksvollen” in the subject']);
+    await page.locator('#rl-zendesk-chat-sync >> .row').first().locator('button').click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Yes, link #53125 too').click();
+    await page.waitForFunction(() => /#53123 \+1 ⇄/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent), null, { timeout: 15000 })
+      .catch(async (err) => { throw new Error(err.message + ' - ' + JSON.stringify(await page.evaluate(() => { const r = document.querySelector('#rl-zendesk-chat-sync').shadowRoot;
+        return { pill: r.querySelector('.pill').textContent, panel: r.querySelector('.panel').hidden ? '(hidden)' : r.querySelector('.panel').innerText.slice(0, 400),
+          posts: window.__world.posts.length, state: JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links }; }))); });
+    let w2 = await page.evaluate(() => window.__world);
+    assert.match(w2.posts[w2.posts.length - 1].content, /Zendesk #53125<\/a> is linked to this chat too · Laksvollen ny bruker<\/p><p>Messages here still go to <a [^>]*>Zendesk #53123<\/a>\. To write to #53125, reply to one of its messages or start with #53125\.<\/p>$/);
+    await page.locator('#rl-zendesk-chat-sync >> text=Linked to 2 Zendesk tickets').waitFor();
+    assert.deepStrictEqual(await page.locator('#rl-zendesk-chat-sync >> .tk > .muted').allTextContents(), ['main ticket · synced', 'synced']);
+    await page.screenshot({ path: path.join(OUT, '6-two-tickets.png') });
+    await page.keyboard.press('Escape');
+
+    // the message box names the ticket a message goes to: the main one, and how to choose the other; the one it names; the
+    // one whose message it answers (Rocketlane's Reply puts that message's quote in the box, above the editor)
+    await page.locator('#composer .ck-editor__editable').click();
+    await barIs(/\(main\)/);
+    assert.deepStrictEqual(await mode(), { bar: 'note: Internal note to Zendesk #53123 (main) · start with #53125 for that one', frame: false });
+    await page.keyboard.type('#53125 Brukeren er laget');
+    await barIs(/Zendesk #53125/);
+    assert.deepStrictEqual(await mode(), { bar: 'note: Internal note to Zendesk #53125 · start with /reply to answer the customer', frame: false });
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await page.evaluate(() => {
+      const q = document.createElement('div');
+      q.className = 'user-message-reply_wrapper__YTHuH';
+      q.innerHTML = '<b>Thomas</b><div class="ck-content"><p><b><a href="https://iwmac.zendesk.com/agent/tickets/53125#zd-comment-1">Zendesk #53125</a></b> · Ola Butikk (customer)</p><p>Takk!</p></div><button>x</button>';
+      const box = document.getElementById('composer');
+      box.style.height = '200px';   // room for the quote: the editor stays on screen, as in Rocketlane's own box
+      box.prepend(q);
+    });
+    await page.keyboard.type('Hei');
+    await barIs(/answering/);
+    assert.deepStrictEqual(await mode(), { bar: 'note: Internal note to Zendesk #53125 · answering its message · start with /reply to answer the customer', frame: false });
+    // the "/" list: /reply for the answered ticket first, then the other one
+    // "/re" put in the box with the caret after it, as the step above puts its text: the stand-in box is no CKEditor, and
+    // after select-all and delete Chrome may leave the caret on the paragraph, where no "/word" is read
+    await page.evaluate(() => {
+      const ed = document.querySelector('#composer .ck-editor__editable');
+      ed.innerHTML = '<p>/re</p>';
+      ed.focus();
+      getSelection().collapse(ed.firstChild.firstChild, 3);
+    });
+    // the list follows each key: waited for as it stands for "/re"
+    await page.waitForFunction(() => document.querySelectorAll('#rlChatMacroPopup .rlMcItem').length === 3, null, { timeout: 5000 })
+      .catch(async (err) => { throw new Error(err.message + ' - the list: ' + JSON.stringify(await page.evaluate(() => [...document.querySelectorAll('#rlChatMacroPopup .rlMcItem')].map((x) => x.textContent))) + ' box: ' + JSON.stringify(await boxText())); });
+    const listed = await popup.locator('.rlMcItem').allTextContents();
+    assert.deepStrictEqual(listed, ['/replyReply to the customer · Zendesk #53125', '/replyReply to the customer · Zendesk #53123', '/Request_FeedbackAsk for a rating of the delivery'],
+      'the list: ' + JSON.stringify(listed) + ' box: ' + JSON.stringify(await boxText()));
+    await popup.locator('.rlMcItem').nth(1).click();
+    await barIs(/^reply: .*#53123/);
+    assert.strictEqual(await boxText(), '\u2063#53123 ', 'the mark, then the number of the ticket picked');
+    assert.deepStrictEqual(await mode(), { bar: 'reply: ↩ Reply to the customer · Zendesk #53123 · emailed to Kari Kunde and 2 in copy', frame: true });
+    await page.screenshot({ path: path.join(OUT, '6b-reply-to-the-other-ticket.png') });
+    await page.locator('#rl-zendesk-chat-sync >> .mode .x').click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await page.evaluate(() => { document.querySelector('#composer [class*="user-message-reply"]').remove(); document.getElementById('composer').style.height = '110px'; });
+    // a number before /reply: no reply - the box says so
+    await page.keyboard.type('#53125 /reply Hei');
+    await barIs(/^typo: /);
+    assert.deepStrictEqual(await mode(), { bar: 'typo: Put /reply first: as written, this goes to Zendesk #53125 as an internal note', frame: false });
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await page.mouse.click(5, 5);
+
+    // a new message on the second ticket comes in under its number; the chat's messages go each to its ticket
+    await page.evaluate(() => {
+      const W = window.__world;
+      W.zd2.push({ id: W.nextZd++, author_id: 701, public: true, plain_body: 'Kan dere legge inn en bruker til?', created_at: new Date().toISOString(), attachments: [] });
+      W.queue.find((x) => x.id === 53125).updated_at = new Date(Date.now() + 5).toISOString();
+    });
+    await pill.click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
+    await page.waitForFunction(() => window.__world.posts.some((p) => /Kan dere legge inn/.test(p.content)), null, { timeout: 15000 });
+    w2 = await page.evaluate(() => window.__world);
+    const mirrored = w2.posts.find((p) => /Kan dere legge inn/.test(p.content));
+    assert.match(unmark(mirrored.content), /^<p><b>Zendesk #53125<\/b> · Ola Butikk \(customer\)<\/p><p>Kan dere legge inn en bruker til\?<\/p>$/);
+    const puts1 = w2.puts.length;
+    await page.evaluate((quoted) => {
+      const W = window.__world, at = Date.now() + 3000;
+      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>#53125 Brukeren er laget.</p>', createdAt: at, user: { userId: 1, firstName: 'Thomas' } });
+      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>Bare hyggelig.</p>', createdAt: at + 1, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' },
+        commentMeta: { repliedTo: { commentId: 1, content: quoted, user: { userId: 1 } } } });
+      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>Kompressor 2 er ok.</p>', createdAt: at + 2, user: { userId: 1, firstName: 'Thomas' } });
+    }, mirrored.content);
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
+    // the three go in the chat's order, the last to the main ticket: waited for, all three
+    await page.waitForFunction((n) => window.__world.puts2.length === 2 && window.__world.puts.length === n + 1, puts1, { timeout: 15000 });
+    w2 = await page.evaluate(() => window.__world);
+    assert.deepStrictEqual(w2.puts2, [{ body: 'Brukeren er laget.', public: false }, { body: 'Andreas Sandnes (Rocketlane):\nBare hyggelig.', public: false }],
+      'named, and answered: to #53125 - the number not sent');
+    assert.deepStrictEqual(w2.puts.slice(puts1), [{ body: 'Kompressor 2 er ok.', public: false }], 'neither: to the main ticket');
+
+    // #53125 made the main one, the chat told; then unlinked, the chat told again - #53123 the main one again
+    await page.locator('#rl-zendesk-chat-sync >> text=Make main').click();
+    await page.waitForFunction(() => /#53125 \+1/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent));
+    w2 = await page.evaluate(() => window.__world);
+    assert.match(w2.posts[w2.posts.length - 1].content, /Zendesk #53125<\/a> is now the main ticket of this chat · Laksvollen ny bruker<\/p><p>Messages here go to it\. To write to #53123, reply to one of its messages or start with #53123\.<\/p>$/);
+    await page.locator('#rl-zendesk-chat-sync >> .tk').nth(1).locator('text=Unlink').click();
+    await page.waitForFunction(() => { const t = document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent; return /#53123 ⇄/.test(t) && !/\+1/.test(t); });
+    w2 = await page.evaluate(() => window.__world);
+    assert.match(w2.posts[w2.posts.length - 1].content, /Zendesk #53125<\/a> is no longer linked to this chat<\/p><p>Messages here go to <a [^>]*>Zendesk #53123<\/a>\.<\/p>$/);
+    await page.keyboard.press('Escape');
     await page.evaluate(() => document.getElementById('composer').remove());
 
     // off in the menu: the button stays on the chat page, greyed
@@ -550,7 +679,9 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     w = await page2.evaluate(() => window.__world);
     assert.match(w.posts[1].content, /^<p><b>Zendesk #53123<\/b> · Kari Kunde \(customer\) · .* · images and files<\/p>$/);
     assert.deepStrictEqual(w.posts[1].commentMeta.linkedAttachments.map((a) => a.name), ['A0.pdf']);
-    assert.strictEqual(await page2.evaluate(() => JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links['1481787:12896932'].filesPosted), true);
+    // the Chat Bridge's link, in the shape of one ticket on the link itself, was read as a link with a ticket list (v1.83.0)
+    assert.deepStrictEqual(await page2.evaluate(() => { const e = JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links['1481787:12896932'];
+      return [e.main, e.tickets.map((t) => [t.ticketId, t.filesPosted])]; }), ['53123', [['53123', true]]]);
     await page2.screenshot({ path: path.join(OUT, '4-handed-over.png') });
 
     assert.deepStrictEqual(errors, [], 'no errors or warnings in the page');

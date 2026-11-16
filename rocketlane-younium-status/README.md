@@ -308,8 +308,8 @@ On a project **plan** page:
 
 ## 7. Zendesk ⇄ General Chat (v1.73.0)
 
-Links a project's General Chat in Rocketlane to one Zendesk ticket, so the conversation with the customer can be
-followed and answered from the chat. It lived in *Rocketlane Chat Bridge* from its 1.16.0 to 1.18.0 and moved here in
+Links a project's General Chat in Rocketlane to a Zendesk ticket from the team's queue - or to several (v1.83.0) - so
+the conversation with the customer can be followed and answered from the chat. It lived in *Rocketlane Chat Bridge* from its 1.16.0 to 1.18.0 and moved here in
 v1.73.0.
 
 - **Turn it on.** The button at the bottom right of a chat page (`/projects/<id>/chat/<id>`) says **Zendesk ⇄ off**
@@ -319,15 +319,31 @@ v1.73.0.
 - **Only on chat pages.** The button and its panel show on a project's chat page only, and go the moment you leave
   it (v1.78.0: they follow Rocketlane's route change itself, not a timer).
 - **Link a chat.** The button lists the active tickets in the team's queue. The queue is set by a Zendesk view,
-  "IWMAC Leveranse - Kulde" by default, which can be changed in the Tampermonkey menu.
+  "IWMAC Leveranse - Kulde" by default, which can be changed in the Tampermonkey menu. Zendesk keeps views in folders
+  ("Views (legacy)::IWMAC Leveranse - Kulde"); the view is found by its own title as well (v1.83.0 - before, a browser
+  that had not kept the view's id found none).
   - The view shows only new and open tickets. So the sync reads the view's groups (Delivery and Aftermarket Cooling)
     and its tag and assignee exclusions, and searches them at every active status. That brings in tickets waiting for
     the customer ("Waiting for Customer") and on hold ("On Hold – Internal"), but never solved, closed or archived
     ones.
-  - The ticket whose **Plant ID** is the project's plant number (the number its name starts with, "8222 - Obs
-    Harstad") comes first. After it come tickets with that number in the subject, then in the text, then with words
-    of the project's name in the subject.
-  - When one matches, opening the chat asks whether to link it: **Link**, **Not now** (not asked again in that
+  - **Best match first** (v1.83.0), each ticket with chips saying why it is where it is:
+    - its **Plant ID** is the project's plant number (the number its name starts with, "8222 - Obs Harstad");
+    - that number is in its subject, or in its text;
+    - the store's own name is in its subject, or in its text: "Laksvollen" from "10263 - Extra Laksvollen: New store".
+      The chain's name ("Coop", "Extra", "Bunnpris") and the kind of project ("Ny butikk", "Ombygging") count for
+      nothing. Words must be whole ("Voll" is not in "Laksvollen"), and Norwegian letters fold (Mære = Maere,
+      Fosnavåg = Fosnavaag);
+    - the project's contractor wrote it: the requester is one of the project's external members, or comes from its
+      customer company (the address's domain, or the Zendesk organisation's name);
+    - a ticket whose Plant ID names another plant is marked so ("Plant ID 10270, another plant"), and one linked to
+      another chat is marked "linked to another chat".
+  - **Asked about** - "found" - is a ticket whose Plant ID is the project's number, or with the number in its subject,
+    or with the store's name (or the number in its text) written by the project's contractor. Never one whose Plant ID
+    names another plant on the store's name alone, nor one linked to another chat. Measured on the queue on
+    2026-11-16 against Thomas's 39 projects: 7 tickets asked about, all right; two of them - "bunnpris VIKA" and "Sv:
+    207394 - Extra Trofors Laksvollen" - named the store only, and were not asked about before. Before, a single word
+    of the name could put an unrelated ticket first ("Extra Trofors Laksvollen" for "Extra Voll").
+  - When one is found, opening the chat asks whether to link it: **Link**, **Not now** (not asked again in that
     chat for that ticket) or **Choose another ticket**. Meanwhile the button says **Zendesk #207248 found · Link**.
   - **Link** in the list asks once more, with "Yes, link #…".
   - Linking posts a short note in the chat. From then on only **new** messages come in (v1.79.0); the ticket's
@@ -335,6 +351,21 @@ v1.73.0.
   - **Post earlier messages** in the panel posts them on request, once, oldest first: who, what kind, when, and the
     text, in one message or a few for a long ticket. **Post earlier messages again** posts them once more, after the
     old copies have been deleted from the chat. What was in the chat before the link stays in the chat.
+- **More than one ticket** (v1.83.0). **Link another ticket** in the panel of a linked chat lists the queue without the
+  chat's own tickets; "Yes, link #… too" links one more. A ticket of the queue that is surely the project's shows as
+  "· 1 more found" on the button and under **Also found for this project** in the panel, with **Link too** and
+  **Not now**.
+  - Each ticket's new messages come in under its own "Zendesk #…".
+  - A message written in the chat goes to **one** ticket: the one it names at its start (`#213200 …`, or
+    `/reply #213200 …` for a reply to that ticket's customer - the number is not sent), else the one whose message it
+    answers with Rocketlane's **Reply**, else the chat's **main** ticket - the first one linked, unless **Make main**
+    in the panel says otherwise. A number that names no ticket of the chat is just text.
+  - The chat is told when a ticket is linked too ("Messages here still go to Zendesk #…"), when the main one changes
+    and when one is unlinked, so everyone in it knows where messages go - also those whose browser does not run the
+    sync, whose message box reads it from there.
+  - A solved ticket pauses only itself: messages for it wait until it is opened again, and the others go on.
+  - **Unlink** in a ticket's row unlinks that one; the main ticket's place goes to the next.
+  - A link made before 1.83.0 carries on as a link with one ticket, nothing posted again.
 - **From Zendesk to the chat.** Every new message on the ticket is posted in the chat as a private message, so
   customers in the project do not see it. It starts with "Zendesk #<ticket> · <name>" and a label: "(customer)" for the
   customer, "internal note" for an internal note, "reply to the customer" for an agent's public reply. Its images and
@@ -351,8 +382,9 @@ v1.73.0.
   cut. The signature is cut too, its sign-off included ("Med vennlig hilsen", "Mvh Markus Hassel"): the first line
   already names who wrote it, as messages written in Rocketlane have no signature either (v1.82.0; before, the sign-off
   and the name under it stayed). Each line is a paragraph, as Rocketlane writes its own messages.
-- **From the chat to Zendesk.** Every message written in the chat goes to the ticket as an internal note. One that
-  starts with **/reply** goes as a public reply, emailed to the customer. Messages are written with your Zendesk
+- **From the chat to Zendesk.** Every message written in the chat goes to the ticket as an internal note - with more
+  than one ticket, to the one chosen as above. One that starts with **/reply** goes as a public reply, emailed to the
+  customer. Messages are written with your Zendesk
   session. A colleague's message is marked with their name: "Name (Rocketlane):" before an internal note,
   "— Name" after a public reply.
 - **What a message will be** (v1.76.0). While you write in a linked chat, the message box shows what the message
@@ -362,6 +394,13 @@ v1.73.0.
   - A word close to it, such as `/replay` or the old `/kunde`, gets a yellow warning that the message goes as an
     internal note.
   - Any other message gets a quiet "Internal note to Zendesk #…" label while the box is in use.
+  - With more than one ticket (v1.83.0) the bar names the ticket the message goes to: "(main)" with how to choose the
+    other one, "answering its message" while Rocketlane's Reply quotes one of a ticket's messages in the box, or the
+    ticket named at the start. A number before `/reply` ("#213200 /reply …") is no reply, and the bar says to put
+    `/reply` first.
+  - The "/" list offers `/reply` for each ticket: first the one a reply goes to without a number, then the others,
+    which put their number after the reply mark. A "/word" closed with Esc opens again once it is gone from before the
+    caret (v1.83.0 - before, the same word in a later message never opened the list again).
   - The bar turns red and says nothing will be sent when the sync is off in this browser or the ticket is not open.
   - For someone whose browser does not run the sync, the reply bar and the warning show when the chat holds the
     sync's messages.
@@ -413,6 +452,9 @@ v1.73.0.
   - **Sync now** in the panel runs one at once.
   - A ticket's messages are fetched only when the ticket has changed, and then only those after the last one taken.
   - A tab in front takes over from one in the background, but only once that tab's round is over.
+  - What the panel does (link, unlink, earlier messages) waits for a round, and a round for it, from the moment the
+    round starts claiming the tab's lock (v1.83.0 - before, a link made during the claim, up to 0.8 s, could be lost to
+    the round's save).
   - With the browser closed it does not run, and it catches up the next time.
 - **Nothing twice** (v1.80.0). Every message the sync brings in from Zendesk carries a mark: its "Zendesk #…" link
   points at the ticket with the comment's id. Before posting, the sync searches the other side:
@@ -421,6 +463,10 @@ v1.73.0.
   - A Zendesk comment made from a chat message (through the API, with that message's text) never comes back into the
     chat.
   - A chat message already on the ticket is not sent again.
+  - A public reply is known under the signature Zendesk puts after it (v1.83.0: seen 2026-11-16, "Best regards,
+    Thomas Kvalvåg …" under a reply the sync sent). Before, a second browser running the sync would have sent such a
+    reply to the customer again and brought it back into the chat; the sync's own comments come from the API, which
+    the check relies on, also measured that day.
   - So a second browser running the sync for the same chat, or a browser whose record of the link is out of date,
     posts nothing twice. Even so, turn the sync on in one browser only.
 - **The chat on screen.** Rocketlane shows new messages through its push events. If a message the sync posted does not
@@ -442,7 +488,8 @@ v1.73.0.
   button and rounds keep away from it.
 - **Tests:** `node --test "rocketlane-younium-status/test/*.test.js"` runs the engine against an in-memory chat and
   Zendesk. `node rocketlane-younium-status/test/chat-sync-e2e.js` runs the button and panel in headless Chrome,
-  including the Chat Bridge's hand-over.
+  including the Chat Bridge's hand-over and, since v1.83.0, a second ticket: linking it, the bar and the "/" list
+  for each ticket, routing by number and by Reply, the main ticket, and unlinking.
 
 ---
 

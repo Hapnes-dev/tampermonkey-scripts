@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.82.0
+// @version      1.83.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -105,8 +105,12 @@
  *     /reply, and where this browser sends the chat's messages the word
  *     becomes an invisible mark, so no one sees "/reply"; a Zendesk message
  *     comes in without its signature, and times are Norwegian, 24-hour
- *     (v1.82.0). Off until turned on in this browser (button on chat pages,
- *     Tampermonkey menu); one tab runs it.
+ *     (v1.82.0). A chat can link more than one ticket (v1.83.0): a message
+ *     goes to the ticket it names (#N), else the one whose message it
+ *     answers, else the main one; the ticket list ranks by the plant
+ *     number, the store's name and the contractor, and says why. Off until
+ *     turned on in this browser (button on chat pages, Tampermonkey menu);
+ *     one tab runs it.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -6140,7 +6144,7 @@
   const RL_MC_POPUP_ID = "rlChatMacroPopup";
   const rlMc = { el: null, token: "", items: [], index: 0, dismissedEl: null, dismissedToken: "" };
   // Entries other sections add to the list (the Zendesk sync's /reply, v1.82.0): each a function of the message box -
-  // { el, atStart: the "/word" is the start of the message } - giving an entry or null. An entry with `apply` is no
+  // { el, atStart: the "/word" is the start of the message } - giving an entry, several (v1.83.0), or null. An entry with `apply` is no
   // text: picked, it does its own thing with the box - apply(el, token), the token null when the box holds the whole
   // word. A `strict` entry matches only from the start of its name.
   const RL_MC_EXTRA = [];
@@ -6159,7 +6163,10 @@
     for (const f of RL_MC_EXTRA) {
       let m = null;
       try { m = f(ctx); } catch (_) { m = null; }
-      if (m && (m.strict ? String(m.name).toLowerCase().startsWith(q) : rlMacroFilter([m], q).length)) out.push(m);
+      // an entry, or several (the sync's /reply for each linked ticket, v1.83.0)
+      for (const x of Array.isArray(m) ? m : m ? [m] : []) {
+        if (x.strict ? String(x.name).toLowerCase().startsWith(q) : rlMacroFilter([x], q).length) out.push(x);
+      }
     }
     return out;
   }
@@ -6268,7 +6275,9 @@
   function rlMcUpdate() {
     const c = rlMcCaret();
     const tok = c ? rlMacroToken(c.before) : null;
-    if (!c || !tok) { rlMcClose(); return; }
+    // no "/word" before the caret: one closed with Esc is over (v1.83.0) - kept, the same word in a later message
+    // never opened the list again, in the same box (Rocketlane keeps its message box)
+    if (!c || !tok) { rlMc.dismissedEl = null; rlMc.dismissedToken = ""; rlMcClose(); return; }
     if (rlMc.dismissedEl === c.el && rlMc.dismissedToken === tok.token) return; // closed with Esc for this "/word"
     rlMc.dismissedEl = null;
     rlMc.dismissedToken = "";
@@ -17180,6 +17189,15 @@
   //     browser sends the chat's messages itself, "/reply" - typed or picked - becomes the reply mark, an invisible
   //     separator the sync reads as the word, so the chat never shows "/reply", also to those without the script.
   //     A Zendesk message comes in without its signature; every time shown is Norwegian time, 24-hour.
+  //     v1.83.0: more than one ticket in a chat. Each ticket's new messages come in under its own number; a message
+  //     written in the chat goes to one of them - the one it names at its start ("#213200 …", "/reply #213200 …"),
+  //     else the one whose message it answers (Rocketlane's Reply), else the chat's main ticket - and the message box,
+  //     the "/" list and the marks name that ticket. The chat is told when a ticket is linked or unlinked, and when the
+  //     main one changes. The ticket list ranks by the plant number, the store's own name (not the chain's) and the
+  //     project's contractor as requester, and says why; a ticket with another plant's Plant ID or linked elsewhere is
+  //     marked. Fixed on the way: a reply under the signature Zendesk adds was not known as sent (a second browser would
+  //     send it again); a link made while a round claimed the lock was lost; the queue's view, now in a Zendesk folder
+  //     ("Views (legacy)::…"), was not found without its id kept.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17219,20 +17237,34 @@
     const REPLY_MARK = "\u2063";
     const LEAD_RE = /^[\s\u00a0\u200B\u2060\uFEFF]*(?:\u2063[\s\u00a0\u200B\u2060\uFEFF]*(?:\/reply\b[ \t\u00a0:]*)?|\/reply\b[ \t\u00a0:]*)/i;
 
+    // A ticket named at the start of a message, after /reply when there is one: "#213200 …", "/reply #213200 …" (v1.83.0).
+    // It chooses the ticket only when that ticket is linked to the chat; any other "#123456" is just text.
+    const SEL_RE = /^[\s\u00A0\u200B\u2060\uFEFF]*#(\d{4,10})(?=[\s\u00A0:,.]|$)[\s\u00A0:,.]*/;
+    const idsOf = (linked) => new Set((Array.isArray(linked) ? linked : linked instanceof Set ? [...linked] : linked ? [linked] : []).map(String));
+
     /** A chat message: a public reply to the customer when it starts with the reply mark or /reply, else an internal
-     *  note. The mark never goes to the ticket. */
-    function parseChatMessage(text) {
+     *  note. The mark never goes to the ticket. Given the chat's `linked` tickets (v1.83.0), a "#N" at its start - after
+     *  /reply when there is one - that names one of them is read too: `ticket` is N, and the number is not in `body`. */
+    function parseChatMessage(text, linked) {
       const t = String(text || "");
       const m = LEAD_RE.exec(t);
-      return { isPublic: !!m, body: (m ? t.slice(m[0].length) : t).split(REPLY_MARK).join("").trim() };
+      let rest = m ? t.slice(m[0].length) : t, ticket = "";
+      const sel = linked ? SEL_RE.exec(rest) : null;
+      if (sel && idsOf(linked).has(sel[1])) { ticket = sel[1]; rest = rest.slice(sel[0].length); }
+      const out = { isPublic: !!m, body: rest.split(REPLY_MARK).join("").trim() };
+      if (ticket) out.ticket = ticket;
+      return out;
     }
 
     /** What a message being written will be on the ticket: "reply" when it starts with /reply (read as parseChatMessage
      *  reads it), "typo" when it starts with a word close to it ("/replay") or the old /kunde - an internal note then,
-     *  which the writer should know - else "note". A word counts once it is finished (a space or ":" after it). */
+     *  which the writer should know - or with a ticket's number before /reply (v1.83.0: /reply comes first, so the
+     *  number then is not read as a ticket), else "note". A word counts once it is finished (a space or ":" after it). */
     function composeModeOf(text) {
       const t = String(text || "").replace(/[\u200B\u2060\uFEFF]/g, "");
       if (parseChatMessage(t).isPublic) return { mode: "reply", word: "/reply" };
+      const sel = SEL_RE.exec(t);
+      if (sel && /^\/reply\b/i.test(t.slice(sel[0].length))) return { mode: "typo", word: "#" + sel[1] + " /reply", order: true };
       const m = /^\s*\/([a-zæøå_]+)[\s:]/i.exec(t);
       const w = m ? m[1].toLowerCase() : "";
       if (w === "kunde" || w === "customer" || (w.length >= 3 && w[0] === "r" && editDistance(w, "reply") <= 2)) return { mode: "typo", word: "/" + m[1] };
@@ -17240,13 +17272,17 @@
     }
     /** The "/reply" or reply mark a sent message starts with, as the chat shows its first paragraph (v1.81.0): `whole` when that
      *  paragraph holds nothing else - it is hidden - else how many characters to hide; null when it does not start
-     *  with /reply as parseChatMessage reads it. The chat's own text is never changed, only how it is shown. */
-    function replyLead(firstParagraph) {
+     *  with /reply as parseChatMessage reads it. With the chat's `linked` tickets, the "#N" after it that chose one of
+     *  them is hidden too (v1.83.0): the mark names the ticket. The chat's own text is never changed, only how it is shown. */
+    function replyLead(firstParagraph, linked) {
       // measured on the text as it stands, zero-width marks and all, so the length cuts the very text it was read from
       const t = String(firstParagraph || "");
       const m = /^[\s\u00A0\u200B\u2060\uFEFF]*(?:\u2063[ \t\u00A0\u200B\u2060\uFEFF]*(?:\/reply\b[ \t\u00A0\u200B\u2060\uFEFF:]*)?|\/reply\b[ \t\u00A0\u200B\u2060\uFEFF:]*)/i.exec(t);
       if (!m) return null;
-      return t.slice(m[0].length).replace(/[\u200B\u2060\u2063\uFEFF]/g, "").trim() ? { whole: false, length: m[0].length } : { whole: true, length: t.length };
+      let length = m[0].length;
+      const sel = linked ? SEL_RE.exec(t.slice(length)) : null;
+      if (sel && idsOf(linked).has(sel[1])) length += sel[0].length;
+      return t.slice(length).replace(/[\u200B\u2060\u2063\uFEFF]/g, "").trim() ? { whole: false, length } : { whole: true, length: t.length };
     }
     function editDistance(a, b) {
       let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -17387,23 +17423,40 @@
       .replace(/&#39;|&apos;/gi, "'").replace(/&amp;/gi, "&").replace(/[\u200B\u2060\u2063\uFEFF]/g, "").replace(/[\s\u00a0]+/g, " ").trim();
     const viaApi = (z) => !!(z && z.via && z.via.channel === "api");
     const zdText = (z) => norm(z && (z.plain_body != null ? z.plain_body : textOfHtml(z.html_body || z.body || "")));
-    /** What chat message `m` becomes on the ticket, in each form a browser running the sync gives it: plain from the
-     *  person running it, else with the writer's name before a note or after a reply. None for the sync's own. */
-    function forwardForms(m) {
+    /** What chat message `m` becomes on the ticket, as written, in each form a browser running the sync gives it:
+     *  plain from the person running it, else with the writer's name before a note or after a reply - and each also
+     *  without a "#N" at its start, for a message that chose its ticket so (v1.83.0). None for the sync's own. */
+    function formsOf(m) {
       if (!m || OWN_RE.test(String(m.content || ""))) return [];
-      const msg = parseChatMessage(textOfHtml(m.content));
-      if (!msg.body) return [];
+      const body = parseChatMessage(textOfHtml(m.content)).body;
+      if (!body) return [];
+      const sel = SEL_RE.exec(body);
+      const bodies = sel && body.slice(sel[0].length).trim() ? [body, body.slice(sel[0].length).trim()] : [body];
       const who = authorName(m.user);
-      return (who ? [msg.body, who + " (Rocketlane):\n" + msg.body, msg.body + "\n\n— " + who] : [msg.body]).map(norm);
+      return [].concat(...bodies.map((b) => (who ? [b, who + " (Rocketlane):\n" + b, b + "\n\n— " + who] : [b])));
     }
+    function forwardForms(m) { return formsOf(m).map(norm); }
+    // A public reply made through the API carries its sender's Zendesk signature after the text - Zendesk adds it (seen
+    // 2026-11-16: "Best regards, Thomas Kvalvåg …" under a reply the sync sent). Without this, a reply the sync sent was
+    // never known on the ticket by its text, and a second browser running the sync would send it to the customer again.
+    const cutSignature = (s) => {
+      const lines = String(s || "").split("\n");
+      const i = lines.findIndex((l) => isSignOff(l.trim()));
+      return i > 0 ? lines.slice(0, i).join("\n") : String(s || "");
+    };
     /** Whether Zendesk comment `z` is chat message `m` sent to the ticket, by any browser: made through the API after the
-     *  message was written, with its text - and at most the sync's line on files that could not go. */
+     *  message was written, with its text - and at most the sync's line on files that could not go, or, on a public
+     *  reply, the signature Zendesk puts under it (v1.83.0). */
     function isForwardOf(z, m) {
       if (!viaApi(z)) return false;
       const t = ms(z.created_at);
       if (t && t < ms(m.createdAt) - 120000) return false;
       const text = zdText(z);
-      return !!text && forwardForms(m).some((f) => text === f || text.startsWith(f + " Not attached"));
+      if (!text) return false;
+      if (forwardForms(m).some((f) => text === f || text.startsWith(f + " Not attached"))) return true;
+      if (z.public === false) return false;
+      const cut = norm(cutSignature(z.plain_body != null ? z.plain_body : textOfHtml(z.html_body || z.body || "")));
+      return !!cut && cut !== text && formsOf(m).some((f) => cut === norm(cutSignature(f)));
     }
     /** For a mark only (v1.81.1), so looser than isForwardOf, which keeps nothing from crossing twice: made through the
      *  API or the agent's session in the browser - the sync posts with that session, which Zendesk may record as "web" -
@@ -17429,18 +17482,20 @@
     /** What became of chat message `m`, for its mark (v1.81.1): this browser's record of sending it (`e.sent`) first;
      *  else the ticket's `comments` (by its text, whichever browser sent it); else this browser's sync having taken it
      *  on - sent, or found on the ticket - before records were kept. Null when none of them knows. Thomas: a reply the
-     *  customer got showed "Not sent", the text match alone having missed it. */
+     *  customer got showed "Not sent", the text match alone having missed it. `ticketId` (v1.83.0): which of the chat's
+     *  tickets it went to - the record's, else the one the chat's routing gives it. */
     function wentAs(e, m, comments) {
       if (!m) return null;
       const id = cidOf(m);
       const rec = e && e.sent && e.sent[id];
-      if (rec) return { commentId: rec.z != null ? String(rec.z) : "", isPublic: rec.p === 1, at: Number(rec.t) || 0 };
+      const where = () => (e ? routeOf(e, parseChatMessage(textOfHtml(m.content), ticketIdsOf(e)), quoteOf(m)).ticketId : "");
+      if (rec) return { commentId: rec.z != null ? String(rec.z) : "", isPublic: rec.p === 1, at: Number(rec.t) || 0, ticketId: rec.k ? String(rec.k) : where() };
       const z = sentAs(m, comments);
-      if (z) return z;
+      if (z) return Object.assign(z, { ticketId: where() });
       // rlSince is the newest message's time when the chat was linked: that message was there, not sent
       if (e && ms(m.createdAt) > Number(e.rlSince || 0) && (e.rlSeen || []).includes(id)) {
         const msg = parseChatMessage(textOfHtml(m.content));
-        if (msg.body || rlFilesOf(m).length) return { commentId: "", isPublic: msg.isPublic, at: 0 };
+        if (msg.body || rlFilesOf(m).length) return { commentId: "", isPublic: msg.isPublic, at: 0, ticketId: where() };
       }
       return null;
     }
@@ -17448,11 +17503,11 @@
      *  rlSince is the newest one's time then, so it counts too. */
     function beforeLink(e, m) { return !!(e && m && ms(m.createdAt) <= Number(e.rlSince || 0)); }
     // what a chat message became on the ticket, kept per link for its mark: chat id -> { z: comment id, p: 1 when public,
-    // t: when } (v1.81.1), the newest KEEP of them
-    function noteSent(e, chatId, z) {
+    // t: when, k: the ticket (v1.83.0) } (v1.81.1), the newest KEEP of them
+    function noteSent(e, chatId, z, ticketId) {
       const s = Object.assign({}, e.sent || {});
       delete s[chatId];
-      s[chatId] = { z: z && z.id != null ? String(z.id) : null, p: z && z.public === false ? 0 : 1, t: (z && ms(z.created_at)) || now() };
+      s[chatId] = { z: z && z.id != null ? String(z.id) : null, p: z && z.public === false ? 0 : 1, t: (z && ms(z.created_at)) || now(), k: ticketId != null ? String(ticketId) : null };
       const keys = Object.keys(s);
       for (const k of keys.slice(0, Math.max(0, keys.length - KEEP))) delete s[k];
       e.sent = s;
@@ -17543,21 +17598,91 @@
     }
     const historyHtml = (comments, users, ticketId) => historyParts(comments, users, ticketId).map((p) => p.html);
 
-    /** The queue's tickets for a project, best match first: the project's plant number as the ticket's Plant ID, then
-     *  in its subject, then in its text, then words of the project's name. -> [{ticket, score}] */
-    function rankTickets(tickets, projectName, plantFieldId) {
-      const name = String(projectName || "");
+    // ---- which tickets suit a project (v1.83.0) ----
+    // Thomas: "see if you can find improvements when you give recommended cases to link to the project". Measured on the
+    // queue on 2026-11-16 against his 39 projects: the plant number (Plant ID, or in the subject) found 5 tickets, all
+    // right; two more were his projects' and went unasked - "bunnpris VIKA" and "Sv: 207394 - Extra Trofors Laksvollen"
+    // (its Plant ID "0000") - each naming the store only, each written by the project's contractor. So a store's own name
+    // counts, and the contractor; the chain's name and the kind of project ("Extra", "Ny butikk") do not.
+    /** A word in one form for comparing: lower case, æ as ae, ø as o, å and aa as a, other accents off (Mære, Maere;
+     *  Fosnavåg, Fosnavaag). */
+    function fold(s) {
+      return String(s || "").toLowerCase().replace(/æ/g, "ae").replace(/ø/g, "o").replace(/å/g, "a")
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/aa/g, "a");
+    }
+    // words of a project's name that do not tell which store it is: chains, the kind of project, filler
+    const NAME_NOISE = new Set(("coop extra prix obs mega marked spar eurospar bunnpris rema kiwi meny joker naerbutikken storcash " +
+      "kesko supermarket citymarket prisma lidl ica maxi nara matkroken europris sm ny nye new store butikk butikken ombygging " +
+      "omb ettermarked aftermarked aftermarket utvidelse mqtt kampanje ac anlegg prosjekt project kulde kjol kjole frys service " +
+      "as asa oy ab norge norway mat og the and team oppgaver delivery improvements tracker workload sync iwmac integrator test").split(" "));
+    /** The words of a project's name that tell its store - "10263 - Extra Laksvollen: New store" gives Laksvollen. ->
+     *  [{ word: folded, label: as written }] */
+    function nameWords(name) {
+      const seen = new Set();
+      return String(name || "").replace(/^\s*\d{3,6}\b/, "").split(/[^0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF]+/)
+        .map((w) => ({ word: fold(w), label: w }))
+        .filter((x) => x.word.length >= 3 && !/^\d+$/.test(x.word) && !NAME_NOISE.has(x.word) && !seen.has(x.word) && !!seen.add(x.word));
+    }
+    // words of a company's name that do not tell which company it is
+    const COMPANY_NOISE = new Set(("as asa oy ab ltd gmbh inc norge norway sverige sweden finland danmark commercial refrigeration " +
+      "kulde kuldeteknikk kuldeteknisk kjoleservice kjoleteknikk klima klimateknikk teknisk tekniske teknikk avdeling industri " +
+      "service partner kiona internal").split(" "));
+    const companyWords = (s) => new Set(fold(s).split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !COMPANY_NOISE.has(w)));
+    // mail providers and Kiona's own: an address there says nothing of the company
+    const MAIL_NOISE = new Set(("gmail.com googlemail.com hotmail.com hotmail.no outlook.com outlook.no live.com live.no msn.com " +
+      "online.no icloud.com me.com yahoo.com yahoo.no kiona.com iwmac.no iwmac.com").split(" "));
+
+    /** The queue's tickets for a project, best first. `project`: its name, or { name, company, emails, domains } - its
+     *  customer company and its external members' addresses (v1.83.0); a ticket's requester and organisation come as
+     *  `_requester` { email } and `_org` { name }. `ctx`: { linkedHere: [ticket ids], linkedElsewhere: { id: chat } } -
+     *  the chat's own tickets are left out, another chat's are marked and never `found`. -> [{ ticket, score, found, why }]:
+     *  `found` when the ticket is the project's surely enough to ask about it - its Plant ID or its number in the subject,
+     *  or its store or its number in the text written by the project's contractor, its Plant ID naming no other plant;
+     *  `why` in words, strongest first, a conflict last. */
+    function rankTickets(tickets, project, plantFieldId, ctx) {
+      const p = project && typeof project === "object" ? project : { name: String(project || "") };
+      const name = String(p.name || "");
       const num = (/^\s*(\d{3,6})\b/.exec(name) || [])[1] || "";
       const numRe = num ? new RegExp("(^|\\D)" + num + "(\\D|$)") : null;
-      const words = name.replace(/^\s*\d+\s*-\s*/, "").split(":")[0].toLowerCase().split(/[^a-z0-9æøå]+/i).filter((w) => w.length >= 4);
-      return (tickets || []).map((t) => {
-        const subj = String(t.subject || ""), desc = String(t.description || "");
+      const words = nameWords(name).map((w) => Object.assign(w, { re: new RegExp("(^|[^a-z0-9])" + w.word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "([^a-z0-9]|$)") }));
+      const emails = new Set((p.emails || []).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean));
+      const domains = new Set((p.domains || []).map((x) => String(x || "").trim().toLowerCase()).filter((d) => d && !MAIL_NOISE.has(d)));
+      const company = companyWords(p.company);
+      const here = new Set(((ctx && ctx.linkedHere) || []).map(String));
+      const elsewhere = (ctx && ctx.linkedElsewhere) || {};
+      return (tickets || []).filter((t) => t && !here.has(String(t.id))).map((t) => {
+        const why = [];
         let score = 0;
-        if (num && plantOf(t, plantFieldId) === String(Number(num))) score += 20;
-        if (numRe && numRe.test(subj)) score += 10;
-        if (numRe && numRe.test(desc)) score += 5;
-        for (const w of words) if (subj.toLowerCase().includes(w)) score += 2;
-        return { ticket: t, score };
+        const plant = plantOf(t, plantFieldId);
+        const byPlant = !!num && plant === String(Number(num));
+        // a Plant ID that names another plant: the store's name alone does not make the ticket this project's - measured
+        // on the live queue, "10270 Kanda As" (Plant ID 10270) came up for "3313 - Kanda: Utvidelse"; its own number in
+        // the subject still does ("10259, Extra Mære (ny)", whose Plant ID is the old plant's, 2191)
+        const otherPlant = !!plant && !byPlant;
+        if (byPlant) { score += 20; why.push("Plant ID " + plant); }
+        const subj = String(t.subject || ""), desc = String(t.description || "");
+        const numSubj = !!numRe && numRe.test(subj), numDesc = !!numRe && numRe.test(desc);
+        if (numSubj) { score += 10; if (!byPlant) why.push(num + " in the subject"); }
+        if (numDesc) { score += 5; if (!byPlant && !numSubj) why.push(num + " in the text"); }
+        // the store's own name: in the subject it says much, somewhere in a long email less
+        const fs = fold(subj), fd = fold(desc);
+        let inSubj = 0, inDesc = 0;
+        for (const w of words) {
+          if (w.re.test(fs)) { if (inSubj++ < 2) { score += 6; why.push("“" + w.label + "” in the subject"); } }
+          else if (w.re.test(fd)) { if (inDesc++ < 2) { score += 2; why.push("“" + w.label + "” in the text"); } }
+        }
+        // the project's contractor wrote it: the requester is one of the project's members, or from its customer company
+        const email = String((t._requester && t._requester.email) || "").trim().toLowerCase(), domain = email.split("@")[1] || "";
+        const org = String((t._org && t._org.name) || "");
+        let contractor = 0;
+        if (email && emails.has(email)) { contractor = 4; why.push("requester is on the project"); }
+        else if ((domain && domains.has(domain)) || [...companyWords(org)].some((w) => company.has(w))) { contractor = 2; why.push("from " + (org || domain)); }
+        score += contractor;
+        if (otherPlant) { score -= 4; why.push("Plant ID " + plant + ", another plant"); }
+        const other = elsewhere[String(t.id)];
+        if (other) { score -= 15; why.push("linked to another chat"); }
+        const found = !other && (byPlant || numSubj || (!otherPlant && (inSubj > 0 || numDesc) && contractor > 0));
+        return { ticket: t, score, found, why };
       }).sort((a, b) => b.score - a.score || ms(b.ticket.updated_at) - ms(a.ticket.updated_at));
     }
 
@@ -17568,9 +17693,63 @@
       return ((await deps.zd.queueTickets()) || []).filter(isActive);
     }
 
-    function load() { const s = deps.store.load() || {}; s.links = s.links || {}; return s; }
+    // ---- links: a chat and the tickets linked to it (v1.83.0: more than one) ----
+    // Thomas: "can you also make it so i can link multiple zendesk cases to the chat?" A link is the chat's: what of the
+    // chat has gone across (rlSince, rlSeen, ownRl, sent) and its tickets, each with how far its own messages have come
+    // (zdMax, ownZd, zdUpdatedAt), its state and its earlier messages. One of them is the main ticket: a message that
+    // names no ticket and answers none goes there. A link as 1.82 and before kept it - one ticket, its fields on the link
+    // itself - becomes one of these as it is read, nothing posted again.
+    function upgrade(e) {
+      if (!e || typeof e !== "object" || Array.isArray(e.tickets)) return e;
+      const t = {
+        ticketId: String(e.ticketId), subject: String(e.subject || ""), linkedAt: Number(e.linkedAt) || 0,
+        zdMax: Number(e.zdMax) || 0, zdUpdatedAt: String(e.zdUpdatedAt || ""), ownZd: Array.isArray(e.ownZd) ? e.ownZd : [],
+        status: String(e.status || "active"), note: String(e.note || ""), historyPosted: !!e.historyPosted, filesPosted: !!e.filesPosted,
+      };
+      return {
+        projectId: String(e.projectId), conversationId: String(e.conversationId), main: t.ticketId, tickets: [t],
+        rlSince: Number(e.rlSince) || 0, rlSeen: Array.isArray(e.rlSeen) ? e.rlSeen : [], ownRl: Array.isArray(e.ownRl) ? e.ownRl : [],
+        sent: e.sent && typeof e.sent === "object" ? e.sent : {}, status: t.status, note: t.note, lastRun: Number(e.lastRun) || 0,
+      };
+    }
+    function load() {
+      const s = deps.store.load() || {};
+      s.links = s.links || {};
+      for (const k of Object.keys(s.links)) s.links[k] = upgrade(s.links[k]);
+      return s;
+    }
+    const ticketsOf = (e) => (e && Array.isArray(e.tickets) ? e.tickets : []);
+    const ticketIdsOf = (e) => ticketsOf(e).map((t) => String(t.ticketId));
+    const ticketOf = (e, id) => ticketsOf(e).find((t) => String(t.ticketId) === String(id)) || null;
+    /** The chat's state in one, for its button: an error on any ticket, paused when all are; the tickets' notes. */
+    function summarise(e) {
+      const ts = ticketsOf(e);
+      e.status = ts.some((t) => t.status === "error") ? "error" : ts.length && ts.every((t) => t.status === "paused") ? "paused" : "active";
+      const noted = ts.filter((t) => t.note);
+      e.note = ts.length > 1 ? noted.map((t) => "#" + t.ticketId + ": " + t.note).join(" ") : noted.length ? noted[0].note : "";
+    }
 
     function linkOf(projectId, conversationId) { return load().links[keyOf(projectId, conversationId)] || null; }
+
+    /** The ticket a message of the sync's own names at its start ("Zendesk #N · …"), or "". */
+    function ticketNamedIn(content) {
+      const s = String(content || "");
+      const m = /^\s*Zendesk #(\d+)\b/.exec(/</.test(s) ? textOfHtml(s) : s);
+      return m ? m[1] : "";
+    }
+    // the message a chat message answers with Rocketlane's Reply: its content (checked 2026-11-16 - commentMeta.repliedTo
+    // holds the answered message's commentId, content, user and time)
+    const quoteOf = (c) => String((c && c.commentMeta && c.commentMeta.repliedTo && c.commentMeta.repliedTo.content) || "");
+    /** Which of the chat's tickets a message goes to (v1.83.0): the one it names at its start ("#213200 …", read by
+     *  parseChatMessage with the chat's tickets), else the one whose message it answers (Rocketlane's Reply on one of the
+     *  sync's messages, "Zendesk #N · …"), else the chat's main ticket. -> { ticketId, why: "named" | "reply" | "main" } */
+    function routeOf(e, msg, quoted) {
+      const linked = ticketIdsOf(e);
+      if (msg && msg.ticket && linked.includes(String(msg.ticket))) return { ticketId: String(msg.ticket), why: "named" };
+      const q = ticketNamedIn(quoted);
+      if (q && linked.includes(q)) return { ticketId: q, why: "reply" };
+      return { ticketId: String((e && e.main) || linked[0] || ""), why: "main" };
+    }
 
     /** Posts chat messages the sync made itself, and keeps their ids so they never go to Zendesk. */
     async function postOwn(projectId, conversationId, html, attachments) {
@@ -17580,96 +17759,149 @@
         if (e) { e.ownRl = tail(e.ownRl.concat(String(made.id))); e.rlSeen = tail(e.rlSeen.concat(String(made.id))); deps.store.save(s2); }
       }
     }
+    const refList = (ids) => ids.map((id) => "#" + esc(id)).join(", ");
 
-    /** Links the chat to an active ticket of the queue. The chat gets a short message saying so; from then on both sides
-     *  go across, new messages only. The ticket's earlier messages come only on request (postHistory), and what was in
-     *  the chat before stays in the chat. */
+    /** Links the chat to an active ticket of the queue - its first, or one more (v1.83.0). The chat gets a short message
+     *  saying so; from then on both sides go across, new messages only. The ticket's earlier messages come only on
+     *  request (postHistory), and what was in the chat before stays in the chat. */
     async function link(projectId, conversationId, ticketId) {
       const ticket = (await queue()).find((t) => String(t.id) === String(ticketId));
       if (!ticket) throw new Error("Ticket #" + ticketId + " is not an active ticket in the queue.");
+      const key = keyOf(projectId, conversationId);
+      const had = load().links[key];
+      if (had && ticketOf(had, ticket.id)) return had;
       // the ticket's newest message: only those after it come into the chat (Thomas: no earlier ones by themselves)
       const zd = await deps.zd.getComments(ticket.id);
-      const rl = await deps.rl.getComments(projectId, conversationId);
+      const rl = had ? [] : await deps.rl.getComments(projectId, conversationId);
       const st = load();
-      const entry = {
-        projectId: String(projectId), conversationId: String(conversationId), ticketId: String(ticket.id),
-        subject: String(ticket.subject || ""), linkedAt: now(),
-        zdMax: Math.max(0, ...zd.comments.map((c) => Number(c.id) || 0)),
-        rlSince: Math.max(0, ...rl.map((c) => ms(c.createdAt))),
-        rlSeen: tail(rl.map(cidOf)), ownRl: [], ownZd: [],
-        status: "active", note: "", lastRun: 0, historyPosted: false, filesPosted: false,
+      let e = st.links[key];
+      const t = {
+        ticketId: String(ticket.id), subject: String(ticket.subject || ""), linkedAt: now(),
+        zdMax: Math.max(0, ...zd.comments.map((c) => Number(c.id) || 0)), zdUpdatedAt: "", ownZd: [],
+        status: "active", note: "", historyPosted: false, filesPosted: false,
       };
-      st.links[keyOf(projectId, conversationId)] = entry;
+      if (!e) {
+        e = {
+          projectId: String(projectId), conversationId: String(conversationId), main: t.ticketId, tickets: [],
+          rlSince: Math.max(0, ...rl.map((c) => ms(c.createdAt))), rlSeen: tail(rl.map(cidOf)), ownRl: [], sent: {},
+          status: "active", note: "", lastRun: 0,
+        };
+        st.links[key] = e;
+      }
+      e.tickets.push(t);
+      summarise(e);
       deps.store.save(st);
       // two short lines: which ticket (a link to it in Zendesk), and what writing here does
-      await postOwn(projectId, conversationId, "<p>" + zdRef(ticket.id) + " is linked to this chat" + (entry.subject ? " · " + esc(entry.subject) : "") + "</p>" +
-        "<p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>");
+      const subj = t.subject ? " · " + esc(t.subject) : "";
+      if (e.tickets.length === 1) {
+        await postOwn(projectId, conversationId, "<p>" + zdRef(ticket.id) + " is linked to this chat" + subj + "</p>" +
+          "<p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>");
+      } else {
+        await postOwn(projectId, conversationId, "<p>" + zdRef(ticket.id) + " is linked to this chat too" + subj + "</p>" +
+          "<p>Messages here still go to " + zdRef(e.main) + ". To write to #" + esc(t.ticketId) + ", reply to one of its messages " +
+          "or start with #" + esc(t.ticketId) + ".</p>");
+      }
       return linkOf(projectId, conversationId);
     }
 
-    /** The ticket's messages from before the link, posted in the chat once. */
-    async function postHistoryOf(projectId, conversationId, zd, before) {
+    /** Makes a linked ticket the chat's main one (v1.83.0): messages that name no ticket and answer none go there. The
+     *  chat is told, so everyone in it knows. */
+    async function setMain(projectId, conversationId, ticketId) {
+      const st = load(), e = st.links[keyOf(projectId, conversationId)], t = ticketOf(e, ticketId);
+      if (!t) throw new Error("Ticket #" + ticketId + " is not linked to this chat.");
+      if (e.main === t.ticketId) return e;
+      e.main = t.ticketId;
+      deps.store.save(st);
+      const others = ticketIdsOf(e).filter((id) => id !== t.ticketId);
+      await postOwn(projectId, conversationId, "<p>" + zdRef(t.ticketId) + " is now the main ticket of this chat" + (t.subject ? " · " + esc(t.subject) : "") + "</p>" +
+        "<p>Messages here go to it. To write to " + (others.length === 1 ? refList(others) + ", reply to one of its messages or start with " + refList(others)
+          : "another ticket, reply to one of its messages or start with its number: " + refList(others)) + ".</p>");
+      return linkOf(projectId, conversationId);
+    }
+
+    /** A ticket's messages from before its link, posted in the chat once. */
+    async function postHistoryOf(projectId, conversationId, ticketId, zd, before) {
       const users = new Map((zd.users || []).map((u) => [u.id, u]));
-      const st = load(), e = st.links[keyOf(projectId, conversationId)];
-      if (!e || e.historyPosted) return 0;
-      const earlier = zd.comments.filter((c) => Number(c.id) <= e.zdMax && ms(c.created_at) < before && !e.ownZd.includes(String(c.id)));
-      for (const part of historyParts(earlier, users, e.ticketId)) {
+      const t = ticketOf(linkOf(projectId, conversationId), ticketId);
+      if (!t || t.historyPosted) return 0;
+      const earlier = zd.comments.filter((c) => Number(c.id) <= t.zdMax && ms(c.created_at) < before && !t.ownZd.includes(String(c.id)));
+      for (const part of historyParts(earlier, users, t.ticketId)) {
         // the pictures and files of the messages in this part go with it
         const { attached, links } = await carry(projectId, [].concat(...part.comments.map(filesOf)));
         await postOwn(projectId, conversationId, part.html + filesHtml(links), attached);
       }
-      const s2 = load(), e2 = s2.links[keyOf(projectId, conversationId)];
-      if (e2) { e2.historyPosted = true; e2.filesPosted = true; deps.store.save(s2); }
+      const s2 = load(), t2 = ticketOf(s2.links[keyOf(projectId, conversationId)], ticketId);
+      if (t2) { t2.historyPosted = true; t2.filesPosted = true; deps.store.save(s2); }
       return earlier.length;
     }
 
-    /** The ticket's messages from before the link, posted in the chat: once for a chat linked before 1.17.4, or `again`
-     *  (after the earlier copies were deleted from the chat). -> how many */
-    async function postHistory(projectId, conversationId, again) {
+    /** A linked ticket's messages from before its link, posted in the chat: once, or `again` (after the earlier copies
+     *  were deleted from the chat). `ticketId`: which of the chat's tickets, the main one unless given. -> how many */
+    async function postHistory(projectId, conversationId, again, ticketId) {
       const e = linkOf(projectId, conversationId);
       if (!e) throw new Error("This chat is not linked to a ticket.");
-      if (e.historyPosted && !again) return 0;
+      const t = ticketOf(e, ticketId != null ? ticketId : e.main);
+      if (!t) throw new Error("Ticket #" + ticketId + " is not linked to this chat.");
+      if (t.historyPosted && !again) return 0;
       if (again) {
-        const st = load(), x = st.links[keyOf(projectId, conversationId)];
+        const st = load(), x = ticketOf(st.links[keyOf(projectId, conversationId)], t.ticketId);
         x.historyPosted = false;
         deps.store.save(st);
       }
-      return postHistoryOf(projectId, conversationId, await deps.zd.getComments(e.ticketId, 1), e.linkedAt || Infinity);
+      return postHistoryOf(projectId, conversationId, t.ticketId, await deps.zd.getComments(t.ticketId, 1), t.linkedAt || Infinity);
     }
 
-    /** The pictures and files of the ticket's messages already in the chat, for a chat linked before they came along
-     *  (1.74.0): a message for each Zendesk message that has any, once. -> how many files */
-    async function postFiles(projectId, conversationId) {
+    /** The pictures and files of a linked ticket's messages already in the chat, for a chat linked before they came
+     *  along (1.74.0): a message for each Zendesk message that has any, once. `ticketId` as postHistory. -> how many files */
+    async function postFiles(projectId, conversationId, ticketId) {
       const e = linkOf(projectId, conversationId);
       if (!e) throw new Error("This chat is not linked to a ticket.");
-      if (e.filesPosted) return 0;
-      const zd = await deps.zd.getComments(e.ticketId, 1);
+      const t = ticketOf(e, ticketId != null ? ticketId : e.main);
+      if (!t) throw new Error("Ticket #" + ticketId + " is not linked to this chat.");
+      if (t.filesPosted) return 0;
+      const zd = await deps.zd.getComments(t.ticketId, 1);
       const users = new Map((zd.users || []).map((u) => [u.id, u]));
       let n = 0;
       for (const c of (zd.comments || []).slice().sort((a, b) => Number(a.id) - Number(b.id))) {
-        if (!(Number(c.id) <= e.zdMax) || e.ownZd.includes(String(c.id))) continue;
+        if (!(Number(c.id) <= t.zdMax) || t.ownZd.includes(String(c.id))) continue;
         const files = filesOf(c);
         if (!files.length) continue;
         const u = users.get(c.author_id);
         const { attached, links } = await carry(projectId, files);
         if (!attached.length && !links.length) continue;
-        await postOwn(projectId, conversationId, "<p><b>Zendesk #" + esc(e.ticketId) + "</b> · " + esc((u && u.name) || "Unknown") + kindOf(c, u) +
+        await postOwn(projectId, conversationId, "<p><b>Zendesk #" + esc(t.ticketId) + "</b> · " + esc((u && u.name) || "Unknown") + kindOf(c, u) +
           (c.created_at ? " · " + esc(when(c.created_at)) : "") + " · images and files</p>" + filesHtml(links), attached);
         n += attached.length + links.length;
       }
-      const st = load(), x = st.links[keyOf(projectId, conversationId)];
+      const st = load(), x = ticketOf(st.links[keyOf(projectId, conversationId)], t.ticketId);
       if (x) { x.filesPosted = true; deps.store.save(st); }
       return n;
     }
 
-    function unlink(projectId, conversationId) {
-      const st = load();
-      delete st.links[keyOf(projectId, conversationId)];
+    /** Unlinks a ticket from the chat - all of them without `ticketId`, as does unlinking the last. When others stay
+     *  (v1.83.0), the main ticket's place goes to the next, and the chat is told what it goes to now. Its state changes
+     *  at once; the promise is the chat's message. */
+    function unlink(projectId, conversationId, ticketId) {
+      const st = load(), key = keyOf(projectId, conversationId), e = st.links[key];
+      if (!e) return Promise.resolve();
+      const gone = ticketId == null ? null : ticketOf(e, ticketId);
+      if (ticketId != null && !gone) return Promise.resolve();
+      if (!gone || ticketsOf(e).length <= 1) {
+        delete st.links[key];
+        deps.store.save(st);
+        return Promise.resolve();
+      }
+      e.tickets = e.tickets.filter((t) => t !== gone);
+      if (e.main === gone.ticketId) e.main = e.tickets[0].ticketId;
+      summarise(e);
       deps.store.save(st);
+      const others = ticketIdsOf(e).filter((id) => id !== e.main);
+      return postOwn(projectId, conversationId, "<p>" + zdRef(gone.ticketId) + " is no longer linked to this chat</p>" +
+        "<p>Messages here go to " + zdRef(e.main) + (others.length ? ", unless they answer or name " + refList(others) : "") + ".</p>");
     }
 
-    /** One round for every link: the ticket's new messages into the chat, then the chat's new messages to the ticket.
-     *  Each message moved is saved at once, so a round that fails part way goes on from there the next time. */
+    /** One round for every link: each ticket's new messages into the chat, then the chat's new messages each to its
+     *  ticket. Each message moved is saved at once, so a round that fails part way goes on from there the next time. */
     async function runOnce() {
       const st = load();
       const keys = Object.keys(st.links);
@@ -17677,84 +17909,103 @@
       if (!keys.length) return out;
       // a linked ticket syncs while it is new, open, pending or on hold - also when it has left the queue's view, which
       // shows only new and open ones
-      const statuses = (await deps.zd.statuses(keys.map((k) => st.links[k].ticketId))) || {};
+      const statuses = (await deps.zd.statuses([].concat(...keys.map((k) => ticketIdsOf(st.links[k]))))) || {};
       const runner = Number(deps.rl.userId()) || 0;
       for (const key of keys) {
         const e = st.links[key];
         e.lastRun = now();
-        // its status, and when it last changed: its comments are fetched only when that moved
-        const info = statuses[e.ticketId];
-        const status = String((info && typeof info === "object" ? info.status : info) || "").toLowerCase();
-        const updatedAt = info && typeof info === "object" ? String(info.updatedAt || "") : "";
-        if (ACTIVE[status] !== 1) {
-          e.status = "paused";
-          e.note = status ? "The ticket is " + (STATUS_WORD[status] || status) + ": the sync waits until it is opened again." : "The ticket was not found in Zendesk.";
-          out.paused++;
-          deps.store.save(st);
-          continue;
+        // each ticket's status, and when it last changed: its comments are fetched only when that moved. A ticket that is
+        // solved waits, and only it - the chat's other tickets go on (v1.83.0)
+        const active = [];
+        for (const t of ticketsOf(e)) {
+          const info = statuses[t.ticketId];
+          const status = String((info && typeof info === "object" ? info.status : info) || "").toLowerCase();
+          if (ACTIVE[status] !== 1) {
+            t.status = "paused";
+            t.note = status ? "The ticket is " + (STATUS_WORD[status] || status) + ": the sync waits until it is opened again." : "The ticket was not found in Zendesk.";
+            out.paused++;
+            continue;
+          }
+          active.push({ t, updatedAt: info && typeof info === "object" ? String(info.updatedAt || "") : "" });
         }
+        summarise(e);
+        deps.store.save(st);
+        if (!active.length) continue;
+        let current = null;   // the ticket being worked on, which an error is told on
         try {
           // the chat as it stands, read first: what is in it is not posted again, and what came from it does not come back
           const chat = ((await deps.rl.getComments(e.projectId, e.conversationId)) || [])
             .filter((c) => c && c.messageType === "USER_MESSAGE")
             .sort((a, b) => ms(a.createdAt) - ms(b.createdAt) || Number(cidOf(a)) - Number(cidOf(b)));
           const sinceLink = chat.filter((m) => ms(m.createdAt) >= e.rlSince);
-          // the ticket -> the chat
-          const moved = !updatedAt || e.zdUpdatedAt !== updatedAt;
-          const zd = moved ? await deps.zd.getComments(e.ticketId, e.zdMax) : { comments: [], users: [] };
-          let posted = 0;
-          const users = new Map((zd.users || []).map((u) => [u.id, u]));
-          for (const c of zd.comments.slice().sort((a, b) => Number(a.id) - Number(b.id))) {
-            if (!(Number(c.id) > e.zdMax)) continue;
-            if (e.ownZd.includes(String(c.id))) { e.zdMax = Number(c.id); continue; }
-            // made of a chat message - by this browser before its record was saved, or by another browser running the
-            // sync: the chat's own, it never comes back, and that message is on the ticket already (the oldest of the
-            // same words not yet known as sent: the same words written twice are two messages)
-            const sources = sinceLink.filter((m) => isForwardOf(c, m));
-            if (sources.length) {
-              // the message it came of counts as sent only as what it was meant to be, a reply as a public comment: a
-              // sync older than the reply mark sends a marked message as a note, and the reply must still go (v1.82.0)
-              const m = sources.find((x) => !e.rlSeen.includes(cidOf(x)) && (c.public !== false) === parseChatMessage(textOfHtml(x.content)).isPublic);
-              if (m) { e.rlSeen = tail(e.rlSeen.concat(cidOf(m))); noteSent(e, cidOf(m), c); }
-              e.ownZd = tail(e.ownZd.concat(String(c.id)));
-              e.zdMax = Number(c.id);
+          // each ticket -> the chat
+          for (const { t, updatedAt } of active) {
+            current = t;
+            const moved = !updatedAt || t.zdUpdatedAt !== updatedAt;
+            const zd = moved ? await deps.zd.getComments(t.ticketId, t.zdMax) : { comments: [], users: [] };
+            let posted = 0;
+            const users = new Map((zd.users || []).map((u) => [u.id, u]));
+            for (const c of zd.comments.slice().sort((a, b) => Number(a.id) - Number(b.id))) {
+              if (!(Number(c.id) > t.zdMax)) continue;
+              if (t.ownZd.includes(String(c.id))) { t.zdMax = Number(c.id); continue; }
+              // made of a chat message - by this browser before its record was saved, or by another browser running the
+              // sync: the chat's own, it never comes back, and that message is on the ticket already (the oldest of the
+              // same words not yet known as sent: the same words written twice are two messages)
+              const sources = sinceLink.filter((m) => isForwardOf(c, m));
+              if (sources.length) {
+                // the message it came of counts as sent only as what it was meant to be, a reply as a public comment: a
+                // sync older than the reply mark sends a marked message as a note, and the reply must still go (v1.82.0)
+                const m = sources.find((x) => !e.rlSeen.includes(cidOf(x)) && (c.public !== false) === parseChatMessage(textOfHtml(x.content)).isPublic);
+                if (m) { e.rlSeen = tail(e.rlSeen.concat(cidOf(m))); noteSent(e, cidOf(m), c, t.ticketId); }
+                t.ownZd = tail(t.ownZd.concat(String(c.id)));
+                t.zdMax = Number(c.id);
+                deps.store.save(st);
+                continue;
+              }
+              const user = users.get(c.author_id);
+              // in the chat already (posted from another browser): not again
+              if (inChatAlready(c, user, t.ticketId, chat)) { t.zdMax = Number(c.id); deps.store.save(st); continue; }
+              // its pictures and files go with it into Rocketlane; those that cannot stay links
+              const { attached, links } = await carry(e.projectId, filesOf(c));
+              const made = await deps.rl.postComment(e.projectId, e.conversationId, chatHtmlOf(c, user, t.ticketId, links), true, attached);
+              if (made && made.id != null) { e.ownRl = tail(e.ownRl.concat(String(made.id))); e.rlSeen = tail(e.rlSeen.concat(String(made.id))); }
+              t.zdMax = Number(c.id);
+              out.mirrored++;
+              posted++;
               deps.store.save(st);
-              continue;
             }
-            const user = users.get(c.author_id);
-            // in the chat already (posted from another browser): not again
-            if (inChatAlready(c, user, e.ticketId, chat)) { e.zdMax = Number(c.id); deps.store.save(st); continue; }
-            // its pictures and files go with it into Rocketlane; those that cannot stay links
-            const { attached, links } = await carry(e.projectId, filesOf(c));
-            const made = await deps.rl.postComment(e.projectId, e.conversationId, chatHtmlOf(c, user, e.ticketId, links), true, attached);
-            if (made && made.id != null) { e.ownRl = tail(e.ownRl.concat(String(made.id))); e.rlSeen = tail(e.rlSeen.concat(String(made.id))); }
-            e.zdMax = Number(c.id);
-            out.mirrored++;
-            posted++;
-            deps.store.save(st);
+            if (updatedAt) t.zdUpdatedAt = updatedAt;
+            if (posted) out.posted.push({ projectId: e.projectId, conversationId: e.conversationId, ticketId: t.ticketId, count: posted });
+            t.status = "active";
+            t.note = "";
           }
-          if (updatedAt) e.zdUpdatedAt = updatedAt;
-          if (posted) out.posted.push({ projectId: e.projectId, conversationId: e.conversationId, ticketId: e.ticketId, count: posted });
-          // the chat -> the ticket
-          let recent = null;   // the ticket's latest comments, read once when a message is about to go
+          current = null;
+          // the chat -> the tickets: each message to the ticket it names, or answers, or else the main one
+          const linked = ticketIdsOf(e);
+          const recent = new Map();   // ticket -> its latest comments, read once when a message is about to go there
           for (const c of chat) {
             const id = cidOf(c);
             if (e.rlSeen.includes(id) || e.ownRl.includes(id)) continue;
             const mine = runner > 0 && Number((c.user && c.user.userId) || c.createdBy) === runner;
             if (ms(c.createdAt) < e.rlSince || (mine && OWN_RE.test(String(c.content || "")))) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
-            let msg = parseChatMessage(textOfHtml(c.content));
+            let msg = parseChatMessage(textOfHtml(c.content), linked);
             // sent as a reply from this browser, the mark gone from it on the way: still a reply, once (v1.82.0)
-            if (!msg.isPublic && msg.body && mine && deps.intents && deps.intents.take(key, norm(msg.body), ms(c.createdAt))) msg = { isPublic: true, body: msg.body };
+            if (!msg.isPublic && msg.body && mine && deps.intents && deps.intents.take(key, norm(msg.body), ms(c.createdAt))) msg = Object.assign({}, msg, { isPublic: true });
             const files = rlFilesOf(c);
             if (!msg.body && !files.length) { e.rlSeen = tail(e.rlSeen.concat(id)); continue; }
+            const go = active.find((x) => x.t.ticketId === routeOf(e, msg, quoteOf(c)).ticketId);
+            // its ticket is solved: the message waits until it is opened again, and the others go on
+            if (!go) continue;
+            const t = go.t;
+            current = t;
             // on the ticket already - sent from another browser, or before this one's record was saved: not again
             if (msg.body) {
-              if (!recent) recent = ((((await deps.zd.getComments(e.ticketId)) || {}).comments) || []).slice().sort((a, b) => Number(a.id) - Number(b.id));
-              // the oldest such comment not yet known as another message's: the same words written twice go twice
-              // a reply is on the ticket only as a public comment: a sync that does not know the reply mark sends the
-              // message as a note, and that must not keep the reply from going (v1.82.0)
-              const dup = recent.find((z) => !e.ownZd.includes(String(z.id)) && isForwardOf(z, c) && (z.public !== false) === msg.isPublic);
-              if (dup) { e.ownZd = tail(e.ownZd.concat(String(dup.id))); e.rlSeen = tail(e.rlSeen.concat(id)); noteSent(e, id, dup); deps.store.save(st); continue; }
+              if (!recent.has(t.ticketId)) recent.set(t.ticketId, ((((await deps.zd.getComments(t.ticketId)) || {}).comments) || []).slice().sort((x, y) => Number(x.id) - Number(y.id)));
+              // the oldest such comment not yet known as another message's: the same words written twice go twice; a reply
+              // is on the ticket only as a public comment: a sync that does not know the reply mark sends the message as a
+              // note, and that must not keep the reply from going (v1.82.0)
+              const dup = recent.get(t.ticketId).find((z) => !t.ownZd.includes(String(z.id)) && isForwardOf(z, c) && (z.public !== false) === msg.isPublic);
+              if (dup) { t.ownZd = tail(t.ownZd.concat(String(dup.id))); e.rlSeen = tail(e.rlSeen.concat(id)); noteSent(e, id, dup, t.ticketId); deps.store.save(st); continue; }
             }
             const who = authorName(c.user);
             // its files go to Zendesk first and the comment carries them; a message of files alone says their names
@@ -17763,27 +18014,27 @@
             const text = msg.body || files.map((f) => f.name).join(", ");
             let body = mine || !who ? text : msg.isPublic ? text + "\n\n— " + who : who + " (Rocketlane):\n" + text;
             if (missing && !msg.isPublic) body += "\n\nNot attached, see the Rocketlane chat: " + missing;
-            const res = await deps.zd.addComment(e.ticketId, body, msg.isPublic, sent.uploads);
-            if (res && res.commentId != null) e.ownZd = tail(e.ownZd.concat(String(res.commentId)));
+            const res = await deps.zd.addComment(t.ticketId, body, msg.isPublic, sent.uploads);
+            if (res && res.commentId != null) t.ownZd = tail(t.ownZd.concat(String(res.commentId)));
             e.rlSeen = tail(e.rlSeen.concat(id));
-            noteSent(e, id, { id: res && res.commentId != null ? res.commentId : null, public: msg.isPublic, created_at: now() });
+            noteSent(e, id, { id: res && res.commentId != null ? res.commentId : null, public: msg.isPublic, created_at: now() }, t.ticketId);
             out.forwarded++;
             deps.store.save(st);
             if (missing && msg.isPublic) {
               // the reply went to the customer without them: the team is told in a note (the reply is out, so at most once)
               try {
-                const note = await deps.zd.addComment(e.ticketId, "Not attached to the reply above, see the Rocketlane chat: " + missing, false, []);
-                if (note && note.commentId != null) { e.ownZd = tail(e.ownZd.concat(String(note.commentId))); deps.store.save(st); }
+                const note = await deps.zd.addComment(t.ticketId, "Not attached to the reply above, see the Rocketlane chat: " + missing, false, []);
+                if (note && note.commentId != null) { t.ownZd = tail(t.ownZd.concat(String(note.commentId))); deps.store.save(st); }
               } catch (_) {}
             }
           }
-          e.status = "active";
-          e.note = "";
         } catch (err) {
-          e.status = "error";
-          e.note = String((err && err.message) || err).slice(0, 300);
+          // told on the ticket being worked on - or, when the chat itself could not be read, on the main one
+          const t = current || ticketOf(e, e.main) || ticketsOf(e)[0];
+          if (t) { t.status = "error"; t.note = String((err && err.message) || err).slice(0, 300); }
           out.errors++;
         }
+        summarise(e);
         deps.store.save(st);
       }
       return out;
@@ -17791,7 +18042,9 @@
 
     function links() { return load().links; }
 
-    return { link, unlink, linkOf, links, postHistory, postFiles, runOnce, queue, rankTickets, plantOf, chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, replyLead, sentAs, wentAs, beforeLink, isActive, clockOf, dayOf, when, replyMark: REPLY_MARK, normText: norm };
+    return { link, unlink, setMain, linkOf, links, ticketsOf, routeOf, ticketNamedIn, postHistory, postFiles, runOnce, queue, rankTickets, nameWords, plantOf, quoteOf,
+      whereTo: (e, c) => (e ? routeOf(e, parseChatMessage(textOfHtml(c && c.content), ticketIdsOf(e)), quoteOf(c)).ticketId : ticketNamedIn(quoteOf(c))),
+      chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, replyLead, sentAs, wentAs, beforeLink, isActive, clockOf, dayOf, when, replyMark: REPLY_MARK, normText: norm };
   }
   // @@ZDSYNC-ENGINE-END
 
@@ -17859,12 +18112,18 @@
       const title = viewTitle();
       const cached = get(VIEWID_KEY, null);
       if (cached && cached.title === title && cached.id) return cached.id;
-      let path = "/views.json?active=true&per_page=100", found = null;
+      // Zendesk keeps views in folders as "Folder::Title" - "Views (legacy)::IWMAC Leveranse - Kulde", seen 2026-11-16 -
+      // so the title alone counts too, after an exact match (v1.83.0); before, a browser without the id kept found nothing
+      const bare = (v) => String(v || "").split("::").pop().trim().toLowerCase();
+      let path = "/views.json?active=true&per_page=100", found = null, loose = null;
       for (let i = 0; path && i < 10 && !found; i++) {
         const j = await zd("GET", path);
-        found = ((j && j.views) || []).find((v) => String(v.title || "").trim().toLowerCase() === title.toLowerCase()) || null;
+        const views = (j && j.views) || [];
+        found = views.find((v) => String(v.title || "").trim().toLowerCase() === title.toLowerCase()) || null;
+        loose = loose || views.find((v) => bare(v.title) === bare(title)) || null;
         path = nextPath(j);
       }
+      found = found || loose;
       if (!found) throw new Error("The Zendesk view “" + title + "” was not found (Tampermonkey menu: choose the queue).");
       set(VIEWID_KEY, { title, id: found.id });
       return found.id;
@@ -17904,26 +18163,48 @@
           const p = await rl("GET", "/projects/" + encodeURIComponent(projectId));
           return String((p && (p.projectName || p.name)) || "");
         },
+        // the project's name, its customer company and its external members' addresses: what tells a ticket is the
+        // project's (v1.83.0) - the contractor's people write most of the queue
+        async projectInfo(projectId) {
+          const j = await rl("GET", "/projects/" + encodeURIComponent(projectId));
+          const p = (j && (j.projectName || j.name) ? j : j && j.data) || {};
+          const ext = (p.teamMembers || []).filter((u) => u && u.userType && u.userType !== "NATIVE");
+          const emails = [...new Set(ext.map((u) => String(u.emailId || "").trim().toLowerCase()).filter((x) => x.includes("@")))];
+          return { name: String(p.projectName || p.name || ""), company: String((p.customer && p.customer.companyName) || ""),
+            emails, domains: [...new Set(emails.map((x) => x.split("@")[1]))] };
+        },
       },
       zd: {
         async queueTickets() {
-          const byId = new Map();
+          const byId = new Map(), users = new Map(), orgs = new Map();
+          const keep = (j) => {
+            for (const u of (j && j.users) || []) users.set(String(u.id), u);
+            for (const o of (j && j.organizations) || []) orgs.set(String(o.id), o);
+          };
           const query = await queueQuery();
           if (query) {
-            let path = "/search.json?query=" + encodeURIComponent(query) + "&per_page=100";
+            // with each ticket's requester and organisation, in the same answer: who wrote it tells the project too (v1.83.0)
+            let path = "/search.json?query=" + encodeURIComponent(query) + "&per_page=100&include=tickets(users,organizations)";
             for (let i = 0; path && i < 5; i++) {
               const j = await zd("GET", path);
+              keep(j);
               for (const t of (j && j.results) || []) if (t && t.result_type === "ticket") byId.set(String(t.id), t);
               path = nextPath(j);
             }
           }
           // the view's own tickets as well: search lags a little behind a new ticket
           const id = await viewId();
-          let path = "/views/" + id + "/tickets.json?per_page=100";
+          let path = "/views/" + id + "/tickets.json?per_page=100&include=users,organizations";
           for (let i = 0; path && i < 5; i++) {
             const j = await zd("GET", path);
+            keep(j);
             for (const t of (j && j.tickets) || []) if (!byId.has(String(t.id))) byId.set(String(t.id), t);
             path = nextPath(j);
+          }
+          for (const t of byId.values()) {
+            const u = users.get(String(t.requester_id)), o = orgs.get(String(t.organization_id));
+            if (u) t._requester = { email: String(u.email || ""), name: String(u.name || "") };
+            if (o) t._org = { name: String(o.name || "") };
           }
           return [...byId.values()];
         },
@@ -18102,8 +18383,11 @@
     async function round() {
       if (!enabled() || legacy()) return false;
       if (running) { rerun = true; return true; }
-      if (!(await claim())) return false;
+      // running from before the lock is claimed (v1.83.0): what the panel does waits for the round from now on. Set after
+      // the claim, a link made during it - the claim waits up to 0.8 s - was lost to the round's save of the state it had
+      // read before (the e2e caught a second ticket vanishing so)
       running = true;
+      if (!(await claim())) { running = false; rerun = false; return false; }
       markBusy(true);
       const viewing = chatIds(), shownBefore = viewing ? zendeskShown() : 0;
       let res = null;
@@ -18183,6 +18467,9 @@
       "button.b{padding:4px 10px;border:1px solid #2f6fed;border-radius:6px;background:#2f6fed;color:#fff;font:inherit;cursor:pointer}",
       "button.g{padding:4px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#344054;font:inherit;cursor:pointer}",
       ".acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}a{color:#2f6fed}",
+      // why a ticket is listed where it is, and a linked ticket's block in a chat with more than one (v1.83.0)
+      ".why{display:flex;flex-wrap:wrap;gap:4px;margin:3px 0 2px}.why .match{margin-left:0}.match.weak{background:#f2f4f7;color:#475467}.match.warn{background:#fef3f2;color:#b42318}",
+      ".tk{border-top:1px solid #eaecf0;margin-top:8px;padding-top:8px}.tk .s{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sec{margin-top:10px}",
       ".every{margin-top:8px}.every select{font:inherit;font-size:12px;padding:1px 4px;border:1px solid #d0d5dd;border-radius:5px;background:#fff;color:#344054}",
       // what the message being written will be: on the message box, never in the way of a click
       ".frame{position:fixed;z-index:2147482999;pointer-events:none;border:2px solid #e8590c;border-radius:10px;box-shadow:0 0 0 4px rgba(232,89,12,.16)}",
@@ -18213,31 +18500,42 @@
     // Norwegian time, 24-hour (v1.82.0)
     const hhmm = (t) => (t ? sync.clockOf(t) : "");
 
-    // the project's tickets in the queue, best match first, kept two minutes per project
+    // the queue and the project as the ticket list needs them - its name, customer company and members - kept two minutes
+    // per project, and ranked with the chat's links as they stand when looked at (v1.83.0)
     const ranked = new Map();
     let ranking = null;
     async function rankedFor(projectId, fresh) {
       const hit = ranked.get(projectId);
       if (!fresh && hit && Date.now() - hit.at < 120000) return hit;
       try {
-        const [tickets, name, fieldId] = await Promise.all([sync.queue(), api.rl.projectName(projectId).catch(() => ""), api.zd.plantFieldId().catch(() => null)]);
-        const got = { at: Date.now(), list: sync.rankTickets(tickets, name, fieldId), name, fieldId, error: "" };
+        const [tickets, info, fieldId] = await Promise.all([sync.queue(), api.rl.projectInfo(projectId).catch(() => ({ name: "" })),
+          api.zd.plantFieldId().catch(() => null)]);
+        const got = { at: Date.now(), tickets, info, name: info.name, fieldId, error: "" };
         ranked.set(projectId, got);
         return got;
       } catch (err) {
-        const got = { at: Date.now(), list: [], error: String((err && err.message) || err) };
+        const got = { at: Date.now(), tickets: [], info: { name: "" }, name: "", fieldId: null, error: String((err && err.message) || err) };
         ranked.set(projectId, got);
         return got;
       }
     }
-    /** The ticket the project's plant number points at (its Plant ID, or the number in its subject), if it is known. */
-    function foundFor(projectId) {
-      const hit = ranked.get(projectId);
-      if ((!hit || Date.now() - hit.at > 120000) && !ranking) {
-        ranking = rankedFor(projectId).then(() => { ranking = null; paint(); });
+    /** The queue ranked for a chat (sync.rankTickets): the chat's own tickets left out, another chat's marked. */
+    function rankFor(ids, got) {
+      if (!got || !got.tickets) return [];
+      const here = [], elsewhere = {}, mine = ids.projectId + ":" + ids.conversationId;
+      for (const [k, e] of Object.entries(sync.links())) {
+        for (const t of sync.ticketsOf(e)) { if (k === mine) here.push(t.ticketId); else elsewhere[t.ticketId] = k; }
       }
-      const best = hit && hit.list[0];
-      return best && best.score >= 10 ? best : null;
+      return sync.rankTickets(got.tickets, got.info, got.fieldId, { linkedHere: here, linkedElsewhere: elsewhere });
+    }
+    /** The tickets surely the project's (rankTickets' `found`) and not linked to the chat, best first. The queue is read
+     *  in the background when it is not known yet, and the button painted again then. */
+    function foundFor(ids) {
+      const hit = ranked.get(ids.projectId);
+      if ((!hit || Date.now() - hit.at > 120000) && !ranking) {
+        ranking = rankedFor(ids.projectId).then(() => { ranking = null; paint(); });
+      }
+      return rankFor(ids, hit).filter((r) => r.found);
     }
 
     function paint() {
@@ -18253,15 +18551,16 @@
         return;
       }
       const e = sync.linkOf(ids.projectId, ids.conversationId);
+      const found = foundFor(ids);
       if (!e) {
-        const best = foundFor(ids.projectId);
+        const best = found[0];
         if (best) {
           pill.className = "pill found";
           pill.append("Zendesk #" + best.ticket.id + " found · Link");
-          pill.title = String(best.ticket.subject || "");
+          pill.title = String(best.ticket.subject || "") + (best.why.length ? "\n" + best.why.join(" · ") : "");
           // ask once per visit to the chat - not again here for a ticket the user said "Not now" to
           const chatKey = ids.projectId + ":" + ids.conversationId;
-          if (panel.hidden && !asked.has(chatKey) && String(notNow()[chatKey] || "") !== String(best.ticket.id)) {
+          if (panel.hidden && !asked.has(chatKey) && !notNowOf(ids).includes(String(best.ticket.id))) {
             asked.add(chatKey);
             openSuggest(ids, best, ranked.get(ids.projectId));
           }
@@ -18272,9 +18571,18 @@
         }
         return;
       }
+      // linked: the main ticket and how many more, the state - and the project's tickets found but not linked, unless
+      // put off with "Not now" (v1.83.0)
+      const ts = sync.ticketsOf(e);
+      const extra = found.filter((r) => !notNowOf(ids).includes(String(r.ticket.id))).length;
       pill.className = "pill " + (e.status === "active" ? "on" : e.status);
-      pill.append("Zendesk #" + e.ticketId + (e.status === "active" ? " ⇄ " + (e.lastRun ? "synced " + hhmm(e.lastRun) : "linked") : e.status === "paused" ? " · paused" : " · error"));
-      pill.title = e.note || ("Synced with Zendesk #" + e.ticketId + " “" + e.subject + "”");
+      pill.append("Zendesk #" + e.main + (ts.length > 1 ? " +" + (ts.length - 1) : "") +
+        (e.status === "active" ? " ⇄ " + (e.lastRun ? "synced " + hhmm(e.lastRun) : "linked") : e.status === "paused" ? " · paused" : " · error") +
+        (extra ? " · " + extra + " more found" : ""));
+      pill.title = ts.length > 1
+        ? ts.map((t) => "Zendesk #" + t.ticketId + " “" + t.subject + "”" + (t.ticketId === e.main ? " - messages go here" : "") + (t.note ? " - " + t.note : "")).join("\n")
+        : e.note || ("Synced with Zendesk #" + e.main + " “" + ts[0].subject + "”");
+      if (extra) pill.title += "\n" + extra + (extra === 1 ? " more ticket in the queue looks" : " more tickets in the queue look") + " like this project's: see the panel";
     }
 
     const asked = new Set();
@@ -18282,45 +18590,68 @@
     const STATUS_LABEL = { new: "new", open: "open", pending: "waiting for customer", hold: "on hold", solved: "solved", closed: "closed" };
     const statusLabel = (t) => STATUS_LABEL[String((t && t.status) || "").toLowerCase()] || String((t && t.status) || "");
     const notNow = () => { const v = get(DISMISS_KEY, {}); return v && typeof v === "object" ? v : {}; };
-
-    /** The ticket found for the chat's project, and the question whether to link it. */
-    function openSuggest(ids, best, got) {
-      const t = best.ticket;
-      panel.hidden = false;
-      panel.textContent = "";
-      panel.append(el("h3", null, "Found a ticket for this project"));
-      const card = el("div", "row");
+    // the tickets the user said "Not now" to in a chat: one, as it was kept, or several since v1.83.0 ("53123,53125")
+    const notNowOf = (ids) => String(notNow()[ids.projectId + ":" + ids.conversationId] || "").split(",").filter(Boolean);
+    function putOff(ids, ticketId) {
+      const d = notNow();
+      d[ids.projectId + ":" + ids.conversationId] = [...new Set(notNowOf(ids).concat(String(ticketId)))].join(",");
+      set(DISMISS_KEY, d);
+    }
+    /** Why a ticket is listed where it is, as chips: its strongest reasons (v1.83.0). */
+    function whyChips(r) {
+      const box = el("span", "why");
+      for (const w of r.why.slice(0, 3)) box.append(el("span", "match" + (w === "linked to another chat" || /another plant$/.test(w) ? " warn" : r.found ? "" : " weak"), w.length > 44 ? w.slice(0, 43) + "…" : w));
+      return box;
+    }
+    function ticketLine(t, got) {
+      const plant = got ? sync.plantOf(t, got.fieldId) : "";
+      return el("span", "muted", statusLabel(t) + (plant ? " · Plant ID " + plant : "") + (t.updated_at ? " · " + sync.dayOf(t.updated_at) : ""));
+    }
+    function ticketRow(t) {
+      const row = el("div", "row");
       const txt = el("div", "t");
       const top = el("span", "s");
       top.append(el("b", null, "#" + t.id + " "), document.createTextNode(String(t.subject || "(no subject)")));
-      const plant = got ? sync.plantOf(t, got.fieldId) : "";
-      txt.append(top, el("span", "muted", statusLabel(t) + (plant ? " · Plant ID " + plant : "") +
-        (t.updated_at ? " · " + sync.dayOf(t.updated_at) : "")));
-      card.append(txt);
-      panel.append(card);
-      panel.append(el("div", "muted", "Link this chat to the ticket? Its new messages then appear here as they come (earlier ones only if you ask, " +
-        "in the panel). What is written here goes to the ticket as an internal note (/reply for a reply to the customer)."));
+      txt.append(top);
+      row.append(txt);
+      return { row, txt };
+    }
+    const openLink = (ticketId) => {
+      const a = el("a", null, "Open in Zendesk");
+      a.href = ZD_HOST + "/agent/tickets/" + encodeURIComponent(ticketId);
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      return a;
+    };
+
+    /** A ticket found for the chat's project, and the question whether to link it - the chat's first, or one more. */
+    function openSuggest(ids, best, got) {
+      const t = best.ticket;
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      panel.hidden = false;
+      panel.textContent = "";
+      panel.append(el("h3", null, e ? "Another ticket for this project" : "Found a ticket for this project"));
+      const { row, txt } = ticketRow(t);
+      if (best.why.length) txt.append(whyChips(best));
+      txt.append(ticketLine(t, got));
+      panel.append(row);
+      panel.append(el("div", "muted", e
+        ? "Link it too? Its new messages then come in here as well. Messages written here still go to #" + e.main +
+          ", unless they answer one of its messages or start with #" + t.id + "."
+        : "Link this chat to the ticket? Its new messages then appear here as they come (earlier ones only if you ask, " +
+          "in the panel). What is written here goes to the ticket as an internal note (/reply for a reply to the customer)."));
       const acts = el("div", "acts");
-      const yes = el("button", "b", "Link");
+      const yes = el("button", "b", e ? "Link too" : "Link");
       const later = el("button", "g", "Not now");
-      const other = el("button", "g", "Choose another ticket");
-      const open = el("a", null, "Open in Zendesk");
-      open.href = ZD_HOST + "/agent/tickets/" + encodeURIComponent(t.id);
-      open.target = "_blank";
-      open.rel = "noopener noreferrer";
+      const other = el("button", "g", e ? "Back" : "Choose another ticket");
       yes.onclick = async () => {
         yes.disabled = true;
         try { await exclusive(() => sync.link(ids.projectId, ids.conversationId, t.id)); panel.hidden = true; paint(); }
         catch (err) { yes.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
       };
-      later.onclick = () => {
-        const d = notNow();
-        d[ids.projectId + ":" + ids.conversationId] = String(t.id);
-        set(DISMISS_KEY, d);
-        panel.hidden = true;
-      };
+      later.onclick = () => { putOff(ids, t.id); panel.hidden = true; paint(); };
       other.onclick = () => { void openPanel(); };
-      acts.append(yes, later, other, open);
+      acts.append(yes, later, other, openLink(t.id));
       panel.append(acts);
     }
 
@@ -18330,9 +18661,116 @@
       if (!ids) return;
       if (!enabled() || sync.linkOf(ids.projectId, ids.conversationId)) return openPanel();
       const got = await rankedFor(ids.projectId);
-      const best = got.list[0];
-      if (best && best.score >= 10) { asked.add(ids.projectId + ":" + ids.conversationId); openSuggest(ids, best, got); return; }
+      const best = rankFor(ids, got).find((r) => r.found);
+      if (best) { asked.add(ids.projectId + ":" + ids.conversationId); openSuggest(ids, best, got); return; }
       return openPanel();
+    }
+
+    /** A linked ticket's buttons: its earlier messages and files, the main ticket, unlinking it, Zendesk. `before`: put
+     *  ahead of Unlink (Sync now, in a chat with one ticket). */
+    function ticketActs(ids, e, t, before) {
+      const several = sync.ticketsOf(e).length > 1;
+      const acts = el("div", "acts");
+      // a link brings only new messages: the ticket's earlier ones on request, once
+      if (!t.historyPosted) {
+        const hist = el("button", "g", "Post earlier messages");
+        hist.title = "Posts the ticket's messages from before the link in this chat, once";
+        hist.onclick = async () => {
+          hist.disabled = true;
+          try { const n = await exclusive(() => sync.postHistory(ids.projectId, ids.conversationId, false, t.ticketId)); hist.textContent = n ? n + " earlier messages posted" : "No earlier messages"; }
+          catch (err) { hist.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
+        };
+        acts.append(hist);
+      } else {
+        const again = el("button", "g", "Post earlier messages again");
+        again.title = "Delete the old copies in the chat first: this posts the ticket's messages from before the link once more, tidied";
+        again.onclick = async () => {
+          again.disabled = true;
+          try { const n = await exclusive(() => sync.postHistory(ids.projectId, ids.conversationId, true, t.ticketId)); again.textContent = n + " earlier messages posted"; }
+          catch (err) { again.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
+        };
+        acts.append(again);
+      }
+      // a chat linked before 1.74.0 has the ticket's messages without their pictures and files: those, once
+      if (t.historyPosted && !t.filesPosted) {
+        const files = el("button", "g", "Post earlier images and files");
+        files.title = "Posts the images and files of the ticket's messages already in this chat, once";
+        files.onclick = async () => {
+          files.disabled = true;
+          files.textContent = "Posting images and files…";
+          try { const n = await exclusive(() => sync.postFiles(ids.projectId, ids.conversationId, t.ticketId)); files.textContent = n ? n + (n === 1 ? " file posted" : " images and files posted") : "No earlier images or files"; }
+          catch (err) { files.disabled = false; files.textContent = "Post earlier images and files"; panel.append(el("div", "err", String((err && err.message) || err))); }
+        };
+        acts.append(files);
+      }
+      for (const b of before || []) acts.append(b);
+      if (several && t.ticketId !== e.main) {
+        const main = el("button", "g", "Make main");
+        main.title = "Messages that name no ticket and answer none go to the main ticket. The chat is told.";
+        main.onclick = () => {
+          main.disabled = true;
+          void exclusive(() => sync.setMain(ids.projectId, ids.conversationId, t.ticketId))
+            .then(() => { paint(); void openPanel(); }, (err) => { main.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); });
+        };
+        acts.append(main);
+      }
+      const off = el("button", "g", "Unlink");
+      off.title = several ? "Unlinks #" + t.ticketId + " only; the chat is told" : "Unlinks the chat from the ticket";
+      off.onclick = () => {
+        off.disabled = true;
+        void exclusive(() => sync.unlink(ids.projectId, ids.conversationId, t.ticketId)).then(() => {
+          paint();
+          if (sync.linkOf(ids.projectId, ids.conversationId)) void openPanel(); else panel.hidden = true;
+        });
+      };
+      acts.append(off, openLink(t.ticketId));
+      return acts;
+    }
+
+    /** Tickets of the queue as rows to link, each with why it is listed - the chat's first, or one more. `putOffToo`:
+     *  each also with "Not now" (those found for a linked chat). */
+    function queueRows(ids, host, list, got, more, putOffToo) {
+      for (const r of list) {
+        const t = r.ticket;
+        const { row, txt } = ticketRow(t);
+        if (r.why.length) txt.append(whyChips(r));
+        txt.append(ticketLine(t, got));
+        const go = el("button", "b", more ? "Link too" : "Link");
+        go.onclick = () => {
+          // asked once more: linking posts a note in the chat, and from then on both sides go across
+          const ask = el("div", "acts");
+          const yes = el("button", "b", "Yes, link #" + t.id + (more ? " too" : ""));
+          const no = el("button", "g", "Cancel");
+          yes.onclick = async () => {
+            yes.disabled = true;
+            no.disabled = true;
+            try { await exclusive(() => sync.link(ids.projectId, ids.conversationId, t.id)); paint(); if (more) void openPanel(); else panel.hidden = true; }
+            catch (err) { yes.disabled = false; no.disabled = false; host.prepend(el("div", "err", String((err && err.message) || err))); }
+          };
+          no.onclick = () => { ask.replaceWith(go); };
+          ask.append(yes, no);
+          go.replaceWith(ask);
+        };
+        row.append(go);
+        if (putOffToo) {
+          const later = el("button", "g", "Not now");
+          later.onclick = () => { putOff(ids, t.id); row.remove(); paint(); };
+          row.append(later);
+        }
+        host.append(row);
+      }
+    }
+    /** The queue in the panel, best match first. */
+    async function showQueue(ids, host, more) {
+      host.textContent = "";
+      host.append(el("div", "muted", "Loading the queue…"));
+      const got = await rankedFor(ids.projectId, true);
+      paint();
+      host.textContent = "";
+      if (got.error) { host.append(el("div", "err", got.error)); return; }
+      const list = rankFor(ids, got);
+      if (!list.length) host.append(el("div", "muted", more ? "No other active tickets in the queue." : "No active tickets in the queue."));
+      queueRows(ids, host, list.slice(0, 25), got, more, false);
     }
 
     async function openPanel() {
@@ -18354,52 +18792,48 @@
       }
       const e = sync.linkOf(ids.projectId, ids.conversationId);
       if (e) {
-        panel.append(el("h3", null, "Zendesk #" + e.ticketId + " “" + e.subject + "”"));
-        panel.append(el("div", "muted", "New messages on the ticket appear here as private messages, with their images and files. What is written in the chat goes to the ticket as an internal note; start with /reply to reply to the customer."));
-        if (e.note) panel.append(el("div", "err", e.note));
-        const acts = el("div", "acts");
-        // a link brings only new messages: the ticket's earlier ones on request, once
-        if (!e.historyPosted) {
-          const hist = el("button", "g", "Post earlier messages");
-          hist.title = "Posts the ticket's messages from before the link in this chat, once";
-          hist.onclick = async () => {
-            hist.disabled = true;
-            try { const n = await exclusive(() => sync.postHistory(ids.projectId, ids.conversationId)); hist.textContent = n ? n + " earlier messages posted" : "No earlier messages"; }
-            catch (err) { hist.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
-          };
-          acts.append(hist);
-        } else {
-          const again = el("button", "g", "Post earlier messages again");
-          again.title = "Delete the old copies in the chat first: this posts the ticket's messages from before the link once more, tidied";
-          again.onclick = async () => {
-            again.disabled = true;
-            try { const n = await exclusive(() => sync.postHistory(ids.projectId, ids.conversationId, true)); again.textContent = n + " earlier messages posted"; }
-            catch (err) { again.disabled = false; panel.append(el("div", "err", String((err && err.message) || err))); }
-          };
-          acts.append(again);
-        }
-        // a chat linked before 1.74.0 has the ticket's messages without their pictures and files: those, once
-        if (e.historyPosted && !e.filesPosted) {
-          const files = el("button", "g", "Post earlier images and files");
-          files.title = "Posts the images and files of the ticket's messages already in this chat, once";
-          files.onclick = async () => {
-            files.disabled = true;
-            files.textContent = "Posting images and files…";
-            try { const n = await exclusive(() => sync.postFiles(ids.projectId, ids.conversationId)); files.textContent = n ? n + (n === 1 ? " file posted" : " images and files posted") : "No earlier images or files"; }
-            catch (err) { files.disabled = false; files.textContent = "Post earlier images and files"; panel.append(el("div", "err", String((err && err.message) || err))); }
-          };
-          acts.append(files);
-        }
+        const ts = sync.ticketsOf(e);
+        const several = ts.length > 1;
         const now = el("button", "b", "Sync now");
-        now.onclick = () => { now.disabled = true; round().then((ran) => { if (!ran) now.textContent = "The sync runs in another tab"; else openPanel(); }); };
-        const open = el("a", null, "Open in Zendesk");
-        open.href = ZD_HOST + "/agent/tickets/" + encodeURIComponent(e.ticketId);
-        open.target = "_blank";
-        open.rel = "noopener noreferrer";
-        const off = el("button", "g", "Unlink");
-        off.onclick = () => { void exclusive(async () => sync.unlink(ids.projectId, ids.conversationId)).then(() => { panel.hidden = true; paint(); }); };
-        acts.append(now, off, open);
-        panel.append(acts);
+        now.onclick = () => { now.disabled = true; round().then((ran) => { if (!ran) now.textContent = "The sync runs in another tab"; else void openPanel(); }); };
+        if (several) {
+          const others = ts.filter((t) => t.ticketId !== e.main).map((t) => "#" + t.ticketId).join(", ");
+          panel.append(el("h3", null, "Linked to " + ts.length + " Zendesk tickets"));
+          panel.append(el("div", "muted", "New messages on the tickets appear here as private messages, with their images and files. What is written " +
+            "in the chat goes to the main ticket, #" + e.main + ", as an internal note - or to another one when it answers one of that ticket's " +
+            "messages (Reply) or starts with its number (" + others + "). Start with /reply to reply to that ticket's customer."));
+          for (const t of ts) {
+            const block = el("div", "tk");
+            const head = el("span", "s");
+            head.append(el("b", null, "#" + t.ticketId + " "), document.createTextNode(t.subject || "(no subject)"));
+            block.append(head, el("div", "muted", (t.ticketId === e.main ? "main ticket · " : "") +
+              (t.status === "paused" ? "paused" : t.status === "error" ? "error" : "synced")));
+            if (t.note) block.append(el("div", "err", t.note));
+            block.append(ticketActs(ids, e, t));
+            panel.append(block);
+          }
+        } else {
+          panel.append(el("h3", null, "Zendesk #" + ts[0].ticketId + " “" + ts[0].subject + "”"));
+          panel.append(el("div", "muted", "New messages on the ticket appear here as private messages, with their images and files. What is written in the chat goes to the ticket as an internal note; start with /reply to reply to the customer."));
+          if (e.note) panel.append(el("div", "err", e.note));
+          panel.append(ticketActs(ids, e, ts[0], [now]));
+        }
+        // the project's tickets that surely are its, offered to link too (v1.83.0)
+        const extra = foundFor(ids).filter((r) => !notNowOf(ids).includes(String(r.ticket.id)));
+        if (extra.length) {
+          panel.append(el("div", "muted sec", "Also found for this project:"));
+          const host = el("div");
+          queueRows(ids, host, extra.slice(0, 3), ranked.get(ids.projectId), true, true);
+          panel.append(host);
+        }
+        const acts = el("div", "acts");
+        if (several) acts.append(now);
+        const more = el("button", "g", "Link another ticket");
+        more.title = "Link one more ticket of the queue to this chat";
+        const list = el("div");
+        more.onclick = () => { more.disabled = true; void showQueue(ids, list, true); };
+        acts.append(more);
+        panel.append(acts, list);
         // how often it checks - set here too - and when it last did
         const every = el("div", "muted every");
         const pick = document.createElement("select");
@@ -18418,45 +18852,11 @@
         return;
       }
       panel.append(el("h3", null, "Link the chat to a ticket in the queue"));
-      panel.append(el("div", "muted", "Active tickets (new, open, waiting for customer, on hold) in the queue “" + viewTitle() + "”. Tickets " +
-        "with the project's plant number (Plant ID, or in the subject) come first."));
+      panel.append(el("div", "muted", "Active tickets (new, open, waiting for customer, on hold) in the queue “" + viewTitle() + "”, best match " +
+        "first: the project's plant number (Plant ID, subject, text), its store's name, and a requester from its contractor."));
       const list = el("div");
-      list.append(el("div", "muted", "Loading the queue…"));
       panel.append(list);
-      const got = await rankedFor(ids.projectId, true);
-      paint();
-      list.textContent = "";
-      if (got.error) { list.append(el("div", "err", got.error)); return; }
-      if (!got.list.length) list.append(el("div", "muted", "No active tickets in the queue."));
-      const num = (/^\s*(\d{3,6})\b/.exec(got.name || "") || [])[1] || "";
-      for (const { ticket: t, score } of got.list.slice(0, 25)) {
-        const row = el("div", "row");
-        const txt = el("div", "t");
-        const top = el("span", "s");
-        top.append(el("b", null, "#" + t.id + " "), document.createTextNode(String(t.subject || "(no subject)")));
-        if (score >= 20) top.append(el("span", "match", "Plant ID " + num));
-        else if (score >= 10) top.append(el("span", "match", "match"));
-        const plant = sync.plantOf(t, got.fieldId);
-        txt.append(top, el("span", "muted", statusLabel(t) + (plant ? " · Plant ID " + plant : "") + (t.updated_at ? " · " + sync.dayOf(t.updated_at) : "")));
-        const go = el("button", "b", "Link");
-        go.onclick = () => {
-          // asked once more: linking posts a note in the chat, and from then on both sides go across
-          const ask = el("div", "acts");
-          const yes = el("button", "b", "Yes, link #" + t.id);
-          const no = el("button", "g", "Cancel");
-          yes.onclick = async () => {
-            yes.disabled = true;
-            no.disabled = true;
-            try { await exclusive(() => sync.link(ids.projectId, ids.conversationId, t.id)); panel.hidden = true; paint(); }
-            catch (err) { yes.disabled = false; no.disabled = false; list.prepend(el("div", "err", String((err && err.message) || err))); }
-          };
-          no.onclick = () => { ask.replaceWith(go); };
-          ask.append(yes, no);
-          go.replaceWith(ask);
-        };
-        row.append(txt, go);
-        list.append(row);
-      }
+      await showQueue(ids, list, false);
     }
 
     // ---- what the message being written will be on the ticket, shown on the message box ----
@@ -18474,14 +18874,45 @@
       const box = rte && rte.parentElement && rte.parentElement.getBoundingClientRect().height < 400 ? rte.parentElement : ed;
       return { ed, box, focused: ed.contains(document.activeElement) };
     }
-    const seenInChat = new Map();   // conversation -> {id, at}: the ticket the sync's messages in the chat name
+    const seenInChat = new Map();   // conversation -> {id, at}: the ticket the chat's messages go to, as its messages say
+    /** For a browser that does not hold the link: the ticket the chat's messages go to, as the sync's own messages in the
+     *  chat say it - the last of its notices naming the main ticket (v1.83.0) - else the last ticket they name. */
     function ticketInChat(conversationId) {
       const hit = seenInChat.get(conversationId);
       if (hit && Date.now() - hit.at < 20000) return hit.id;
-      const all = ((document.body && document.body.innerText) || "").match(/Zendesk #\d+/g) || [];
-      const id = all.length ? all[all.length - 1].replace(/\D/g, "") : "";
+      const text = (document.body && document.body.innerText) || "";
+      const said = [...text.matchAll(/Messages here (?:still )?go to Zendesk #(\d+)|Zendesk #(\d+) is now the main ticket|Zendesk #(\d+) is linked to this chat(?! too)/g)];
+      const last = said.length ? said[said.length - 1] : null;
+      const all = text.match(/Zendesk #\d+/g) || [];
+      const id = last ? last[1] || last[2] || last[3] : all.length ? all[all.length - 1].replace(/\D/g, "") : "";
       seenInChat.set(conversationId, { id, at: Date.now() });
       return id;
+    }
+    /** The message being answered with Rocketlane's Reply, as its quote stands in the message box above the editor: its
+     *  content, or "" (seen 2026-11-16: user-message-reply_wrapper, in the editor's own wrapper - never the chat). */
+    function quotedIn(ed) {
+      const rte = ed && ed.closest ? ed.closest(RTE) : null;
+      const wrap = rte && rte.parentElement;
+      if (!wrap || wrap.querySelector("[data-spotlight]")) return "";
+      const q = wrap.querySelector('[class*="user-message-reply"], [class*="UserMessageReply"]');
+      if (!q || q.contains(ed)) return "";
+      const content = q.querySelector(".ck-content");
+      if (content) return content.innerHTML;
+      return String(q.innerText || "").split("\n").map((x) => x.trim()).find((x) => /^Zendesk #\d+/.test(x)) || "";
+    }
+    /** Which ticket the message being written goes to, as the sync will send it (sync.routeOf, v1.83.0): the one it
+     *  names at its start, the one whose message it answers, else the main one. Where this browser does not hold the
+     *  link: the answered message's ticket, else the one the chat's messages say. -> { ticketId, why, others, e } */
+    function targetOf(ids, text, ed) {
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      const quoted = quotedIn(ed);
+      if (e) {
+        const linked = sync.ticketsOf(e).map((t) => t.ticketId);
+        const r = sync.routeOf(e, sync.parseChatMessage(text, linked), quoted);
+        return { ticketId: r.ticketId, why: r.why, others: linked.filter((x) => x !== r.ticketId), e };
+      }
+      const q = sync.ticketNamedIn(quoted);
+      return { ticketId: q || ticketInChat(ids.conversationId), why: q ? "reply" : "main", others: [], e: null };
     }
     const requesters = new Map();   // ticket -> {name, copies} once known, "asked" meanwhile
     function requesterOf(ticketId) {
@@ -18506,22 +18937,29 @@
       const mode = sync.composeModeOf(text);
       if (modeWasReply && mode.mode !== "reply" && !blank(text)) forgetIntents(ids);
       modeWasReply = mode.mode === "reply";
-      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      const to = targetOf(ids, text, c.ed);
+      const e = to.e;
       // a quiet label only for this browser's own link, and only while the box is in use
       if (mode.mode === "note" && (!e || !(c.focused || text.trim()))) return hideMode();
-      const ticketId = e ? e.ticketId : mode.mode !== "note" ? ticketInChat(ids.conversationId) : "";
+      const ticketId = to.ticketId;
       if (!ticketId) return hideMode();
+      const t = e ? sync.ticketsOf(e).find((x) => x.ticketId === ticketId) : null;
+      // with more than one ticket: which one, and how to choose another (v1.83.0)
+      const which = to.why === "reply" ? " · answering its message" : to.why === "main" && to.others.length ? " (main)" : "";
+      const choose = to.why === "main" && to.others.length
+        ? to.others.length === 1 ? " · start with #" + to.others[0] + " for that one" : " · start with a ticket's number for another" : "";
       let cls = mode.mode, say = "";
       if (mode.mode === "reply") {
         const who = requesterOf(ticketId);
-        const to = who && who.name ? "emailed to " + who.name + (who.copies ? " and " + who.copies + " in copy" : "") : "emailed to the customer";
-        say = "↩ Reply to the customer · Zendesk #" + ticketId + " · " + to;
+        const tx = who && who.name ? "emailed to " + who.name + (who.copies ? " and " + who.copies + " in copy" : "") : "emailed to the customer";
+        say = "↩ Reply to the customer · Zendesk #" + ticketId + which + " · " + tx;
         if (e && !enabled()) { cls = "stop"; say = "↩ Reply to the customer · the Zendesk sync is off in this browser: nothing is sent"; }
-        else if (e && e.status === "paused") { cls = "stop"; say = "↩ Reply to the customer · Zendesk #" + ticketId + " is not open: nothing is sent until it is"; }
+        else if (t && t.status === "paused") { cls = "stop"; say = "↩ Reply to the customer · Zendesk #" + ticketId + " is not open: nothing is sent until it is"; }
       } else if (mode.mode === "typo") {
-        say = "“" + mode.word + "” is not /reply: this goes to Zendesk #" + ticketId + " as an internal note";
+        say = mode.order ? "Put /reply first: as written, this goes to Zendesk #" + ticketId + " as an internal note"
+          : "“" + mode.word + "” is not /reply: this goes to Zendesk #" + ticketId + " as an internal note";
       } else {
-        say = "Internal note to Zendesk #" + ticketId + " · start with /reply to answer the customer";
+        say = "Internal note to Zendesk #" + ticketId + which + (choose || " · start with /reply to answer the customer");
       }
       const r = c.box.getBoundingClientRect();
       if (!r.width || !r.height || r.bottom < 0 || r.top > window.innerHeight) return hideMode();
@@ -18599,7 +19037,7 @@
       editor.model.change((writer) => {
         const lead = ckLead(editor);
         const sel = editor.model.document.selection.getFirstPosition();
-        const word = how.literal ? "/reply " : MARK_CH;
+        const word = (how.literal ? "/reply " : MARK_CH) + (how.ticket ? "#" + how.ticket + " " : "");
         if (how.token) {
           const p = sel && sel.parent;
           if (!p || !lead || lead.p !== p || noLead(ckText(p).slice(0, sel.offset)) !== how.token) return;
@@ -18639,7 +19077,7 @@
     }
     function domToReply(ed, how) {
       const sel = window.getSelection();
-      const word = how.literal ? "/reply " : MARK_CH;
+      const word = (how.literal ? "/reply " : MARK_CH) + (how.ticket ? "#" + how.ticket + " " : "");
       const t = firstText(ed);
       if (!t) return false;
       if (how.token) {
@@ -18676,12 +19114,12 @@
       try { const ck = ckOf(ed); return ck ? ckToNote(ck) : domToNote(ed); }
       catch (e) { try { console.warn("[zendesk-chat] the message could not be made a note:", (e && e.message) || e); } catch (_) {} return false; }
     }
-    /** The ticket a reply written in this chat goes to: this browser's link, or the one the sync's messages in the chat
-     *  name (where another browser sends them); "" when there is none. */
+    /** The ticket a reply written in this chat goes to without a number: the one whose message it answers, else the main
+     *  one - or, where this browser does not hold the link, the one the chat's messages say; "" when there is none. */
     function replyTicket(ids) {
       if (!ids || legacy()) return "";
-      const e = sync.linkOf(ids.projectId, ids.conversationId);
-      return e ? String(e.ticketId) : ticketInChat(ids.conversationId);
+      const c = composer();
+      return targetOf(ids, "", c && c.ed).ticketId;
     }
     /** Whether this browser sends this chat's messages itself - the link is here and the sync on: only then the mark. */
     const canMark = (ids) => !!(ids && enabled() && sync.linkOf(ids.projectId, ids.conversationId));
@@ -18696,7 +19134,8 @@
     }
     /** A reply about to be sent from this browser, kept a while: the sync still knows it should the mark be lost. */
     function noteIntent(ids, c) {
-      const msg = sync.parseChatMessage(String(c.ed.innerText || c.ed.textContent || ""));
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      const msg = sync.parseChatMessage(String(c.ed.innerText || c.ed.textContent || ""), e ? sync.ticketsOf(e).map((t) => t.ticketId) : null);
       if (!msg.isPublic || !msg.body) return;
       set(INTENT_KEY, intents().slice(-19).concat([{ key: ids.projectId + ":" + ids.conversationId, text: sync.normText(msg.body), at: Date.now() }]));
     }
@@ -18730,32 +19169,42 @@
     // Thomas: "when typing /reply you should get a preview before the word is fully typed so you can click on it". From
     // the "/" on, at the start of a message in a chat with a ticket, the list offers /reply and says what it will do;
     // picking it - a click, Enter or Tab - makes the message a reply.
-    let replyItem = null, replyItemSig = "";
+    // v1.83.0: in a chat with more than one ticket, one /reply for each - first the one a reply goes to without a number
+    // (the answered message's, else the main one), then the others, which put their number after the mark.
+    let replyItems = [], replyItemsSig = "";
     if (typeof net.addMacro === "function") net.addMacro((ctx) => {
       const ids = chatIds();
-      const ticketId = ctx && ctx.atStart && ctx.el ? replyTicket(ids) : "";
-      if (!ticketId || MARKED_RE.test(String(ctx.el.innerText || ctx.el.textContent || ""))) return null;
-      const e = sync.linkOf(ids.projectId, ids.conversationId);
-      const who = requesterOf(ticketId);
-      const to = who && who.name ? who.name + (who.copies ? " and " + who.copies + " in copy" : "") : "the customer";
-      const paragraphs = ["The message goes to Zendesk #" + ticketId + " as a public reply, emailed to " + to + "."];
-      if (e && !enabled()) paragraphs.push("The Zendesk sync is off in this browser: nothing is sent from here.");
-      else if (e && e.status === "paused") paragraphs.push("Zendesk #" + ticketId + " is not open: the reply waits until it is.");
-      paragraphs.push("Without /reply, a message goes to the ticket as an internal note.");
+      if (!ctx || !ctx.atStart || !ctx.el || !ids || legacy()) return null;
+      if (MARKED_RE.test(String(ctx.el.innerText || ctx.el.textContent || ""))) return null;
+      const first = targetOf(ids, "", ctx.el);
+      if (!first.ticketId) return null;
+      const e = first.e;
+      const ts = e ? sync.ticketsOf(e) : [];
       const literal = !canMark(ids);
-      const sig = [ticketId, literal ? "word" : "mark"].concat(paragraphs).join("|");
-      if (sig !== replyItemSig) {
-        replyItemSig = sig;
-        replyItem = {
+      const items = [first.ticketId].concat(first.others).map((ticketId, i) => {
+        const t = ts.find((x) => x.ticketId === ticketId) || null;
+        const who = requesterOf(ticketId);
+        const to = who && who.name ? who.name + (who.copies ? " and " + who.copies + " in copy" : "") : "the customer";
+        const paragraphs = ["The message goes to Zendesk #" + ticketId + (ts.length > 1 && t && t.subject ? " “" + t.subject + "”" : "") +
+          " as a public reply, emailed to " + to + "."];
+        if (i === 0 && first.why === "reply") paragraphs.push("It answers a message from that ticket.");
+        if (i > 0) paragraphs.push("The ticket's number goes at the start of the message, so it goes there and not to #" + first.ticketId + ".");
+        if (e && !enabled()) paragraphs.push("The Zendesk sync is off in this browser: nothing is sent from here.");
+        else if (t && t.status === "paused") paragraphs.push("Zendesk #" + ticketId + " is not open: the reply waits until it is.");
+        paragraphs.push("Without /reply, a message goes to the ticket as an internal note.");
+        return {
           name: "reply", title: "Reply to the customer · Zendesk #" + ticketId, paragraphs, kind: "reply", strict: true,
-          // picked: the "/word" typed so far becomes the mark (or the word, where this browser does not send); the box
-          // holding the word alone (Enter) the same
+          // picked: the "/word" typed so far becomes the mark (or the word, where this browser does not send) - with the
+          // ticket's number after it for another than the first; the box holding the word alone (Enter) the same
           apply: (el, token) => {
-            if ((token && toReply(el, { token, literal })) || toReply(el, { force: true, literal })) updateMode();
+            const how = { literal, ticket: i > 0 ? ticketId : "" };
+            if ((token && toReply(el, Object.assign({ token }, how))) || toReply(el, Object.assign({ force: true }, how))) updateMode();
           },
         };
-      }
-      return replyItem;
+      });
+      const sig = literal + "|" + items.map((x) => x.title + "|" + x.paragraphs.join("|")).join("||");
+      if (sig !== replyItemsSig) { replyItemsSig = sig; replyItems = items; }
+      return replyItems;
     });
 
     // ---- a /reply in the chat: a mark saying what became of it, in place of the word (v1.81.0) ----
@@ -18783,27 +19232,30 @@
     }
     // when it reached the ticket, with the date when that was not today - the section's own formats, as it runs on its own
     const clockOf = (t) => (sync.dayOf(t) === sync.dayOf(Date.now()) ? "" : sync.dayOf(t) + " ") + hhmm(t);
-    /** The chat's messages that start with /reply, as shown: their commentId, text box and first paragraph. */
-    function replyMessages() {
+    // a message's own text, not the quote of the message it answers (Rocketlane's Reply shows that inside the message too)
+    const QUOTE_SEL = '[class*="user-message-reply"], [class*="UserMessageReply"]';
+    /** The chat's messages that start with /reply, as shown: their commentId, text box and first paragraph. `linked`:
+     *  the chat's tickets, whose number after /reply is hidden too (v1.83.0). */
+    function replyMessages(linked) {
       const out = [];
       for (const w of document.querySelectorAll("[data-spotlight]")) {
-        const box = w.querySelector(".ck-content");
+        const box = [...w.querySelectorAll(".ck-content")].filter((x) => !x.closest(QUOTE_SEL)).pop();
         // a message being edited is CKEditor's own and is never touched
         if (!box || box.isContentEditable || box.closest(".ck-editor__editable")) continue;
         const first = [...box.children].find((el) => !el.classList.contains(MARK));
-        const lead = first ? sync.replyLead(first.textContent) : null;
+        const lead = first ? sync.replyLead(first.textContent, linked) : null;
         if (!lead) { const old = box.querySelector(":scope > ." + MARK); if (old) old.remove(); continue; }
         out.push({ id: String(w.getAttribute("data-spotlight") || ""), box, first, lead });
       }
       return out;
     }
     /** The word hidden: its paragraph when it stands alone, else the word itself in the paragraph's first text. */
-    function hideWord(m) {
+    function hideWord(m, linked) {
       if (m.lead.whole) { if (m.first.style.display !== "none") m.first.style.display = "none"; return; }
       if (m.first.querySelector("[data-rlzd-word]")) return;
       const t = document.createTreeWalker(m.first, NodeFilter.SHOW_TEXT).nextNode();
       // as the chat writes it the word is in one text node, measured on that node; anything else keeps it, the mark above
-      const own = t ? sync.replyLead(t.nodeValue) : null;
+      const own = t ? sync.replyLead(t.nodeValue, linked) : null;
       if (!own) return;
       if (!own.whole) t.splitText(own.length);
       const span = document.createElement("span");
@@ -18856,30 +19308,33 @@
       }
     }
     /** Settles the marks of `list`: this browser's own record of what its sync sent first (sync.wentAs, no Zendesk call),
-     *  then the ticket itself, read once for whatever that leaves open. */
-    async function checkMarks(ids, ticketId, list) {
+     *  then the ticket each message went to, read once each for whatever that leaves open. */
+    async function checkMarks(ids, list) {
       marksBusy = true;
       marksCheckedAt = Date.now();
-      const keep = (id, state, s) => marks.set(id, { state, at: s ? s.at : 0, zdId: s ? s.commentId : "", isPublic: s ? s.isPublic : true });
+      const keep = (id, state, s, ticketId) => marks.set(id, { state, at: s ? s.at : 0, zdId: s ? s.commentId : "", isPublic: s ? s.isPublic : true,
+        ticketId: String((s && s.ticketId) || ticketId || "") });
       try {
         const e = sync.linkOf(ids.projectId, ids.conversationId);
         const chat = (await api.rl.getComments(ids.projectId, ids.conversationId)) || [];
-        let comments = null;   // the ticket's comments, read once when the record does not settle a mark; false: unreadable
+        const read = new Map();   // ticket -> its comments, read once; false: Zendesk could not be read
         for (const m of list) {
           const c = chat.find((x) => String(x.commentId) === m.id);
           if (!c) continue;
           let s = sync.wentAs(e, c, null);
-          if (!s && !sync.beforeLink(e, c)) {
-            if (comments === null) {
-              try { comments = ((await api.zd.getComments(ticketId)) || {}).comments || []; } catch (_) { comments = false; }
+          // the ticket it went to - or, while that is not known, the one it goes to
+          const ticketId = (s && s.ticketId) || sync.whereTo(e, c) || ticketInChat(ids.conversationId);
+          if (!s && !sync.beforeLink(e, c) && ticketId) {
+            if (!read.has(ticketId)) {
+              try { read.set(ticketId, ((await api.zd.getComments(ticketId)) || {}).comments || []); } catch (_) { read.set(ticketId, false); }
             }
-            if (comments) s = sync.wentAs(e, c, comments);
+            if (read.get(ticketId)) s = sync.wentAs(e, c, read.get(ticketId));
           }
           const at = typeof c.createdAt === "number" ? c.createdAt : Date.parse(c.createdAt) || 0;
-          if (s) keep(m.id, "sent", s);
-          else if (sync.beforeLink(e, c)) keep(m.id, "before");
-          else if (Date.now() - at < 10 * 60 * 1000) keep(m.id, "sending");
-          else keep(m.id, comments === false ? "unknown" : "unconfirmed");
+          if (s) keep(m.id, "sent", s, ticketId);
+          else if (sync.beforeLink(e, c)) keep(m.id, "before", null, ticketId);
+          else if (Date.now() - at < 10 * 60 * 1000) keep(m.id, "sending", null, ticketId);
+          else keep(m.id, read.get(ticketId) === false ? "unknown" : "unconfirmed", null, ticketId);
         }
       } catch (_) {
         for (const m of list) if (!marks.has(m.id)) keep(m.id, "unknown");
@@ -18891,20 +19346,28 @@
     function markReplies() {
       const ids = chatIds();
       if (!ids || legacy()) return;
-      const list = replyMessages();
+      const e = sync.linkOf(ids.projectId, ids.conversationId);
+      const linked = e ? sync.ticketsOf(e).map((t) => t.ticketId) : null;
+      const list = replyMessages(linked);
       if (!list.length) return;
       injectMarkStyles();
-      const e = sync.linkOf(ids.projectId, ids.conversationId);
-      const ticketId = e ? String(e.ticketId) : ticketInChat(ids.conversationId);
-      if (ticketId !== marksTicket) { marks.clear(); marksTicket = ticketId; }
-      for (const m of list) { hideWord(m); paintMark(m, ticketId); }
+      const chatKey = ids.projectId + ":" + ids.conversationId;
+      if (chatKey !== marksTicket) { marks.clear(); marksTicket = chatKey; }
+      // each reply's ticket (v1.83.0): where it went once that is known, else the one it names, else the main one
+      const fallback = e ? e.main : ticketInChat(ids.conversationId);
+      for (const m of list) {
+        hideWord(m, linked);
+        const k = marks.get(m.id);
+        const named = linked ? sync.parseChatMessage(m.first.textContent, linked).ticket : "";
+        paintMark(m, (k && k.ticketId) || named || fallback);
+      }
       // a mark not yet settled is looked at again: at once for a new one, every 15 s while one is on its way, every
       // minute for one not confirmed; sent, and written before the link, are final
-      if (!ticketId || marksBusy) return;
+      if (!fallback || marksBusy) return;
       const open = list.filter((m) => { const k = marks.get(m.id); return !k || (k.state !== "sent" && k.state !== "before"); });
       if (!open.length) return;
       const wait = open.some((m) => !marks.has(m.id)) ? 2000 : open.some((m) => marks.get(m.id).state === "sending") ? 15000 : 60000;
-      if (Date.now() - marksCheckedAt > wait) void checkMarks(ids, ticketId, open);
+      if (Date.now() - marksCheckedAt > wait) void checkMarks(ids, open);
     }
 
     pill.addEventListener("click", () => { if (!panel.hidden) { panel.hidden = true; return; } void openFor(); });
