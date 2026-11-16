@@ -88,6 +88,8 @@ window.__rlUpload = async (projectId, blob, name) => {
 window.GM_xmlhttpRequest = (o) => {
   const u = new URL(o.url), p = u.pathname, body = o.data ? JSON.parse(o.data) : null;
   const ok = (j) => setTimeout(() => o.onload({ status: 200, responseText: JSON.stringify(j) }), 30);
+  // a request Tampermonkey lost, as when Chrome restarts the extension's worker: never answered at all (v1.84.0)
+  if (W.hang && W.hang[p] > 0) { W.hang[p]--; W.hung = (W.hung || 0) + 1; return; }
   if (u.host === 'kiona.api.rocketlane.com') {
     if (o.headers['api-key'] !== 'rl-key') return setTimeout(() => o.onload({ status: 401, responseText: '' }), 10);
     if (p === '/api/v1/projects/1481787') return ok({ projectId: 1481787, projectName: '10263 - Extra Laksvollen: New store' });
@@ -111,7 +113,8 @@ window.GM_xmlhttpRequest = (o) => {
       any: [{ field: 'group_id', operator: 'is', value: '360002360679' }, { field: 'group_id', operator: 'is', value: '28952105' }] } } });
     if (p === '/api/v2/search.json') { W.queries.push(u.searchParams.get('query')); return ok({ results: W.queue.filter((t) => t.status !== 'solved').map((t) => Object.assign({ result_type: 'ticket' }, t)), next_page: null }); }
     if (p === '/api/v2/ticket_fields.json') return ok({ ticket_fields: [{ id: 1, title: 'Subject' }, { id: 27741611, title: 'Plant ID' }], next_page: null });
-    if (p === '/api/v2/tickets/show_many.json') { const ids = u.searchParams.get('ids').split(','); return ok({ tickets: W.queue.filter((t) => ids.includes(String(t.id))) }); }
+    // every round starts with the tickets' statuses: counted, to tell what started one (v1.84.0)
+    if (p === '/api/v2/tickets/show_many.json') { W.rounds = (W.rounds || 0) + 1; const ids = u.searchParams.get('ids').split(','); return ok({ tickets: W.queue.filter((t) => ids.includes(String(t.id))) }); }
     if (p === '/api/v2/tickets/53123/comments.json') return ok({ comments: W.zd.slice().reverse(), users: [{ id: 700, name: 'Kari Kunde', role: 'end-user' }, { id: 900, name: 'Thomas', role: 'agent' }], next_page: null });
     if (p === '/api/v2/tickets/53123.json' && o.method === 'GET') return ok({ ticket: { id: 53123, requester_id: 700, email_cc_ids: [901, 902] }, users: [{ id: 700, name: 'Kari Kunde' }] });
     if (p === '/api/v2/tickets/53123.json' && o.method === 'PUT') {
@@ -683,6 +686,99 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.deepStrictEqual(await page2.evaluate(() => { const e = JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links['1481787:12896932'];
       return [e.main, e.tickets.map((t) => [t.ticketId, t.filesPosted])]; }), ['53123', [['53123', true]]]);
     await page2.screenshot({ path: path.join(OUT, '4-handed-over.png') });
+
+    // ---- v1.84.0: synced from any page. On the home page: a round at load; a call that never answers ends its round,
+    // and the tab goes on; the user's own push channel and the project's channel subscribed again start rounds; so does
+    // going to another page. The clock is set to ten minutes, so every round here comes of one of those ----
+    const NET3 = NET.replace('pusher: () => null,', 'pusher: () => window.__pusher || null, deadlineMs: 1500,');
+    assert.notStrictEqual(NET3, NET, 'the test transports take a pusher and a short deadline');
+    const START3 = '(function(){ function rlWhenDomReady(fn) { fn(); }\n' + MACROS + '\n' + SYNC + '\nstartZendeskChatSync(' + NET3 + ');})();';
+    const page3 = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    page3.on('pageerror', (e) => errors.push(String(e)));
+    page3.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(m.text()); });
+    await page3.addInitScript(SHIM);
+    await page3.goto(base + '/home');
+    await page3.evaluate(() => {
+      const W = window.__world;
+      GM_setValue('zdsync_enabled_v1', true);
+      GM_setValue('zdsync_interval_v1', 600);
+      // the chat linked to #53123, everything crossed; since then a customer's message on the ticket
+      GM_setValue('zdsync_state_v1', JSON.stringify({ links: { '1481787:12896932': { projectId: '1481787', conversationId: '12896932', main: '53123',
+        tickets: [{ ticketId: '53123', subject: 'SV: 41584 Extra Laksvollen - alarm', linkedAt: Date.now() - 86400000, zdMax: 4001, zdUpdatedAt: '',
+          ownZd: [], status: 'active', note: '', historyPosted: true, filesPosted: true }],
+        rlSince: Math.max(...W.chat.map((c) => c.createdAt)), rlSeen: W.chat.map((c) => String(c.commentId)), ownRl: [], sent: {},
+        status: 'active', note: '', lastRun: Date.now() - 3600000 } } }));
+      W.addZd({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Svar mens Thomas er på forsiden.', created_at: new Date().toISOString(), attachments: [] });
+      // the ticket's comments, asked for the first time: no answer ever comes
+      W.hang = { '/api/v2/tickets/53123/comments.json': 1 };
+      // Rocketlane's push channels as pusher-js keeps them, listeners and all: the user's own, and another project's
+      window.__chan = (name) => { const cbs = {}; return { name, bind(ev, fn) { (cbs['_' + ev] = cbs['_' + ev] || []).push({ fn }); },
+        unbind(ev) { delete cbs['_' + ev]; }, callbacks: { get: (ev) => cbs['_' + ev] }, fire(ev, d) { (cbs['_' + ev] || []).slice().forEach((b) => b.fn(d)); } }; };
+      window.__pusher = { list: [window.__chan('private-accountId@3-userId@1'), window.__chan('private-accountId@3-permissionId@5-projectId@777')],
+        allChannels() { return this.list; } };
+    });
+    await page3.addScriptTag({ content: START3 });
+    const st3 = () => page3.evaluate(() => { const e = JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links['1481787:12896932'];
+      const W = window.__world, l = GM_getValue('zdsync_lock_v1', null);
+      return { rounds: W.rounds || 0, hung: W.hung || 0, posts: W.posts.length, puts: W.puts.length, status: e.tickets[0].status, note: e.tickets[0].note, busy: !!(l && l.busy) }; });
+    const roundOver = (n) => page3.waitForFunction((n) => (window.__world.rounds || 0) === n && !(GM_getValue('zdsync_lock_v1', null) || {}).busy, n, { timeout: 6000 });
+    await page3.waitForFunction(() => JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links['1481787:12896932'].tickets[0].status === 'error', null, { timeout: 8000 });
+    await roundOver(1);
+    assert.deepStrictEqual(await st3(), { rounds: 1, hung: 1, posts: 0, puts: 0, status: 'error', note: 'Zendesk did not answer within 2 s', busy: false },
+      'the round at load, on the home page: the call that never answered failed after its time, and the round ended');
+    assert.strictEqual(await page3.evaluate(() => getComputedStyle(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill')).display), 'none', 'no button on the home page');
+
+    // someone writes in the linked chat: said on the user's own channel, which every page keeps - a round at once, which
+    // brings the customer's message in and sends the chat's out (1.83.0 waited for the call above for good)
+    await page3.waitForTimeout(5500);   // listened on within 5 s
+    await page3.evaluate(() => {
+      const W = window.__world;
+      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>Kommer kl 10.</p>', createdAt: Date.now(), user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } });
+      window.__pusher.list[0].fire('CREATE', { objectType: 'CONVERSATION_COMMENT', action: 'CREATE', projectId: 1481787, data: { commentContext: { type: 'PROJECT_CONVERSATIONS' } } });
+    });
+    await roundOver(2);
+    w = await page3.evaluate(() => window.__world);
+    assert.deepStrictEqual([w.posts.map((p) => unmark(p.content)), w.puts.map((p) => p.body)],
+      [['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Svar mens Thomas er på forsiden.</p>'], ['Andreas Sandnes (Rocketlane):\nKommer kl 10.']]);
+    assert.strictEqual((await st3()).status, 'active');
+
+    // what is no linked chat's message starts none: an entry in the bell, a message in a project not linked, any event
+    // on a project's channel not linked
+    await page3.evaluate(() => {
+      const [user, other] = window.__pusher.list;
+      user.fire('CREATE', { objectType: 'NOTIFICATION', action: 'CREATE', data: { meta: { eventType: 'MessageCreated' } } });
+      user.fire('CREATE', { objectType: 'CONVERSATION_COMMENT', action: 'CREATE', projectId: 999 });
+      other.fire('CREATE', { objectType: 'CONVERSATION_COMMENT', action: 'CREATE', projectId: 777 });
+    });
+    await page3.waitForTimeout(2500);
+    assert.strictEqual((await st3()).rounds, 2, 'no round for what is not a linked chat\'s');
+
+    // the linked project's own channel, once the page subscribes to it: a task there starts no round, a chat message does -
+    // also after the page subscribes to it again, which makes a new channel object (1.83.0 never listened on that one)
+    await page3.evaluate(() => { window.__pusher.list.push(window.__chan('private-accountId@3-permissionId@5-projectId@1481787')); });
+    await page3.waitForTimeout(5500);
+    await page3.evaluate(() => window.__pusher.list[2].fire('CREATE', { objectType: 'TASK', action: 'CREATE', projectId: 1481787 }));
+    await page3.waitForTimeout(2500);
+    assert.strictEqual((await st3()).rounds, 2, 'a task on the project\'s channel: no round');
+    await page3.evaluate(() => { window.__pusher.list[2] = window.__chan(window.__pusher.list[2].name); });
+    await page3.waitForTimeout(5500);
+    await page3.evaluate(() => window.__pusher.list[2].fire('CREATE', { objectType: 'CONVERSATION_COMMENT', action: 'CREATE', projectId: 1481787 }));
+    await roundOver(3);
+    // and the user's channel, its listeners all unbound by the page: listened on again
+    await page3.evaluate(() => window.__pusher.list[0].unbind('CREATE'));
+    await page3.waitForTimeout(5500);
+    await page3.evaluate(() => window.__pusher.list[0].fire('CREATE', { objectType: 'CONVERSATION_COMMENT', action: 'CREATE', projectId: 1481787 }));
+    await roundOver(4);
+
+    // going to another page: no round when one has just been, one when none has for ten seconds
+    await page3.evaluate(() => history.pushState({}, '', '/projects'));
+    await page3.waitForTimeout(2500);
+    assert.strictEqual((await st3()).rounds, 4, 'just synced: the page change waits for the clock');
+    await page3.waitForTimeout(8500);
+    await page3.evaluate(() => history.pushState({}, '', '/home'));
+    await roundOver(5);
+    assert.deepStrictEqual(await st3(), { rounds: 5, hung: 1, posts: 1, puts: 1, status: 'active', note: '', busy: false }, 'nothing posted twice in all those rounds');
+    await page3.screenshot({ path: path.join(OUT, '5-home-synced.png') });
 
     assert.deepStrictEqual(errors, [], 'no errors or warnings in the page');
     console.log('chat sync e2e passed; screenshots in ' + path.relative(process.cwd(), OUT));

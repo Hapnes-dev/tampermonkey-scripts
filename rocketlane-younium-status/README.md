@@ -442,19 +442,36 @@ v1.73.0.
 - **Only active tickets.** A linked ticket syncs while it is new, open, pending or on hold, also after it has left the
   queue's view. Solved or closed, the link pauses. Opened again, the link catches up on everything that came in
   meanwhile.
-- **When it runs:** by itself, in one Rocketlane tab of the browser where it is on, on any Rocketlane page.
+- **When it runs:** by itself, in one Rocketlane tab of the browser where it is on, on any Rocketlane page - the home
+  page as well: a linked chat need not be opened to be synced (v1.84.0).
   - It checks the linked tickets at a set interval while that tab is in front: 15 seconds unless changed. In the
     background it checks at most once a minute. Change the interval in the panel ("Checks Zendesk every …") or in the
     Tampermonkey menu (v1.80.0). The panel also shows when it last checked.
   - A visit checks at once: a second after a Rocketlane page loads, when the tab or the window comes back to the
-    front, and when you open a linked chat.
-  - A new message in a linked chat starts a round at once, through Rocketlane's own push events.
+    front, and when you go to another page - any page, not only a linked chat (v1.84.0), unless it checked in the last
+    ten seconds. Also when Chrome runs a page again that it had frozen in the background, and when the network is back
+    after the PC slept.
+  - A new message in a linked chat starts a round at once, through Rocketlane's own push events: those on the user's
+    own channel, which every Rocketlane page keeps, so on the home page too, and those on the project's channel
+    (v1.84.0 - before, only the project's channel, and only until the page subscribed to it again: leaving the project
+    and coming back made a new channel, which was never listened on).
   - **Sync now** in the panel runs one at once.
   - A ticket's messages are fetched only when the ticket has changed, and then only those after the last one taken.
   - A tab in front takes over from one in the background, but only once that tab's round is over.
   - What the panel does (link, unlink, earlier messages) waits for a round, and a round for it, from the moment the
     round starts claiming the tab's lock (v1.83.0 - before, a link made during the claim, up to 0.8 s, could be lost to
     the round's save).
+  - Nothing stops the rounds (v1.84.0). Every call to Zendesk and Rocketlane has a time limit - two minutes, five for
+    a file - above the transports' own timeouts (20 seconds a call, two minutes a file). Tampermonkey keeps a
+    request's timeout in the extension, and a request the extension loses (Chrome restarts its worker, after the PC
+    has slept) is never answered at all: before, the round waited for it for good, and that tab ran no round again
+    until the page was loaded anew - opening a project in a new tab, say, from a chat notification. A call that fails
+    so is told on its ticket like any other error, and the next round goes on; what it did get done is found then and
+    not done twice. The rounds' timer is set again whatever became of the last round, and a check every second starts
+    it should it not go off.
+  - A tab long out of sight may be frozen or discarded by Chrome; nothing runs in it then, and showing it again
+    starts a round at once. Chrome's Settings → Performance → "Always keep these sites active" keeps a site's tabs
+    from being discarded.
   - With the browser closed it does not run, and it catches up the next time.
 - **Nothing twice** (v1.80.0). Every message the sync brings in from Zendesk carries a mark: its "Zendesk #…" link
   points at the ticket with the comment's id. Before posting, the sync searches the other side:
@@ -489,7 +506,10 @@ v1.73.0.
 - **Tests:** `node --test "rocketlane-younium-status/test/*.test.js"` runs the engine against an in-memory chat and
   Zendesk. `node rocketlane-younium-status/test/chat-sync-e2e.js` runs the button and panel in headless Chrome,
   including the Chat Bridge's hand-over and, since v1.83.0, a second ticket: linking it, the bar and the "/" list
-  for each ticket, routing by number and by Reply, the main ticket, and unlinking.
+  for each ticket, routing by number and by Reply, the main ticket, and unlinking. Since v1.84.0 also the home page:
+  the round at load, a call that is never answered (the round ends after its time limit, the next one goes on), the
+  push channels - the user's own, the project's subscribed again, events that are no linked chat's message - and
+  going to another page.
 
 ---
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.83.0
+// @version      1.84.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -108,9 +108,11 @@
  *     (v1.82.0). A chat can link more than one ticket (v1.83.0): a message
  *     goes to the ticket it names (#N), else the one whose message it
  *     answers, else the main one; the ticket list ranks by the plant
- *     number, the store's name and the contractor, and says why. Off until
- *     turned on in this browser (button on chat pages, Tampermonkey menu);
- *     one tab runs it.
+ *     number, the store's name and the contractor, and says why. It syncs
+ *     from whatever Rocketlane page is open, the home page as well, and a
+ *     request that is never answered no longer stops it (v1.84.0). Off
+ *     until turned on in this browser (button on chat pages, Tampermonkey
+ *     menu); one tab runs it.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
  *     Enhancer" v2.0). Hides the timeline half of project-plan pages behind a
  *     toggle button and mounts a two-conversation chat panel on the timeline
@@ -17198,6 +17200,13 @@
   //     marked. Fixed on the way: a reply under the signature Zendesk adds was not known as sent (a second browser would
   //     send it again); a link made while a round claimed the lock was lost; the queue's view, now in a Zendesk folder
   //     ("Views (legacy)::…"), was not found without its id kept.
+  //     v1.84.0: synced from any page. A request Tampermonkey never answered - one the extension loses when Chrome
+  //     restarts its worker, after the PC has slept - kept that tab's round running for good, and no round ran there
+  //     again until the page was loaded anew. Every call now has a time limit, the rounds' timer is set again whatever
+  //     became of the last round, and a check every second starts it should it not go off. Going to any page starts a
+  //     round, not only opening a linked chat; so does a chat message said on the user's own push channel, which every
+  //     page keeps, and on a project's channel subscribed again (listened on by name before, the new channel object
+  //     never was).
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -18053,6 +18062,22 @@
   function startZendeskChatSync(net) {
     if (window.top !== window.self || window.__zendeskChatSync) return;
     window.__zendeskChatSync = true;
+    // every call the sync makes comes to an end (v1.84.0). Tampermonkey keeps a request's timeout in the extension, and
+    // a request the extension loses - Chrome restarting its worker, after the PC has slept - is never answered at all:
+    // the round waited for it for good, and that tab ran no round again until it was reloaded, on whatever page it
+    // was. Such a call now fails after a while like any other, and the next round goes on; whatever it did get done is
+    // found then, and not done twice. The limits lie above the transports' own timeouts (20 s a call, 120 s a file).
+    const NET_MS = Number(net.deadlineMs) || 2 * 60 * 1000, FILE_MS = Number(net.fileDeadlineMs) || 5 * 60 * 1000;
+    const deadline = (ms, what, fn) => (...args) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(what + " did not answer within " + Math.round(ms / 1000) + " s")), ms);
+      Promise.resolve().then(() => fn(...args)).then((v) => { clearTimeout(timer); resolve(v); }, (err) => { clearTimeout(timer); reject(err); });
+    });
+    net = Object.assign({}, net, {
+      rlRequest: deadline(NET_MS, "Rocketlane", net.rlRequest), zdRequest: deadline(NET_MS, "Zendesk", net.zdRequest),
+      plantFieldId: deadline(NET_MS, "Zendesk", net.plantFieldId),
+      zdFile: deadline(FILE_MS, "Zendesk (a file)", net.zdFile), rlUpload: deadline(FILE_MS, "Rocketlane (a file upload)", net.rlUpload),
+      rlFile: deadline(FILE_MS, "Rocketlane (a file)", net.rlFile), zdUpload: deadline(FILE_MS, "Zendesk (a file upload)", net.zdUpload),
+    });
     const EN_KEY = "zdsync_enabled_v1", STATE_KEY = "zdsync_state_v1", VIEW_KEY = "zdsync_view_title_v1";
     const VIEWID_KEY = "zdsync_view_id_v1", LOCK_KEY = "zdsync_lock_v1";
     const DISMISS_KEY = "zdsync_not_now_v1";   // {"<project>:<chat>": ticket id the user said "Not now" to}
@@ -18252,7 +18277,8 @@
     async function isIcon(blob) {
       if (typeof createImageBitmap !== "function") return false;
       try {
-        const bm = await createImageBitmap(blob);
+        // bounded like the calls (v1.84.0): a picture that never decodes is no icon, and goes along
+        const bm = await deadline(20000, "A picture", () => createImageBitmap(blob))();
         const small = Math.max(bm.width, bm.height) < ICON_PX;
         if (typeof bm.close === "function") bm.close();
         return small;
@@ -18379,6 +18405,8 @@
       }
     }
     let lastRoundAt = 0;
+    // a visit - another page, the window back in front - starts a round unless one ended this recently (v1.84.0)
+    const VISIT_MS = 10 * 1000;
     const markBusy = (on) => { const l = get(LOCK_KEY, null); if (l && l.tab === tabId) set(LOCK_KEY, Object.assign({}, l, { busy: on ? Date.now() : 0 })); };
     async function round() {
       if (!enabled() || legacy()) return false;
@@ -18387,16 +18415,22 @@
       // the claim, a link made during it - the claim waits up to 0.8 s - was lost to the round's save of the state it had
       // read before (the e2e caught a second ticket vanishing so)
       running = true;
-      if (!(await claim())) { running = false; rerun = false; return false; }
-      markBusy(true);
-      const viewing = chatIds(), shownBefore = viewing ? zendeskShown() : 0;
-      let res = null;
-      try { res = await sync.runOnce(); } catch (e) { try { console.warn("[zendesk-chat] round failed:", (e && e.message) || e); } catch (_) {} }
-      markBusy(false);
-      lastRoundAt = Date.now();
-      running = false;
-      paint();
-      if (res && viewing) checkShown(viewing, res, shownBefore);
+      // and never left running (v1.84.0): whatever happens in the round, it ends here, and the next one can start
+      let claimed = false, res = null, viewing = null, shownBefore = 0;
+      try {
+        if (!(await claim())) { rerun = false; return false; }
+        claimed = true;
+        markBusy(true);
+        viewing = chatIds();
+        shownBefore = viewing ? zendeskShown() : 0;
+        res = await sync.runOnce();
+      } catch (e) {
+        try { console.warn("[zendesk-chat] round failed:", (e && e.message) || e); } catch (_) {}
+      } finally {
+        if (claimed) { markBusy(false); lastRoundAt = Date.now(); }
+        running = false;
+      }
+      try { paint(); if (res && viewing) checkShown(viewing, res, shownBefore); } catch (_) {}
       if (rerun) { rerun = false; void round(); }
       return true;
     }
@@ -18431,17 +18465,54 @@
     // ---- a new chat message on a linked project starts a round at once (Rocketlane's own push events) ----
     let soonTimer = 0;
     function soon() { clearTimeout(soonTimer); soonTimer = setTimeout(() => { void round(); }, 1500); }
-    const hooked = new Set();
+    const linkedProjects = () => new Set(Object.values(sync.links()).map((e) => String(e.projectId)));
+    // what a push event is (Rocketlane's chat code, read 2026-10-06, as the chat notifications use it): a new chat
+    // message is CREATE with objectType CONVERSATION_COMMENT and its projectId. Anything else said of itself - a task,
+    // an entry in the bell - starts no round; on a project's own channel an event of a shape never seen does
+    const payloadOf = (d) => { if (typeof d !== "string") return d && typeof d === "object" ? d : null; try { return JSON.parse(d); } catch (_) { return null; } };
+    function onProjectPush(data) {
+      const d = payloadOf(data);
+      if (!d || d.objectType == null || d.objectType === "CONVERSATION_COMMENT") soon();
+    }
+    function onUserPush(data) {
+      const d = payloadOf(data);
+      if (!d || d.objectType !== "CONVERSATION_COMMENT") return;
+      if (d.projectId == null || linkedProjects().has(String(d.projectId))) soon();
+    }
+    // the channels listened on, as objects (v1.84.0). Kept by name before: Rocketlane makes a new channel object when it
+    // subscribes again - leaving a project and coming back, or the chat notifications taking over the lead - and the
+    // new one was never listened on. Whether a channel still has the listener is read from it where pusher-js lets it
+    // be (the page may unbind it); the set is what is left where it does not.
+    const hooked = new WeakSet();
+    function listens(ch, fn) {
+      try {
+        // pusher-js keeps an event's listeners as [{ fn, context }], and none at all once they are all unbound
+        if (ch.callbacks && typeof ch.callbacks.get === "function") {
+          const list = ch.callbacks.get("CREATE");
+          if (list === undefined) return false;
+          if (Array.isArray(list)) return list.some((x) => x && x.fn === fn);
+        }
+      } catch (_) {}
+      return hooked.has(ch);
+    }
     function hookPusher() {
       try {
         const p = net.pusher();
         if (!enabled() || !p || typeof p.allChannels !== "function") return;
-        const projects = new Set(Object.values(sync.links()).map((e) => String(e.projectId)));
+        const projects = linkedProjects();
+        if (!projects.size) return;
+        const me = String(net.userId() || "");
         for (const ch of p.allChannels()) {
-          const m = /projectId@(\d+)/.exec(String((ch && ch.name) || ""));
-          if (!m || !projects.has(m[1]) || hooked.has(ch.name) || typeof ch.bind !== "function") continue;
-          hooked.add(ch.name);
-          ch.bind("CREATE", () => soon());
+          if (!ch || typeof ch.bind !== "function") continue;
+          const name = String(ch.name || "");
+          const m = /projectId@(\d+)/.exec(name);
+          // the user's own channel, which every Rocketlane page keeps: a chat message of a linked project comes there
+          // too, so a round starts at once on any page - the home page as well as the project's own (v1.84.0)
+          const fn = m && projects.has(m[1]) ? onProjectPush
+            : me && /^private-accountId@\d+-userId@\d+$/.test(name) && name.endsWith("-userId@" + me) ? onUserPush : null;
+          if (!fn || listens(ch, fn)) continue;
+          hooked.add(ch);
+          ch.bind("CREATE", fn);
         }
       } catch (_) {}
     }
@@ -19386,9 +19457,10 @@
       panel.hidden = true;
       paint();
       updateMode();
-      // opening a linked chat checks its ticket at once
+      // opening a linked chat checks its ticket at once - and so does going to any other page (v1.84.0), the home page as
+      // well, unless a round has just been: the linked chats need not be opened to be synced
       const here = chatIds();
-      if (here && sync.linkOf(here.projectId, here.conversationId)) soon();
+      if ((here && sync.linkOf(here.projectId, here.conversationId)) || Date.now() - lastRoundAt > VISIT_MS) soon();
     }
     const pageNav = ((typeof unsafeWindow !== "undefined" && unsafeWindow) || window).navigation || window.navigation;
     if (pageNav && typeof pageNav.addEventListener === "function") pageNav.addEventListener("currententrychange", onRoute);
@@ -19401,17 +19473,31 @@
       if (!bar.hidden) updateMode();
       // a /reply shown in the chat gets its mark within a second as well (v1.81.0)
       try { markReplies(); } catch (_) {}
+      // the rounds' timer gone, or not gone off long after it was due: started again (v1.84.0)
+      if (loopDue && Date.now() - loopDue > 90000) loop(0);
     }, 1000);
-    // the rounds: at the set interval in front, at most once a minute behind, and at once when the tab comes to the front
-    let loopTimer = 0;
-    function loop() {
+    // the rounds: at the set interval in front, at most once a minute behind, and at once when the tab comes to the front.
+    // The next is set whatever became of the last (v1.84.0: a round that threw had ended them in that tab)
+    let loopTimer = 0, loopDue = 0;
+    function loop(wait) {
       clearTimeout(loopTimer);
-      loopTimer = setTimeout(async () => { await round(); loop(); }, visible() ? frontMs() : backMs());
+      const ms = wait != null ? wait : visible() ? frontMs() : backMs();
+      loopDue = Date.now() + ms;
+      loopTimer = setTimeout(async () => {
+        loopDue = 0;
+        try { await round(); }
+        catch (err) { try { console.warn("[zendesk-chat] round failed:", (err && err.message) || err); } catch (_) {} }
+        finally { loop(); }
+      }, ms);
     }
-    // a visit checks at once: the page loading, the tab or the window coming back to the front
+    // a visit checks at once: the page loading, the tab or the window coming back to the front, a page Chrome had frozen
+    // in the background or kept in its back-forward cache running again, the network back after the PC slept (v1.84.0)
     document.addEventListener("visibilitychange", () => { if (visible()) soon(); });
-    window.addEventListener("focus", () => { if (visible() && Date.now() - lastRoundAt > 10000) soon(); });
-    setTimeout(() => { void round().then(loop); }, 1000);
+    window.addEventListener("focus", () => { if (visible() && Date.now() - lastRoundAt > VISIT_MS) soon(); });
+    document.addEventListener("resume", () => soon());
+    window.addEventListener("pageshow", (ev) => { if (ev.persisted) soon(); });
+    window.addEventListener("online", () => soon());
+    loop(1000);
     setInterval(hookPusher, 5000);
 
     try {
