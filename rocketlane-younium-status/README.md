@@ -565,6 +565,11 @@ script could remove. Since 1.86.0:
   5 million Chrome allows a site.
 - **A value written again as it stands is not written** (a string, number or boolean), so the Zendesk links are
   written only when something in them changed.
+- **A chat notifications' check writes its record once (v1.86.1)**: the record of what was shown, after it has opened
+  every chat it needed and before it shows anything, so another tab still never announces the same messages. Until
+  1.86.1 it was written after each chat. After an evening away, the first check opened five chats with unread
+  messages and wrote Tampermonkey's whole set five times in a second and a half. A chat that stays unread is opened
+  again every five to ten minutes, so that burst came back as often.
 - **The first Rocketlane page after the update** moves the three caches to the page, unless the page already has a
   newer one, and takes the moved keys out of Tampermonkey's storage, with `rltlMineCache`, which nothing read any more.
   Should the page's storage ever be full, this script's caches give way, never Rocketlane's own values.
@@ -577,7 +582,14 @@ script could remove. Since 1.86.0:
   Reload the Rocketlane tabs after updating. After going back to 1.85.0 or older, that copy runs no sync rounds and
   sends no chat notifications for up to a day.
 - **Tests:** `test/page-storage.test.js` runs the page's storage, the move out of Tampermonkey's, and the 1.85.0 lock
-  and chat leader, taken from this repository's history, against the standing records.
+  and chat leader, taken from this repository's history, against the standing records. It also runs a chat check
+  against 1.86.0's. The check writes once, before it shows anything, and shows the same notifications and leaves
+  the same record.
+- **Measured on 2026-11-17, after the update**, with one Rocketlane tab open:
+  - Tampermonkey's set was 29 KB (59 keys) instead of 333 KB.
+  - Opening the tab wrote it 8 times in 30 s, then not at all for 4 minutes; before, it was 9 times in 2 minutes.
+  - Tampermonkey's requests took about 1 s instead of 16-25 s. The browser had also been restarted in between, so
+    this does not prove the churn was the cause.
 
 ---
 

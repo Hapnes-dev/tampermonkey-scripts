@@ -5,6 +5,7 @@
  * GM_setValue (@@rlGmSetValue), the page's storage and the move out of Tampermonkey's (@@rlPageStore ..
  * @@rlPageMoveOut), and - against the 1.85.0 code from this repository's history - how a copy from before 1.86.0,
  * still open in another tab, is kept from running the Zendesk sync's rounds or the chat notifications beside it.
+ * Since 1.86.1 also the chat notifications' check, which writes its record once instead of once per chat it opened.
  *   node --test "rocketlane-younium-status/test/*.test.js" */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -17,9 +18,13 @@ const src = fs.readFileSync(FILE, 'utf8').replace(/\r\n/g, '\n');
 const part = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b); assert.ok(i > 0 && j > i, a + ' is in the userscript'); return src.slice(i, j); };
 const GMSET = part('  // @@rlGmSetValue:start', '  // @@rlGmSetValue:end');
 const PAGE = part('  // @@rlPageStore:start', '  // @@rlPageMoveOut:end');
+const fromHistory = (rev) => {
+  try { return execFileSync('git', ['show', rev + ':rocketlane-younium-status/rocketlane-younium-status.user.js'], { cwd: path.join(__dirname, '..'), encoding: 'utf8', maxBuffer: 64 << 20 }).replace(/\r\n/g, '\n'); } catch (_) { return null; }
+};
 // 1.85.0, the last version that kept the lock and the chat leader in Tampermonkey's storage
-let OLD = null;
-try { OLD = execFileSync('git', ['show', 'ca1fd92:rocketlane-younium-status/rocketlane-younium-status.user.js'], { cwd: path.join(__dirname, '..'), encoding: 'utf8', maxBuffer: 64 << 20 }).replace(/\r\n/g, '\n'); } catch (_) { OLD = null; }
+const OLD = fromHistory('ca1fd92');
+// 1.86.0, the last version whose chat check wrote its record once for each chat it opened
+const OLD186 = fromHistory('29696e1');
 
 /** The text of the function that starts with `head` in `text`, to its closing brace. */
 function fn(text, head) {
@@ -176,4 +181,68 @@ test('chat notifications: a copy from before 1.86.0 leading in Tampermonkey\'s s
   assert.strictEqual(store.rlChatNotifyLeader, JSON.stringify(record), 'nor writes there');
   keepOut();
   assert.strictEqual(store.rlChatNotifyLeader, JSON.stringify(record), 'renewed twice a day, not every tick');
+});
+
+/**
+ * One full check of five owned projects' chats, run with the rlCnCheck in `text` (and its GM_setValue, helpers and
+ * record), at `now`. Returns what it wrote to Tampermonkey's storage and what it showed, in order.
+ *   p1/101: one new message          p2/102: still unread, nothing new: looked at again after 5 min
+ *   p3/103: two new, and one's own   p4/104: seen for the first time: noted, and in the one summary
+ *   p5/105: its messages fail to load: left as it was
+ */
+async function chatCheck(text, store, now) {
+  const slice = (a, b) => { const i = text.indexOf(a), j = text.indexOf(b); assert.ok(i > 0 && j > i, a + ' is in the code'); return text.slice(i, j); };
+  const consts = ['RL_CN_GM_STATE', 'RL_CN_REFETCH_MS', 'RL_CN_PER_CHAT'].map((k) => new RegExp('const ' + k + ' = [^;]+;').exec(text)[0]).join('\n');
+  const unread = { 101: 2, 102: 1, 103: 3, 104: 2, 105: 1 };
+  const msg = (commentId, createdAt, createdBy) => ({ commentId, createdAt, createdBy, messageType: 'USER_MESSAGE' });
+  const comments = {
+    101: [msg('a1', 1000, 7), msg('a2', 2000, 7)],
+    102: [msg('b1', 1000, 7)],
+    103: [msg('c1', 1000, 1), msg('c2', 3000, 7), msg('c3', 3100, 8)],
+    104: [msg('d1', 500, 7), msg('d2', 600, 7)],
+  };
+  const gmRocketlaneGet = async (p) => {
+    let m = /^\/projects\/p(\d)\/project-conversations$/.exec(p);
+    if (m) return [{ conversationId: 100 + Number(m[1]), unreadMessages: unread[100 + Number(m[1])], partOfConversation: true }];
+    m = /^\/projects\/p\d\/project-conversations\/(\d+)\/conversations$/.exec(p);
+    if (m && comments[m[1]]) return { comments: comments[m[1]] };
+    throw new Error('HTTP 502');
+  };
+  const log = [];
+  const check = new Function('tmSetValue', 'GM_getValue', 'Date', 'rlHpReadCurrentUserId', 'rlZdMapWithConcurrency', 'gmRocketlaneGet',
+    'rlCnAnnounce', 'rlCnNotify', 'rlCnChatUrl',
+    slice('  // @@rlGmSetValue:start', '  // @@rlGmSetValue:end') + slice('  // @@rlChatNotifyHelpers:start', '  // @@rlChatNotifyHelpers:end') +
+    consts + '\n' + fn(text, 'function rlCnReadState() {') + '\n' + fn(text, 'function rlCnWriteState(s) {') + '\n' +
+    fn(text, 'async function rlCnCheck(projects, full) {') + '\nreturn rlCnCheck;')(
+    (k, v) => { log.push('write ' + k); store[k] = v; }, (k, d) => (k in store ? store[k] : d), { now: () => now },
+    () => '1', (items, n, f) => Promise.all(items.map(f)), gmRocketlaneGet,
+    (project, conv, fresh) => log.push('announce ' + conv.conversationId + ': ' + fresh.map((m) => m.commentId).join(' ')),
+    (opts) => log.push('notify ' + opts.tag), () => 'url');
+  await check([1, 2, 3, 4, 5].map((n) => ({ id: 'p' + n, name: 'Project ' + n })), true);
+  return log;
+}
+
+test('chat notifications: a check writes its record once, before it shows anything (1.86.1)', async () => {
+  const before = JSON.stringify({
+    101: { at: 1000, unread: 1, fetchedAt: 0 }, 102: { at: 1000, unread: 1, fetchedAt: 0 },
+    103: { at: 1000, unread: 3, fetchedAt: 0 }, 105: { at: 1000, unread: 1, fetchedAt: 0 }, 999: { at: 1000, unread: 0, fetchedAt: 0 },
+  });
+  const now = 20 * 60 * 1000;
+  const store = { rlChatNotifyState: before };
+  const log = await chatCheck(src, store, now);
+  assert.deepStrictEqual(log, ['write rlChatNotifyState', 'announce 101: a2', 'announce 103: c2 c3', 'notify rl-chat-summary'],
+    'one write, and before the first notification, so another tab never announces the same messages');
+  const after = store.rlChatNotifyState;
+  assert.deepStrictEqual(JSON.parse(after), {
+    101: { at: 2000, unread: 2, fetchedAt: now }, 102: { at: 1000, unread: 1, fetchedAt: now },
+    103: { at: 3100, unread: 3, fetchedAt: now }, 104: { at: 600, unread: 2, fetchedAt: now }, 105: { at: 1000, unread: 1, fetchedAt: 0 },
+  }, 'every chat opened is in it, the one that failed as it was, and the chat of a project no longer mine is forgotten');
+  assert.deepStrictEqual(await chatCheck(src, store, now + 60 * 1000), [], 'a check that changes nothing writes nothing');
+
+  if (!OLD186) return;
+  const old = { rlChatNotifyState: before };
+  const oldLog = await chatCheck(OLD186, old, now);
+  assert.strictEqual(oldLog.filter((l) => l.startsWith('write ')).length, 5, '1.86.0 wrote once for each chat it opened, and once more at the end');
+  assert.deepStrictEqual(oldLog.filter((l) => !l.startsWith('write ')), log.slice(1), 'the same notifications as 1.86.0');
+  assert.strictEqual(old.rlChatNotifyState, after, 'and the same record');
 });

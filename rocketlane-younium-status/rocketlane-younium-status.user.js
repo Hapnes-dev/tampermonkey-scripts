@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.86.0
+// @version      1.86.1
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -132,6 +132,8 @@
  * again on every change. What changes every few seconds and the big caches
  * therefore live in the Rocketlane page's localStorage (section 0b), and a
  * value written again as it stands is not written (GM_setValue below).
+ * Since v1.86.1 a chat notifications' check writes its record once, not
+ * once for each chat it opened (rlCnCheck).
  */
 
 (function (tmSetValue) {
@@ -5826,6 +5828,7 @@
     // Re-read right before planning: another tab may have handled messages since.
     const state = rlCnReadState();
     const plan = rlCnPlan(state, lists, Date.now(), RL_CN_REFETCH_MS);
+    const toAnnounce = [];
     for (const job of plan.toFetch) {
       const id = String(job.conv.conversationId);
       let comments;
@@ -5840,10 +5843,15 @@
       const { fresh, newest } = rlCnFreshMessages(entry, comments, job.unread, userId, RL_CN_PER_CHAT * 3);
       entry.fetchedAt = Date.now();
       if (newest > (Number(entry.at) || 0)) entry.at = newest;
-      // Saved before notifying, so another tab never announces the same messages.
-      rlCnWriteState(state);
-      if (!job.baseline && fresh.length) rlCnAnnounce(job.project, job.conv, fresh);
+      if (!job.baseline && fresh.length) toAnnounce.push({ job, fresh });
     }
+    // Forget chats of projects that are no longer open and mine — only after a complete poll.
+    if (full && !failed) for (const id of Object.keys(state)) if (!plan.seen.has(id)) delete state[id];
+    // Saved once for the whole check, before any notification, so another tab never announces the same messages.
+    // Until v1.86.1 it was saved after each chat opened: Tampermonkey stores the script's whole set of values on every
+    // write, and a check that opened five chats wrote it five times in a second and a half (2026-11-17).
+    rlCnWriteState(state);
+    for (const { job, fresh } of toAnnounce) rlCnAnnounce(job.project, job.conv, fresh);
     const summary = rlCnSummary(plan.firstSight);
     if (summary.length) {
       const total = summary.reduce((n, x) => n + x.unread, 0);
@@ -5855,9 +5863,6 @@
         url: rlCnChatUrl(summary[0].project.id, summary[0].conv.conversationId),
       });
     }
-    // Forget chats of projects that are no longer open and mine — only after a complete poll.
-    if (full && !failed) for (const id of Object.keys(state)) if (!plan.seen.has(id)) delete state[id];
-    rlCnWriteState(state);
   }
 
   // ── Every chat the user is in: the bell's own feed (v1.62.0) ────────────
