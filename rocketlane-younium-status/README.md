@@ -85,6 +85,30 @@ The Younium API uses Frontegg JWT auth. The script mints a fresh access token on
 | Invoice history | `POST /api/order/invoicesForHistory` `{ orderNumber }` |
 | Audit event log | `GET /api/eventlog/order/id/{id}` |
 
+**A lookup in three rounds** (v1.85.0)
+
+Every request goes through Tampermonkey, and on 2026-11-17 every Tampermonkey request in the browser took 16–25 s,
+Younium, Rocketlane and Oneflow alike. Younium itself answered in 0.1–0.7 s. The lookup used to make nine requests one
+after another (the order search twice, the legal entity read before and after), so the chip spun for three minutes.
+Now it needs three rounds:
+
+1. The session's legal entity and the plant's order search, at once.
+2. Every order the lookup can need, fetched at once: the main one, the newest other order beside a subscription
+   agreement, and the first six subscription candidates in the search's own order. More follow only when none of
+   those carries the IWMAC subscription.
+3. Both event logs and the invoice history, at once.
+
+The verdict is the same as before, every field. A test runs the old and the new lookup against the same fake Younium
+and compares them.
+
+- **A lost request is sent again.** Tampermonkey can lose a request, after the PC has slept, and then it never answers
+  or times out. A Younium request (and the token refresh) is given up after 60 s and sent once more, instead of leaving
+  the chip spinning until the page is reloaded.
+- **The last status at once.** The chip shows the plant's last known status, with its spinner, while it checks again.
+  The modal says what that status was while it works. This is kept per plant (the newest 200) in the page's own
+  `localStorage` (`rlimp_yn_last_v1`), not in Tampermonkey's storage, which rewrites a script's whole stored set on
+  every change.
+
 **Subscription detection**
 
 An order is treated as the IWMAC subscription only when a product line matches the strict pattern `/\bIWMAC\s*(?:Abonnement|Subscription)\b/i` — i.e. literally `IWMAC Subscription` / `IWMAC Abonnement`. `IWMAC Modul: …` / `IWMAC Product: …` line items are one-time deliverables, not subscription evidence.
@@ -103,6 +127,7 @@ An order is treated as the IWMAC subscription only when a product line matches t
 | Modal says "Younium session expired" | Visit `https://eu.younium.com` once while logged in, then retry. |
 | "Couldn't read a plant ID" | The project name must start with the plant number, e.g. `10112 - …`. |
 | "No Younium orders found" | No order in Younium carries that `plant_id`, or you're in the wrong region. |
+| "Checking Younium…" for a long time | Usually Tampermonkey itself is slow: every request it makes waits. The lookup needs three rounds of them (v1.85.0). If every Tampermonkey feature is slow, restarting Chrome starts Tampermonkey's background afresh. A request that never answers is sent again after 60 s. |
 
 ---
 

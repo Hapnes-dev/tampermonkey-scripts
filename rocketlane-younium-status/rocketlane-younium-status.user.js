@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.84.0
+// @version      1.85.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -218,6 +218,35 @@
    * Passive refreshes honour a 30s cooldown; a 401-driven forceRefresh bypasses
    * it (the cached token was just rejected, so handing it back would loop).
    */
+  // A Younium request through Tampermonkey (v1.85.0). Tampermonkey's own timeout lives in the extension, and a request
+  // the extension loses - its worker restarted, after the PC slept - is never answered at all (1.84.0 found that for the
+  // Zendesk sync); here it held the chip for good. So each request has a limit of its own, well above the 16-25 s every
+  // Tampermonkey request took on 2026-11-17, after which it is given up (`lost`) - and its caller sends it once more.
+  const YN_LOST_MS = 60 * 1000;
+  function ynXhr(init) {
+    return new Promise((resolve, reject) => {
+      let done = false, req = null;
+      const finish = (fn, v) => { if (done) return; done = true; clearTimeout(timer); fn(v); };
+      const timer = setTimeout(() => {
+        try { if (req && typeof req.abort === "function") req.abort(); } catch (_) {}
+        finish(reject, Object.assign(new Error("Younium did not answer (Tampermonkey lost the request)"), { lost: true }));
+      }, YN_LOST_MS);
+      const { __what, ...opts } = init;   // what it is, for the error text only
+      try {
+        req = GM_xmlhttpRequest(Object.assign({}, opts, {
+          onload: (res) => finish(resolve, res),
+          onerror: () => finish(reject, new Error(__what === "auth" ? "Network error reaching Younium auth" : "Network error reaching Younium API")),
+          ontimeout: () => finish(reject, new Error(__what === "auth" ? "Younium auth timed out" : "Younium API timed out")),
+        }));
+      } catch (e) { finish(reject, e); }
+    });
+  }
+  /** ynXhr, sent once more when Tampermonkey lost it. */
+  async function ynXhrRetry(init) {
+    try { return await ynXhr(init); }
+    catch (e) { if (e && e.lost) return ynXhr(init); throw e; }
+  }
+
   let ynRefreshInFlight = null;
   let ynLastRefreshAttempt = 0;
   function gmYouniumRefreshToken(forceRefresh) {
@@ -230,41 +259,37 @@
     ynLastRefreshAttempt = now;
     const region = GM_getValue("ynRegion", "eu"); // default to EU
     const authHost = "https://auth." + region + ".younium.com";
-    ynRefreshInFlight = new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: "POST",
-        url: authHost + "/frontegg/identity/resources/auth/v1/user/token/refresh",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        data: "{}",
-        timeout: 20000,
-        anonymous: false,
-        onload: (res) => {
-          if (res.status < 200 || res.status >= 300) {
-            reject(new Error(
-              "HTTP " + res.status +
-              ": Younium session expired or missing. Open https://" + region +
-              ".younium.com once while logged in, then try again.",
-            ));
-            return;
-          }
-          try {
-            const j = JSON.parse(res.responseText || "{}");
-            const token = String(j?.accessToken ?? "").trim();
-            if (!token) { reject(new Error("Younium refresh returned no accessToken.")); return; }
-            const ttlMs = Math.max(60_000, Number(j.expiresIn || 0) * 1000);
-            const expiresAt = Date.now() + ttlMs;
-            GM_setValue("ynAccessToken", token);
-            GM_setValue("ynAccessTokenExpiresAt", expiresAt);
-            GM_setValue("ynAccessTokenCapturedAt", Date.now());
-            resolve(token);
-          } catch (e) {
-            reject(new Error("Younium refresh parse failed: " + (e?.message ?? e)));
-          }
-        },
-        onerror: () => reject(new Error("Network error reaching Younium auth")),
-        ontimeout: () => reject(new Error("Younium auth timed out")),
-      });
-    }).finally(() => { setTimeout(() => { ynRefreshInFlight = null; }, 0); });
+    ynRefreshInFlight = ynXhrRetry({
+      __what: "auth",
+      method: "POST",
+      url: authHost + "/frontegg/identity/resources/auth/v1/user/token/refresh",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      data: "{}",
+      timeout: 20000,
+      anonymous: false,
+    }).then((res) => new Promise((resolve, reject) => {
+      if (res.status < 200 || res.status >= 300) {
+        reject(new Error(
+          "HTTP " + res.status +
+          ": Younium session expired or missing. Open https://" + region +
+          ".younium.com once while logged in, then try again.",
+        ));
+        return;
+      }
+      try {
+        const j = JSON.parse(res.responseText || "{}");
+        const token = String(j?.accessToken ?? "").trim();
+        if (!token) { reject(new Error("Younium refresh returned no accessToken.")); return; }
+        const ttlMs = Math.max(60_000, Number(j.expiresIn || 0) * 1000);
+        const expiresAt = Date.now() + ttlMs;
+        GM_setValue("ynAccessToken", token);
+        GM_setValue("ynAccessTokenExpiresAt", expiresAt);
+        GM_setValue("ynAccessTokenCapturedAt", Date.now());
+        resolve(token);
+      } catch (e) {
+        reject(new Error("Younium refresh parse failed: " + (e?.message ?? e)));
+      }
+    })).finally(() => { setTimeout(() => { ynRefreshInFlight = null; }, 0); });
     return ynRefreshInFlight;
   }
 
@@ -286,7 +311,7 @@
     const expiringSoon = !expiresAt || (Date.now() > expiresAt - 60_000);
     if (!token || expiringSoon) token = await gmYouniumRefreshToken();
 
-    const send = (t) => new Promise((resolve, reject) => {
+    const send = (t) => {
       const headers = {
         accept: "application/json",
         Authorization: "Bearer " + t,
@@ -298,16 +323,13 @@
         headers,
         timeout: 20000,
         anonymous: false,
-        onload: (res) => resolve({ status: res.status, text: res.responseText || "" }),
-        onerror: () => reject(new Error("Network error reaching Younium API")),
-        ontimeout: () => reject(new Error("Younium API timed out")),
       };
       if (body !== undefined && body !== null) {
         headers["content-type"] = "application/json";
         init.data = typeof body === "string" ? body : JSON.stringify(body);
       }
-      GM_xmlhttpRequest(init);
-    });
+      return ynXhrRetry(init).then((res) => ({ status: res.status, text: res.responseText || "" }));
+    };
 
     let res = await send(token);
     if (res.status === 401) {
@@ -469,19 +491,23 @@
     if (!pid || ynEntityScope > 0) return fn();
 
     const remembered = ynReadPlantEntity(pid);
-    if (remembered && remembered.id) {
-      let current = "";
-      try { current = (await ynCurrentLegalEntity()).id; } catch (_) {}
-      if (current && remembered.id !== current) {
-        const viaCache = await ynRunInEntity(remembered.id, fn);
-        if (!empty(viaCache)) return viaCache;
-        ynWritePlantEntity(pid, ""); // moved or deleted — fall through and look again
-      }
+    // The session's entity and the lookup in it at once (v1.85.0: they were one after another, and the entity was read
+    // again after a hit - each Younium request cost 16-25 s through Tampermonkey on 2026-11-17). The lookup is only
+    // reads, so when the entity is not the remembered one its answer is just not used.
+    const [current, ran] = await Promise.all([
+      ynCurrentLegalEntity().then((e) => e.id, () => ""),
+      fn().then((v) => ({ v }), (e) => ({ e })),
+    ]);
+    if (remembered && remembered.id && current && remembered.id !== current) {
+      const viaCache = await ynRunInEntity(remembered.id, fn);
+      if (!empty(viaCache)) return viaCache;
+      ynWritePlantEntity(pid, ""); // moved or deleted — fall through and look again
     }
 
-    const here = await fn();
+    if (ran.e) throw ran.e;
+    const here = ran.v;
     if (!empty(here)) {
-      try { ynWritePlantEntity(pid, (await ynCurrentLegalEntity()).id); } catch (_) {}
+      if (current) ynWritePlantEntity(pid, current);
       return here;
     }
     if (remembered && !remembered.id) return here; // known to be nowhere; do not sweep again
@@ -848,6 +874,15 @@
    * verdict as the tracker's saved-URL order path. Returns the `out` shape the
    * modal renderer expects.
    */
+  /** Orders fetched in full, `ids` all at once (v1.85.0: one after another before). -> Map id -> order, or the Error */
+  async function ynHydrateOrders(ids) {
+    const want = [...new Set((ids || []).map((x) => String(x || "").trim()).filter(Boolean))];
+    const got = await Promise.all(want.map((id) => youniumFetchOrderDetails(id).then((o) => o, (e) => (e instanceof Error ? e : new Error(String(e))))));
+    return new Map(want.map((id, i) => [id, got[i]]));
+  }
+  // how many subscription candidates are fetched at once, in the search's own order, before a second batch
+  const YN_SUB_BATCH = 6;
+
   async function computeYouniumStatusByPlantId(plantId, projectName) {
     // Wrapped so every follow-up call (order hydration, invoices, event logs) runs
     // in the same entity as the search that found the orders.
@@ -904,8 +939,17 @@
     const looksLikeSubscriptionAgreement = (o) =>
       /\babonnementsavtale\b|\bsubscription agreement\b|\bsubscription\b/i.test(String(o?.description || ""));
     const primarySummary = sorted.find((o) => !looksLikeSubscriptionAgreement(o)) || sorted[0];
+    // Every order the steps below can need, fetched at once (v1.85.0): the main one, the newest other order beside it
+    // (should the main one prove to be the subscription agreement), and the first subscription candidates in the
+    // search's own order - the separate-subscription check used to search again and fetch them one by one.
+    const altSummary = sorted.find((o) => o.id !== primarySummary.id && !looksLikeSubscriptionAgreement(o));
+    const candidates = allOrders.filter((o) => o?.id);
+    const hydrated = await ynHydrateOrders([primarySummary.id, altSummary?.id].concat(candidates.slice(0, YN_SUB_BATCH).map((o) => o.id)));
     let order;
-    try { order = await youniumFetchOrderDetails(primarySummary.id); }
+    try {
+      order = hydrated.get(String(primarySummary.id));
+      if (order instanceof Error) throw order;
+    }
     catch (e) {
       dbg("primary hydrate failed", e);
       out.color = "yellow"; out.label = "Younium: Error";
@@ -934,8 +978,9 @@
       const alt = sorted.find((o) => o.id !== order.id && !looksLikeSubscriptionAgreement(o));
       let swapped = null;
       if (alt) {
-        try { swapped = await youniumFetchOrderDetails(alt.id); }
-        catch (e) { dbg("alt order hydrate failed", e); }
+        const got = hydrated.has(String(alt.id)) ? hydrated.get(String(alt.id)) : await youniumFetchOrderDetails(alt.id).catch((e) => e);
+        if (got instanceof Error) dbg("alt order hydrate failed", got);
+        else swapped = got;
       }
       if (swapped && !findIwmacSubscriptionItem(swapped)) {
         order = swapped;
@@ -949,11 +994,20 @@
       }
     }
     if (!subMatch) {
+      // a separate subscription order: the first of the plant's orders, in the search's own order, that carries the
+      // IWMAC subscription product - from the orders fetched above, then the rest in batches (as
+      // youniumFindSubscriptionByPlantId did one by one, after a second search)
       let found = null;
-      try {
-        found = await youniumFindSubscriptionByPlantId(pid);
-      } catch (e) {
-        out.problems.push("Couldn't check Younium for a separate subscription order: " + (e?.message ?? e));
+      for (let i = 0; i < candidates.length && !found; i += YN_SUB_BATCH) {
+        const batch = candidates.slice(i, i + YN_SUB_BATCH);
+        const more = batch.filter((o) => !hydrated.has(String(o.id))).map((o) => o.id);
+        if (more.length) for (const [k, v] of await ynHydrateOrders(more)) hydrated.set(k, v);
+        for (const summary of batch) {
+          const full = hydrated.get(String(summary.id));
+          if (full instanceof Error) { console.warn("[Younium status] failed to hydrate order " + summary.id, full); continue; }
+          const match = full ? findIwmacSubscriptionItem(full) : null;
+          if (match) { found = { order: full, productName: match.productName }; break; }
+        }
       }
       if (found) {
         subMatch = { item: null, productName: found.productName };
@@ -967,16 +1021,21 @@
     out.subscriptionOrder = subscriptionOrder;
     out.subscriptionOrderIsSeparate = subscriptionOrderIsSeparate;
 
-    // ── Eventlogs for Created by / Last updated by (non-fatal) ──
-    try {
-      const ev = await youniumFetchOrderEventLog(order.id);
-      out.raw.orderEventLog = ev;
-      out.orderLatestEvent = extractLatestEvent(ev);
-      out.orderCreatedEvent = extractFirstEvent(ev);
-    } catch (e) { dbg("primary eventlog failed", e); }
-    if (subscriptionOrder?.id && subscriptionOrder.id !== order.id) {
+    // ── Eventlogs for Created by / Last updated by (non-fatal), and the invoices - all at once (v1.85.0) ──
+    const subLogWanted = !!(subscriptionOrder?.id && subscriptionOrder.id !== order.id);
+    const [evOrder, evSub, invoicesFetched] = await Promise.all([
+      youniumFetchOrderEventLog(order.id).catch((e) => { dbg("primary eventlog failed", e); return null; }),
+      subLogWanted ? youniumFetchOrderEventLog(subscriptionOrder.id).catch((e) => { dbg("sub eventlog failed", e); return null; }) : null,
+      youniumFetchInvoicesForOrder(out.orderNumber),
+    ]);
+    if (evOrder) {
+      out.raw.orderEventLog = evOrder;
+      out.orderLatestEvent = extractLatestEvent(evOrder);
+      out.orderCreatedEvent = extractFirstEvent(evOrder);
+    }
+    if (subLogWanted) {
       try {
-        const ev = await youniumFetchOrderEventLog(subscriptionOrder.id);
+        const ev = evSub || [];
         out.raw.subscriptionEventLog = ev;
         out.subscriptionLatestEvent = extractLatestEvent(ev);
         out.subscriptionCreatedEvent = extractFirstEvent(ev);
@@ -1015,7 +1074,7 @@
     else out.subscriptionStatus = "Unknown";
 
     // ── Invoice check ──
-    const invoices = await youniumFetchInvoicesForOrder(out.orderNumber);
+    const invoices = invoicesFetched;
     const postedInvoices = (invoices || []).filter(youniumInvoiceIsPosted);
     // Distinguish ISSUED (posted, real) invoices from fully-PAID ones (status 3
     // or a paymentDate) so the order can read "Paid" / "Partially paid" /
@@ -1494,13 +1553,44 @@
     return { name, plantId: extractPlantIdFromProjectName(name) };
   }
 
+  // The chip's last status per plant (v1.85.0), shown at once while the lookup runs again: in the page's own storage, as it
+  // is the page's to show - Tampermonkey rewrites a script's whole stored set, 333 KB here, on every change. The newest
+  // 200 plants are kept.
+  const YN_LAST_KEY = "rlimp_yn_last_v1";
+  function ynReadLast(plantId) {
+    try {
+      const all = JSON.parse(window.localStorage.getItem(YN_LAST_KEY) || "{}");
+      const v = all && all[String(plantId)];
+      return v && typeof v === "object" && v.label ? v : null;
+    } catch (_) { return null; }
+  }
+  function ynWriteLast(plantId, v) {
+    if (!v || v.fetchFailed || !v.label) return;
+    try {
+      const all = JSON.parse(window.localStorage.getItem(YN_LAST_KEY) || "{}") || {};
+      delete all[String(plantId)];
+      all[String(plantId)] = { color: v.color, label: v.label, problems: (v.problems || []).slice(0, 8), at: Date.now() };
+      const keys = Object.keys(all);
+      for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete all[k];
+      window.localStorage.setItem(YN_LAST_KEY, JSON.stringify(all));
+    } catch (_) {}
+  }
+  // "14:32", or "13 nov 14:32" for another day - Norwegian time
+  function ynWhen(t) {
+    const d = new Date(t);
+    const f = (o) => { try { return d.toLocaleString("nb-NO", Object.assign({ timeZone: "Europe/Oslo" }, o)); } catch (_) { return d.toLocaleString("nb-NO", o); } };
+    const clock = f({ hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    return f({ year: "numeric", month: "2-digit", day: "2-digit" }) === new Date().toLocaleString("nb-NO", { timeZone: "Europe/Oslo", year: "numeric", month: "2-digit", day: "2-digit" })
+      ? clock : f({ day: "numeric", month: "short" }) + " " + clock;
+  }
+
   // Compute (or reuse) the verdict for a plant, deduping concurrent calls and
   // caching the result for the session.
   function computeForPlant(plantId, name) {
     if (verdictCache.has(plantId)) return Promise.resolve(verdictCache.get(plantId));
     if (inflightPlants.has(plantId)) return inflightPlants.get(plantId);
     const pr = computeYouniumStatusByPlantId(plantId, name)
-      .then((v) => { verdictCache.set(plantId, v); inflightPlants.delete(plantId); return v; })
+      .then((v) => { verdictCache.set(plantId, v); inflightPlants.delete(plantId); ynWriteLast(plantId, v); return v; })
       .catch((e) => { inflightPlants.delete(plantId); throw e; });
     inflightPlants.set(plantId, pr);
     return pr;
@@ -1528,14 +1618,18 @@
     if (verdictCache.has(plantId)) { applyVerdictToButton(plantId, verdictCache.get(plantId)); return; }
     if (ynSessionUnavailable) { setButtonState("gray", "Younium"); btn.title = "Younium not connected — open younium.com once while logged in, then reload"; return; }
 
-    setButtonState("gray", "Younium", true);
+    // the last known status at once, with the spinner, while the lookup runs again (v1.85.0)
+    const last = ynReadLast(plantId);
+    setButtonState(last ? last.color : "gray", last ? last.label : "Younium", true);
+    if (last) btn.title = last.label + " — as of " + ynWhen(last.at) + "; checking Younium again…";
     computeForPlant(plantId, name).then((v) => {
       applyVerdictToButton(plantId, v);
     }).catch((e) => {
       const b = document.getElementById("ynNavBtn");
       if (b && b.dataset.plantId === plantId) {
-        setButtonState("gray", "Younium");
-        b.title = "Younium status unavailable — open younium.com once while logged in, then reload (or click to retry)";
+        setButtonState(last ? last.color : "gray", last ? last.label : "Younium");
+        b.title = (last ? last.label + " — as of " + ynWhen(last.at) + ". " : "") +
+          "Younium status unavailable — open younium.com once while logged in, then reload (or click to retry)";
       }
       if (/session expired|session is missing|Younium session/i.test(String(e?.message || ""))) ynSessionUnavailable = true;
     });
@@ -1944,8 +2038,11 @@
     // Instant render from the session cache (the background auto-compute usually
     // already ran on page load); otherwise show a spinner and compute.
     if (verdictCache.has(plantId)) { renderYouniumStatusModalBody(verdictCache.get(plantId), gen); return; }
-    els.dlgYouniumStatusBody.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-style:italic;">Checking Younium…</div>';
-    setButtonState("gray", "Younium", true);
+    // while it works: what it said last time, if it has looked before (v1.85.0)
+    const last = ynReadLast(plantId);
+    els.dlgYouniumStatusBody.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-style:italic;">Checking Younium…' +
+      (last ? '<div style="margin-top:8px;font-style:normal;">Last check ' + escHtml(ynWhen(last.at)) + ': ' + escHtml(last.label) + '</div>' : '') + '</div>';
+    setButtonState(last ? last.color : "gray", last ? last.label : "Younium", true);
     try {
       const verdict = await computeForPlant(plantId, name);
       if (gen !== ynRenderGen || !els.dlgYouniumStatus.open) return; // superseded by a newer open/refresh
