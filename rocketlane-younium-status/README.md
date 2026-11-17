@@ -590,6 +590,8 @@ script could remove. Since 1.86.0:
   - Opening the tab wrote it 8 times in 30 s, then not at all for 4 minutes; before, it was 9 times in 2 minutes.
   - Tampermonkey's requests took about 1 s instead of 16-25 s. The browser had also been restarted in between, so
     this does not prove the churn was the cause.
+  - With 1.86.1, opening the tab wrote it 3 times. Its first chat check opened the same five unread chats as
+    1.86.0's and wrote once instead of five times. Requests took 0.5-1.2 s (median 0.7 s).
 
 ---
 
