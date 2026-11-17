@@ -20,6 +20,11 @@ const SYNC = src.slice(from, to);
 const mFrom = src.indexOf('  // @@rlChatMacroHelpers:start'), mTo = src.indexOf('\n  // ════', mFrom);
 assert.ok(mFrom > 0 && mTo > mFrom, 'the chat macros are in the userscript');
 const MACROS = src.slice(mFrom, mTo);
+// GM_setValue as the script has it (a value written again as it stands is not written) and the page's storage, where
+// the sync keeps its lock and when each link last ran (v1.86.0)
+const part = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b); assert.ok(i > 0 && j > i, a + ' is in the userscript'); return src.slice(i, j); };
+const GMSET = part('  // @@rlGmSetValue:start', '  // @@rlGmSetValue:end');
+const PAGESTORE = part('  // @@rlPageStore:start', '  // @@rlPageStore:end');
 // the Chat Bridge's hand-over (its 1.19.0), to see its links come over
 const bridge = fs.readFileSync(path.join(__dirname, '..', '..', 'rocketlane-chat-bridge', 'rocketlane-chat-bridge.user.js'), 'utf8').replace(/\r\n/g, '\n');
 const HANDOVER = bridge.slice(bridge.indexOf('  // @@ZDSYNC-HANDOVER-START'), bridge.indexOf('  // @@ZDSYNC-HANDOVER-END'));
@@ -40,7 +45,9 @@ const NET = `{
   zdUpload: (blob, name) => window.__zdUpload(blob, name),
   addMacro: (f) => RL_MC_EXTRA.push(f),
 }`;
-const START = '(function(){ function rlWhenDomReady(fn) { fn(); }\n' + MACROS + '\n' + SYNC + '\nstartZendeskChatSync(' + NET + ');})();';
+const startOf = (net) => '(function(){ const tmSetValue = window.GM_setValue; function rlWhenDomReady(fn) { fn(); }\n' +
+  GMSET + '\n' + PAGESTORE + '\n' + MACROS + '\n' + SYNC + '\nstartZendeskChatSync(' + net + ');})();';
+const START = startOf(NET);
 // a mirrored message's first line without its mark (the link to the Zendesk comment, since 1.80.0)
 const unmark = (h) => String(h).replace(/<a href="[^"]*#zd-comment-\d+"[^>]*>(Zendesk #\d+)<\/a>/g, '$1');
 
@@ -48,7 +55,11 @@ const unmark = (h) => String(h).replace(/<a href="[^"]*#zd-comment-\d+"[^>]*>(Ze
 const SHIM = `
 window.__menu = [];
 window.GM_getValue = (k, d) => { const v = localStorage.getItem('gm:' + k); return v == null ? d : JSON.parse(v); };
-window.GM_setValue = (k, v) => localStorage.setItem('gm:' + k, JSON.stringify(v));
+// every write that reaches Tampermonkey's storage, counted by key: it writes the script's whole set each time
+window.__gmWrites = {};
+window.GM_setValue = (k, v) => { window.__gmWrites[k] = (window.__gmWrites[k] || 0) + 1; localStorage.setItem('gm:' + k, JSON.stringify(v)); };
+// the page's storage as the script keeps it (section 0b): "rlimp:<key>", a string behind "s", anything else as JSON behind "j"
+window.__page = (k, d) => { const v = localStorage.getItem('rlimp:' + k); return v == null ? d : v[0] === 's' ? v.slice(1) : JSON.parse(v.slice(1)); };
 window.GM_registerMenuCommand = (name, fn) => window.__menu.push({ name, fn });
 const W = window.__world = {
   chat: [{ commentId: 12, messageType: 'USER_MESSAGE', content: '<p>Gammel melding</p>', createdAt: Date.now() - 60000, user: { userId: 2, firstName: 'Andreas', lastName: 'Sandnes' } }],
@@ -311,11 +322,23 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.strictEqual(await page.evaluate(() => GM_getValue('zdsync_interval_v1', null)), 60);
     await page.locator('#rl-zendesk-chat-sync >> .every select').selectOption('15');
 
-    // another round brings nothing back
+    // another round brings nothing back - and writes nothing to Tampermonkey's storage (v1.86.0): the lock and when the
+    // link last ran are the page's, and the link, which did not change, is not written again
+    const gmBefore = await page.evaluate(() => ({ writes: Object.assign({}, window.__gmWrites), rounds: window.__world.rounds || 0 }));
     await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click().catch(() => {});
-    await page.waitForTimeout(1500);
+    await page.waitForFunction((n) => (window.__world.rounds || 0) > n && !(__page('zdsync_lock_v1', null) || {}).busy, gmBefore.rounds, { timeout: 8000 });
+    await page.waitForTimeout(500);
     w = await page.evaluate(() => window.__world);
     assert.deepStrictEqual([w.posts.length, w.puts.length], [2, 4], 'nothing twice, nothing echoed (the third and fourth: the marks step\'s replies)');
+    const gmAfter = await page.evaluate(() => Object.assign({}, window.__gmWrites));
+    assert.deepStrictEqual(Object.keys(gmAfter).filter((k) => gmAfter[k] !== gmBefore.writes[k]), [], 'a round with no news writes nothing to Tampermonkey\'s storage');
+    const kept = await page.evaluate(() => ({
+      link: Object.keys(JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links['1481787:12896932']), ran: __page('zdsync_runs_v1', {})['1481787:12896932'],
+      lock: __page('zdsync_lock_v1', null), standing: GM_getValue('zdsync_lock_v1', null), lockWrites: window.__gmWrites.zdsync_lock_v1 }));
+    assert.ok(!kept.link.includes('lastRun') && kept.ran > Date.now() - 60000, 'when the link last ran is kept in the page: ' + JSON.stringify(kept));
+    assert.ok(kept.lock && kept.lock.tab !== 'rlimp-page-lock' && kept.lock.busy === 0 && kept.lock.until > Date.now(), 'this tab\'s lock, in the page');
+    assert.deepStrictEqual([kept.standing.tab, kept.standing.visible, kept.standing.until - Date.now() > 23 * 3600 * 1000, kept.lockWrites], ['rlimp-page-lock', true, true, 1],
+      'in Tampermonkey\'s storage only the standing lock that keeps older copies out, written once in all those rounds');
     // the ticket's earlier messages: only on request, from the panel
     await page.locator('#rl-zendesk-chat-sync >> text="Post earlier messages"').click();
     await page.waitForFunction(() => window.__world.posts.some((p) => /earlier messages/.test(p.content)), null, { timeout: 15000 });
@@ -692,7 +715,7 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     // going to another page. The clock is set to ten minutes, so every round here comes of one of those ----
     const NET3 = NET.replace('pusher: () => null,', 'pusher: () => window.__pusher || null, deadlineMs: 1500,');
     assert.notStrictEqual(NET3, NET, 'the test transports take a pusher and a short deadline');
-    const START3 = '(function(){ function rlWhenDomReady(fn) { fn(); }\n' + MACROS + '\n' + SYNC + '\nstartZendeskChatSync(' + NET3 + ');})();';
+    const START3 = startOf(NET3);
     const page3 = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     page3.on('pageerror', (e) => errors.push(String(e)));
     page3.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(m.text()); });
@@ -719,9 +742,9 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     });
     await page3.addScriptTag({ content: START3 });
     const st3 = () => page3.evaluate(() => { const e = JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links['1481787:12896932'];
-      const W = window.__world, l = GM_getValue('zdsync_lock_v1', null);
+      const W = window.__world, l = __page('zdsync_lock_v1', null);
       return { rounds: W.rounds || 0, hung: W.hung || 0, posts: W.posts.length, puts: W.puts.length, status: e.tickets[0].status, note: e.tickets[0].note, busy: !!(l && l.busy) }; });
-    const roundOver = (n) => page3.waitForFunction((n) => (window.__world.rounds || 0) === n && !(GM_getValue('zdsync_lock_v1', null) || {}).busy, n, { timeout: 6000 });
+    const roundOver = (n) => page3.waitForFunction((n) => (window.__world.rounds || 0) === n && !(__page('zdsync_lock_v1', null) || {}).busy, n, { timeout: 6000 });
     await page3.waitForFunction(() => JSON.parse(GM_getValue('zdsync_state_v1', '{}')).links['1481787:12896932'].tickets[0].status === 'error', null, { timeout: 8000 });
     await roundOver(1);
     assert.deepStrictEqual(await st3(), { rounds: 1, hung: 1, posts: 0, puts: 0, status: 'error', note: 'Zendesk did not answer within 2 s', busy: false },
@@ -779,6 +802,39 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     await roundOver(5);
     assert.deepStrictEqual(await st3(), { rounds: 5, hung: 1, posts: 1, puts: 1, status: 'active', note: '', busy: false }, 'nothing posted twice in all those rounds');
     await page3.screenshot({ path: path.join(OUT, '5-home-synced.png') });
+    await page3.close();
+
+    // a tab still running a copy from before 1.86.0 takes its turn by the lock in Tampermonkey's storage, which it renews
+    // every round: while it holds it, this copy runs no round - both would post the same messages. Once it has run out,
+    // this copy puts the standing lock there, which keeps every older copy out, and syncs
+    const page4 = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    page4.on('pageerror', (e) => errors.push(String(e)));
+    page4.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errors.push(m.text()); });
+    await page4.addInitScript(SHIM);
+    await page4.goto(base + '/home');
+    await page4.evaluate(() => {
+      const W = window.__world;
+      GM_setValue('zdsync_enabled_v1', true);
+      GM_setValue('zdsync_interval_v1', 600);
+      GM_setValue('zdsync_state_v1', JSON.stringify({ links: { '1481787:12896932': { projectId: '1481787', conversationId: '12896932', main: '53123',
+        tickets: [{ ticketId: '53123', subject: 'SV: 41584 Extra Laksvollen - alarm', linkedAt: Date.now() - 86400000, zdMax: 4001, zdUpdatedAt: '',
+          ownZd: [], status: 'active', note: '', historyPosted: true, filesPosted: true }],
+        rlSince: Math.max(...W.chat.map((c) => c.createdAt)), rlSeen: W.chat.map((c) => String(c.commentId)), ownRl: [], sent: {},
+        status: 'active', note: '', lastRun: Date.now() - 3600000 } } }));
+      W.addZd({ id: W.nextZd++, author_id: 700, public: true, plain_body: 'Svar mens en eldre fane har låsen.', created_at: new Date().toISOString(), attachments: [] });
+      GM_setValue('zdsync_lock_v1', { tab: 'older-copy', until: Date.now() + 3000, visible: false, busy: 0 });
+    });
+    await page4.addScriptTag({ content: START });
+    await page4.waitForTimeout(2000);
+    assert.deepStrictEqual(await page4.evaluate(() => [window.__world.rounds || 0, GM_getValue('zdsync_lock_v1', null).tab]), [0, 'older-copy'],
+      'no round while an older copy holds Tampermonkey\'s lock, and its lock left as it is');
+    await page4.waitForTimeout(1500);
+    await page4.evaluate(() => history.pushState({}, '', '/projects'));
+    await page4.waitForFunction(() => (window.__world.rounds || 0) === 1 && !(__page('zdsync_lock_v1', null) || {}).busy, null, { timeout: 6000 });
+    const s4 = await page4.evaluate(() => ({ posts: window.__world.posts.map((p) => p.content), standing: GM_getValue('zdsync_lock_v1', null) }));
+    assert.deepStrictEqual(s4.posts.map(unmark), ['<p><b>Zendesk #53123</b> · Kari Kunde (customer)</p><p>Svar mens en eldre fane har låsen.</p>'], 'brought in once the older copy\'s lock ran out');
+    assert.deepStrictEqual([s4.standing.tab, s4.standing.visible], ['rlimp-page-lock', true], 'the standing lock, held by a tab in front: an older copy leaves it alone');
+    await page4.close();
 
     assert.deepStrictEqual(errors, [], 'no errors or warnings in the page');
     console.log('chat sync e2e passed; screenshots in ' + path.relative(process.cwd(), OUT));

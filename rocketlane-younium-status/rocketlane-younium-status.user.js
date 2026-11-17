@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.85.0
+// @version      1.86.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -29,6 +29,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_deleteValue
 // @grant        GM_notification
 // @grant        GM_openInTab
 // @grant        GM_registerMenuCommand
@@ -126,10 +127,30 @@
  *
  * The modules share nothing but the page: each keeps its own storage keys,
  * styles and observers, exactly as in the scripts they came from.
+ *
+ * Storage (v1.86.0): Tampermonkey stores a script's whole set of values
+ * again on every change. What changes every few seconds and the big caches
+ * therefore live in the Rocketlane page's localStorage (section 0b), and a
+ * value written again as it stands is not written (GM_setValue below).
  */
 
-(function () {
+(function (tmSetValue) {
   "use strict";
+
+  // @@rlGmSetValue:start (rocketlane-younium-status/test/page-storage.test.js and chat-sync-e2e.js run this part)
+  // Tampermonkey writes a script's whole set of values again on every GM_setValue. This script's set was 333 KB in
+  // November 2026, rewritten about every 7 s while Rocketlane was open, mostly with values that had not changed
+  // (v1.86.0). A string, number or boolean written again as it already stands is not written. An object always is:
+  // the one read back may be the very object the caller has just changed.
+  function GM_setValue(key, value) {
+    if (value !== null && typeof value !== "object") {
+      let stored;
+      try { stored = GM_getValue(key); } catch (_) { stored = undefined; }
+      if (stored === value) return;
+    }
+    return tmSetValue(key, value);
+  }
+  // @@rlGmSetValue:end
 
   // ──────────────────────────────────────────────────────────────────────────
   // Side A — On Younium: remember the hublet region (eu / us).
@@ -179,6 +200,54 @@
 
   // Everything below only runs on the Rocketlane tenant.
   if (location.hostname !== "kiona.rocketlane.com") return;
+
+  // @@rlPageStore:start (rocketlane-younium-status/test/page-storage.test.js and chat-sync-e2e.js run this part)
+  // ──────────────────────────────────────────────────────────────────────────
+  // 0b. Page storage (v1.86.0). Tampermonkey writes a script's whole set of
+  // values again on every change. What changes every few seconds - which tab
+  // runs the Zendesk sync's rounds, which tab listens for chat messages - and
+  // the big caches therefore live in the Rocketlane page's own localStorage,
+  // as "rlimp:<key>", shared by every Rocketlane tab. Tokens, settings and the
+  // Zendesk links stay in Tampermonkey's storage, which the page can neither
+  // read nor clear. A value keeps its type: a string is kept as it is behind
+  // "s", anything else as JSON behind "j".
+  // ──────────────────────────────────────────────────────────────────────────
+  const RL_PAGE_CACHES = ["rlHpProjectsCache", "rltlCacheV2", "rlZdReplyAtCache"];
+  function rlPageGet(key, dflt) {
+    try {
+      const raw = window.localStorage.getItem("rlimp:" + key);
+      if (raw && raw.charAt(0) === "s") return raw.slice(1);
+      if (raw && raw.charAt(0) === "j") return JSON.parse(raw.slice(1));
+    } catch (_) {}
+    return dflt;
+  }
+  /** Keeps `value` under `key`; null or undefined takes it away. False when the page's storage refused it. */
+  function rlPageSet(key, value) {
+    const k = "rlimp:" + key;
+    try {
+      if (value == null) { window.localStorage.removeItem(k); return true; }
+      const raw = typeof value === "string" ? "s" + value : "j" + JSON.stringify(value);
+      try { window.localStorage.setItem(k, raw); return true; } catch (_) {}
+      // the page's storage is full: this script's caches make room, never Rocketlane's own values
+      for (const c of RL_PAGE_CACHES) window.localStorage.removeItem("rlimp:" + c);
+      window.localStorage.setItem(k, raw);
+      return true;
+    } catch (_) { return false; }
+  }
+  // @@rlPageStore:end
+  // Moved out of Tampermonkey's storage in 1.86.0: a cache comes along when the page has none of its own; what tabs
+  // still running an older copy write there again is taken away at the next page load; a key nothing reads goes too.
+  (function rlPageMoveOut() {
+    const moved = RL_PAGE_CACHES.concat(["rlChatNotifyLive", "rlChatNotifyLastPoll", "rlChatNotifyHeard", "rltlMineCache"]);
+    for (const key of moved) {
+      let v;
+      try { v = GM_getValue(key); } catch (_) { continue; }
+      if (v === undefined) continue;
+      if (v && RL_PAGE_CACHES.indexOf(key) >= 0 && rlPageGet(key) === undefined) rlPageSet(key, v);
+      try { GM_deleteValue(key); } catch (_) {}
+    }
+  })();
+  // @@rlPageMoveOut:end
 
   // Run a callback once the DOM exists. The script now starts at
   // document-start (the Gantt module needs that); the modules that scan or
@@ -5584,11 +5653,15 @@
 
   const RL_CN_GM_ENABLED = "rlChatNotifyEnabled";    // boolean, default true
   const RL_CN_GM_STATE = "rlChatNotifyState";        // { [conversationId]: { at, unread, fetchedAt } }
-  const RL_CN_GM_LEADER = "rlChatNotifyLeader";      // { id, at } — the tab that listens and polls
-  const RL_CN_GM_LAST = "rlChatNotifyLastPoll";      // shared, so a new leader keeps the pace
+  // The tabs elect their leader in the page's storage since v1.86.0 (section 0b; RL_CN_PG_*: rewritten every tick).
+  // RL_CN_GM_LEADER, in Tampermonkey's storage, only holds the standing record that keeps older copies out.
+  const RL_CN_GM_LEADER = "rlChatNotifyLeader";
+  const RL_CN_STANDING = "rlimp-page-leader";        // that record's id (rlCnKeepOlderOut)
+  const RL_CN_PG_LEADER = "rlChatNotifyLeader";      // { id, at, v } — the tab that listens and polls
+  const RL_CN_PG_LAST = "rlChatNotifyLastPoll";      // shared, so a new leader keeps the pace
   const RL_CN_GM_CHANNELS = "rlChatNotifyChannels";  // { [projectId]: { name, at } }
-  const RL_CN_GM_LIVE = "rlChatNotifyLive";          // { at, channels, of, user } — the leader's live state, for the switch
-  const RL_CN_GM_HEARD = "rlChatNotifyHeard";        // when a chat message was last heard live (ms), for the switch
+  const RL_CN_PG_LIVE = "rlChatNotifyLive";          // { at, channels, of, user } — the leader's live state, for the switch
+  const RL_CN_PG_HEARD = "rlChatNotifyHeard";        // when a chat message was last heard live (ms), for the switch
   const RL_CN_GM_FEED = "rlChatNotifyFeed";          // { at, ids } — how far the bell's feed has been read
   const RL_CN_GM_ANNOUNCED = "rlChatNotifyAnnounced"; // { [commentId]: ms } — shown already, by any road or tab
   const RL_CN_POLL_MS = 60 * 1000;                   // without a live connection
@@ -5876,7 +5949,7 @@
   function rlCnOnChannelEvent(event, data, project) {
     if (!rlCnEnabled() || !rlCnIsLeaderNow()) return;
     const v = rlCnEventVerdict(event, data, rlHpReadCurrentUserId());
-    if (v.chat) { try { GM_setValue(RL_CN_GM_HEARD, Date.now()); } catch (_) {} }
+    if (v.chat) rlPageSet(RL_CN_PG_HEARD, Date.now());
     if (project) {
       if (v.check) rlCnOnEvent(project);
       return;
@@ -5945,7 +6018,7 @@
     }
     const live = [...wanted.keys()].filter((n) => inst.channel?.(n)?.subscribed).length;
     const user = !!(rlCnUserBound && rlCnUserBound.ch.subscribed);
-    try { GM_setValue(RL_CN_GM_LIVE, JSON.stringify({ at: Date.now(), channels: live, of: wanted.size, user, v: RL_CN_VERSION })); } catch (_) {}
+    rlPageSet(RL_CN_PG_LIVE, JSON.stringify({ at: Date.now(), channels: live, of: wanted.size, user, v: RL_CN_VERSION }));
     return live;
   }
   function rlCnStopLive() {
@@ -5959,7 +6032,7 @@
   }
 
   function rlCnReadLeader() {
-    try { return JSON.parse(GM_getValue(RL_CN_GM_LEADER, "") || "null"); } catch (_) { return null; }
+    try { return JSON.parse(rlPageGet(RL_CN_PG_LEADER, "") || "null"); } catch (_) { return null; }
   }
   /**
    * True when this tab listens and polls. A stale leader is replaced by claiming; the claim
@@ -5973,20 +6046,33 @@
     const now = Date.now();
     const mine = JSON.stringify({ id: rlCnTabId, at: now, v: RL_CN_VERSION });
     if (lead && lead.id === rlCnTabId) {
-      try { GM_setValue(RL_CN_GM_LEADER, mine); } catch (_) {}
+      rlPageSet(RL_CN_PG_LEADER, mine);
       return true;
     }
     const fresh = lead && now - (Number(lead.at) || 0) < RL_CN_LEADER_STALE_MS;
     if (fresh && !rlCnVersionNewer(RL_CN_VERSION, lead.v)) return false;
-    try { GM_setValue(RL_CN_GM_LEADER, mine); } catch (_) {}
+    rlPageSet(RL_CN_PG_LEADER, mine);
     return false;
   }
   function rlCnReleaseLead() {
-    if (rlCnIsLeaderNow()) { try { GM_setValue(RL_CN_GM_LEADER, ""); } catch (_) {} }
+    if (rlCnIsLeaderNow()) rlPageSet(RL_CN_PG_LEADER, "");
+  }
+  /**
+   * Tabs still running a copy from before v1.86.0 elect their leader in Tampermonkey's storage and never see the
+   * page's. A standing record there - a newer version, fresh for a day and renewed twice a day by the leading tab -
+   * makes each of them leave the lead at its next tick, as every version does for a newer one (v1.63.0).
+   */
+  function rlCnKeepOlderOut() {
+    let lead = null;
+    try { lead = JSON.parse(GM_getValue(RL_CN_GM_LEADER, "") || "null"); } catch (_) {}
+    const now = Date.now();
+    if (lead && lead.id === RL_CN_STANDING && Number(lead.at) - now > 12 * 3600 * 1000 && !rlCnVersionNewer(RL_CN_VERSION, lead.v)) return;
+    try { GM_setValue(RL_CN_GM_LEADER, JSON.stringify({ id: RL_CN_STANDING, at: now + 24 * 3600 * 1000, v: RL_CN_VERSION })); } catch (_) {}
   }
   async function rlCnTick() {
     if (rlCnTicking) return;
     if (!rlCnEnabled() || !rlCnHoldsLead()) { rlCnStopLive(); return; }
+    rlCnKeepOlderOut();
     const userId = rlHpReadCurrentUserId();
     if (!userId) return;
     rlCnTicking = true;
@@ -5996,10 +6082,10 @@
       try { live = await rlCnEnsureLive(projects); }
       catch (e) { console.warn("[Rocketlane improvements] chat notifications: live connection failed:", e?.message || e); }
       const every = live > 0 ? RL_CN_POLL_LIVE_MS : RL_CN_POLL_MS;
-      const last = Number(GM_getValue(RL_CN_GM_LAST, 0)) || 0;
+      const last = Number(rlPageGet(RL_CN_PG_LAST, 0)) || 0;
       if (!rlCnForcePoll && Date.now() - last < every - 2000) return;
       rlCnForcePoll = false;
-      GM_setValue(RL_CN_GM_LAST, Date.now());
+      rlPageSet(RL_CN_PG_LAST, Date.now());
       await rlCnSerial(() => rlCnCheck(projects, true));
       // The bell's feed on the same schedule, so a missed event costs minutes, not the message.
       try { await rlCnSerial(() => rlCnFeedCheck()); }
@@ -6014,14 +6100,14 @@
   // ── The switch in the Notifications panel header ────────────────────────
   function rlCnLiveStatus() {
     try {
-      const j = JSON.parse(GM_getValue(RL_CN_GM_LIVE, "") || "null");
+      const j = JSON.parse(rlPageGet(RL_CN_PG_LIVE, "") || "null");
       return j && Date.now() - (Number(j.at) || 0) < 90 * 1000 ? j : null;
     } catch (_) { return null; }
   }
   /** Turn chat push on or off. `quiet` (the switch, which shows the state itself) sends no toast. */
   function rlCnSetEnabled(next, quiet) {
     GM_setValue(RL_CN_GM_ENABLED, next);
-    if (next) { try { GM_setValue(RL_CN_GM_LAST, 0); } catch (_) {} }
+    if (next) rlPageSet(RL_CN_PG_LAST, 0);
     if (quiet) return;
     rlCnNotify({
       timeout: RL_CN_NOTE_TIMEOUT_MS,
@@ -6078,7 +6164,7 @@
         live.channels ? live.channels + " project channel" + (live.channels === 1 ? "" : "s") : "",
       ].filter(Boolean).join(" and ");
       lines.push("Live on " + where + ".");
-      const heard = Number(GM_getValue(RL_CN_GM_HEARD, 0)) || 0;
+      const heard = Number(rlPageGet(RL_CN_PG_HEARD, 0)) || 0;
       const sameDay = heard && new Date(heard).toDateString() === new Date().toDateString();
       lines.push(heard
         ? "Last chat message heard live: " + (sameDay ? "" : rlTlFmtDate(rlTlIsoOf(heard)) + " ") + rlHpFmtClock(heard) + "."
@@ -10362,7 +10448,7 @@
   // filtered call ever fails, it falls back to that scan, which has always worked.
   // v1.55.0: keyed per selection (one person, or the whole Delivery Cooling team), so
   // switching back to someone already viewed paints instantly too.
-  const RL_TL_GM_CACHE = "rltlCacheV2";
+  const RL_TL_PG_CACHE = "rltlCacheV2";   // in the page's storage since v1.86.0 (section 0b)
   const RL_TL_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
   // A filtered owner list is a few dozen per person. A count this high means the
   // server ignored the owner filter and returned the tenant — never trust that.
@@ -10372,7 +10458,7 @@
 
   function rlTlReadStore() {
     try {
-      const j = JSON.parse(GM_getValue(RL_TL_GM_CACHE, "") || "null");
+      const j = JSON.parse(rlPageGet(RL_TL_PG_CACHE, "") || "null");
       if (j && j.v === 2 && j.viewer === String(rlHpReadCurrentUserId() || "") && j.entries && typeof j.entries === "object") return j;
     } catch (_) {}
     return { v: 2, viewer: String(rlHpReadCurrentUserId() || ""), entries: {} };
@@ -10394,7 +10480,7 @@
     try {
       const store = rlTlReadStore();
       store.entries[String(selKey)] = hit;
-      GM_setValue(RL_TL_GM_CACHE, JSON.stringify(store));
+      rlPageSet(RL_TL_PG_CACHE, JSON.stringify(store));
     } catch (_) {}
   }
 
@@ -11196,9 +11282,10 @@
   // the data has aged past the interval, so a background tab costs nothing.
   const RL_HP_AUTO_MS = 3 * 60 * 1000;
   const RL_HP_AUTO_TICK_MS = 20 * 1000;
-  // The last result also lives in Tampermonkey storage so the panels paint at
+  // The last result also lives in the page's storage (section 0b; Tampermonkey's
+  // before v1.86.0, where it alone was 257 KB) so the panels paint at
   // once on the next page load and only revalidate in the background.
-  const RL_HP_GM_CACHE = "rlHpProjectsCache";
+  const RL_HP_PG_CACHE = "rlHpProjectsCache";
   const RL_HP_PERSIST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
   // 100 beats 200: the server cost per page grows faster than the page, and small
   // pages parallelise better. Measured on this tenant (397 open projects):
@@ -11235,7 +11322,7 @@
 
   function rlHpReadPersistedCache(userId) {
     try {
-      const raw = GM_getValue(RL_HP_GM_CACHE, "");
+      const raw = rlPageGet(RL_HP_PG_CACHE, "");
       if (!raw) return null;
       const j = JSON.parse(raw);
       if (!j || String(j.userId) !== String(userId) || Number(j.v) !== 2) return null;
@@ -11247,7 +11334,7 @@
   }
   function rlHpWritePersistedCache(cache) {
     try {
-      GM_setValue(RL_HP_GM_CACHE, JSON.stringify({
+      rlPageSet(RL_HP_PG_CACHE, JSON.stringify({
         v: 2, at: cache.at, userId: cache.userId,
         ownerProjects: cache.ownerProjects, memberProjects: cache.memberProjects,
       }));
@@ -18155,7 +18242,8 @@
   // @@ZDSYNC-ENGINE-END
 
   /** The sync in the page: its Rocketlane and Zendesk calls through `net` (the transports of sections 5b and 8), its
-   *  state in Tampermonkey's storage, the button on chat pages, and the rounds. Off until turned on in this browser. */
+   *  links and settings in Tampermonkey's storage, its lock and the time each link last ran in the page's (section 0b,
+   *  v1.86.0), the button on chat pages, and the rounds. Off until turned on in this browser. */
   function startZendeskChatSync(net) {
     if (window.top !== window.self || window.__zendeskChatSync) return;
     window.__zendeskChatSync = true;
@@ -18434,10 +18522,33 @@
       },
     };
 
-    const sync = createZendeskChatSync({
-      rl: api.rl, zd: api.zd, files: api.files, intents: replyIntents,
-      store: { load: () => { try { return JSON.parse(get(STATE_KEY, "{}")) || {}; } catch (_) { return {}; } }, save: (s) => set(STATE_KEY, JSON.stringify(s)) },
-    });
+    // when each link last ran changes every round, the rest of the links seldom: it is kept in the page's storage
+    // (section 0b, v1.86.0), the links themselves in Tampermonkey's, which nothing on the page can clear - a save that
+    // changes nothing in them writes nothing there (GM_setValue at the top)
+    const RUNS_KEY = "zdsync_runs_v1";
+    const store = {
+      load() {
+        let s;
+        try { s = JSON.parse(get(STATE_KEY, "{}")) || {}; } catch (_) { s = {}; }
+        const runs = rlPageGet(RUNS_KEY, null) || {};
+        for (const [k, e] of Object.entries(s.links || {})) if (e && Number(runs[k]) > (Number(e.lastRun) || 0)) e.lastRun = Number(runs[k]);
+        return s;
+      },
+      save(s) {
+        if (!s || !s.links) { set(STATE_KEY, JSON.stringify(s || {})); return; }
+        const links = {}, runs = {};
+        for (const [k, e] of Object.entries(s.links)) {
+          if (!e) continue;
+          const copy = Object.assign({}, e);
+          if (Number(copy.lastRun) > 0) runs[k] = Number(copy.lastRun);
+          delete copy.lastRun;
+          links[k] = copy;
+        }
+        rlPageSet(RUNS_KEY, runs);
+        set(STATE_KEY, JSON.stringify(Object.assign({}, s, { links })));
+      },
+    };
+    const sync = createZendeskChatSync({ rl: api.rl, zd: api.zd, files: api.files, intents: replyIntents, store });
 
     // links made while the sync lived in Rocketlane Chat Bridge (1.16.0-1.18.0): that script's 1.19.0 leaves them once
     // in the page's localStorage, which both scripts can read here. They are taken over as they stand - how far each
@@ -18476,18 +18587,34 @@
     }
 
     // one tab runs the rounds: it holds the lock while it is open. Two tabs can read a free lock at the same moment,
-    // so the lock is read again a moment after it is taken, and only the tab still holding it goes on.
+    // so the lock is read again a moment after it is taken, and only the tab still holding it goes on. The lock is in
+    // the page's storage since v1.86.0 (section 0b), where taking it every round costs nothing.
+    const settle = () => new Promise((r) => setTimeout(r, 400 + Math.floor(Math.random() * 400)));
     async function claim() {
-      const l = get(LOCK_KEY, null), t = Date.now();
+      if (!(await olderKeptOut())) return false;
+      const l = rlPageGet(LOCK_KEY, null), t = Date.now();
       // held by another tab: left to it, unless it is in the background and this one is in front - and never while that
       // tab's round is still going, or both would post the same messages
       if (l && l.tab !== tabId && l.until > t && (!(visible() && !l.visible) || (l.busy && t - l.busy < 90000))) return false;
-      set(LOCK_KEY, { tab: tabId, until: t + (visible() ? frontMs() : backMs()) + 20000, visible: visible(), busy: 0 });
-      await new Promise((r) => setTimeout(r, 400 + Math.floor(Math.random() * 400)));
-      const again = get(LOCK_KEY, null);
+      rlPageSet(LOCK_KEY, { tab: tabId, until: t + (visible() ? frontMs() : backMs()) + 20000, visible: visible(), busy: 0 });
+      await settle();
+      const again = rlPageGet(LOCK_KEY, null);
       return !!again && again.tab === tabId;
     }
-    window.addEventListener("beforeunload", () => { const l = get(LOCK_KEY, null); if (l && l.tab === tabId) set(LOCK_KEY, null); });
+    window.addEventListener("beforeunload", () => { const l = rlPageGet(LOCK_KEY, null); if (l && l.tab === tabId) rlPageSet(LOCK_KEY, null); });
+    // a tab still running a copy from before v1.86.0 takes its turn by the lock in Tampermonkey's storage and never sees
+    // the page's. While such a copy holds that lock, or its round may still be going, the rounds are left to it. Else a
+    // standing lock there - held for a day by a tab in front, renewed twice a day - keeps every older copy out.
+    const STANDING = "rlimp-page-lock", DAY = 24 * 3600 * 1000;
+    async function olderKeptOut() {
+      const l = get(LOCK_KEY, null), t = Date.now();
+      if (l && l.tab === STANDING && l.until - t > DAY / 2) return true;
+      if (l && l.tab !== STANDING && (l.until > t || (l.busy && t - l.busy < 10 * 60 * 1000))) return false;
+      set(LOCK_KEY, { tab: STANDING, until: t + DAY, visible: true, busy: 0 });
+      await settle();
+      const again = get(LOCK_KEY, null);
+      return !!again && again.tab === STANDING;
+    }
 
     // a round asked for while one runs (Sync now, a push event) runs right after it, so nothing new waits a whole interval
     let running = false, rerun = false;
@@ -18504,7 +18631,7 @@
     let lastRoundAt = 0;
     // a visit - another page, the window back in front - starts a round unless one ended this recently (v1.84.0)
     const VISIT_MS = 10 * 1000;
-    const markBusy = (on) => { const l = get(LOCK_KEY, null); if (l && l.tab === tabId) set(LOCK_KEY, Object.assign({}, l, { busy: on ? Date.now() : 0 })); };
+    const markBusy = (on) => { const l = rlPageGet(LOCK_KEY, null); if (l && l.tab === tabId) rlPageSet(LOCK_KEY, Object.assign({}, l, { busy: on ? Date.now() : 0 })); };
     async function round() {
       if (!enabled() || legacy()) return false;
       if (running) { rerun = true; return true; }
@@ -20986,15 +21113,16 @@
   // return (stamped "Updated …" from the search row); the per-ticket
   // "Last reply …" lookups then run in the background, update each card in
   // place and reorder the list. A ticket's last public reply is remembered in
-  // GM storage keyed by its updated_at, so unchanged tickets need no comments
-  // request on later visits, and the last list per plant is kept for the
-  // session so re-opening the tab paints instantly before refreshing.
-  const RL_ZD_GM_REPLY_CACHE = "rlZdReplyAtCache";
+  // the page's storage (section 0b, since v1.86.0) keyed by its updated_at, so
+  // unchanged tickets need no comments request on later visits, and the last
+  // list per plant is kept for the session so re-opening the tab paints
+  // instantly before refreshing.
+  const RL_ZD_PG_REPLY_CACHE = "rlZdReplyAtCache";
   const RL_ZD_REPLY_CACHE_MAX = 600;
   const rlZdTicketsSessionCache = new Map(); // plantId -> { at, tickets }
   function rlZdReadReplyCache() {
     try {
-      const j = JSON.parse(GM_getValue(RL_ZD_GM_REPLY_CACHE, "") || "{}");
+      const j = JSON.parse(rlPageGet(RL_ZD_PG_REPLY_CACHE, "") || "{}");
       return j && typeof j === "object" && !Array.isArray(j) ? j : {};
     } catch (_) { return {}; }
   }
@@ -21005,7 +21133,7 @@
         keys.sort((a, b) => (Number(map[a]?.t) || 0) - (Number(map[b]?.t) || 0));
         for (const k of keys.slice(0, keys.length - RL_ZD_REPLY_CACHE_MAX)) delete map[k];
       }
-      GM_setValue(RL_ZD_GM_REPLY_CACHE, JSON.stringify(map));
+      rlPageSet(RL_ZD_PG_REPLY_CACHE, JSON.stringify(map));
     } catch (_) {}
   }
   function rlZdStamp(t) {
@@ -25604,4 +25732,4 @@
   startObserver();
   refreshFromSql(true);
   }
-})();
+})(typeof GM_setValue === "function" ? GM_setValue : function () {});

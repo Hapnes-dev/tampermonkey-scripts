@@ -12,7 +12,7 @@ One Tampermonkey userscript with eight independent improvements for `kiona.rocke
 9. **Categories overview** (v1.16.0) — a third button in the project plan's view switcher (next to board and timeline) swaps the board for the Project Progress Tracker's Categories section: one card per phase with `N task(s) | N completed | N In progress` and a green / amber tint, expandable to its tasks with a status picker per task (To do, In progress, Completed, Blocked — written to Rocketlane and verified), **✓ Complete all** and **+ Add task** per category, and **Complete all tasks**, **Hide completed tasks**, **+ Add category**, **Refresh** on top. The choice is remembered; clicking board or timeline goes back. Styled like the home panels (v1.16.1). Every task row has **+ Add a private note** (v1.17.0): the note is Rocketlane's own private task note, and saving it also adds (and renames or removes) a matching entry in the home page's **Personal tasks** widget, toggle in the editor.
 10. **Project notes → Personal tasks** (v1.18.0) — every open project you own or are a member of that has a **Project notes** value gets one entry in the home page's Personal tasks widget (`<project>: <first line>`), renamed or removed as the note or the project changes. Runs a few seconds after load and every few minutes. Completed projects are never synced.
 11. **Project note panel** (v1.19.0) — a **Project note** card on the project plan, directly above the Categories overview, that edits the project's own **Project notes** field — the same column the Projects list view shows. It loads the current note, saves 800 ms after you stop typing (blur and **Ctrl+Enter** save at once) and shows *Saving… / Saved* beside the box. Because Rocketlane offers no version check, every save re-reads the field first: if someone else changed it in the meantime nothing is overwritten and you are offered **Load server** or **Overwrite**; after the write the field is read back and compared, and a failed save keeps your text with a **Retry** button. A verified save immediately updates that project's entry in the Personal tasks widget.
-8. **Home panels** — **v1.15.0:** *Project Owner* lists every open project in the tenant grouped by owner (an owner's count is their real count), *In progress* lists every project with status In progress grouped by owner (you included); each panel has its own pin and pins your own group first by default; **v1.15.1:** a **Delivery Cooling** toggle in both headers shows only the team's owners (Thomas Kvalvåg Håpnes, Andreas Sandnes, ivarhaga haga, Matthias Criel, Svein Olav Wahlberg — remembered), plus **Collapse all** / **Expand all** per panel (single groups still toggle by clicking their header); **v1.15.2:** a **search box** in both headers filters both panels by plant name, id, owner or status (every word must match; groups open while searching); **Ctrl+F** on the home page focuses it, **Esc** clears it; data is one server-filtered `lightV1` fetch (`status isNot Completed`, ~400 rows, two pages). Earlier: (v1.12.1) — on `https://kiona.rocketlane.com/` (`pathname === "/"`), PPT-style dark panel of **In progress** projects mounted **under the native Overdue** task section (Incomplete widgets stay). Cards show %, status/due pills, progress bar; owner groups with pin + Due/Progress sort. Data from `POST /projects/lightV1` filtered to Status=In progress (owner/member; exclude `[Tracker] Workload Sync`). (the `+ RL Project` button was removed in v1.15.3). **v1.14.2:** the result is cached in Tampermonkey storage, so the panels paint instantly from the last result and, since v1.14.4, refresh in the background on every visit (status line shows *updated HH:MM* or *refreshing…*); the fetch starts at document-start and pages lightV1 in one parallel round; **Refresh** forces a new fetch. **v1.14.3:** lightV1 is filtered server-side to the projects you own or are a member of (the same `filter` body the Rocketlane Projects grid sends), so one ~1.4 MB page replaces the five 3.7 MB pages of the full scan; the panels also wait for the Overdue card (up to 10 s) instead of mounting at the top and jumping down once it renders. **v1.14.6:** cards show the project **start date** (Starts / Started) instead of the overdue pill — the due date moved to the card tooltip — and the status chips are quiet outlined pills with a coloured dot rather than tinted buttons. **v1.14.21:** click a card's status chip to **change the project status** from the overview — the menu lists the tenant's Status options (Proposed, In Planning, To be Staffed, In progress, On Hold, Blocked, Completed, Cancelled), the pick is written with `PUT /projects/{id}` on the Status field, the card updates at once and the lists revalidate a moment later (a Completed project drops out).
+8. **Home panels** — **v1.15.0:** *Project Owner* lists every open project in the tenant grouped by owner (an owner's count is their real count), *In progress* lists every project with status In progress grouped by owner (you included); each panel has its own pin and pins your own group first by default; **v1.15.1:** a **Delivery Cooling** toggle in both headers shows only the team's owners (Thomas Kvalvåg Håpnes, Andreas Sandnes, ivarhaga haga, Matthias Criel, Svein Olav Wahlberg — remembered), plus **Collapse all** / **Expand all** per panel (single groups still toggle by clicking their header); **v1.15.2:** a **search box** in both headers filters both panels by plant name, id, owner or status (every word must match; groups open while searching); **Ctrl+F** on the home page focuses it, **Esc** clears it; data is one server-filtered `lightV1` fetch (`status isNot Completed`, ~400 rows, two pages). Earlier: (v1.12.1) — on `https://kiona.rocketlane.com/` (`pathname === "/"`), PPT-style dark panel of **In progress** projects mounted **under the native Overdue** task section (Incomplete widgets stay). Cards show %, status/due pills, progress bar; owner groups with pin + Due/Progress sort. Data from `POST /projects/lightV1` filtered to Status=In progress (owner/member; exclude `[Tracker] Workload Sync`). (the `+ RL Project` button was removed in v1.15.3). **v1.14.2:** the result is cached (in Tampermonkey storage; in the page's localStorage since v1.86.0, section 8), so the panels paint instantly from the last result and, since v1.14.4, refresh in the background on every visit (status line shows *updated HH:MM* or *refreshing…*); the fetch starts at document-start and pages lightV1 in one parallel round; **Refresh** forces a new fetch. **v1.14.3:** lightV1 is filtered server-side to the projects you own or are a member of (the same `filter` body the Rocketlane Projects grid sends), so one ~1.4 MB page replaces the five 3.7 MB pages of the full scan; the panels also wait for the Overdue card (up to 10 s) instead of mounting at the top and jumping down once it renders. **v1.14.6:** cards show the project **start date** (Starts / Started) instead of the overdue pill — the due date moved to the card tooltip — and the status chips are quiet outlined pills with a coloured dot rather than tinted buttons. **v1.14.21:** click a card's status chip to **change the project status** from the overview — the menu lists the tenant's Status options (Proposed, In Planning, To be Staffed, In progress, On Hold, Blocked, Completed, Cancelled), the pick is written with `PUT /projects/{id}` on the Status field, the card updates at once and the lists revalidate a moment later (a Completed project drops out).
 12. **Zendesk ⇄ General Chat** (v1.73.0; in *Rocketlane Chat Bridge* 1.16.0–1.18.0 before) — a project's General Chat linked to its ticket in the team's Zendesk queue: the ticket's messages come into the chat as private messages, and what is written in the chat goes to the ticket as an internal note, or as a public reply to the customer when it starts with `/reply`, which the "/" list offers and which never shows in the chat (v1.82.0). The ticket's images and files come along as Rocketlane attachments (v1.74.0), and files attached in the chat go to the ticket (v1.75.0). Off until turned on in the browser that runs it. See section 7 below.
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
@@ -127,7 +127,7 @@ An order is treated as the IWMAC subscription only when a product line matches t
 | Modal says "Younium session expired" | Visit `https://eu.younium.com` once while logged in, then retry. |
 | "Couldn't read a plant ID" | The project name must start with the plant number, e.g. `10112 - …`. |
 | "No Younium orders found" | No order in Younium carries that `plant_id`, or you're in the wrong region. |
-| "Checking Younium…" for a long time | Usually Tampermonkey itself is slow: every request it makes waits. The lookup needs three rounds of them (v1.85.0). If every Tampermonkey feature is slow, restarting Chrome starts Tampermonkey's background afresh. A request that never answers is sent again after 60 s. |
+| "Checking Younium…" for a long time | Usually Tampermonkey itself is slow: every request it makes waits. The lookup needs three rounds of them (v1.85.0). If every Tampermonkey feature is slow, restarting Chrome starts Tampermonkey's background afresh. A request that never answers is sent again after 60 s. Since v1.86.0 this script no longer rewrites its whole stored set every few seconds (section 8). |
 
 ---
 
@@ -483,6 +483,9 @@ v1.73.0.
   - **Sync now** in the panel runs one at once.
   - A ticket's messages are fetched only when the ticket has changed, and then only those after the last one taken.
   - A tab in front takes over from one in the background, but only once that tab's round is over.
+  - The tabs agree on which of them runs the rounds through a lock in the page's `localStorage` (v1.86.0, section
+    8). It was in Tampermonkey's storage before, written three times a round. A tab still running an older copy
+    keeps the rounds while it holds its own lock, and is kept out once it lets go.
   - What the panel does (link, unlink, earlier messages) waits for a round, and a round for it, from the moment the
     round starts claiming the tab's lock (v1.83.0 - before, a link made during the claim, up to 0.8 s, could be lost to
     the round's save).
@@ -534,7 +537,47 @@ v1.73.0.
   for each ticket, routing by number and by Reply, the main ticket, and unlinking. Since v1.84.0 also the home page:
   the round at load, a call that is never answered (the round ends after its time limit, the next one goes on), the
   push channels - the user's own, the project's subscribed again, events that are no linked chat's message - and
-  going to another page.
+  going to another page. Since v1.86.0 also where it keeps things: a round with no news writes nothing to
+  Tampermonkey's storage, and a tab running an older copy keeps the rounds while it holds its lock.
+
+## 8. Where it keeps its data (v1.86.0)
+
+Tampermonkey stores a script's whole set of values again on every change. On 2026-11-17 this script's set was 333 KB
+and was rewritten about every 7 s while Rocketlane was open, and every Tampermonkey request in the browser took
+16-25 s (section 1, "A lookup in three rounds"). That churn was not proven to be the cause, but it was the part this
+script could remove. Since 1.86.0:
+
+- **What changes often, and the big caches, live in the Rocketlane page's `localStorage`**, as `rlimp:<key>`, shared
+  by every Rocketlane tab:
+
+  | Key | What | Before 1.86.0 |
+  |---|---|---|
+  | `zdsync_lock_v1` | which tab runs the Zendesk sync's rounds | Tampermonkey's storage, written three times a round |
+  | `zdsync_runs_v1` | when each linked chat was last checked | inside the links, which were rewritten every round |
+  | `rlChatNotifyLeader`, `rlChatNotifyLive`, `rlChatNotifyLastPoll`, `rlChatNotifyHeard` | which tab listens for chat messages, and what the switch shows | Tampermonkey's storage, every 15 s |
+  | `rlHpProjectsCache` | the home panels' last project list | Tampermonkey's storage, 257 KB |
+  | `rltlCacheV2` | the timeline's project lists | Tampermonkey's storage, 31 KB |
+  | `rlZdReplyAtCache` | each Zendesk case's last public reply | Tampermonkey's storage, 15 KB |
+
+- **What stays in Tampermonkey's storage**, which the page can neither read nor clear: the tokens (Younium, the
+  Zendesk CSRF token), the settings, the Zendesk links and what has crossed, and the chat notifications' record of what
+  was shown. Rocketlane's own `localStorage` held about 41 000 characters in 99 keys on 2026-11-17, of the roughly
+  5 million Chrome allows a site.
+- **A value written again as it stands is not written** (a string, number or boolean), so the Zendesk links are
+  written only when something in them changed.
+- **The first Rocketlane page after the update** moves the three caches to the page, unless the page already has a
+  newer one, and takes the moved keys out of Tampermonkey's storage, with `rltlMineCache`, which nothing read any more.
+  Should the page's storage ever be full, this script's caches give way, never Rocketlane's own values.
+- **Tabs still running an older copy** use Tampermonkey's storage until they are reloaded. Two standing records there
+  keep them from running beside 1.86.0. Each holds for a day and is renewed twice a day:
+  - the sync's lock: while an older copy holds its own lock, or its round may still be going, the rounds are left to
+    it, and once it lets go the standing lock keeps every older copy out;
+  - the chat leader: an older copy leaves the lead at its next tick, as it does for any newer version.
+
+  Reload the Rocketlane tabs after updating. After going back to 1.85.0 or older, that copy runs no sync rounds and
+  sends no chat notifications for up to a day.
+- **Tests:** `test/page-storage.test.js` runs the page's storage, the move out of Tampermonkey's, and the 1.85.0 lock
+  and chat leader, taken from this repository's history, against the standing records.
 
 ---
 
@@ -544,7 +587,7 @@ v1.73.0.
 |---|---|
 | `@match` | `https://kiona.rocketlane.com/*`, `https://eu.younium.com/*`, `https://us.younium.com/*`, `https://app.younium.com/*`, `https://iwmac.zendesk.com/*` |
 | `@connect` | `auth.eu.younium.com`, `auth.us.younium.com`, `api.younium.com`, `app.oneflow.com`, `kiona.api.rocketlane.com`, `iwmac.zendesk.com`, `toolbox.iwmac.local`, plus attachment CDN hosts (`s3.us-east-1.amazonaws.com`, `s3.amazonaws.com`, `amazonaws.com`, `assets.rocketlane.com`, `d1vtr0p8bkmfca.cloudfront.net`) for Files popover blob downloads |
-| `@grant` | `GM_xmlhttpRequest`, `GM_setValue`, `GM_getValue` |
+| `@grant` | `GM_xmlhttpRequest`, `GM_setValue`, `GM_getValue`, `GM_deleteValue` (v1.86.0), `GM_notification`, `GM_openInTab`, `GM_registerMenuCommand`, `unsafeWindow` |
 | `@run-at` | `document-start` — the Gantt module needs it; the Younium chip and the Notes column wait for the DOM |
 
 The five modules share nothing but the page: each keeps its own storage keys, styles and observers, exactly as in the scripts they came from.
