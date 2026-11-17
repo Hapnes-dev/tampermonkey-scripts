@@ -531,6 +531,32 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A picture of pixels stays as it is, in the export and in Copilot (v1.119.5)
+
+Thomas, 2026-11-17, with plant 6089's Maskinrom: sometimes the exported picture came back *distorted or completely
+messed up* when the panel's picture is a plain PNG, not a VectorCraft drawing. He asked for PNG pictures to be exported
+*exactly as it is, without applying tracing, vectorization, or any other transformations*, and VectorCraft drawings as
+before.
+
+Export JSON already did that: the file's `image_data` was byte for byte the plant's `6089_Maskin.png` (12 740 bytes, the
+same SHA-256), with no `image_svg` and no trace beside it (v1.96.0), and its picture for the AI showed it unchanged.
+Copilot changed it. Since v1.98.3 its kit read every Maskin or Oversikt picture of pixels into a drawing first,
+whatever it was asked (`optimise.py`), and Insert JSON… → Replace of its file then put that drawing on the panel. On the
+Maskinrom that drawing lost every pipe's colour (only the arrows stayed coloured), the exchanger's blue bars and the
+title "Maskinrom", and shifted the receiver and the dry cooler.
+
+- **The kit** keeps a picture of pixels byte for byte in every file, a Maskin or Oversikt one too, and reads it into a
+  drawing only on a request that names that ("optimaliser", "konverter"). A VectorCraft drawing is changed as a drawing,
+  as before. The field, the edit skill, `panel_format.py` and the references say so (kit Part 274).
+- **The warning** on Export JSON's card, *Not converted with VectorCraft*, now says the export keeps the picture exactly
+  as it is, and so does Copilot, which converts it only when asked to. Converting in VectorCraft stays the way to a
+  drawing: *Vectorize image* for an Oversikt, the plant's `.ai` for a Maskin.
+- **Unchanged:** the export itself. A plain PNG is detected by having no VectorCraft drawing kept in it, and goes out as
+  its own bytes; a PNG VectorCraft saved goes out with its drawing as `panel.image_svg`; Shift+click still reads the
+  picture into a drawing.
+
+Checked with the kit's `tests/test-export-trace.js` and its Python suite. Not run in the live Designer.
+
 ### A picture that runs past the canvas is edited at its own size, and a sync keeps it whole (v1.119.4)
 
 Thomas, 2026-11-12, after 1.119.3: *"ja fiks det også"*. On 7195 and 8682 the panel's picture is 1400 × 750 and the
@@ -1679,6 +1705,9 @@ open all, except for background*.
   hides its background; nothing of it is locked.
 
 ### Copilot converts it by itself, unasked (v1.98.3)
+
+*Withdrawn in v1.119.5:* the kit no longer converts unasked, and the warning says the picture is kept as it is (see
+that section).
 
 Thomas: *Copilot should not ask users to write "convert this" or "create v2". This should always be part of its default
 workflow.* The Copilot kit now converts a Maskin or Oversikt panel not converted with VectorCraft first, whatever it is
