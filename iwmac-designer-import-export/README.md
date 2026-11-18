@@ -531,6 +531,24 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Oversikt cases placed as Thomas placed plant 3259's: a bottom row's bell at its top left (v1.119.6)
+
+Thomas inserted plant 3259 COOP EXTRA Vikhammer's Oversikt on 2026-11-18 and moved its objects by hand. He then asked
+for his placements to be learnt: *"lær kitet plasseringene"*. The case planner behind Edit in VectorCraft's `case`
+op, and behind Claude's bridge, now places as the kit's `oversikt.py` does since its Part 279.
+
+- **A row on a bottom wall** (`lying-bottom`) hangs its bell at its case's top left first.
+  - The spot is -23, -22 from the value, which moves off the value to -34, -22.
+  - The bell keeps that spot where it lies on the next case's state in the gap between them. Bells and states may lie
+    on each other, never on a value, and no gap line is written for it.
+  - Its name goes beside the bell first, on the case's top edge.
+- **A standing case with its back to the right** (`upright-right`) hangs its bell over its value first, at +4, -36,
+  centred on the case. Before, the bell stood out in the aisle the case faces.
+
+`IWDIE_OV_HOUSE`'s `lying-bottom` alarm spots are now -23, -22, then +4, -36, then +31, -22. They match the kit's
+`oversikt-layout.json`, and the kit's tests hold the two together. On the kit's three example plans, the planner and
+`oversikt.py` still place every object on the same pixel.
+
 ### A picture of pixels stays as it is, in the export and in Copilot (v1.119.5)
 
 Thomas, 2026-11-17, with plant 6089's Maskinrom: sometimes the exported picture came back *distorted or completely

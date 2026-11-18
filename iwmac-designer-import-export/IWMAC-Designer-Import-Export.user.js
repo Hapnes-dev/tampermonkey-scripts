@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.5
+// @version      1.119.6
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14243,7 +14243,7 @@ var IWDIE_OV_LABEL = 'number_v3_label_12px_norm';
  *  end with another case within IWDIE_OV_CLOSE px keeps the compact spots it had (row-T-close, row-B-close). */
 var IWDIE_OV_HOUSE = {
   lying: { alarm: [[31, -22], [31, 10], [-23, -22], [4, -36], [4, 24]], state: [[34, 5], [-34, 5], [7, 23], [7, -31]] },
-  'lying-bottom': { alarm: [[4, -36], [31, -22], [-23, -22]], state: [[34, 5], [-34, 5], [7, 23]] },
+  'lying-bottom': { alarm: [[-23, -22], [4, -36], [31, -22]], state: [[34, 5], [-34, 5], [7, 23]] },
   upright: { alarm: [[29, 15], [29, -27], [4, -36], [4, 24]], state: [[6, 24], [6, -30], [29, -6]] },
   'column-L': { alarm: [[-36, -6], [4, -36], [4, 24], [-20, -30], [-20, 18]], state: [[-30, 18], [-30, -24], [7, 24], [7, -30]] },
   'column-R': { alarm: [[44, -6], [4, -36], [4, 24], [28, -30], [28, 18]], state: [[44, 18], [44, -24], [7, 24], [7, -30]] },
@@ -14409,6 +14409,9 @@ function iwdieOvOffsets(st, anatomy) {
   if (st === 'upright-right') {
     var mirror = function (list, w) { return list.map(function (p) { return [42 - p[0] - w, p[1]]; }); };
     alarm = mirror(alarm, 34); state = mirror(state, 28);
+    // (v1.119.6) Thomas, plant 3259's K11a-c: a standing case with its back to the right hangs its bell over its value
+    // (oversikt.py since the kit's Part 279)
+    alarm = [[4, -36]].concat(alarm.filter(function (p) { return !(p[0] === 4 && p[1] === -36); }));
   }
   return { alarm: alarm, cooling: state, defrost: state };
 }
@@ -14635,7 +14638,8 @@ function iwdieOvNameSpots(box, st, nw, caption, nameAt) {
   if (side === 'none') return [];
   if (side === 'inside' || st === 'room') return [[x + 6, y + 5]];
   var auto = {
-    lying: below.concat(above, right, left), 'lying-bottom': below.concat(above, right, left),
+    // (v1.119.6) a bottom-wall row's name beside its bell, at the case's top left (Thomas, plant 3259; Part 279)
+    lying: below.concat(above, right, left), 'lying-bottom': [[x + (w - 42) / 2 + 2, y - 16]].concat(below, above, right, left),
     'row-T': above.concat(right, left, below), 'row-B': below.concat(right, left, above),
     'row-T-close': above.concat(right, left, below), 'row-B-close': below.concat(right, left, above),
     upright: right.concat(left, below, above), 'upright-right': left.concat(right, below, above),
@@ -15001,6 +15005,11 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
             });
             tries = own.concat(tries);
           }
+          if (role === 'alarm' && p.st === 'lying-bottom') {
+            // (v1.119.6) a bottom-wall row's bell keeps to its case's top left, on the next case's state where the two
+            // share the gap, before it goes over its value (Thomas, plant 3259; the kit's Part 279)
+            tries = [[[near[0]], mine.concat(['room', 'wall'])], [[near[0]], mine.concat(['room', 'wall', 'member', 'bottom-row'])]].concat(tries);
+          }
           var hitAt = null;
           tries.some(function (t) {
             t[0].some(function (d) {
@@ -15008,7 +15017,7 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
               if (lay.free(b, t[1]) && !lay.onValue(b)) { hitAt = [b[0], b[1]]; return true; }
               return false;
             });
-            if (hitAt && t[1].indexOf('member') >= 0) gaps.push(c.key + ' ' + role + ": no room clear of the other clusters; it lies on another cluster's bell or state, never on a value");
+            if (hitAt && t[1].indexOf('member') >= 0 && t[1].indexOf('bottom-row') < 0) gaps.push(c.key + ' ' + role + ": no room clear of the other clusters; it lies on another cluster's bell or state, never on a value");
             return !!hitAt;
           });
           if (!hitAt) {
