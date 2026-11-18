@@ -292,6 +292,13 @@ Walks the 16 questions of *Leveranseavdelingens Sjekkliste til Support*, pre-fil
 
 The first step picks the checklist. **Ny leveranse** is the 16 questions above. **Ombygging** (v1.72.0) is the rebuild checklist: the Oneflow links, PANG notes, completeness, IK-mat, remote access, energinett, ventilation schedule, Younium plant ID and system count after the rebuild, and documentation, with its own DEL 2 for service (plant unblocked, old plant cancelled and users moved, Younium active). Its title is `<plant ID> - <plant name> - Avblokkering og Overlevering ---Ombygging---`, and its ticket takes group and tags from the Zendesk macro *Sjekkliste Overlevering IWMAC Kulde til Service (Ombygging)*, looked up by title. Answers shared by both lists carry over when you switch.
 
+The documentation question (15) lists the project's files with **⬇ Last ned alle**. It saves every file into a folder
+you pick, in a subfolder named after the project and the date, using the same routine as **Download all** in the
+*Files* popover. Since v1.87.0 it fetches three files at a time instead of one. Each file's address is still looked
+up one at a time, because Tampermonkey makes such requests one by one, but the downloads themselves overlap. Two
+files with the same name get the same numbering whichever finishes first. `test/download-all.test.js` runs it
+beside 1.86.1's: the same files under the same names, three in flight instead of one.
+
 Answers are saved per project in `GM` storage as you go, so a half-finished checklist survives a reload. Picking an answer does **not** jump to the next question — click the option, then **Next →** — so a mis-click costs nothing and you can change your mind after reading the hint.
 
 The last step is an **editable rich preview** of exactly what will be sent. From there:

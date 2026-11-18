@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.86.1
+// @version      1.87.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -16520,6 +16520,16 @@
   // to be the first await in the gesture turn or the browser refuses it.
   // Resolves { failed, cancelled, blocked } rather than throwing, so the two
   // callers can word their own buttons.
+  //
+  // (v1.87.0) Three files at a time, not one (Thomas: "yes make download all
+  // fetch 3 at once"). Each file is two requests: its signed address from the
+  // API, then the file itself. Tampermonkey 5.5.1 makes the first kind one at
+  // a time whatever this asks, but the second kind (a blob) side by side, so
+  // the files' bytes now overlap. Names are settled in the list's order before
+  // anything starts, so two files of the same name are numbered the same way
+  // whichever arrives first. Without a folder (no File System Access API) the
+  // browser's own downloads still start one at a time, a quarter second apart.
+  const RL_FILES_DOWNLOAD_PARALLEL = 3;
   async function rlFilesDownloadAll(atts, projectLabel, setLabel) {
     const list = Array.isArray(atts) ? atts : [];
     const say = typeof setLabel === "function" ? setLabel : () => {};
@@ -16543,40 +16553,56 @@
         return { failed: 0, cancelled: true, blocked: true };
       }
     }
-    let current = 0;
-    let failed = 0;
     const usedNames = new Set();
-    for (const att of list) {
+    const jobs = list.map((att) => {
       const attId = att?.attachmentId;
       const fileName = rlFilesSanitizeFileName(String(att?.name ?? "Attachment").trim());
-      current++;
-      say("Downloading " + current + "/" + list.length + "\u2026");
-      if (!attId) { failed++; continue; }
-      try {
-        const { blob } = await gmRocketlaneDownloadAttachmentBlob(attId);
-        if (dirHandle) {
-          const safeName = rlFilesUniqueName(fileName, usedNames);
-          const fileHandle = await dirHandle.getFileHandle(safeName, { create: true });
-          const writable = await fileHandle.createWritable();
-          await writable.write(blob);
-          await writable.close();
+      return { attId, fileName, safeName: attId && dirHandle ? rlFilesUniqueName(fileName, usedNames) : fileName };
+    });
+    let next = 0;
+    let done = 0;
+    let failed = 0;
+    let browserSaves = Promise.resolve();
+    say("Downloading 0/" + jobs.length + "\u2026");
+    const worker = async () => {
+      while (next < jobs.length) {
+        const job = jobs[next++];
+        if (job.attId) {
+          try {
+            const { blob } = await gmRocketlaneDownloadAttachmentBlob(job.attId);
+            if (dirHandle) {
+              const fileHandle = await dirHandle.getFileHandle(job.safeName, { create: true });
+              const writable = await fileHandle.createWritable();
+              await writable.write(blob);
+              await writable.close();
+            } else {
+              // No File System Access API: fall back to one download per file.
+              const save = browserSaves.then(async () => {
+                const objUrl = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = objUrl;
+                a.download = job.fileName;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
+                await new Promise((r) => setTimeout(r, 250));
+              });
+              browserSaves = save.catch(() => {});
+              await save;
+            }
+          } catch (e) {
+            console.warn("[rlFiles] Download failed for " + job.fileName + ":", e);
+            failed++;
+          }
         } else {
-          // No File System Access API: fall back to one download per file.
-          const objUrl = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = objUrl;
-          a.download = fileName;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(() => URL.revokeObjectURL(objUrl), 1000);
-          await new Promise((r) => setTimeout(r, 250));
+          failed++;
         }
-      } catch (e) {
-        console.warn("[rlFiles] Download failed for " + fileName + ":", e);
-        failed++;
+        done++;
+        say("Downloading " + done + "/" + jobs.length + "\u2026");
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(RL_FILES_DOWNLOAD_PARALLEL, jobs.length) }, () => worker()));
     return { failed, cancelled: false, blocked: false };
   }
 
