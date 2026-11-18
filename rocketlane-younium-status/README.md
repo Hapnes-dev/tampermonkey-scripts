@@ -299,6 +299,17 @@ up one at a time, because Tampermonkey makes such requests one by one, but the d
 files with the same name get the same numbering whichever finishes first. `test/download-all.test.js` runs it
 beside 1.86.1's: the same files under the same names, three in flight instead of one.
 
+Measured on 2026-11-18 with the same requests, fetched into memory:
+
+| Files | Three at a time | One at a time |
+|---|---|---|
+| 33, 13.8 MB | 13.6 s | 20.5 s |
+| 13, 17.8 MB | 6.4 s | 8.7 s |
+| 4, 1.4 MB | 2.6 s | 2.5 s |
+
+What is left is the address lookups, about 0.4 s each and one at a time. They cannot be skipped: the file list's own
+`downloadUrl` and `location` were signed when the file was uploaded and last seven days.
+
 Answers are saved per project in `GM` storage as you go, so a half-finished checklist survives a reload. Picking an answer does **not** jump to the next question — click the option, then **Next →** — so a mis-click costs nothing and you can change your mind after reading the hint.
 
 The last step is an **editable rich preview** of exactly what will be sent. From there:
