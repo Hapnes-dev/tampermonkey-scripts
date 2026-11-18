@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rocketlane improvements
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.87.0
+// @version      1.88.0
 // @description  Younium + Oneflow status chips, Categories overview, project and task notes mirrored to Personal tasks, home project panels, Zendesk cases, desktop notifications for new chat messages in the projects you own, chat macros (type / in a chat), and a project's General Chat synced with its Zendesk ticket (/reply answers the customer).
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -111,7 +111,10 @@
  *     answers, else the main one; the ticket list ranks by the plant
  *     number, the store's name and the contractor, and says why. It syncs
  *     from whatever Rocketlane page is open, the home page as well, and a
- *     request that is never answered no longer stops it (v1.84.0). Off
+ *     request that is never answered no longer stops it (v1.84.0). A ticket
+ *     the queue does not list - another group's, such as the handover to
+ *     service - can be linked by its number or link, and the project's own
+ *     Zendesk case (Fetch URLs) is offered in the panel (v1.88.0). Off
  *     until turned on in this browser (button on chat pages, Tampermonkey
  *     menu); one tab runs it.
  *  2. Gantt calendar + floating chat panel (section 6; formerly "Rocketlane
@@ -17422,6 +17425,9 @@
   //     round, not only opening a linked chat; so does a chat message said on the user's own push channel, which every
   //     page keeps, and on a project's channel subscribed again (listened on by name before, the new channel object
   //     never was).
+  //     v1.88.0: a ticket the queue does not list can be linked by hand - by its number or its Zendesk link, typed above
+  //     the queue's list - whatever its group, while it is active. The project's own Zendesk case, the one in its links
+  //     task (Fetch URLs), is offered there when the list does not show it. Neither is linked without being asked.
   // ════════════════════════════════════════════════════════════════════════
   // @@ZDSYNC-ENGINE-START (rocketlane-younium-status/test/zendesk-chat-sync.test.js runs this part in Node)
   function createZendeskChatSync(deps) {
@@ -17985,11 +17991,40 @@
     }
     const refList = (ids) => ids.map((id) => "#" + esc(id)).join(", ");
 
-    /** Links the chat to an active ticket of the queue - its first, or one more (v1.83.0). The chat gets a short message
-     *  saying so; from then on both sides go across, new messages only. The ticket's earlier messages come only on
-     *  request (postHistory), and what was in the chat before stays in the chat. */
-    async function link(projectId, conversationId, ticketId) {
-      const ticket = (await queue()).find((t) => String(t.id) === String(ticketId));
+    // ---- a ticket added by hand (v1.88.0) ----
+    // Thomas: "when link zendesk case make so you can manually add zendesk ticket to chat on the project if you want".
+    // The queue lists only its own groups' tickets; one of another group - the handover to service, a support case - is
+    // linked by its number or its link. Active only, as one of the queue: a solved ticket would wait at once, and with it
+    // every message written in the chat for it.
+    /** The ticket a number or a Zendesk link names - "213185", "#213185", "…/agent/tickets/213185" - or "". */
+    function ticketIdIn(text) {
+      const s = String(text == null ? "" : text).trim();
+      const m = /^(?:zendesk\s*)?#?\s*(\d{1,12})$/i.exec(s) || /\/(?:tickets|requests)\/(\d{1,12})(?:[/?#.]|$)/.exec(s);
+      return m ? m[1] : "";
+    }
+    /** Why a ticket cannot be linked by hand, or "" when it can. `t`: the ticket as Zendesk gives it, null for none. */
+    function notLinkable(t, ticketId) {
+      if (!t || t.id == null) return "Zendesk has no ticket #" + ticketId + " that you can see.";
+      if (isActive(t)) return "";
+      const s = String(t.status || "").toLowerCase();
+      return "Ticket #" + t.id + " is " + (STATUS_WORD[s] || s || "not active") + ": only a new, open, waiting or on-hold ticket " +
+        "can be linked. " + (s === "closed" ? "A closed ticket cannot be opened again; make a follow-up in Zendesk." : "Open it again in Zendesk first.");
+    }
+    async function ticketByHand(ticketId) {
+      const id = ticketIdIn(ticketId);
+      if (!id) throw new Error("“" + String(ticketId) + "” is not a ticket number.");
+      const t = await deps.zd.ticket(id);
+      const why = notLinkable(t, id);
+      if (why) throw new Error(why);
+      return t;
+    }
+
+    /** Links the chat to a ticket - its first, or one more (v1.83.0): an active one of the queue, or with
+     *  `opts.manual` (v1.88.0) any active ticket, read from Zendesk itself whatever its group or view. The chat gets a
+     *  short message saying so; from then on both sides go across, new messages only. The ticket's earlier messages come
+     *  only on request (postHistory), and what was in the chat before stays in the chat. */
+    async function link(projectId, conversationId, ticketId, opts) {
+      const ticket = opts && opts.manual ? await ticketByHand(ticketId) : (await queue()).find((t) => String(t.id) === String(ticketId));
       if (!ticket) throw new Error("Ticket #" + ticketId + " is not an active ticket in the queue.");
       const key = keyOf(projectId, conversationId);
       const had = load().links[key];
@@ -18267,6 +18302,7 @@
     function links() { return load().links; }
 
     return { link, unlink, setMain, linkOf, links, ticketsOf, routeOf, ticketNamedIn, postHistory, postFiles, runOnce, queue, rankTickets, nameWords, plantOf, quoteOf,
+      ticketIdsOf, ticketIdIn, notLinkable,
       whereTo: (e, c) => (e ? routeOf(e, parseChatMessage(textOfHtml(c && c.content), ticketIdsOf(e)), quoteOf(c)).ticketId : ticketNamedIn(quoteOf(c))),
       chatHtmlOf, historyHtml, filesOf, tidyText, textOfHtml, htmlOfText, parseChatMessage, composeModeOf, replyLead, sentAs, wentAs, beforeLink, isActive, clockOf, dayOf, when, replyMark: REPLY_MARK, normText: norm };
   }
@@ -18461,6 +18497,16 @@
             path = nextPath(j);
           }
           return { comments, users };
+        },
+        // one ticket as Zendesk has it, for a ticket added by hand (v1.88.0): null when there is none
+        async ticket(ticketId) {
+          try {
+            const j = await zd("GET", "/tickets/" + encodeURIComponent(ticketId) + ".json");
+            return (j && j.ticket) || null;
+          } catch (err) {
+            if (/^HTTP 404\b/.test(String((err && err.message) || ""))) return null;
+            throw err;
+          }
         },
         async statuses(ids) {
           const list = [...new Set((ids || []).map(String).filter((x) => /^\d+$/.test(x)))];
@@ -18797,6 +18843,10 @@
       ".why{display:flex;flex-wrap:wrap;gap:4px;margin:3px 0 2px}.why .match{margin-left:0}.match.weak{background:#f2f4f7;color:#475467}.match.warn{background:#fef3f2;color:#b42318}",
       ".tk{border-top:1px solid #eaecf0;margin-top:8px;padding-top:8px}.tk .s{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sec{margin-top:10px}",
       ".every{margin-top:8px}.every select{font:inherit;font-size:12px;padding:1px 4px;border:1px solid #d0d5dd;border-radius:5px;background:#fff;color:#344054}",
+      // a ticket by its number or link, above the queue's (v1.88.0)
+      ".hand{margin:0 0 6px;padding:0 0 8px;border-bottom:1px solid #eaecf0}.hand-f{display:flex;align-items:center;gap:6px;margin:4px 0 2px}.hand-f .muted{white-space:nowrap}",
+      ".hand-f input{flex:1;min-width:0;padding:4px 8px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#1f2328;font:inherit;font-size:12.5px}",
+      ".hand-f input:focus{outline:none;border-color:#2f6fed;box-shadow:0 0 0 3px #d1e0ff}",
       // what the message being written will be: on the message box, never in the way of a click
       ".frame{position:fixed;z-index:2147482999;pointer-events:none;border:2px solid #e8590c;border-radius:10px;box-shadow:0 0 0 4px rgba(232,89,12,.16)}",
       ".mode{position:fixed;z-index:2147482999;pointer-events:none;max-width:72vw;padding:5px 12px;border-radius:7px;font:600 13px/1.4 Inter,'Segoe UI',Roboto,Arial,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
@@ -18893,7 +18943,7 @@
         } else {
           pill.className = "pill";
           pill.append("Zendesk ⇄ Link ticket");
-          pill.title = "Link this chat to an active ticket in the queue " + viewTitle();
+          pill.title = "Link this chat to an active ticket in the queue " + viewTitle() + ", or to any active ticket by its number";
         }
         return;
       }
@@ -18923,10 +18973,10 @@
       d[ids.projectId + ":" + ids.conversationId] = [...new Set(notNowOf(ids).concat(String(ticketId)))].join(",");
       set(DISMISS_KEY, d);
     }
-    /** Why a ticket is listed where it is, as chips: its strongest reasons (v1.83.0). */
+    /** Why a ticket is listed where it is, as chips: its strongest reasons (v1.83.0). `r.weak`: chips that only inform. */
     function whyChips(r) {
       const box = el("span", "why");
-      for (const w of r.why.slice(0, 3)) box.append(el("span", "match" + (w === "linked to another chat" || /another plant$/.test(w) ? " warn" : r.found ? "" : " weak"), w.length > 44 ? w.slice(0, 43) + "…" : w));
+      for (const w of r.why.slice(0, 3)) box.append(el("span", "match" + (w === "linked to another chat" || /another plant$/.test(w) ? " warn" : r.found && !(r.weak || []).includes(w) ? "" : " weak"), w.length > 44 ? w.slice(0, 43) + "…" : w));
       return box;
     }
     function ticketLine(t, got) {
@@ -19054,7 +19104,8 @@
     }
 
     /** Tickets of the queue as rows to link, each with why it is listed - the chat's first, or one more. `putOffToo`:
-     *  each also with "Not now" (those found for a linked chat). */
+     *  each also with "Not now" (those found for a linked chat). An entry with `manual` is a ticket added by hand
+     *  (v1.88.0), linked whatever its group. */
     function queueRows(ids, host, list, got, more, putOffToo) {
       for (const r of list) {
         const t = r.ticket;
@@ -19070,7 +19121,7 @@
           yes.onclick = async () => {
             yes.disabled = true;
             no.disabled = true;
-            try { await exclusive(() => sync.link(ids.projectId, ids.conversationId, t.id)); paint(); if (more) void openPanel(); else panel.hidden = true; }
+            try { await exclusive(() => sync.link(ids.projectId, ids.conversationId, t.id, r.manual ? { manual: true } : undefined)); paint(); if (more) void openPanel(); else panel.hidden = true; }
             catch (err) { yes.disabled = false; no.disabled = false; host.prepend(el("div", "err", String((err && err.message) || err))); }
           };
           no.onclick = () => { ask.replaceWith(go); };
@@ -19086,17 +19137,81 @@
         host.append(row);
       }
     }
-    /** The queue in the panel, best match first. */
+    /** The queue in the panel, best match first - and above it a ticket by its number or link (v1.88.0). */
     async function showQueue(ids, host, more) {
       host.textContent = "";
       host.append(el("div", "muted", "Loading the queue…"));
       const got = await rankedFor(ids.projectId, true);
       paint();
       host.textContent = "";
+      const hand = el("div", "hand");
+      host.append(hand);
+      const list = got.error ? [] : rankFor(ids, got), shown = list.slice(0, 25);
+      byHand(ids, hand, got, more, new Set(shown.map((r) => String(r.ticket.id))));
       if (got.error) { host.append(el("div", "err", got.error)); return; }
-      const list = rankFor(ids, got);
       if (!list.length) host.append(el("div", "muted", more ? "No other active tickets in the queue." : "No active tickets in the queue."));
-      queueRows(ids, host, list.slice(0, 25), got, more, false);
+      queueRows(ids, host, shown, got, more, false);
+    }
+
+    /** A ticket the queue does not list, by its number or its link (v1.88.0), and the project's own Zendesk case - its
+     *  links task, Fetch URLs' Zendesk - offered when it is active and the list does not show it. Each a row to link
+     *  like the queue's, asked once more; never linked by itself. `listed`: the queue's tickets shown below. */
+    function byHand(ids, box, got, more, listed) {
+      const here = new Set(sync.ticketIdsOf(sync.linkOf(ids.projectId, ids.conversationId)));
+      const inQueue = new Set(((got && got.tickets) || []).map((t) => String(t.id)));
+      const mine = ids.projectId + ":" + ids.conversationId;
+      const elsewhere = (id) => Object.entries(sync.links()).some(([k, x]) => k !== mine && sync.ticketIdsOf(x).includes(String(id)));
+      const offered = el("div"), form = el("div", "hand-f"), found = el("div");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "Ticket number or Zendesk link";
+      input.setAttribute("aria-label", "Ticket number or Zendesk link");
+      const find = el("button", "g", "Find");
+      form.append(el("span", "muted", "Not in the list?"), input, find);
+      box.append(offered, form, found);
+      // the ticket as a row to link, with why it is there; `quiet`: nothing said when it cannot be linked
+      async function offer(where, id, chip, quiet) {
+        where.textContent = "";
+        if (here.has(id)) { if (!quiet) where.append(el("div", "muted", "#" + id + " is linked to this chat already.")); return; }
+        if (!quiet) where.append(el("div", "muted", "Looking up #" + id + "…"));
+        let t = null;
+        try { t = await api.zd.ticket(id); }
+        catch (err) { where.textContent = ""; if (!quiet) where.append(el("div", "err", String((err && err.message) || err))); return; }
+        where.textContent = "";
+        const why = sync.notLinkable(t, id);
+        if (why) {
+          if (quiet) return;
+          if (t) { const { row, txt } = ticketRow(t); txt.append(ticketLine(t, got)); where.append(row); }
+          where.append(el("div", "err", why));
+          return;
+        }
+        // whether the queue lists it, when the queue could be read
+        const queued = got && !got.error ? [inQueue.has(String(t.id)) ? "in the queue" : "not in the queue"] : [];
+        const chips = (chip ? [chip] : []).concat(queued, elsewhere(t.id) ? ["linked to another chat"] : []);
+        queueRows(ids, where, [{ ticket: t, why: chips, found: true, weak: ["in the queue", "not in the queue"], manual: true }], got, more, false);
+      }
+      find.onclick = async () => {
+        const id = sync.ticketIdIn(input.value);
+        found.textContent = "";
+        if (!id) { found.append(el("div", "err", "Type the ticket's number, or paste its link from Zendesk.")); return; }
+        find.disabled = true;
+        try { await offer(found, id, "", false); } finally { find.disabled = false; }
+      };
+      // typed into the panel, not into Rocketlane: the page's shortcuts and paste handling never get these (the shadow
+      // root hands the page its host as their target, not this field). Enter finds, Esc closes the panel.
+      for (const type of ["keydown", "keyup", "keypress", "paste", "copy", "cut"]) {
+        input.addEventListener(type, (ev) => {
+          ev.stopPropagation();
+          if (type !== "keydown") return;
+          if (ev.key === "Enter") { ev.preventDefault(); find.click(); } else if (ev.key === "Escape") panel.hidden = true;
+        });
+      }
+      if (typeof net.projectZendesk === "function") {
+        Promise.resolve().then(() => net.projectZendesk(ids.projectId)).then((url) => {
+          const id = sync.ticketIdIn(url);
+          if (id && !listed.has(id) && box.isConnected) return offer(offered, id, "the project's Zendesk link", true);
+        }).catch(() => {});
+      }
     }
 
     async function openPanel() {
@@ -19155,7 +19270,7 @@
         const acts = el("div", "acts");
         if (several) acts.append(now);
         const more = el("button", "g", "Link another ticket");
-        more.title = "Link one more ticket of the queue to this chat";
+        more.title = "Link one more ticket to this chat: one of the queue, or any active ticket by its number";
         const list = el("div");
         more.onclick = () => { more.disabled = true; void showQueue(ids, list, true); };
         acts.append(more);
@@ -19179,7 +19294,8 @@
       }
       panel.append(el("h3", null, "Link the chat to a ticket in the queue"));
       panel.append(el("div", "muted", "Active tickets (new, open, waiting for customer, on hold) in the queue “" + viewTitle() + "”, best match " +
-        "first: the project's plant number (Plant ID, subject, text), its store's name, and a requester from its contractor."));
+        "first: the project's plant number (Plant ID, subject, text), its store's name, and a requester from its contractor. " +
+        "A ticket of another group, such as the handover to service: by its number or link."));
       const list = el("div");
       panel.append(list);
       await showQueue(ids, list, false);
@@ -19785,6 +19901,8 @@
         zdFile: zendeskAttachmentBlob, rlUpload: gmRocketlaneUploadChatFile,
         rlFile: gmRocketlaneDownloadAttachmentBlob, zdUpload: zendeskUploadFile,
         addMacro: (f) => RL_MC_EXTRA.push(f),
+        // the project's own Zendesk case, from its links task (Fetch URLs' Zendesk), offered for linking (v1.88.0)
+        projectZendesk: async (projectId) => String((await rlLoadProjectLinks(projectId))?.zendesk || ""),
       });
     } catch (e) { console.warn("[Rocketlane improvements] Zendesk chat sync failed to start", e); }
   });

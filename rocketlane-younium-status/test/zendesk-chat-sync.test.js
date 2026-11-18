@@ -63,6 +63,8 @@ function world(opts = {}) {
     },
     zd: {
       async queueTickets() { return JSON.parse(JSON.stringify(queue)); },
+      // one ticket as GET /tickets/{id}.json gives it (v1.88.0): the queue's, or one elsewhere in Zendesk; none, null
+      async ticket(id) { const t = queue.find((x) => String(x.id) === String(id)) || elsewhere.get(String(id)); return t ? JSON.parse(JSON.stringify(t)) : null; },
       ticketUrl: (id) => 'https://iwmac.zendesk.com/agent/tickets/' + id,
       async statuses(ids) {
         const out = {};
@@ -975,4 +977,75 @@ test('suggestions: the chat\'s own tickets are left out; one linked to another c
   const { sync } = world();
   const ranked = sync.rankTickets([vika, trofors], ccr, 27741611, { linkedHere: [210837], linkedElsewhere: { 211004: '1:2' } });
   assert.deepStrictEqual(ranked.map((r) => [r.ticket.id, r.found, r.why.slice(-1)[0]]), [[211004, false, 'linked to another chat']]);
+});
+
+// ---- v1.88.0: a ticket added by hand ----
+// Thomas: "when link zendesk case make so you can manually add zendesk ticket to chat on the project if you want". The
+// handover to service is made in IWMAC Support, a group outside the queue's view: linked by its number, while active.
+const HANDOVER = { id: 61000, subject: 'Overlevering til service - 10263 Extra Laksvollen', status: 'open', updated_at: '2026-10-28T09:10:00Z', custom_fields: [{ id: 27741611, value: '10263' }] };
+function handWorld() {
+  const w = world();
+  w.elsewhere.set('61000', JSON.parse(JSON.stringify(HANDOVER)));
+  w.elsewhere.set('61001', { id: 61001, subject: 'Gammel servicesak', status: 'solved' });
+  w.elsewhere.set('61002', { id: 61002, subject: 'Lukket sak', status: 'closed' });
+  w.zdComments.set(61000, [{ id: 4500, author_id: 800, public: false, plain_body: 'Overlevering opprettet fra Rocketlane.', created_at: '2026-10-28T09:10:00Z', attachments: [] }]);
+  return w;
+}
+
+test('ticketIdIn: a number, with # or "Zendesk" before it, or a Zendesk link; anything else is none', () => {
+  const { sync } = world();
+  const read = (s) => sync.ticketIdIn(s);
+  assert.deepStrictEqual(['61000', ' #61000 ', 'Zendesk #61000', 'https://iwmac.zendesk.com/agent/tickets/61000', 'https://iwmac.zendesk.com/agent/tickets/61000?x=1',
+    'https://iwmac.zendesk.com/hc/no/requests/61000', 'https://iwmac.zendesk.com/api/v2/tickets/61000.json'].map(read), Array(7).fill('61000'));
+  assert.deepStrictEqual(['', 'abc', '61000 og 61001', 'https://iwmac.zendesk.com/agent/tickets/', 'https://kiona.rocketlane.com/projects/61000', null, undefined].map(read), Array(7).fill(''));
+});
+
+test('by hand: a ticket outside the queue, by its number - the chat told, new messages only, both ways', async () => {
+  const w = handWorld();
+  await assert.rejects(w.sync.link(P, C, 61000), /not an active ticket in the queue/, 'from the queue\'s list: still the queue\'s only');
+  const e = await w.sync.link(P, C, 'https://iwmac.zendesk.com/agent/tickets/61000', { manual: true });
+  assert.deepStrictEqual([e.main, e.tickets.map((t) => [t.ticketId, t.subject, t.status, t.zdMax])], ['61000', [['61000', HANDOVER.subject, 'active', 4500]]]);
+  assert.strictEqual(w.posted.rl.length, 1, 'the notice only, as from the queue');
+  assert.strictEqual(w.posted.rl[0].html, '<p><a href="https://iwmac.zendesk.com/agent/tickets/61000" target="_blank" rel="noopener noreferrer">Zendesk #61000</a>' +
+    ' is linked to this chat · ' + HANDOVER.subject + '</p><p>Messages here go to the ticket as internal notes. Start with /reply to answer the customer.</p>');
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 0, errors: 0 }, 'it syncs though the queue does not list it');
+  // a new message on it comes in; one written in the chat goes to it
+  const c = { id: 4501, author_id: 800, public: false, plain_body: 'Servicetekniker er varslet.', created_at: new Date(w.tick()).toISOString(), attachments: [] };
+  w.zdComments.get(61000).push(c);
+  w.elsewhere.get('61000').updated_at = c.created_at;
+  w.say(2, '<p>Takk, vi følger opp.</p>', 'Andreas', 'Sandnes');
+  const r = await w.sync.runOnce();
+  assert.deepStrictEqual(counts(r), { mirrored: 1, forwarded: 1, paused: 0, errors: 0 });
+  assert.match(unmark(w.posted.rl[1].html), /^<p><b>Zendesk #61000<\/b> · Ola Agent · internal note<\/p><p>Servicetekniker er varslet\.<\/p>$/);
+  assert.deepStrictEqual(w.posted.zd.map((p) => [p.ticketId, p.body, p.isPublic]), [['61000', 'Andreas Sandnes (Rocketlane):\nTakk, vi følger opp.', false]]);
+  // and it pauses when it is solved, as any linked ticket does
+  w.elsewhere.get('61000').status = 'solved';
+  assert.deepStrictEqual(counts(await w.sync.runOnce()), { mirrored: 0, forwarded: 0, paused: 1, errors: 0 });
+});
+
+test('by hand: only an active ticket - solved, closed, missing or no number at all is refused, and nothing is posted', async () => {
+  const w = handWorld();
+  await assert.rejects(w.sync.link(P, C, 61001, { manual: true }), /^Error: Ticket #61001 is solved: only a new, open, waiting or on-hold ticket can be linked\. Open it again in Zendesk first\.$/);
+  await assert.rejects(w.sync.link(P, C, 61002, { manual: true }), /is closed: .* A closed ticket cannot be opened again; make a follow-up in Zendesk\.$/);
+  await assert.rejects(w.sync.link(P, C, 53126, { manual: true }), /#53126 is solved/, 'the queue\'s solved one too');
+  await assert.rejects(w.sync.link(P, C, 69999, { manual: true }), /^Error: Zendesk has no ticket #69999 that you can see\.$/);
+  await assert.rejects(w.sync.link(P, C, 'butikken', { manual: true }), /“butikken” is not a ticket number/);
+  assert.strictEqual(w.sync.linkOf(P, C), null);
+  assert.strictEqual(w.posted.rl.length, 0);
+  assert.strictEqual(w.sync.notLinkable({ id: 61003, status: 'hold' }, '61003'), '', 'on hold is active');
+});
+
+test('by hand: one more ticket in a linked chat, the queue\'s ticket still the main; linked twice, nothing happens', async () => {
+  const w = handWorld();
+  await w.sync.link(P, C, 53123);
+  const e = await w.sync.link(P, C, '#61000', { manual: true });
+  assert.deepStrictEqual([e.main, e.tickets.map((t) => t.ticketId)], ['53123', ['53123', '61000']]);
+  assert.match(w.posted.rl[1].html, /Zendesk #61000<\/a> is linked to this chat too · Overlevering til service - 10263 Extra Laksvollen<\/p><p>Messages here still go to <a [^>]*>Zendesk #53123<\/a>\. To write to #61000, reply to one of its messages or start with #61000\.<\/p>$/);
+  await w.sync.link(P, C, 61000, { manual: true });
+  await w.sync.link(P, C, 53123, { manual: true });
+  assert.strictEqual(w.posted.rl.length, 2, 'either one linked again: nothing');
+  // a message that names it goes to it, the number not sent
+  w.say(1, '<p>#61000 Overlevering sjekket.</p>', 'Thomas');
+  await w.sync.runOnce();
+  assert.deepStrictEqual(toTicket(w, 61000), [['Overlevering sjekket.', false]]);
 });

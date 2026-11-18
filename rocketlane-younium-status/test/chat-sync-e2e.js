@@ -2,7 +2,8 @@
 /* Zendesk ⇄ General Chat (Rocketlane improvements 1.73.0) in a real browser: the userscript's sync - engine, button
  * and panel - on a page at a Rocketlane chat path, its transports answered in the page by an in-memory Rocketlane and
  * Zendesk. Link a ticket from the queue, a customer's reply into the chat, a /reply message out to the ticket; an older
- * Chat Bridge's button keeps this one away, and the Chat Bridge's links come over through its own hand-over.
+ * Chat Bridge's button keeps this one away, and the Chat Bridge's links come over through its own hand-over. Since
+ * v1.88.0 also a ticket the queue does not list, linked by its number or link, and the project's own Zendesk case.
  *   node rocketlane-younium-status/test/chat-sync-e2e.js   (screenshots in rocketlane-younium-status/test/out/) */
 const fs = require('fs');
 const path = require('path');
@@ -44,6 +45,7 @@ const NET = `{
   rlFile: (id) => window.__rlFile(id),
   zdUpload: (blob, name) => window.__zdUpload(blob, name),
   addMacro: (f) => RL_MC_EXTRA.push(f),
+  projectZendesk: async () => window.__projectZendesk || '',
 }`;
 const startOf = (net) => '(function(){ const tmSetValue = window.GM_setValue; function rlWhenDomReady(fn) { fn(); }\n' +
   GMSET + '\n' + PAGESTORE + '\n' + MACROS + '\n' + SYNC + '\nstartZendeskChatSync(' + net + ');})();';
@@ -76,6 +78,12 @@ const W = window.__world = {
   puts: [], posts: [], nextRl: 100, nextZd: 5000,
   // a second ticket of the chat (v1.83.0): its comments and what was sent to it
   zd2: [], puts2: [],
+  // tickets of other groups, which the queue does not list (v1.88.0): the handover to service, a service case
+  outside: [
+    { id: 61000, subject: 'Overlevering til service - 10263 Extra Laksvollen', status: 'open', updated_at: '2026-10-28T09:10:00Z', custom_fields: [{ id: 27741611, value: 10263 }] },
+    { id: 61002, subject: 'Servicesak: kompressor 2', status: 'open', updated_at: '2026-10-28T09:20:00Z', custom_fields: [{ id: 27741611, value: 10263 }] },
+  ],
+  zdOut: { 61000: [], 61002: [] }, putsOut: [],
   // Zendesk's files by their token: pictures drawn at their size, a PDF as a few bytes
   files: { shot: { w: 1010, h: 842, type: 'image/png' }, icon: { w: 26, h: 26, type: 'image/png' }, logo: { w: 226, h: 88, type: 'image/png' }, pdf: { type: 'application/pdf' } },
   uploads: [], zdUploads: [],
@@ -125,21 +133,34 @@ window.GM_xmlhttpRequest = (o) => {
     if (p === '/api/v2/search.json') { W.queries.push(u.searchParams.get('query')); return ok({ results: W.queue.filter((t) => t.status !== 'solved').map((t) => Object.assign({ result_type: 'ticket' }, t)), next_page: null }); }
     if (p === '/api/v2/ticket_fields.json') return ok({ ticket_fields: [{ id: 1, title: 'Subject' }, { id: 27741611, title: 'Plant ID' }], next_page: null });
     // every round starts with the tickets' statuses: counted, to tell what started one (v1.84.0)
-    if (p === '/api/v2/tickets/show_many.json') { W.rounds = (W.rounds || 0) + 1; const ids = u.searchParams.get('ids').split(','); return ok({ tickets: W.queue.filter((t) => ids.includes(String(t.id))) }); }
+    if (p === '/api/v2/tickets/show_many.json') { W.rounds = (W.rounds || 0) + 1; const ids = u.searchParams.get('ids').split(','); return ok({ tickets: W.queue.concat(W.outside).filter((t) => ids.includes(String(t.id))) }); }
     if (p === '/api/v2/tickets/53123/comments.json') return ok({ comments: W.zd.slice().reverse(), users: [{ id: 700, name: 'Kari Kunde', role: 'end-user' }, { id: 900, name: 'Thomas', role: 'agent' }], next_page: null });
-    if (p === '/api/v2/tickets/53123.json' && o.method === 'GET') return ok({ ticket: { id: 53123, requester_id: 700, email_cc_ids: [901, 902] }, users: [{ id: 700, name: 'Kari Kunde' }] });
+    if (p === '/api/v2/tickets/53123.json' && o.method === 'GET') return ok({ ticket: Object.assign({}, W.queue.find((x) => x.id === 53123), { requester_id: 700, email_cc_ids: [901, 902] }), users: [{ id: 700, name: 'Kari Kunde' }] });
     if (p === '/api/v2/tickets/53123.json' && o.method === 'PUT') {
       const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [], via: { channel: 'api' } };
       W.addZd(c); W.puts.push(body.ticket.comment); return ok({ ticket: { id: 53123 }, audit: { events: [{ type: 'Comment', id: c.id }] } });
     }
     if (p === '/api/v2/tickets/53125/comments.json') return ok({ comments: W.zd2.slice().reverse(), users: [{ id: 701, name: 'Ola Butikk', role: 'end-user' }, { id: 900, name: 'Thomas', role: 'agent' }], next_page: null });
-    if (p === '/api/v2/tickets/53125.json' && o.method === 'GET') return ok({ ticket: { id: 53125, requester_id: 701, email_cc_ids: [] }, users: [{ id: 701, name: 'Ola Butikk' }] });
+    if (p === '/api/v2/tickets/53125.json' && o.method === 'GET') return ok({ ticket: Object.assign({}, W.queue.find((x) => x.id === 53125), { requester_id: 701, email_cc_ids: [] }), users: [{ id: 701, name: 'Ola Butikk' }] });
     if (p === '/api/v2/tickets/53125.json' && o.method === 'PUT') {
       const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [], via: { channel: 'api' } };
       W.zd2.push(c); W.puts2.push(body.ticket.comment);
       const t = W.queue.find((x) => x.id === 53125); if (t) t.updated_at = new Date(Date.now() + W.zd2.length).toISOString();
       return ok({ ticket: { id: 53125 }, audit: { events: [{ type: 'Comment', id: c.id }] } });
     }
+    // the tickets of other groups (v1.88.0): their comments, a comment on one, and any ticket by its number. No regular
+    // expressions here: this is a template literal, which would eat their backslashes
+    const seg = p.split('/');   // ['', 'api', 'v2', 'tickets', '61002.json'], or ending '61002', 'comments.json'
+    const tid = seg[3] === 'tickets' ? String(seg[4] || '').replace('.json', '') : '';
+    const outT = W.outside.find((x) => String(x.id) === tid);
+    if (outT && seg.length === 6 && seg[5] === 'comments.json') return ok({ comments: (W.zdOut[tid] || []).slice().reverse(), users: [{ id: 702, name: 'Per Service', role: 'end-user' }, { id: 900, name: 'Thomas', role: 'agent' }], next_page: null });
+    if (outT && seg.length === 5 && o.method === 'PUT') {
+      const c = { id: W.nextZd++, author_id: 900, public: body.ticket.comment.public, plain_body: body.ticket.comment.body, created_at: new Date().toISOString(), attachments: [], via: { channel: 'api' } };
+      (W.zdOut[tid] = W.zdOut[tid] || []).push(c); W.putsOut.push(Object.assign({ ticketId: tid }, body.ticket.comment));
+      outT.updated_at = new Date(Date.now() + W.putsOut.length).toISOString();
+      return ok({ ticket: { id: Number(tid) }, audit: { events: [{ type: 'Comment', id: c.id }] } });
+    }
+    if (tid && seg.length === 5 && o.method === 'GET') { const t = W.queue.concat(W.outside).find((x) => String(x.id) === tid); if (t) return ok({ ticket: t }); }
   }
   setTimeout(() => o.onload({ status: 404, responseText: '{}' }), 10);
 };
@@ -632,6 +653,74 @@ const PAGE = '<!doctype html><html><head><meta charset="utf-8"><title>General ch
     assert.match(w2.posts[w2.posts.length - 1].content, /Zendesk #53125<\/a> is no longer linked to this chat<\/p><p>Messages here go to <a [^>]*>Zendesk #53123<\/a>\.<\/p>$/);
     await page.keyboard.press('Escape');
     await page.evaluate(() => document.getElementById('composer').remove());
+
+    // ---- v1.88.0: a ticket the queue does not list, linked by hand ----
+    // the project's own Zendesk case (its links task) is offered above the list; a number or a link typed there finds a
+    // ticket of any group, linked with the same two steps; a solved one, one that does not exist and one linked already
+    // are each told so
+    await page.evaluate(() => { window.__projectZendesk = 'https://iwmac.zendesk.com/agent/tickets/61000'; });
+    await pill.click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Link another ticket').click();
+    const hand = page.locator('#rl-zendesk-chat-sync >> .hand');
+    await hand.locator('.row').first().waitFor();
+    assert.deepStrictEqual(await hand.locator('.row .s').allTextContents(), ['#61000 Overlevering til service - 10263 Extra Laksvollen'], 'the project\'s Zendesk case, offered');
+    assert.deepStrictEqual(await hand.locator('.row .why .match').allTextContents(), ['the project\'s Zendesk link', 'not in the queue']);
+    assert.match(await hand.locator('.row .muted').first().textContent(), /^open · Plant ID 10263 · /);
+    assert.deepStrictEqual(await page.locator('#rl-zendesk-chat-sync >> .row .s').allTextContents(),
+      ['#61000 Overlevering til service - 10263 Extra Laksvollen', '#53125 Laksvollen ny bruker', '#53130 Annen butikk', '#53131 Service på vent'], 'and the queue below, as before');
+    const field = hand.locator('input');
+    assert.strictEqual(await field.getAttribute('placeholder'), 'Ticket number or Zendesk link');
+    await field.fill('53126');
+    await field.press('Enter');
+    await hand.locator('.err').waitFor();
+    assert.strictEqual(await hand.locator('.err').textContent(), 'Ticket #53126 is solved: only a new, open, waiting or on-hold ticket can be linked. Open it again in Zendesk first.');
+    assert.strictEqual(await hand.locator('.row', { hasText: '#53126' }).locator('button').count(), 0, 'shown, with no Link');
+    await field.fill('99999');
+    await hand.locator('button', { hasText: 'Find' }).click();
+    await hand.locator('text=Zendesk has no ticket #99999 that you can see.').waitFor();
+    await field.fill('#53123');
+    await field.press('Enter');
+    await hand.locator('text=#53123 is linked to this chat already.').waitFor();
+    await field.fill('kompressor');
+    await field.press('Enter');
+    await hand.locator('text=Type the ticket\'s number, or paste its link from Zendesk.').waitFor();
+    // keys typed in the field stay there: the page never sees them (Rocketlane's shortcuts, its paste handling)
+    await page.evaluate(() => {
+      const got = [];
+      const note = (ev) => got.push(ev.type);
+      for (const t of ['keydown', 'keyup', 'keypress']) document.addEventListener(t, note);
+      window.__noteKeys = () => { for (const t of ['keydown', 'keyup', 'keypress']) document.removeEventListener(t, note); return got; };
+    });
+    await field.press('Backspace');
+    await field.press('x');
+    assert.deepStrictEqual(await page.evaluate(() => window.__noteKeys()), [], 'no key of the field reached the page');
+    // a link pasted: found in another group, and linked with the same two steps as the queue's
+    await field.fill('https://iwmac.zendesk.com/agent/tickets/61002');
+    await field.press('Enter');
+    const row61002 = hand.locator('.row', { hasText: '#61002' });
+    await row61002.waitFor();
+    assert.deepStrictEqual(await row61002.locator('.why .match').allTextContents(), ['not in the queue']);
+    await page.screenshot({ path: path.join(OUT, '7a-by-hand-found.png') });
+    await row61002.locator('button').click();
+    await page.locator('#rl-zendesk-chat-sync >> text=Yes, link #61002 too').click();
+    await page.waitForFunction(() => /#53123 \+1 ⇄/.test(document.querySelector('#rl-zendesk-chat-sync').shadowRoot.querySelector('.pill').textContent), null, { timeout: 15000 });
+    w2 = await page.evaluate(() => window.__world);
+    assert.match(w2.posts[w2.posts.length - 1].content, /Zendesk #61002<\/a> is linked to this chat too · Servicesak: kompressor 2<\/p><p>Messages here still go to <a [^>]*>Zendesk #53123<\/a>\. To write to #61002, reply to one of its messages or start with #61002\.<\/p>$/);
+    await page.locator('#rl-zendesk-chat-sync >> text=Linked to 2 Zendesk tickets').waitFor();
+    await page.screenshot({ path: path.join(OUT, '7b-by-hand-linked.png') });
+    // it syncs like the queue's: its new message comes in, and a message naming it goes to it
+    await page.evaluate(() => {
+      const W = window.__world;
+      W.zdOut[61002].push({ id: W.nextZd++, author_id: 702, public: true, plain_body: 'Kompressoren lager støy igjen.', created_at: new Date().toISOString(), attachments: [] });
+      W.outside.find((x) => x.id === 61002).updated_at = new Date(Date.now() + 9).toISOString();
+      W.chat.push({ commentId: W.nextRl++, messageType: 'USER_MESSAGE', content: '<p>#61002 Tekniker kommer torsdag.</p>', createdAt: Date.now() + 4000, user: { userId: 1, firstName: 'Thomas' } });
+    });
+    await page.locator('#rl-zendesk-chat-sync >> text=Sync now').click();
+    await page.waitForFunction(() => window.__world.putsOut.length === 1 && window.__world.posts.some((p) => /Kompressoren lager/.test(p.content)), null, { timeout: 15000 });
+    w2 = await page.evaluate(() => window.__world);
+    assert.match(unmark(w2.posts.find((p) => /Kompressoren lager/.test(p.content)).content), /^<p><b>Zendesk #61002<\/b> · Per Service \(customer\)<\/p><p>Kompressoren lager støy igjen\.<\/p>$/);
+    assert.deepStrictEqual(w2.putsOut, [{ ticketId: '61002', body: 'Tekniker kommer torsdag.', public: false }], 'named: to #61002, the number not sent');
+    await page.keyboard.press('Escape');
 
     // off in the menu: the button stays on the chat page, greyed
     const menu = await page.evaluate(() => window.__menu.map((m) => m.name));

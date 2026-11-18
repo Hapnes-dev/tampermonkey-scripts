@@ -13,7 +13,7 @@ One Tampermonkey userscript with eight independent improvements for `kiona.rocke
 10. **Project notes → Personal tasks** (v1.18.0) — every open project you own or are a member of that has a **Project notes** value gets one entry in the home page's Personal tasks widget (`<project>: <first line>`), renamed or removed as the note or the project changes. Runs a few seconds after load and every few minutes. Completed projects are never synced.
 11. **Project note panel** (v1.19.0) — a **Project note** card on the project plan, directly above the Categories overview, that edits the project's own **Project notes** field — the same column the Projects list view shows. It loads the current note, saves 800 ms after you stop typing (blur and **Ctrl+Enter** save at once) and shows *Saving… / Saved* beside the box. Because Rocketlane offers no version check, every save re-reads the field first: if someone else changed it in the meantime nothing is overwritten and you are offered **Load server** or **Overwrite**; after the write the field is read back and compared, and a failed save keeps your text with a **Retry** button. A verified save immediately updates that project's entry in the Personal tasks widget.
 8. **Home panels** — **v1.15.0:** *Project Owner* lists every open project in the tenant grouped by owner (an owner's count is their real count), *In progress* lists every project with status In progress grouped by owner (you included); each panel has its own pin and pins your own group first by default; **v1.15.1:** a **Delivery Cooling** toggle in both headers shows only the team's owners (Thomas Kvalvåg Håpnes, Andreas Sandnes, ivarhaga haga, Matthias Criel, Svein Olav Wahlberg — remembered), plus **Collapse all** / **Expand all** per panel (single groups still toggle by clicking their header); **v1.15.2:** a **search box** in both headers filters both panels by plant name, id, owner or status (every word must match; groups open while searching); **Ctrl+F** on the home page focuses it, **Esc** clears it; data is one server-filtered `lightV1` fetch (`status isNot Completed`, ~400 rows, two pages). Earlier: (v1.12.1) — on `https://kiona.rocketlane.com/` (`pathname === "/"`), PPT-style dark panel of **In progress** projects mounted **under the native Overdue** task section (Incomplete widgets stay). Cards show %, status/due pills, progress bar; owner groups with pin + Due/Progress sort. Data from `POST /projects/lightV1` filtered to Status=In progress (owner/member; exclude `[Tracker] Workload Sync`). (the `+ RL Project` button was removed in v1.15.3). **v1.14.2:** the result is cached (in Tampermonkey storage; in the page's localStorage since v1.86.0, section 8), so the panels paint instantly from the last result and, since v1.14.4, refresh in the background on every visit (status line shows *updated HH:MM* or *refreshing…*); the fetch starts at document-start and pages lightV1 in one parallel round; **Refresh** forces a new fetch. **v1.14.3:** lightV1 is filtered server-side to the projects you own or are a member of (the same `filter` body the Rocketlane Projects grid sends), so one ~1.4 MB page replaces the five 3.7 MB pages of the full scan; the panels also wait for the Overdue card (up to 10 s) instead of mounting at the top and jumping down once it renders. **v1.14.6:** cards show the project **start date** (Starts / Started) instead of the overdue pill — the due date moved to the card tooltip — and the status chips are quiet outlined pills with a coloured dot rather than tinted buttons. **v1.14.21:** click a card's status chip to **change the project status** from the overview — the menu lists the tenant's Status options (Proposed, In Planning, To be Staffed, In progress, On Hold, Blocked, Completed, Cancelled), the pick is written with `PUT /projects/{id}` on the Status field, the card updates at once and the lists revalidate a moment later (a Completed project drops out).
-12. **Zendesk ⇄ General Chat** (v1.73.0; in *Rocketlane Chat Bridge* 1.16.0–1.18.0 before) — a project's General Chat linked to its ticket in the team's Zendesk queue: the ticket's messages come into the chat as private messages, and what is written in the chat goes to the ticket as an internal note, or as a public reply to the customer when it starts with `/reply`, which the "/" list offers and which never shows in the chat (v1.82.0). The ticket's images and files come along as Rocketlane attachments (v1.74.0), and files attached in the chat go to the ticket (v1.75.0). Off until turned on in the browser that runs it. See section 7 below.
+12. **Zendesk ⇄ General Chat** (v1.73.0; in *Rocketlane Chat Bridge* 1.16.0–1.18.0 before) — a project's General Chat linked to its ticket in the team's Zendesk queue (or to any active ticket by its number, v1.88.0): the ticket's messages come into the chat as private messages, and what is written in the chat goes to the ticket as an internal note, or as a public reply to the customer when it starts with `/reply`, which the "/" list offers and which never shows in the chat (v1.82.0). The ticket's images and files come along as Rocketlane attachments (v1.74.0), and files attached in the chat go to the ticket (v1.75.0). Off until turned on in the browser that runs it. See section 7 below.
 
 The folder, file and install link kept the old `rocketlane-younium-status` path, so a copy installed under the old name keeps auto-updating.
 
@@ -351,8 +351,9 @@ On a project **plan** page:
 
 ## 7. Zendesk ⇄ General Chat (v1.73.0)
 
-Links a project's General Chat in Rocketlane to a Zendesk ticket from the team's queue - or to several (v1.83.0) - so
-the conversation with the customer can be followed and answered from the chat. It lived in *Rocketlane Chat Bridge* from its 1.16.0 to 1.18.0 and moved here in
+Links a project's General Chat in Rocketlane to a Zendesk ticket from the team's queue - or to several (v1.83.0), or
+to one of another group by its number (v1.88.0) - so the conversation with the customer can be followed and answered
+from the chat. It lived in *Rocketlane Chat Bridge* from its 1.16.0 to 1.18.0 and moved here in
 v1.73.0.
 
 - **Turn it on.** The button at the bottom right of a chat page (`/projects/<id>/chat/<id>`) says **Zendesk ⇄ off**
@@ -394,6 +395,23 @@ v1.73.0.
   - **Post earlier messages** in the panel posts them on request, once, oldest first: who, what kind, when, and the
     text, in one message or a few for a long ticket. **Post earlier messages again** posts them once more, after the
     old copies have been deleted from the chat. What was in the chat before the link stays in the chat.
+- **A ticket the queue does not list** (v1.88.0). Thomas: "when link zendesk case make so you can manually add zendesk
+  ticket to chat on the project if you want". The queue lists only its own groups, so a ticket of another group could
+  not be linked. One example is the handover to service, which the delivery wizard makes in IWMAC Support.
+  - **Not in the list?** above the queue's list takes a ticket's number (`213185`, `#213185`) or its link from Zendesk
+    (`…/agent/tickets/213185`). **Find** (or Enter) shows the ticket as a row, with its status, Plant ID and date,
+    and **Link** / **Link too**, asked once more as for the queue's tickets.
+  - **The project's own Zendesk case** - the one in its links task, which **Fetch URLs** fills (its Zendesk row) - is
+    offered at the top of the list when it is active and the queue's list does not show it already, marked "the
+    project's Zendesk link". It is only offered: nothing is linked without being asked.
+  - Only an **active** ticket can be linked, as from the queue: new, open, waiting for the customer or on hold. A
+    solved ticket would pause at once, and every message written in the chat for it would wait. A solved, closed or
+    missing ticket is shown with the reason; a closed one cannot be opened again, so it needs a follow-up in Zendesk.
+  - The chips say whether the queue lists the ticket, and "linked to another chat" when it is. Once linked, it works
+    like a ticket of the queue: the chat is told, only new messages come in, a message naming it goes to it, and it
+    pauses when it is solved.
+  - Keys typed in the field stay in it: Rocketlane's own shortcuts and paste handling never get them. Enter finds, Esc
+    closes the panel.
 - **More than one ticket** (v1.83.0). **Link another ticket** in the panel of a linked chat lists the queue without the
   chat's own tickets; "Yes, link #… too" links one more. A ticket of the queue that is surely the project's shows as
   "· 1 more found" on the button and under **Also found for this project** in the panel, with **Link too** and
@@ -556,7 +574,10 @@ v1.73.0.
   the round at load, a call that is never answered (the round ends after its time limit, the next one goes on), the
   push channels - the user's own, the project's subscribed again, events that are no linked chat's message - and
   going to another page. Since v1.86.0 also where it keeps things: a round with no news writes nothing to
-  Tampermonkey's storage, and a tab running an older copy keeps the rounds while it holds its lock.
+  Tampermonkey's storage, and a tab running an older copy keeps the rounds while it holds its lock. Since v1.88.0 also
+  a ticket of another group: the project's own case offered, a number and a link typed, a solved, a missing and an
+  already linked ticket each told so, keys kept from the page, and the ticket linked and synced both ways. The engine
+  tests cover the same by hand, and that the queue's own list still links only the queue's tickets.
 
 ## 8. Where it keeps its data (v1.86.0)
 
