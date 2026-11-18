@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.6
+// @version      1.119.7
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14398,7 +14398,31 @@ function iwdieOvStance(key, box, all, wall, shared) {
 /** The spots of each role of a cluster for a case standing `st` (oversikt.py's offsets_for): {alarm, cooling, defrost:
  *  [[dx, dy], ...]} from the value's top left. `anatomy` house (the default), compact, or {role: [dx, dy]} another
  *  chain's, measured on its own Oversikt. Mirrored for a right-hand wall: dx' = 42 - dx - the object's width. */
-function iwdieOvOffsets(st, anatomy) {
+/** (v1.119.7) A double case, as the kit's oversikt.py double_span() (2026-11-17, Thomas, plant 8157: "lær kitet å
+ *  sentrere verdien på dobbeldisk"): a case whose other boxes continue it in a straight line - side by side, the same
+ *  height, or one above the other, the same width, 4 px or less apart - is one controller's double (or longer) case, its
+ *  cluster and name laid out on the whole, its value in the middle of it. Boxes that make an L keep the cluster on the
+ *  case's own box. b0 and extras are [x, y, w, h]. -> the whole [x, y, w, h], or null */
+function iwdieOvDoubleSpan(b0, extras) {
+  var bs = [b0].concat(extras || []);
+  if (bs.length < 2) return null;
+  var run = function (lo, size) {
+    var order = bs.slice().sort(function (a, b) { return a[lo] - b[lo]; });
+    for (var i = 0; i < order.length - 1; i++) {
+      var gap = order[i + 1][lo] - (order[i][lo] + order[i][size]);
+      if (gap < -2 || gap > 4) return false;
+    }
+    return true;
+  };
+  var rows = bs.every(function (b) { return Math.abs(b[1] - b0[1]) <= 3 && Math.abs(b[3] - b0[3]) <= 3; }) && run(0, 2);
+  var cols = bs.every(function (b) { return Math.abs(b[0] - b0[0]) <= 3 && Math.abs(b[2] - b0[2]) <= 3; }) && run(1, 3);
+  if (!rows && !cols) return null;
+  var x0 = Math.min.apply(null, bs.map(function (b) { return b[0]; })), y0 = Math.min.apply(null, bs.map(function (b) { return b[1]; }));
+  return [x0, y0, Math.max.apply(null, bs.map(function (b) { return b[0] + b[2]; })) - x0,
+    Math.max.apply(null, bs.map(function (b) { return b[1] + b[3]; })) - y0];
+}
+
+function iwdieOvOffsets(st, anatomy, wall) {
   if (anatomy === 'compact') return { alarm: [IWDIE_OV_COMPACT.alarm], cooling: [IWDIE_OV_COMPACT.cooling], defrost: [IWDIE_OV_COMPACT.defrost] };
   if (anatomy && typeof anatomy === 'object') {
     var own = {};
@@ -14409,8 +14433,11 @@ function iwdieOvOffsets(st, anatomy) {
   if (st === 'upright-right') {
     var mirror = function (list, w) { return list.map(function (p) { return [42 - p[0] - w, p[1]]; }); };
     alarm = mirror(alarm, 34); state = mirror(state, 28);
+  }
+  if (st === 'upright-right' && wall === 'right') {
     // (v1.119.6) Thomas, plant 3259's K11a-c: a standing case with its back to the right hangs its bell over its value
-    // (oversikt.py since the kit's Part 279)
+    // (oversikt.py since the kit's Part 279). (v1.119.7) Only on a right-hand wall: an island's end stands so too where
+    // another case is close above it, and there Thomas kept the bell beside its value (the kit's Part 280)
     alarm = [[4, -36]].concat(alarm.filter(function (p) { return !(p[0] === 4 && p[1] === -36); }));
   }
   return { alarm: alarm, cooling: state, defrost: state };
@@ -14560,7 +14587,7 @@ function iwdieOvTightIslands(plan, small, lay, anatomy) {
       var roles = p.c.roles || { value: null, alarm: null };
       return IWDIE_OV_COLUMNS.indexOf(p.st) >= 0 && roles.alarm !== undefined;
     }).map(function (p) {
-      var a0 = iwdieOvOffsets(p.st, anatomy).alarm[0], a = iwdieOvOffValue(a0[0], a0[1], 34, 34);
+      var a0 = iwdieOvOffsets(p.st, anatomy, p.c.wall).alarm[0], a = iwdieOvOffValue(a0[0], a0[1], 34, 34);
       return { key: p.c.key, bell: [p.vx + a[0], p.vy + a[1], p.vx + a[0] + 34, p.vy + a[1] + 34] };
     });
   });
@@ -14636,7 +14663,11 @@ function iwdieOvNameSpots(box, st, nw, caption, nameAt) {
   var below = [[mid, y + h + 3], [x, y + h + 3], [x + w - nw, y + h + 3]], above = [[mid, y - 17], [x, y - 17], [x + w - nw, y - 17]];
   var right = [[x + w + 4, y + 1], [x + w + 4, y - 2], [x + w + 4, y + h - 15]], left = [[x - 4 - nw, y + 1], [x - 4 - nw, y - 2], [x - 4 - nw, y + h - 15]];
   if (side === 'none') return [];
-  if (side === 'inside' || st === 'room') return [[x + 6, y + 5]];
+  // (v1.119.7) inside its top left; where a wall's stroke runs along that edge, a little further in, then its other
+  // corners - as the kit's oversikt.py (2026-10-30)
+  if (side === 'inside' || st === 'room') {
+    return [[x + 6, y + 5], [x + 6, y + 9], [x + 10, y + 9], [x + w - nw - 6, y + 5], [x + 6, y + h - 14 - 5], [x + w - nw - 6, y + h - 14 - 5]];
+  }
   var auto = {
     // (v1.119.6) a bottom-wall row's name beside its bell, at the case's top left (Thomas, plant 3259; Part 279)
     lying: below.concat(above, right, left), 'lying-bottom': [[x + (w - 42) / 2 + 2, y - 16]].concat(below, above, right, left),
@@ -14952,7 +14983,7 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
       var bx = iwdieOvRhu(n.just === 'L' ? n.x : n.just === 'R' ? n.x - nw : n.x - nw / 2), by = iwdieOvRhu(n.y - 7);
       var roles = c.roles || { value: null, alarm: null };
       if (roles.alarm !== undefined && p.st !== 'room') {
-        var a0 = iwdieOvOffsets(p.st, anatomy).alarm[0], a = iwdieOvOffValue(a0[0], a0[1], 34, 34);
+        var a0 = iwdieOvOffsets(p.st, anatomy, c.wall).alarm[0], a = iwdieOvOffValue(a0[0], a0[1], 34, 34);
         bell = [p.vx + a[0], p.vy + a[1], p.vx + a[0] + 34, p.vy + a[1] + 34];
       }
       if (!bell || !lay.hit([bx, by, bx + nw, by + 14], bell)) spots.push([bx, by]);
@@ -14969,7 +15000,7 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
     }
   });
   plan.forEach(function (p) {
-    var c = p.c, roles = c.roles || { value: null, alarm: null }, spots = iwdieOvOffsets(p.st === 'room' ? 'lying' : p.st, anatomy), stateAt = null;
+    var c = p.c, roles = c.roles || { value: null, alarm: null }, spots = iwdieOvOffsets(p.st === 'room' ? 'lying' : p.st, anatomy, c.wall), stateAt = null;
     if (mirrored[c.key] && anatomy !== 'compact' && !(anatomy && typeof anatomy === 'object')) {
       // (v1.115.3) a small island's rightmost row case, named at its right end, is the mirror of its leftmost: its bell's
       // spots mirrored, so that it slides left off the name as far as the house's slides right (oversikt.py)
@@ -14994,6 +15025,15 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
           // the names, and lies on another cluster's bell there - the facing row's across a narrow aisle, or the
           // drawing's own - before it wanders round its value
           if (small[c.key]) tries.splice(2, 0, [near, mine.concat(['case', 'room', 'wall', 'member'])]);
+          if (p.st === 'lying-bottom' || ((p.st === 'upright' || p.st === 'upright-right') && (c.wall === 'left' || c.wall === 'right'))) {
+            // (v1.119.6) a bottom-wall row's bell keeps to its case's top left, on the next case's state where the two
+            // share the gap, before it goes over its value (Thomas, plant 3259; the kit's Part 279). (v1.119.7) Packed
+            // close, the bell lies over the corner of the case before it and the states keep beside the value on the
+            // next case's bell - each never on a value; a standing case backed on a side wall, in a packed run, keeps
+            // the house's first spots so too, on the next case's corner (Part 280); an island's end keeps the usual tries.
+            // A tight island's bell spots go in front of these (below), as in oversikt.py
+            tries = [[[near[0]], mine.concat(['room', 'wall'])], [[near[0]], mine.concat(['room', 'wall', 'case', 'member', 'bottom-row'])]].concat(tries);
+          }
           if (role === 'alarm' && tight[c.key]) {
             // (v1.119.0) a tight standing island's bell (iwdieOvTightBellSpots): an end's beside its value on the island's
             // outside, a column's on its own case, under its value or over it, each set clear first, then on another bell,
@@ -15004,11 +15044,6 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
               own.push([at2, mine.concat(['case', 'room', 'wall'])], [at2, mine.concat(['case', 'room', 'wall', 'member'])]);
             });
             tries = own.concat(tries);
-          }
-          if (role === 'alarm' && p.st === 'lying-bottom') {
-            // (v1.119.6) a bottom-wall row's bell keeps to its case's top left, on the next case's state where the two
-            // share the gap, before it goes over its value (Thomas, plant 3259; the kit's Part 279)
-            tries = [[[near[0]], mine.concat(['room', 'wall'])], [[near[0]], mine.concat(['room', 'wall', 'member', 'bottom-row'])]].concat(tries);
           }
           var hitAt = null;
           tries.some(function (t) {
@@ -15980,9 +16015,11 @@ function iwdieCbPlan(ops, scene, ctx) {
           return true;
         };
         if (!caseBox(cbx, true)) break;
+        var moreBoxes = [];
         (Array.isArray(o.more) ? o.more : []).forEach(function (m) {
           if (!Array.isArray(m) || m.length !== 4 || !m.every(function (v) { return isFinite(v); })) { fail(i, 'more holds [x, y, w, h] boxes'); return; }
           var mb = { x: r1(+m[0]), y: r1(+m[1]), w: +m[2], h: +m[3] };
+          moreBoxes.push([mb.x, mb.y, mb.w, mb.h]);
           caseBox(mb, false);
           ov.plugs.push([mb.x, mb.y, mb.x + mb.w, mb.y + mb.h, (o.room ? 'room:' : 'case:') + key2]);
         });
@@ -15997,9 +16034,11 @@ function iwdieCbPlan(ops, scene, ctx) {
             ov.plugs.push(plug2.taken);
           }
         }
-        ov.cases.push({ key: key2, box: [cbx.x, cbx.y, cbx.w, cbx.h], roles: cro2, label: o.label, caption: o.caption, wall: o.wall,
+        // (v1.119.7) a double case's cluster and name are laid out on the whole (iwdieOvDoubleSpan, the kit's double_span)
+        var whole2 = iwdieOvDoubleSpan([cbx.x, cbx.y, cbx.w, cbx.h], moreBoxes) || [cbx.x, cbx.y, cbx.w, cbx.h];
+        ov.cases.push({ key: key2, box: whole2, roles: cro2, label: o.label, caption: o.caption, wall: o.wall,
           room: !!o.room, op: i, ref: o.ref, plug: plug2 });
-        ov.all.push([key2, [cbx.x, cbx.y, cbx.w, cbx.h]]);
+        ov.all.push([key2, whole2]);
         if (o.anatomy && !ov.anatomy) ov.anatomy = o.anatomy;
         keep(o.ref, { box: cbx, ov: ck2 });
         break;

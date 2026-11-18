@@ -531,9 +531,29 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Packed runs of cases keep the house's spots; a double case laid out on the whole (v1.119.7)
+
+On 2026-11-18 Thomas asked for plant 3259's runs of cases to stand closer together: *"these disk need to be more
+together also"*. The case planner behind Edit in VectorCraft's `case` op, and behind Claude's bridge, now places as the
+kit's `oversikt.py` does since its Part 280.
+
+- **A packed bottom-wall row** keeps each bell at its case's top left, over the corner of the case before it. Each
+  case's states stay beside its value, on the next case's bell. Neither ever lies on a value.
+- **A packed column of standing cases backed on a side wall** (`wall` left or right) keeps the house's first spots
+  under the value, on the next case's corner. Before, they left for the far side of the value.
+- **The bell over the value** (v1.119.6) is now only for a standing case backed on a right-hand wall. An island's end
+  also stands that way when another case is close above it, and there Thomas kept the bell beside its value.
+- **A double case:** a `case` op's `more` boxes that continue its box in a straight line make one controller's double
+  case. Its cluster and name are laid out on the whole, its value in the middle of both boxes, as the kit has done since
+  2026-11-17. Before, the planner kept them on the first box.
+- **A walk-in room's name** tries the kit's six spots inside the room: its top left, a little further in, then its
+  other corners. Before, it tried the top left only.
+
+On plant 3259's whole plan, the planner and `oversikt.py` now place all 164 objects on the same pixels.
+
 ### Oversikt cases placed as Thomas placed plant 3259's: a bottom row's bell at its top left (v1.119.6)
 
-Thomas inserted plant 3259 COOP EXTRA Vikhammer's Oversikt on 2026-11-18 and moved its objects by hand. He then asked
+Thomas inserted plant 3259's Oversikt on 2026-11-18 and moved its objects by hand. He then asked
 for his placements to be learnt: *"lær kitet plasseringene"*. The case planner behind Edit in VectorCraft's `case`
 op, and behind Claude's bridge, now places as the kit's `oversikt.py` does since its Part 279.
 
