@@ -25,7 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.15.1', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.15.2', PROTOCOL = 1;
 // the userscript that answers an edit's check and preview in the same call, and says whether its tab shows; and (1.10.0)
 // the one that opens a file and gives the drawing as a panel file
 const TAB_MIN = '1.111.0', OPEN_MIN = '1.112.0';
@@ -461,8 +461,16 @@ function caseRoles(P, u) {
   const rows = (P && P.rows && P.rows[u]) || [], out = {}, table = caseTable(P, u);
   Object.keys(table).forEach(role => {
     for (const re of table[role]) {
-      const r = rows.find(x => re.test(String(x[0]).trim()));
-      if (r) { out[role] = [String(r[0]).trim(), bindOf(P, u, r)]; break; }
+      const hits = rows.filter(x => re.test(String(x[0]).trim()));
+      if (!hits.length) continue;
+      // (1.15.2) A bell takes the alarm row of an alias a status twin carries too, whichever the plant lists first.
+      // An AK-CC's "--- High t.alarm" is two rows on 5 286 of the fleet's 12 336 AK-CC units (the 2026-10-21
+      // harvest) and on all 26 of plant 9514's: the Alarm row and an Alarm Status twin. The house's bells link the
+      // Alarm row, as the kit's fleet.py takes it and its oversikt.py since its Part 277. A row is [alias, driver_id,
+      // group, type, rw, eng].
+      const r = (role === 'alarm' && hits.find(x => lower(x[3]) === 'alarm')) || hits[0];
+      out[role] = [String(r[0]).trim(), bindOf(P, u, r)];
+      break;
     }
   });
   return out;
