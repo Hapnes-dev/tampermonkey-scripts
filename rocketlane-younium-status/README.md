@@ -127,7 +127,7 @@ An order is treated as the IWMAC subscription only when a product line matches t
 | Modal says "Younium session expired" | Visit `https://eu.younium.com` once while logged in, then retry. |
 | "Couldn't read a plant ID" | The project name must start with the plant number, e.g. `10112 - …`. |
 | "No Younium orders found" | No order in Younium carries that `plant_id`, or you're in the wrong region. |
-| "Checking Younium…" for a long time | Usually Tampermonkey itself is slow: every request it makes waits. The lookup needs three rounds of them (v1.85.0). If every Tampermonkey feature is slow, restarting Chrome starts Tampermonkey's background afresh. A request that never answers is sent again after 60 s. Since v1.86.0 this script no longer rewrites its whole stored set every few seconds (section 8). |
+| "Checking Younium…" for a long time | Usually Tampermonkey itself is slow: every request it makes waits. The lookup needs three rounds of them (v1.85.0). On 2026-11-17 and 18 the cause was Modpoll Console's Claude bridge poll, from an attached sys_tools tab, holding up every request (section 8). Update Modpoll Console to 1.69.0 and restart the Claude Code session running its bridge, or close the sys_tools tab. A request that never answers is sent again after 60 s. |
 
 ---
 
@@ -592,6 +592,17 @@ script could remove. Since 1.86.0:
     this does not prove the churn was the cause.
   - With 1.86.1, opening the tab wrote it 3 times. Its first chat check opened the same five unread chats as
     1.86.0's and wrote once instead of five times. Requests took 0.5-1.2 s (median 0.7 s).
+- **The slow requests had another cause, found on 2026-11-18**, when they came back at 24-27 s with the churn gone. The
+  delivery wizard's *Oppretter…* and *Last ned alle* waited on them.
+  - Tampermonkey 5.5.1 sends a request that is not anonymous (this script's Rocketlane, Zendesk, Younium and Oneflow
+    calls among them) from its offscreen document, one at a time.
+  - Modpoll Console's Claude bridge poll waits up to 25 s at the server and went the same way. With a sys_tools tab
+    attached, it held that one place almost without a break.
+  - Answering the poll early let stalled requests through at that very second.
+  - Fixed in Modpoll Console 1.69.0, whose bridge requests now go from the service worker; its `claude-bridge/README.md`
+    has the measurement.
+  - It takes effect once the console is updated and the Claude Code session running the old bridge server restarts.
+    Until then, closing the sys_tools tab while Claude is not using it frees the browser.
 
 ---
 
