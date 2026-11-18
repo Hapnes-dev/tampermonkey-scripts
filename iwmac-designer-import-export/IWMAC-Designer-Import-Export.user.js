@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.7
+// @version      1.119.8
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -14422,6 +14422,48 @@ function iwdieOvDoubleSpan(b0, extras) {
     Math.max.apply(null, bs.map(function (b) { return b[1] + b[3]; })) - y0];
 }
 
+/** (v1.119.8) oversikt.py's packed_columns() (the kit's Part 281, Thomas's hand finish of plant 9514): the keys of
+ *  the standing cases in a column on a wall - "wall" left or right, the same x within 3 px - where any two stand 4 px
+ *  or less apart, end to end. -> { key: true } */
+function iwdieOvPackedColumns(plan) {
+  var stand = plan.filter(function (p) {
+    return (p.st === 'upright' || p.st === 'upright-right') && (p.c.wall === 'left' || p.c.wall === 'right');
+  });
+  var parent = {};
+  stand.forEach(function (p) { parent[p.c.key] = p.c.key; });
+  var root = function (k) { while (parent[k] !== k) { parent[k] = parent[parent[k]]; k = parent[k]; } return k; };
+  var close = {};
+  for (var i = 0; i < stand.length; i++) {
+    for (var j = i + 1; j < stand.length; j++) {
+      var a = stand[i].c, b = stand[j].c, ba = a.box, bb = b.box;
+      if (a.wall !== b.wall || Math.abs(ba[0] - bb[0]) > 3) continue;
+      parent[root(a.key)] = root(b.key);
+      var gap = Math.max(bb[1] - (ba[1] + ba[3]), ba[1] - (bb[1] + bb[3]));
+      if (gap >= 0 && gap <= 4) { close[a.key] = true; close[b.key] = true; }
+    }
+  }
+  var roots = {}, out = {};
+  Object.keys(close).forEach(function (k) { roots[root(k)] = true; });
+  stand.forEach(function (p) { if (roots[root(p.c.key)]) out[p.c.key] = true; });
+  return out;
+}
+
+/** (v1.119.8) oversikt.py's in_rooms(): the keys of the cases inside a room - a drawn room's box or a walk-in room's,
+ *  within 4 px - as the value boxes of a room's evaporators stand (9514's F77, F78, K48, K49). -> { key: true } */
+function iwdieOvInRooms(plan, rooms) {
+  var holders = (rooms || []).map(function (r) { return r.box; })
+    .concat(plan.filter(function (p) { return p.st === 'room'; }).map(function (p) { return p.c.box; }));
+  var out = {};
+  plan.forEach(function (p) {
+    if (p.st === 'room') return;
+    var b = p.c.box;
+    if (holders.some(function (h) {
+      return h[0] - 4 <= b[0] && h[1] - 4 <= b[1] && b[0] + b[2] <= h[0] + h[2] + 4 && b[1] + b[3] <= h[1] + h[3] + 4;
+    })) out[p.c.key] = true;
+  });
+  return out;
+}
+
 function iwdieOvOffsets(st, anatomy, wall) {
   if (anatomy === 'compact') return { alarm: [IWDIE_OV_COMPACT.alarm], cooling: [IWDIE_OV_COMPACT.cooling], defrost: [IWDIE_OV_COMPACT.defrost] };
   if (anatomy && typeof anatomy === 'object') {
@@ -14658,10 +14700,16 @@ function iwdieOvPlugAt(box, wall, dx) {
 /** Where a case's name may go, first choice first (oversikt.py's candidates): by how it stands, `caption` (below, above,
  *  left, right, inside, none, auto) first; a walk-in room's inside its top left; an arrangement's case first where the
  *  template writes its name (`nameAt` {x, y, just}). `nw` the name's width. -> [[x, y], ...] */
-function iwdieOvNameSpots(box, st, nw, caption, nameAt) {
+function iwdieOvNameSpots(box, st, nw, caption, nameAt, packedColumn) {
   var x = box[0], y = box[1], w = box[2], h = box[3], mid = x + w / 2 - nw / 2, side = caption || 'auto';
   var below = [[mid, y + h + 3], [x, y + h + 3], [x + w - nw, y + h + 3]], above = [[mid, y - 17], [x, y - 17], [x + w - nw, y - 17]];
   var right = [[x + w + 4, y + 1], [x + w + 4, y - 2], [x + w + 4, y + h - 15]], left = [[x - 4 - nw, y + 1], [x - 4 - nw, y - 2], [x - 4 - nw, y + h - 15]];
+  if (packedColumn) {
+    // (v1.119.8) a packed column's name at the case's top, beside the bell over its value: 2 px further out than the
+    // house's spot, where the bell's edge would touch it (9514's K01-K05, as Thomas set them; the kit's Part 281)
+    right.splice(1, 0, [x + w + 6, y + 1]);
+    left.splice(1, 0, [x - 6 - nw, y + 1]);
+  }
   if (side === 'none') return [];
   // (v1.119.7) inside its top left; where a wall's stroke runs along that edge, a little further in, then its other
   // corners - as the kit's oversikt.py (2026-10-30)
@@ -14948,6 +14996,10 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
   // names of the wall rows beside it on the drawing - is laid out as Thomas laid out 4684's frysetorg by hand: its names
   // first, its bells on its own cases (iwdieOvTightIslands, oversikt.py's tight_islands)
   var tight = iwdieOvTightIslands(plan, small, lay, anatomy);
+  // (v1.119.8, the kit's Part 281) Thomas's hand finish of plant 9514: a column of standing cases on a wall packed end
+  // to end, and a walk-in room or an evaporator's value box in one, hang their clusters as he hung them (below)
+  var house = anatomy !== 'compact' && !(anatomy && typeof anatomy === 'object');
+  var packed = house ? iwdieOvPackedColumns(plan) : {}, inRoom = house ? iwdieOvInRooms(plan, rooms) : {};
   // an arrangement's names where the template writes them, before the bells take their spots - unless one would lie on
   // its own bell's first spot: that name goes beside the case afterwards. (v1.107.8, Thomas, plant 8855) An island's row
   // or standing end, of an arrangement or not, keeps its name at the house's place on its outer side - above or below
@@ -15005,6 +15057,19 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
       // (v1.115.3) a small island's rightmost row case, named at its right end, is the mirror of its leftmost: its bell's
       // spots mirrored, so that it slides left off the name as far as the house's slides right (oversikt.py)
       spots = { alarm: spots.alarm.map(function (d) { return [42 - d[0] - 34, d[1]]; }), cooling: spots.cooling, defrost: spots.defrost };
+    }
+    if (packed[c.key] || inRoom[c.key] || (p.st === 'room' && house)) {
+      // (v1.119.8) in a walk-in room and on an evaporator's value box in one, the bell centred over the value, else under
+      // it; in a column packed end to end on a wall, the bell over the value and the states beside it, left else right;
+      // an evaporator's box keeps its states beside its value so too (Thomas, plant 9514; the kit's Part 281)
+      var notIn = function (list) { return function (d) { return !list.some(function (e) { return e[0] === d[0] && e[1] === d[1]; }); }; };
+      var over = packed[c.key] ? [[4, -36]] : [[4, -36], [4, 22]];
+      spots = { alarm: over.concat(spots.alarm.filter(notIn(over))), cooling: spots.cooling, defrost: spots.defrost };
+      if (packed[c.key] || inRoom[c.key]) {
+        var beside = [[-30, -3], [44, -3]];
+        spots.cooling = beside.concat(spots.cooling.filter(notIn(beside)));
+        spots.defrost = beside.concat(spots.defrost.filter(notIn(beside)));
+      }
     }
     var mine = ['case:' + c.key, 'room:' + c.key, 'value:' + c.key, 'member:' + c.key];
     IWDIE_OV_ROLES.forEach(function (role) {
@@ -15077,7 +15142,7 @@ function iwdieOvPlace(cases, rooms, all, lay, anatomy, free, ends) {
     var c = p.c, text = c.label || c.key;
     if (reserved[c.key]) { todo.push({ key: c.key, text: text, spots: [reserved[c.key]], kind: 'taken', home: null }); return; }
     // (v1.105.0) a case named inside its own box: its own box does not keep the name off (oversikt.py, 2026-10-27)
-    todo.push({ key: c.key, text: text, spots: iwdieOvNameSpots(c.box, p.st, iwdieOvNameWidth(text), c.caption, c.nameAt),
+    todo.push({ key: c.key, text: text, spots: iwdieOvNameSpots(c.box, p.st, iwdieOvNameWidth(text), c.caption, c.nameAt, !!packed[c.key]),
       kind: p.st === 'room' ? 'room' : c.caption === 'inside' ? 'inside:case:' + c.key : 'case',
       home: [c.box[0] + c.box[2] / 2, c.box[1] + c.box[3] / 2] });
   });

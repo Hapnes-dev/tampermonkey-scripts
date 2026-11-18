@@ -531,6 +531,22 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Packed columns, rooms and evaporators hung as Thomas hung plant 9514's (v1.119.8)
+
+On 2026-11-18 Thomas reworked plant 9514's Oversikt by hand. He put its cases end to end and at their own lengths, and
+hung every cluster anew. The case planner behind Edit in VectorCraft's `case` op, and behind Claude's bridge, now
+places as the kit's `oversikt.py` does since its Part 281.
+
+- **A column of standing cases on a wall packed end to end** (any two 4 px or less apart) hangs each bell over its
+  value, at the case's top. The states sit beside the value, on its left, else on its right. The name stands at the
+  case's top beside the bell, 2 px further out than the house's spot.
+- **A walk-in room** hangs its bell centred over its value. Where the room's fan stands over the value, the bell goes
+  under it instead.
+- **An evaporator's value box in a room** hangs its bell the same way, and keeps its states beside its value on the
+  left.
+
+Names still come from the ops' labels. The kit itself now names a case by its code alone.
+
 ### Packed runs of cases keep the house's spots; a double case laid out on the whole (v1.119.7)
 
 On 2026-11-18 Thomas asked for plant 3259's runs of cases to stand closer together: *"these disk need to be more
