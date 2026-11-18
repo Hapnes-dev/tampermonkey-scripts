@@ -20,6 +20,8 @@
  * Who may talk to the port: only the userscript. A request must arrive at 127.0.0.1 or localhost by that very name
  * (no DNS rebinding), carry X-MODPOLL-BRIDGE (a web page cannot send it without a CORS preflight, which is refused)
  * and no web page's Origin; after the attach, the session's token. The port is bound to the loopback only.
+ * Since Modpoll Console 1.69.0 the userscript's requests come from Tampermonkey's service worker and carry its
+ * extension Origin (chrome-extension://...), as the IWDIE VectorCraft bridge's always have; see okOrigin below.
  *
  * Read-only throughout. The console refuses writes and so does this; there is no tool here that can change a plant.
  *
@@ -203,8 +205,13 @@ const server = http.createServer(async (req, res) => {
   const host = String(req.headers.host || '').split(':')[0];
   const okHost = host === '127.0.0.1' || host === 'localhost';
   const origin = req.headers.origin;
-  // A page's Origin is a web origin; the userscript sends none. Refusing it keeps any site that guesses the port out.
-  const okOrigin = !origin || origin === 'null';
+  /*
+   * A page's Origin is a web origin; refusing it keeps any site that guesses the port out. The userscript sends none
+   * from Tampermonkey's offscreen document, and the extension's own from its service worker - the road Modpoll
+   * Console 1.69.0 takes, because on the other one this server's 25 s poll held up every Tampermonkey request in the
+   * browser (2026-11-18). An extension origin is no web page, and the header and the session token still apply.
+   */
+  const okOrigin = !origin || origin === 'null' || /^(chrome|moz|safari-web)-extension:\/\//.test(String(origin));
   if (!okHost || !okOrigin || req.headers[HDR_BRIDGE] !== String(PROTOCOL) || req.method === 'OPTIONS') {
     reply(res, 403, { error: 'not for you' });
     return;

@@ -86,8 +86,11 @@ They are not interchangeable, and plant 5689 needed both:
 The port is bound to the loopback. A request must arrive at `127.0.0.1` or `localhost` by
 that very name (no DNS rebinding), carry `X-MODPOLL-BRIDGE` — which a web page cannot send
 without a CORS preflight, and that is refused — and no web page's `Origin`; after the
-attach, the session's token. Answers pass through the console's own `sanitizeDeep` on the
-way out, so no credential-shaped string leaves by this road either.
+attach, the session's token. An extension's own `Origin` (`chrome-extension://…`) is
+accepted since console 1.69.0, as the IWDIE VectorCraft bridge always has: it is no web page,
+and the header and the token still apply. `test/bridge-origin.js` asks the real server.
+Answers pass through the console's own `sanitizeDeep` on the way out, so no
+credential-shaped string leaves by this road either.
 
 `toolbox_*` is SELECT-only, enforced in the server. The Toolbox API itself would accept
 `INSERT`, `UPDATE` and `DELETE`; a plant's rows are the user's to change, by a script he
@@ -100,6 +103,31 @@ traffic by them.
 Same shape as the IWDIE VectorCraft bridge: `GET /bridge/hello`, `POST /bridge/attach`,
 long-poll `GET /bridge/next`, `POST /bridge/result`, `POST /bridge/detach`. Port 47921, or
 `MODPOLL_BRIDGE_PORT`.
+
+### Why every request is anonymous (console 1.69.0)
+
+Tampermonkey 5.5.1 sends a userscript's request one of two ways. An anonymous request
+(and a blob or stream one) goes out with `fetch()` from its service worker. Every other
+request goes out as an `XMLHttpRequest` from its offscreen document, and those go one at a
+time. The long poll waits up to 25 s at the server for a command. On the offscreen road it
+held that one place almost without a break, so every request of every userscript in the
+browser waited up to 25 s behind it.
+
+Measured on 2026-11-18, with a sys_tools tab attached on plant 3006:
+
+- Rocketlane, Younium and Oneflow requests from other scripts took 24–27 s each.
+- Four sent together came back one after another.
+- Answering the poll early (a `modpoll_status` call) let two stalled requests through at
+  that very second.
+- The anonymous probes of IWMAC Designer Import/Export and KUDL Mapping Assistant kept
+  arriving every second or two all the while.
+
+The bridge takes no cookies, so anonymous costs nothing. From the service worker, though,
+the request carries Tampermonkey's `Origin`, which a server older than 1.69.0 refuses
+(`403 not for you`). The console then asks the old way for as long as that server runs,
+and says so once in the browser console. The slowdown then lasts until the Claude Code
+session that started that server is restarted. `test/bridge-transport.js` runs the real
+request function against a new, an old and a missing server.
 
 The client is in `Modpoll-Console.user.js` under *Claude bridge*. It is built from five
 console methods and no more — `api.devices`, `api.useUnit`, `api.setForm`, `api.run`,

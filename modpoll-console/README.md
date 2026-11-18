@@ -1121,9 +1121,9 @@ Both cost a version to find, and both are invisible from the code alone.
 
 ## Tests
 
-Four scripts in `test/`, each of which lifts the code it tests **out of
-`Modpoll-Console.user.js` on every run**, so a change to the script cannot
-quietly stop being the thing under test.
+The scripts in `test/` test the code that ships. Each lifts the code it tests
+**out of `Modpoll-Console.user.js` on every run**, or runs the shipped bridge
+server, so a change cannot quietly stop being the thing under test.
 
 - `python test/security-matrix.py` — the command guard, in Node. Builds every
   command the form can produce (2 880 lines across mode, format, endianness,
@@ -1208,8 +1208,19 @@ quietly stop being the thing under test.
   `window.__poll`, `__verify`, `__detail`, `__dragGrip`, `__toggleZeroFilter` and
   `__probe` are the hooks, and `window.__api` is the API, `state()` and `card()`
   reading back what the hooks drew.
+- `node test/bridge-transport.js` — the Claude bridge's request function (1.69.0),
+  sliced out of the script and run against a stand-in for Tampermonkey. Every
+  request is anonymous, so Tampermonkey sends it from its service worker. An old
+  server's `403 not for you` makes it ask again the old way, note that once,
+  and keep to the old way until that server goes. Any other refusal is passed
+  on unchanged. Why: `claude-bridge/README.md`, *Why every request is
+  anonymous*.
+- `node test/bridge-origin.js` — the real bridge server on a spare port, asked
+  as the userscript, a web page and a rebinding attempt would ask. It lets in no
+  Origin, `null` and an extension's own Origin, and refuses web origins, a
+  missing or wrong bridge header and a foreign Host.
 
-Neither touches a plant. What only a plant can prove — Plant Term, the unit
+None of them touches a plant. What only a plant can prove — Plant Term, the unit
 list, the names — is still proven on a plant.
 
 ## Requirements

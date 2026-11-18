@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.68.1
+// @version      1.69.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -9865,6 +9865,13 @@
         client: (self.crypto && self.crypto.randomUUID)
             ? self.crypto.randomUUID()
             : String(Date.now()) + Math.random().toString(36).slice(2),
+        /*
+         * (1.69.0) True once a bridge server older than 1.69.0 has refused the fast route below. Such a server
+         * accepts only a request with no Origin, which is the slow route; reset when the server goes away, so the
+         * next one (usually a newer one, after Claude Code restarts) is tried on the fast route again.
+         */
+        legacyTransport: false,
+        legacyNoted: false,
     };
     const BRIDGE_TABLE = { coil: '0', discrete: '1', input: '3', hold: '4' };   // modpoll -t, by Modicon prefix
 
@@ -9878,23 +9885,59 @@
         return m ? m[1] : null;
     }
 
+    /*
+     * (1.69.0) Every request to the bridge is anonymous. That is not about cookies - the bridge takes none - but
+     * about which road Tampermonkey sends it down. Tampermonkey 5.5.1 makes an anonymous request (like a blob or
+     * stream one) with fetch() in its service worker, and every other request with an XMLHttpRequest in its
+     * offscreen document, and those go out one at a time. The poll below waits up to 25 s at the server for a
+     * command, so on the offscreen road it held that single place almost without a break: every request of every
+     * userscript in the browser - Rocketlane, Zendesk, Younium, Oneflow - waited up to 25 s behind it. Measured on
+     * 2026-11-18 with this tab attached on plant 3006: other scripts' requests took 24-27 s each, four sent together
+     * came back one after another, and answering the poll early let them through at that very moment; the
+     * anonymous probes of IWMAC Designer Import/Export and KUDL Mapping Assistant kept arriving every second or two
+     * all the while.
+     *
+     * From the service worker the request carries Tampermonkey's own Origin (chrome-extension://...), which a bridge
+     * server older than 1.69.0 refuses as "not for you". Then this falls back to the old road for as long as that
+     * server runs, and says so once in the console.
+     */
     function bridgeHttp(method, path, body, timeoutMs) {
         return new Promise((resolve, reject) => {
             if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('GM_xmlhttpRequest not granted')); return; }
             const headers = { 'Content-Type': 'application/json' };
             headers['X-MODPOLL-BRIDGE'] = String(BRIDGE.protocol);
             if (BRIDGE.session) headers['X-MODPOLL-SESSION'] = BRIDGE.session;
+            const anonymous = !BRIDGE.legacyTransport;
             GM_xmlhttpRequest({
                 method, url: 'http://127.0.0.1:' + BRIDGE.port + path, headers,
                 data: body === undefined ? undefined : JSON.stringify(body),
                 timeout: timeoutMs || 30000,
+                anonymous,
                 onload: r => {
                     let parsed = null;
                     try { parsed = JSON.parse(r.responseText || '{}'); } catch (e) { /* non-JSON is a failure below */ }
+                    // An older server refuses the extension's Origin before it does anything, so asking again is safe.
+                    if (anonymous && r.status === 403 && parsed && parsed.error === 'not for you') {
+                        BRIDGE.legacyTransport = true;
+                        if (!BRIDGE.legacyNoted) {
+                            BRIDGE.legacyNoted = true;
+                            console.info('[Modpoll Console] the Claude bridge on 127.0.0.1:' + BRIDGE.port + ' is older than ' +
+                                         '1.69.0, so its poll slows every Tampermonkey request in this browser. Restart the ' +
+                                         'Claude Code session that started it to update it, or close this tab when Claude ' +
+                                         'is not using it.');
+                        }
+                        bridgeHttp(method, path, body, timeoutMs).then(resolve, reject);
+                        return;
+                    }
                     if (r.status >= 200 && r.status < 300) resolve(parsed || {});
                     else reject(Object.assign(new Error((parsed && parsed.error) || ('HTTP ' + r.status)), { status: r.status }));
                 },
-                onerror: () => reject(new Error('bridge unreachable')),
+                onerror: () => {
+                    // The server has gone; the next one may be newer.
+                    BRIDGE.legacyTransport = false;
+                    BRIDGE.legacyNoted = false;
+                    reject(new Error('bridge unreachable'));
+                },
                 ontimeout: () => reject(new Error('bridge timed out')),
             });
         });
