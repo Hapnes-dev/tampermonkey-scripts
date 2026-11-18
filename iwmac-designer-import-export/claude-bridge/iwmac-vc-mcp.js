@@ -25,7 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.15.0', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.15.1', PROTOCOL = 1;
 // the userscript that answers an edit's check and preview in the same call, and says whether its tab shows; and (1.10.0)
 // the one that opens a file and gives the drawing as a panel file
 const TAB_MIN = '1.111.0', OPEN_MIN = '1.112.0';
@@ -414,10 +414,14 @@ function bindOf(P, u, r) {
 /** A case's cluster rows (userscript 1.84.0): its value, its alarm, its cooling and its defrost, picked from a unit's rows
  *  by their aliases as the house's case controllers name them - AK-CC: u56 Display air, --- High t.alarm, u58 Comp1/LLSV,
  *  u60 Def. relay. A second section's rows (... B, ...2) are left for the user to ask for. -> {role: [alias, bind]} */
+// (1.15.1) Plant 9514, 2026-11-18: the AK-CC 084B4083's firmware 2.4 and 1.7 carry "U58 Humidifier" beside "u58
+// Comp1/LLSV", and the case-insensitive ^u58 took the humidifier for a case's cooling. ^u58 now passes a humidifier
+// row by, as the kit's fleet-patterns.json does since its Part 276: on the 2026-10-21 harvest's 9 394 units with a
+// u58 row it takes the same row as before on every one.
 const ROLE_RE = {
   value: [/^u56\b/i, /display\s*air(?!\s*2)/i, /air\s*temp/i, /^s4\b/i],
   alarm: [/high\s*t(emp)?\.?\s*alarm(?!.*\bb\b)/i, /^-+\s*high\s*t(emp)?\.?(?!.*\bb\b)/i],
-  cooling: [/^u58\b/i, /\bllsv\b/i, /comp\s*1\b/i],
+  cooling: [/^u58\b(?!.*humid)/i, /\bllsv\b/i, /comp\s*1\b/i],
   defrost: [/^u60\b/i, /def(rost)?\.?\s*relay/i]
 };
 // (1.14.0) Thomas's fixed rule, "kobling av ING_EXT-noder" (2026-11-10): an ING_EXT node shows its external probe - its

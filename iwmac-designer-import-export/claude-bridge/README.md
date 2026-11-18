@@ -116,7 +116,8 @@ example plans every value, bell, cooling and defrost state and name lands on the
 - `iwmac_find {what: 'cases'}` lists the case controllers whose rows came with the edit, one row
   each: `[unit, unit_id, value, alarm, cooling, defrost]`, every cell the bind text of that role's
   row (an AK-CC's `u56 Display air`, `--- High t.alarm` but not its B section's, `u58 Comp1/LLSV`,
-  `u60 Def. relay`). (1.14.0) An ING_EXT node (unit_id `ING_EXT…`, or a logger with the probe's
+  `u60 Def. relay`; (1.15.1) never a `U58 Humidifier`, which the AK-CC 084B4083's newer firmware
+  carries beside `u58 Comp1/LLSV`). (1.14.0) An ING_EXT node (unit_id `ING_EXT…`, or a logger with the probe's
   rows) takes `Temperature (External)` and `High external temperature`, never its own `Temperature`,
   `High temperature` or a limit: Thomas's fixed rule of 2026-11-10. (1.15.0) An SLV 105N plug-in, a
   unit with a value row of an SLV's own name (`Actual Temperature Tact`, `T act °C`, `Actual
