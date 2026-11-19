@@ -531,6 +531,14 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### The version the script reports is its own again (v1.119.9)
+
+1.119.6 to 1.119.8 bumped only the header's `@version`, and `IWDIE_VERSION` stayed at 1.119.5. Everything the script
+stamps with its version therefore said 1.119.5: an export's `generator`, the Claude bridge's hello (and so
+`iwmac_status`), VectorCraft's jobs, a drawing's `data-iwdie-made` and `data-iwdie-optimised`, the Creator of its .ai
+and PDF files, and `__IWDIE.version`. Both now read 1.119.9; nothing else changed. The kit's
+`tests/test-export-trace.js` holds the two equal, and fails on 1.119.6 to 1.119.8.
+
 ### Packed columns, rooms and evaporators hung as Thomas hung plant 9514's (v1.119.8)
 
 On 2026-11-18 Thomas reworked plant 9514's Oversikt by hand. He put its cases end to end and at their own lengths, and
