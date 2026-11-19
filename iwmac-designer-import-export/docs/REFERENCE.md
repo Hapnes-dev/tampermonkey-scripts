@@ -1,4 +1,7 @@
-# IWMAC Designer Import/Export
+# IWMAC Designer Import/Export: reference
+
+The short guide is the [README](../README.md). This file holds everything else: the file format, every feature in
+detail, how the script works with the Designer, and the notes of every release. New release notes go here.
 
 Adds a **Panel JSON** section to the IWMAC Designer's manager sidebar (right below *Manage Files*) with four stacked buttons — **Export JSON**, **Insert JSON…**, **Edit in VectorCraft…**, **Background → Illustrator** — so a panel's complete look (objects, containers, graphics, background image) can be copied out as a single `.json` file and inserted into another panel, on the same plant or a different one, the background artwork can be edited as vectors in a browser editor, and it can be handed to Adobe Illustrator for editing. The designer itself has no way to do any of these; this script adds them.
 
@@ -3299,7 +3302,7 @@ Insert took before, it takes now:
   Unchanged, Insert keeps the picture as before. Changed, Insert puts the original back from the file's picture before
   it draws the drawing, so *Edit in VectorCraft* can still start again from it.
 - **The schema** covers the whole export and is published beside the script as
-  [`panel-file.schema.json`](panel-file.schema.json), where its `$id` points.
+  [`panel-file.schema.json`](../panel-file.schema.json), where its `$id` points.
 
 Checked:
 
@@ -5740,8 +5743,8 @@ ready to sync.
 VectorCraft's own MCP server drives the desktop app, not the web build Edit in VectorCraft
 opens, and the web build has no programming interface. So this script is Claude's hands in
 the editor's tab, and a small MCP server of this repository's own,
-[`claude-bridge/iwmac-vc-mcp.js`](claude-bridge/README.md), connects Claude Code to it.
-Set-up, tools and safety are in [its README](claude-bridge/README.md).
+[`claude-bridge/iwmac-vc-mcp.js`](../claude-bridge/README.md), connects Claude Code to it.
+Set-up, tools and safety are in [its README](../claude-bridge/README.md).
 
 - **The banner's Claude row** says whether the tab has found the server: *connected · ask
   Claude in Claude Code*, *working: edit…* while it works, *not running* when Claude Code is
