@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.9
+// @version      1.119.10
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.119.9';
+var IWDIE_VERSION = '1.119.10';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -22626,10 +22626,11 @@ function iwdieVzClosest(pic, W, H, templates, opts) {
 }
 
 /** What iwdieVzTrace calls, for a worker built of their sources (v1.61.0): it runs them by name, and a helper left out
- *  is a ReferenceError there - so the kit runs the trace from these alone. */
+ *  is a ReferenceError there - so the kit runs the trace from these alone. (v1.119.10) iwdieVzPillLinks too: the trace
+ *  has called it since 1.116.0, and without it here every picture with two pills or more failed in Vectorize image. */
 function iwdieVzWorkerDeps() {
   return [iwdieVzFlat, iwdieVzPalette, iwdieVzLabels, iwdieVzLoops, iwdieVzInside, iwdieVzBezier, iwdieVzFit, iwdieVzSample,
-    iwdieVcFindLines, iwdieVcFindPills, iwdieVcAreas, iwdieVcMix];
+    iwdieVcFindLines, iwdieVcFindPills, iwdieVcAreas, iwdieVcMix, iwdieVzPillLinks];
 }
 
 /* ===================== browser body ===================== */

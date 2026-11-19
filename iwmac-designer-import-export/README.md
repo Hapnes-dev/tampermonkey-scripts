@@ -531,6 +531,20 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### Vectorize image works again on a picture with two pills or more (v1.119.10)
+
+Vectorize image reads the picture in a worker, which holds only the helpers `iwdieVzWorkerDeps()` lists.
+- Since 1.116.0 the trace has drawn the strokes that join two pills (`iwdieVzPillLinks`), but that helper never went
+  to the worker.
+- So on a picture with two pills or more, Vectorize image stopped with *VectorCraft could not be opened:
+  iwdieVzPillLinks is not defined*. Thomas met it on plant 7738 on 2026-11-19.
+- The other readings that run the trace in that worker could fail the same way: Export JSON's reading of a picture,
+  and a picture's words.
+
+The list now holds the helper. The kit's tests now:
+- run plant 10268's Maskin picture through the worker as Vectorize image does, and compare the result with the page's;
+- check that every function the worker's code calls is in the list.
+
 ### The version the script reports is its own again (v1.119.9)
 
 1.119.6 to 1.119.8 bumped only the header's `@version`, and `IWDIE_VERSION` stayed at 1.119.5. Everything the script
