@@ -1097,6 +1097,57 @@ value, no exception and no time-out, even asked alone, is *unsettled* (see
 `test/terminal-check.js` reproduces the 10275 reads against a simulated Plant Term
 and checks them on each variant of what is not known about it (see *Tests*).
 
+## Reads in a hidden tab (1.71.0)
+
+**A read takes as long in a tab nobody is looking at as in the one in front.**
+That is how Claude drives the console: through the bridge, in a sys_tools tab,
+while Thomas works in another tab.
+
+**What went wrong before.** Up to 1.70 a run looked at Plant Term's transcript
+every 60 ms, on a timer, and waited for a late error line the same way. Chrome
+runs a hidden page's timers at most once a second, and a chain of them once a
+minute after the page has been hidden for five minutes. On plant 10275
+(2026-11-20) a 60 ms wait took 909 ms in a hidden test tab, and two reads took
+55 s and 60 s instead of a second or two. 1.69 had the same loop.
+
+Measured in Thomas's Chrome on 2026-11-20, on a local test page left hidden for
+seven minutes:
+- a chain of 60 ms timers on the page took about 1 s per wait for the first five
+  minutes, and 60 s per wait after that;
+- the same chain in a dedicated worker took 60–76 ms per wait throughout;
+- a DOM change made by a network event, one a second, reached a MutationObserver
+  at once, before and after the five minutes.
+
+Then on plant 10275, in a Plant Term tab hidden for more than five minutes, whose
+page timers were waiting 60 s each by then:
+- **Plant Term itself is not slowed.** Its output comes over a WebSocket
+  (`ws_top.onmessage`), and `ws_message` writes it into the terminal at once with
+  `term.echo`. Nothing on that path waits for a timer. A command's first output
+  was on the page within about 100 ms of the line being sent.
+- **1.71.0** ran `modpoll -h` five times back to back, at 0.49–0.51 s each: 0.1 s
+  for the output, then the 400 ms wait for a late error line. A Modbus TCP read of
+  192.168.10.20, which does not serve Modbus TCP, said *Can't reach slave* in
+  1.1 s, twice.
+- **1.70.1**, in the same tab straight after, took 1.1, 2.0 and 2.0 s for the
+  same `modpoll -h`. Each of its waits ended on the hidden tab's once-a-second
+  wake-up. The earlier reads that took 55 s and 60 s were waiting for the
+  once-a-minute one.
+
+**What 1.71.0 does:**
+- **A run wakes when the transcript changes.** Each run watches
+  `#my_top .terminal-output` with a MutationObserver of its own, from just before
+  its line is sent until it ends, and then disconnects it. Output that reaches the
+  frame wakes the run at once, hidden tab or not.
+- **Its timers keep time in a hidden tab.** Every wait is also armed in a small
+  worker, whose timers Chrome does not throttle, and whichever fires first ends
+  it. That covers a run's deadline, the 400 ms wait for a late error line, a
+  reconnect's waits and the bridge's back-off. The page's own timer stays armed
+  as the backstop, so a page that refuses the worker waits as before, never
+  forever.
+- **The timer is the fallback, not the clock.** With an observer, a run that
+  sees no change looks again after a second. Where the page has no
+  MutationObserver, it looks every 60 ms, as before.
+
 ## The API for an agent
 
 `window.__modpoll` is exposed on the page. `__modpoll.help()` prints the list.
@@ -1303,7 +1354,16 @@ server, so a change cannot quietly stop being the thing under test.
   - a strict device refusing 61–64 and answering 55–60;
   - two reads started together;
   - 300 registers on chained lines, twice in a row;
-  - probes and a typed command, each twice in a row.
+  - probes and a typed command, each twice in a row;
+  - that every run disconnects its transcript observer, and that no two are
+    connected at once (1.71.0);
+  - the reads, a reply that leaves no trace, probes and a typed command in a
+    hidden tab (1.71.0). Each runs three times on a fresh Plant Term: in a visible
+    tab, in a hidden one whose page timers wake only every 3 s while a worker's
+    keep time, and in a hidden one with no worker. Hidden, a step may take no
+    longer than visible, give or take the relay's phase. Without the worker that
+    holds for every step that prints a value or an error; the reply that leaves no
+    trace only has to come back right.
 
   The same checks run on variants of what is not known for certain about Plant
   Term:
@@ -1311,14 +1371,17 @@ server, so a change cannot quietly stop being the thing under test.
     starts, and one variant without the `<cwd>->` prefix;
   - stdout as printed, or only at exit;
   - a fast or a slow relay;
-  - errors relayed after the end tag;
-  - a terminal that keeps only 150 lines.
+  - errors relayed after the end tag, hidden and visible;
+  - a terminal that keeps only 150 lines;
+  - a page without MutationObserver, which polls every 60 ms as before 1.71.
 
-  `--quick` runs the main model only, in under a minute; the full run takes
-  three to four. `--src <file>` runs another copy of the script. 1.69.0 fails all
-  ten of the main model's checks, and its three back-to-back reads fail with
-  10275's own signature: 2392,0, then twice *2 references the device refuses:
-  1, 2*.
+  `--quick` runs the main model only, in about two minutes; the full run takes
+  five to six. `--src <file>` runs another copy of the script. 1.69.0 fails all
+  ten of the main model's back-to-back checks, and its three back-to-back reads
+  fail with 10275's own signature: 2392,0, then twice *2 references the device
+  refuses: 1, 2*. 1.70.1 answers right in the hidden tab but fails all eleven
+  timing checks: a read of the EM270 that takes 0.5–1 s visible takes 3 s
+  hidden, and the reply that leaves no trace 30 s instead of 9.
 - `node test/bridge-sweep.js` — the bridge's sweep, sliced out of the script, on
   a stand-in console: a block read and its fallback to single registers, a dead
   device's early stop, a cancel mid-sweep, and since 1.70.0 the reason a row

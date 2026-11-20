@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.70.1
+// @version      1.71.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -59,7 +59,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.70.1';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.71.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -154,7 +154,66 @@
 
     // ---------------------------------------------------------------- helpers
 
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    /*
+     * Timers that keep time in a hidden tab (1.71.0). Chrome runs a hidden
+     * page's timers at most once a second, and a chain of them once a minute
+     * after the page has been hidden for five minutes. In a sys_tools tab
+     * nobody was looking at, a 60 ms wait took 909 ms and two reads took 55 s
+     * and 60 s (plant 10275, 2026-11-20) — which is how Claude drives the
+     * console through the bridge while Thomas works in another tab.
+     *
+     * A dedicated worker's timers are not throttled, so every wait is armed in
+     * one as well as on the page, and whichever fires first ends it. The page's
+     * own timer stays armed as the backstop, so a page that refuses the worker
+     * (a Content-Security-Policy, a manager that hides Worker) waits exactly as
+     * before, never forever.
+     */
+    let tickWorker;            // undefined: not tried yet; null: this page cannot have one
+    let tickSeq = 0;
+    const tickWaits = new Map();
+
+    function getTickWorker() {
+        if (tickWorker !== undefined) return tickWorker;
+        tickWorker = null;
+        try {
+            if (typeof Worker !== 'function' || typeof Blob !== 'function') return null;
+            const src = 'onmessage=function(e){setTimeout(function(){postMessage(e.data);},e.data[1]);};';
+            const worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+            worker.onmessage = e => { const fire = tickWaits.get(e.data && e.data[0]); if (fire) fire(); };
+            worker.onerror = () => { tickWorker = null; };   // every wait still has its page timer
+            tickWorker = worker;
+        } catch (e) { tickWorker = null; }
+        return tickWorker;
+    }
+
+    /** Call fn once after ms, hidden tab or not. Returns a function that cancels it. */
+    function wakeAfter(fn, ms) {
+        let done = false;
+        let id = 0;
+        let timer = null;
+        const fire = () => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            if (id) tickWaits.delete(id);
+            fn();
+        };
+        timer = setTimeout(fire, ms);
+        const worker = getTickWorker();
+        if (worker) {
+            id = ++tickSeq;
+            tickWaits.set(id, fire);
+            try { worker.postMessage([id, ms]); } catch (e) { tickWaits.delete(id); id = 0; }
+        }
+        return () => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            if (id) tickWaits.delete(id);
+        };
+    }
+
+    const sleep = ms => new Promise(r => wakeAfter(r, ms));
 
     /*
      * Settings go through the userscript manager when it is there. It is not
@@ -181,7 +240,7 @@
                 try { got = probe(); } catch (e) { got = null; }
                 if (got) return resolve(got);
                 if (Date.now() > deadline) return reject(new Error('Timed out waiting for ' + what));
-                setTimeout(tick, 150);
+                wakeAfter(tick, 150);
             })();
         });
     }
@@ -819,6 +878,53 @@
     }
 
     /*
+     * What wakes a run (1.71.0): the transcript changing. Up to 1.70 a run
+     * looked at the transcript every 60 ms, on a timer, and in a hidden tab
+     * Chrome let that timer fire once a second and later once a minute, so a
+     * read Plant Term had answered in a second came back a minute later.
+     * Plant Term's frame writes what its WebSocket brings straight into the
+     * terminal (ws_message calls term.echo), and network events are not
+     * throttled: in a tab hidden for over five minutes on plant 10275 a line's
+     * first output landed about 100 ms after it was sent (2026-11-20). An
+     * observer on the transcript is told of each change at once.
+     *
+     * One observer per run, on #my_top .terminal-output only, disconnected when
+     * the run ends. next(ms) resolves on the first change after the last call,
+     * or after ms at the latest (wakeAfter, so that deadline holds in a hidden
+     * tab too). The caller's timer is only the deadline and the fallback: where
+     * no observer can be had, the run looks every 60 ms as before.
+     */
+    const WATCH_FALLBACK_MS = 1000;
+
+    function transcriptWatch(outEl) {
+        const view = outEl && outEl.ownerDocument && outEl.ownerDocument.defaultView;
+        const Observer = (view && view.MutationObserver) || (typeof MutationObserver === 'function' ? MutationObserver : null);
+        let observer = null;
+        let changed = false;
+        let wake = null;
+        if (Observer) {
+            try {
+                observer = new Observer(() => { changed = true; if (wake) wake(); });
+                observer.observe(outEl, { childList: true, subtree: true, characterData: true });
+            } catch (e) { observer = null; }
+        }
+        return {
+            pollMs: observer ? WATCH_FALLBACK_MS : 60,
+            next(ms) {
+                if (changed) { changed = false; return Promise.resolve(true); }
+                return new Promise(resolve => {
+                    const cancel = wakeAfter(() => { wake = null; resolve(false); }, Math.max(0, ms));
+                    wake = () => { wake = null; changed = false; cancel(); resolve(true); };
+                });
+            },
+            stop() {
+                wake = null;
+                if (observer) { try { observer.disconnect(); } catch (e) { /* frame already gone */ } observer = null; }
+            },
+        };
+    }
+
+    /*
      * What a scan costs, counted where every command passes: one entry per
      * command line sent to Plant Term, with how many modpoll runs it held, how
      * long it took and how it ended. Null except while something measures —
@@ -938,21 +1044,46 @@
         // ports (1.64) - leaves the log alone altogether.
         const quiet = options.silent || (!chain.length && !logCommand(command));
         const mirror = text => { if (!options.silent) mirrorTerminal(text, chain, quiet); };
-        state.t.exec('echo ' + startTag + ' & ' + command + ' & echo ' + endTag);
-        const deadline = Date.now() + options.timeoutMs;
-        let shown = -1;
-        while (!run.state.ended && Date.now() < deadline) {
-            await sleep(60);
-            run.take(readLines());
-            // Whoever is waiting can watch the output arrive. A chained line of
-            // probes on a strict device is several refusals at ~630 ms each,
-            // and the markers between them say which one the shell is on — a
-            // caller showing progress gets that instead of one update per line.
-            const text = run.text();
-            if (options.onOutput && text.length !== shown) {
-                shown = text.length;
-                try { options.onOutput(text); } catch (e) { /* a progress callback must not stop a poll */ }
+        // Watching starts before the line is sent: a terminal that echoes the
+        // command as it is sent changes the transcript inside exec().
+        const watch = transcriptWatch(outEl);
+        let text;
+        try {
+            state.t.exec('echo ' + startTag + ' & ' + command + ' & echo ' + endTag);
+            const deadline = Date.now() + options.timeoutMs;
+            let shown = -1;
+            while (!run.state.ended && Date.now() < deadline) {
+                await watch.next(Math.min(watch.pollMs, deadline - Date.now()));
+                run.take(readLines());
+                // Whoever is waiting can watch the output arrive. A chained line of
+                // probes on a strict device is several refusals at ~630 ms each,
+                // and the markers between them say which one the shell is on — a
+                // caller showing progress gets that instead of one update per line.
+                const sofar = run.text();
+                if (options.onOutput && sofar.length !== shown) {
+                    shown = sofar.length;
+                    try { options.onOutput(sofar); } catch (e) { /* a progress callback must not stop a poll */ }
+                }
             }
+            text = run.text();
+            // A run that printed neither a value nor an error has not said what
+            // happened. Give an error line relayed just past the end tag the moment
+            // it needs; a run that said something pays nothing for this. The
+            // wait ends on the line arriving, or STRAGGLER_MS after the end tag
+            // by a timer that a hidden tab does not stretch (wakeAfter).
+            if (run.state.ended && !run.state.cut && !countValueLines(text) &&
+                !text.split('\n').some(line => DIAGNOSTICS.some(d => d.re.test(line)))) {
+                const until = Date.now() + STRAGGLER_MS;
+                for (;;) {
+                    const late = run.late(readLines());
+                    if (late.length) { text += (text ? '\n' : '') + late.join('\n'); break; }
+                    const left = until - Date.now();
+                    if (left <= 0) break;
+                    await watch.next(Math.min(watch.pollMs, left));
+                }
+            }
+        } finally {
+            watch.stop();
         }
         if (!run.state.started) {
             // A shell that answers nothing at all is usually a dead session rather
@@ -965,20 +1096,6 @@
             }
             throw new Error('Plant Term did not start the command within ' + Math.round(options.timeoutMs / 1000) +
                 ' s, before and after reconnecting. Another session may be flooding it.');
-        }
-        let text = run.text();
-        // A run that printed neither a value nor an error has not said what
-        // happened. Give an error line relayed just past the end tag the moment
-        // it needs; a run that said something pays nothing for this.
-        if (run.state.ended && !run.state.cut && !countValueLines(text) &&
-            !text.split('\n').some(line => DIAGNOSTICS.some(d => d.re.test(line)))) {
-            const until = Date.now() + STRAGGLER_MS;
-            for (;;) {
-                const late = run.late(readLines());
-                if (late.length) { text += (text ? '\n' : '') + late.join('\n'); break; }
-                if (Date.now() >= until) break;
-                await sleep(60);
-            }
         }
         info.ended = run.state.ended;
         info.cut = run.state.cut;

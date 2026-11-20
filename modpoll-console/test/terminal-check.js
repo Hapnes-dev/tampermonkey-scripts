@@ -18,6 +18,10 @@
  * often the frame relays, and whether an error line can land after the stdout relayed with it; and a terminal that
  * trims its oldest lines.
  *
+ * Since 1.71.0 a run wakes on the transcript changing (a MutationObserver) and its timers run in a worker, because
+ * in a hidden tab Chrome let the old 60 ms poll fire once a minute. The simulated frame has an observer (one variant
+ * has none), and scenarioHidden runs reads again with the page's timers throttled, with and without a worker.
+ *
  * Each expectation prints PASS or FAIL; the exit code is non-zero on any FAIL. `--quick` runs the main model only.
  * `--src <file>` runs another copy of the userscript (for example HEAD's, to watch the old driver fail the same
  * checks). Run: node test/terminal-check.js
@@ -30,7 +34,8 @@ const argv = process.argv.slice(2);
 const srcAt = argv.indexOf('--src');
 const SRC = srcAt >= 0 ? path.resolve(argv[srcAt + 1]) : path.join(__dirname, '..', 'Modpoll-Console.user.js');
 const quick = argv.includes('--quick');
-const src = fs.readFileSync(SRC, 'utf8');
+// A Windows checkout (core.autocrlf) has CRLF; the markers lift() looks for are written with \n.
+const src = fs.readFileSync(SRC, 'utf8').replace(/\r\n/g, '\n');
 
 function lift(start, end) {
     const a = src.indexOf(start);
@@ -41,13 +46,18 @@ function lift(start, end) {
 
 // ------------------------------------------------------------------ the console, as shipped
 
-function loadConsole(plantTerm) {
+/*
+ * env replaces what the page gives the console: its timers (a hidden tab's are throttled, see hiddenTimers) and the
+ * Worker constructor (Node has none, so by default the console runs on page timers alone).
+ */
+function loadConsole(plantTerm, env) {
+    const e = Object.assign({ setTimeout, clearTimeout, Worker: undefined }, env || {});
     const body = [
         lift("    const EXE_BARE = 'modpoll';", '    // ---------------------------------------------------- Plant Term driver'),
         lift('    const termState = {', '    // -------------------------------------------------------- polling engine'),
         lift('    let abortRequested = false;', '    /*\n     * The map a full scan found'),
     ].join('\n');
-    const factory = new Function('plantTerm', 'globalThis', [
+    const factory = new Function('plantTerm', 'globalThis', 'setTimeout', 'clearTimeout', 'Worker', [
         "const window = globalThis; const location = { hostname: '10275.plants.iwmac.local' };",
         "const document = { getElementById: () => null, createElement: () => ({}) };",
         'const isSerialMode = mode => mode === "rtu" || mode === "ascii";',
@@ -66,7 +76,29 @@ function loadConsole(plantTerm) {
         '}',
         'return { readRegisters, probeRefs, termRun, raw, logged, termState };',
     ].join('\n'));
-    return factory(plantTerm, globalThis);
+    return factory(plantTerm, globalThis, e.setTimeout, e.clearTimeout, e.Worker);
+}
+
+/*
+ * A hidden tab's timers, scaled down: Chrome runs a chain of timers in a page hidden for five minutes once a minute,
+ * each at the first wake-up after it is due; here the wake-ups are alignMs apart. Plant Term's frame is not slowed:
+ * the simulation's own timers stand for its network, whose events a hidden tab still gets at once.
+ */
+function hiddenTimers(alignMs) {
+    return {
+        setTimeout: (fn, ms) => {
+            const at = Math.ceil((Date.now() + (ms || 0)) / alignMs) * alignMs;
+            return setTimeout(fn, Math.max(0, at - Date.now()));
+        },
+        clearTimeout: handle => clearTimeout(handle),
+    };
+}
+
+// A dedicated worker: its timers keep time while the page's are throttled. It echoes [id, ms] back after ms, which
+// is all the console's worker does.
+class TickWorker {
+    constructor() { this.onmessage = null; this.onerror = null; }
+    postMessage(data) { setTimeout(() => { if (this.onmessage) this.onmessage({ data }); }, data[1]); }
 }
 
 // ------------------------------------------------------------------ the simulated Plant Term
@@ -101,10 +133,28 @@ function makePlantTerm(opts) {
         replyMs: 140,         // a 9600-baud answer
         refuseMs: 600,        // a device saying no
         timeoutMs: 1000,      // modpoll's own reply time-out
+        observer: true,       // the frame's window has a MutationObserver (false: a page without one)
     }, opts || {});
     const lines = [];
+    /*
+     * The frame's MutationObserver, as far as the console uses it: observe() the transcript, a callback after each
+     * change to it (once per batch, as a microtask, as the browser delivers it), disconnect(). It counts how many
+     * are connected, so a check can say whether each run let go of its own.
+     */
+    const observers = new Set();
+    const observing = { created: 0, live: 0, maxLive: 0 };
+    class FrameObserver {
+        constructor(callback) { this.callback = callback; observing.created++; }
+        observe(target) {
+            if (target !== out) throw new Error('observing something other than the transcript');
+            if (!observers.has(this)) { observers.add(this); observing.live = observers.size; }
+            observing.maxLive = Math.max(observing.maxLive, observers.size);
+        }
+        disconnect() { observers.delete(this); observing.live = observers.size; }
+    }
     const out = {
         isConnected: true,
+        ownerDocument: o.observer ? { defaultView: { MutationObserver: FrameObserver } } : null,
         get firstElementChild() { return lines.length ? node(0) : null; },
     };
     const node = i => ({
@@ -112,8 +162,10 @@ function makePlantTerm(opts) {
         get nextElementSibling() { return i + 1 < lines.length ? node(i + 1) : null; },
     });
     const append = texts => {
+        if (!texts.length) return;
         for (const t of texts) lines.push(t);
         if (o.limit && lines.length > o.limit) lines.splice(0, lines.length - o.limit);
+        for (const ob of observers) queueMicrotask(() => { if (observers.has(ob)) ob.callback([]); });
     };
     let pending = [];
     let fresh = false;   // the next line printed is the command's first
@@ -220,7 +272,11 @@ function makePlantTerm(opts) {
             }
         },
     };
-    return { t, out, stats, lines, stop: () => clearInterval(relay), get busy() { return running || pending.length > 0; } };
+    return {
+        t, out, stats, lines, observing,
+        stop: () => clearInterval(relay),
+        get busy() { return running || pending.length > 0; },
+    };
 }
 
 // ------------------------------------------------------------------ checks
@@ -238,6 +294,14 @@ const shape = r => (r.values.length ? r.values.map(v => v.i + '=' + v.v).join(',
     ' | ' + (r.diagnostics.map(d => d.text).join(' / ') || 'no diagnostics');
 const saysRefused = r => r.diagnostics.some(d => /refus/i.test(d.text));
 const idle = async term => { const until = Date.now() + 15000; while (term.busy && Date.now() < until) await sleep(50); };
+// Each run watches the transcript through an observer of its own and lets it go when it ends (1.71.0). Runs go one
+// line at a time, so no more than one is ever connected.
+const checkObservers = (label, term) => {
+    const o = term.observing;
+    if (!o.created) return;   // a page without MutationObserver, or a console from before 1.71
+    check(label + ': every run disconnects its transcript observer, and no two are connected at once',
+        o.live === 0 && o.maxLive === 1, o.created + ' created, ' + o.live + ' still connected, at most ' + o.maxLive + ' at once');
+};
 
 async function scenarioBackToBack(label, model) {
     const term = makePlantTerm(model);
@@ -273,6 +337,7 @@ async function scenarioBackToBack(label, model) {
         check(label + ': two reads started at once each get their own answer',
             x.values.map(v => v.v).join(',') === '2392,0' && y.values.map(v => v.v).join(',') === '30,33,36', shape(x) + '\n        ' + shape(y));
     } finally { await idle(term); term.stop(); }
+    checkObservers(label, term);
 }
 
 async function scenarioWide(label, model) {
@@ -305,6 +370,69 @@ async function scenarioWide(label, model) {
             t1.values.map(v => v.v).join(',') === '2392,0' && t2.values.map(v => v.v).join(',') === '2392,0',
             JSON.stringify(t1.values) + ' then ' + JSON.stringify(t2.values));
     } finally { await idle(term); term.stop(); }
+    checkObservers(label, term);
+}
+
+/*
+ * The same reads in a hidden tab (1.71.0). On plant 10275 a 60 ms wait took 909 ms in a hidden tab and two reads took
+ * 55 s and 60 s: the console looked at the transcript on a timer, and Chrome let that timer fire once a minute. Every
+ * step runs three times, each on a fresh Plant Term: in a visible tab; in a hidden one, whose page timers wake only
+ * every ALIGN ms while a worker's keep time; and in a hidden one whose page cannot have a worker. A step may take no
+ * longer hidden than visible, give or take the relay's phase. Without the worker that holds for every run that
+ * prints a value or an error; a run that prints neither waits out its 400 ms for a late error line on the page's
+ * throttled timer, and only has to come back right.
+ */
+async function scenarioHidden(label, model) {
+    const ALIGN = 3000;
+    const em270 = Object.assign({}, RTU, { slave: 1, start: 1, count: 2 });
+    const probes = [1, 61, 100, 161].map(ref => ({ table: '4', ref }));
+    const said = p => Object.keys(p).sort().map(k => k + (p[k].answered ? '=' + p[k].value : '=no')).join(' ');
+    const meter = r => r.values.map(v => v.v).join(',') === '2392,0';
+    // name, the step, whether its answer is right, whether it prints a value or an error on every line it sends
+    const steps = [
+        ['read 1 of the EM270', c => c.readRegisters(em270), meter, true],
+        ['read 2 of the EM270', c => c.readRegisters(em270), meter, true],
+        ['read 3 of the EM270', c => c.readRegisters(em270), meter, true],
+        ['a reply that leaves no trace', c => c.readRegisters(Object.assign({}, RTU, { slave: 5, start: 5, count: 5 })),
+            r => r.values.map(v => v.i).join(',') === '5,6,8,9' && (r.unsettled || []).join(',') === '7', false],
+        ['probes of a strict device', c => c.probeRefs(Object.assign({}, RTU, { slave: 2, timeoutMs: 25000 }), probes),
+            p => said(p) === '4:1=1001 4:100=1100 4:161=no 4:61=no', true],
+        ['a typed command', c => c.raw('modpoll -m rtu -a 1 -t 4 -r 1 -c 2 -b 9600 -d 8 -s 1 -p none COM1'), meter, true],
+    ];
+    const modes = [
+        { name: 'visible', env: {} },
+        { name: 'hidden', env: Object.assign(hiddenTimers(ALIGN), { Worker: TickWorker }) },
+        { name: 'hidden, no worker', env: hiddenTimers(ALIGN) },
+    ];
+    const took = {};
+    for (const mode of modes) {
+        const term = makePlantTerm(model);
+        const c = loadConsole(term, mode.env);
+        const right = [];
+        took[mode.name] = [];
+        try {
+            for (const [name, step, ok] of steps) {
+                const t0 = Date.now();
+                const r = await step(c);
+                took[mode.name].push(Date.now() - t0);
+                if (!ok(r)) right.push(name + ': ' + (r.values ? shape(r) : said(r)));
+            }
+        } finally { await idle(term); term.stop(); }
+        check(label + ', ' + mode.name + ': every step comes back right', !right.length, right.join('\n        '));
+        checkObservers(label + ', ' + mode.name, term);
+    }
+    // The relay hands output over every relayMs whatever the tab does, so two runs of one step differ by its phase.
+    const slack = v => v * 1.25 + 400;
+    steps.forEach(([name, , , prompt], i) => {
+        const v = took.visible[i];
+        const h = took.hidden[i];
+        const n = took['hidden, no worker'][i];
+        check(label + ': ' + name + ' takes no longer in a hidden tab (' + v + ' ms visible, ' + h + ' ms hidden)', h <= slack(v));
+        if (prompt) {
+            check(label + ': ' + name + ' takes no longer in a hidden tab without a worker (' + v + ' ms visible, ' + n + ' ms hidden)',
+                n <= slack(v));
+        }
+    });
 }
 
 (async () => {
@@ -312,7 +440,10 @@ async function scenarioWide(label, model) {
     const main = { echo: 'shell', stdout: 'live', relayMs: 150 };
     await scenarioBackToBack('plant-like', main);
     await scenarioWide('plant-like', main);
+    await scenarioHidden('plant-like', main);
     if (!quick) {
+        await scenarioBackToBack('a page without MutationObserver', { echo: 'shell', stdout: 'live', relayMs: 150, observer: false });
+        await scenarioHidden('errors relayed after stdout', { echo: 'shell', stdout: 'exit', relayMs: 300, stderrLast: true });
         await scenarioBackToBack('echoed on send', { echo: 'send', stdout: 'live', relayMs: 150 });
         await scenarioBackToBack('echoed when it starts, stdout at exit', { echo: 'start', stdout: 'exit', relayMs: 250 });
         await scenarioBackToBack('no echo, no prefix, fast relay', { echo: 'none', stdout: 'live', relayMs: 40, firstPrefix: false });
