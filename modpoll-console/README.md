@@ -1192,6 +1192,18 @@ finding says to set it to the bus's settings, not the other way round.
 `headline`, `findings`, `suggestion`, `confidence`, `next`, and every read made
 with its settings, outcome and time. Over the bridge it is `modpoll_diagnose`.
 
+The box is green when the device answers as configured, amber when it answered
+but the register or the table was wrong or a suggestion was found (1.72.1), and
+red when nothing answered at all.
+
+Live on plant 2349, 2026-11-20:
+- **V01 over TCP:** answered on the first read in 93 ms.
+- **V01 input 9990:** refused; the first register of the stored map answered,
+  so the verdict was *register refused*, after 5 reads in 0.7 s.
+- **E01 on COM1, with the Plant Server running:** the port was held. The bus
+  gateway 192.168.10.30 answered in ENC on none of 4001–4004, about 1.1 s
+  each, so the verdict was *port held*, after 5 reads in 4.6 s.
+
 ### Values that look like placeholders
 
 A controller writes a fixed code into a register it has nothing for, such as a
@@ -1249,6 +1261,13 @@ What 1.72.0 changes:
 
 The context collected is the same as before, but it reflects the unit as it was
 when the scan began.
+
+**Measured live on 2349 the same evening, with 1.72.0 installed:**
+- IWMAC's side of V01 on its own took 68.4 s instead of 222 s, complete: 964
+  parameter definitions and 185 driver-log lines, nothing unavailable.
+- A full rediscovery scan through the bridge (`modpoll_discover`) took 74 s
+  from call to answer, against 329 s for the same scan on 1.71.0. The device
+  part was 73 s, and IWMAC's side was read during it.
 
 ### The bridge, off the person's form
 

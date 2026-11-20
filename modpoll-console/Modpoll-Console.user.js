@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.72.0
+// @version      1.72.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -59,7 +59,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.72.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.72.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -9278,7 +9278,7 @@
             renderDiagnosis(report);
             log('Diagnose: ' + report.headline + (report.suggestion ? ' Suggested: ' + report.suggestion.settings + ' (confidence ' + report.confidence + ')' : ''),
                 report.verdict === 'answers' ? 'ok' : 'warn');
-            setDot(report.verdict === 'answers' ? 'ok' : (report.suggestion ? 'warn' : 'err'));
+            setDot(diagnosisTone(report));
             return report;
         } catch (e) {
             setDot('err');
@@ -9291,9 +9291,17 @@
         }
     }
 
+    // A device that answered - with a value or with an exception - is amber at worst: the fault is the register or
+    // the table, not the line to the device. Red is for no communication at all (1.72.1).
+    const DIAG_DEVICE_SPOKE = new Set(['register refused', 'register refused, neighbour answers', 'wrong table']);
+    function diagnosisTone(report) {
+        if (report.verdict === 'answers') return 'ok';
+        return report.suggestion || DIAG_DEVICE_SPOKE.has(report.verdict) ? 'warn' : 'err';
+    }
+
     function renderDiagnosis(report) {
         if (!ui.diag) return;
-        const tone = report.verdict === 'answers' ? 'ok' : (report.suggestion ? 'warn' : 'err');
+        const tone = diagnosisTone(report);
         ui.diag.className = 'mpc-diag ' + tone;
         ui.diag.textContent = '';
         ui.diag.appendChild(el('h4', { textContent: report.headline }));
@@ -11191,7 +11199,8 @@
                 driver: ctx.driver ? ctx.driver.owner : null,
                 driver_running: ctx.driver && ctx.driver.module ? ctx.driver.module.running : null,
                 unit_status: ctx.status ? ctx.status.unitStatus : null,
-                log_trouble: ctx.log && ctx.log.current ? ctx.log.current.counts || null : null,
+                // Every kind of line the driver logged since it last started, trouble or not: { timeout: 3, write: 21 }.
+                log_counts: ctx.log && ctx.log.current ? ctx.log.current.counts || null : null,
                 not_read: ctx.unavailable && ctx.unavailable.length ? ctx.unavailable : undefined,
             } : null,
         };
