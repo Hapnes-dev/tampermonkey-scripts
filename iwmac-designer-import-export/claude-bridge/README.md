@@ -187,9 +187,55 @@ Ctrl+S placed 62 objects, the 12 of the three units linked to their rows.
 | *did not answer in N s* | It may still be working: the next call starts with a note if it answered after all. |
 | A red dashed box where a symbol should be | The component library kept in this browser lacks it: import the Maskin template's `.ai` under Components in the banner, then Edit in VectorCraft again. |
 | Values placed but not linked after the sync | The banner says why per object: no such parameter in that unit, an alias two units share, a unit whose rows were not read. |
+| Every Tampermonkey request in the browser takes up to 25 s while a VectorCraft tab is open; the Claude row says *server 1.15.x is old* | The server is older than 1.16.0 and still holds Tampermonkey's lock with its poll (see below). Restart the Claude Code session that started it. Until then, close the VectorCraft tab when Claude is not using it. |
 
 The server's port is 47913 (`IWDIE_BRIDGE_PORT` moves it; the userscript then needs the
 same number in its storage key `iwdie.vc.bridge.port`).
+
+## Why the poll's headers go out at once (server 1.16.0, userscript 1.120.0)
+
+**The cause.** Tampermonkey 5.5.1 runs every `GM_xmlhttpRequest` in the browser through one
+lock:
+
+- With its default *Allow headers to be modified by scripts: Yes*, it adds `origin: null`
+  to every request.
+- `origin` is one of the headers a page may not set, so Tampermonkey lets only one such
+  request out at a time.
+- That request holds the lock until its response headers arrive.
+
+The tab's poll, `/bridge/next?wait=25`, got its headers only with Claude's next call. So an
+attached VectorCraft tab held the lock for up to 25 s at a time, and every userscript
+request in the browser waited behind it: the userscript's own PANG folder lookup, Modpoll
+Console's Toolbox queries, Rocketlane, Zendesk, any tab. Measured on plant 2349 on
+2026-11-20 with Modpoll Console's bridge, which polled the same way:
+
+- Toolbox queries from another tab took 0.5 s, or up to a full 25 s;
+- answering the poll early let each stalled one through 0.45–0.92 s later.
+
+**The fix.** A 1.120.0 userscript sends `X-IWDIE-Early: 1` with every request. For such a
+poll a 1.16.0 server writes the status line and headers at once, and the body when the
+poll ends:
+
+- `{cmd}` when Claude calls;
+- `{cmd: null}` at the idle reply, or when a newer poll replaces it;
+- `{error}` when another tab takes Claude over or the tab leaves. This is a 200, where the
+  server used to send a 409. The userscript reads that `error` exactly as it reads a 409.
+
+With the headers out, the lock is free again within milliseconds, and the open body costs
+nothing. Tampermonkey stops its own timeout once the headers are in, so the userscript keeps
+a guard of its own: a request is aborted 5 s after its time limit.
+
+**Old tabs and old servers.**
+
+- A userscript older than 1.120.0 does not send the header, so it gets exactly the old
+  answers. It reads a refusal from the status code alone, and would have taken an `error`
+  in a 200 body for an empty poll.
+- A server older than 1.16.0 ignores the header. Its `hello` has no `early: true`, and the
+  Claude row says *server … is old*.
+- **The fix takes effect only when the server on port 47913 is a 1.16.0 one.** That means
+  restarting the Claude Code session that started the server, after its checkout of this
+  repository has the change. Until then, closing the VectorCraft tab when Claude is not
+  using it frees the browser.
 
 ## Tests
 
@@ -200,3 +246,8 @@ fake tab answers, the image, the export, and a second session taking the port ov
 run end to end against the VectorCraft web build in the stub Designer: scene, preview, a
 bank continuing the drawing's own row, pipes into the gas cooler, a bound value, check,
 move, undo, and a second tab taking Claude over and giving it back.
+
+The kit's `tests/test-bridge-early.js` (server 1.16.0, userscript 1.120.0) polls the real
+server as both userscripts would, and checks the userscript's side: the header on every
+request, the guard, a refusal in a 200 body read as a 409, and the userscript's own request
+against the server. The 1.15.2 server fails 9 of its checks.

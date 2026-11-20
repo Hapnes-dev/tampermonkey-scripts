@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.11
+// @version      1.120.0
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.119.11';
+var IWDIE_VERSION = '1.120.0';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -12844,9 +12844,66 @@ function iwdieVcLineSvg(L, used) {
    runs between two of them, where a free place is, what a drawing's own layout is, what is wrong with it, and an
    edit's plan. */
 
-/** The bridge on this computer (claude-bridge/iwmac-vc-mcp.js): its port, and the protocol both ends speak; and (v1.111.0)
- *  the server version whose edit checks and previews in the same call this script answers. */
-var IWDIE_CB_PORT = 47913, IWDIE_CB_PROTOCOL = 1, IWDIE_CB_SERVER_MIN = '1.9.0';
+/** The bridge on this computer (claude-bridge/iwmac-vc-mcp.js): its port, and the protocol both ends speak; and the oldest
+ *  server this script works best with, said on the Claude row when the server is older - (v1.111.0) 1.9.0, whose edit
+ *  checks and previews in the same call this script answers; (v1.120.0) 1.16.0, which sends a poll's headers at once
+ *  (iwdieCbHttp). */
+var IWDIE_CB_PORT = 47913, IWDIE_CB_PROTOCOL = 1, IWDIE_CB_SERVER_MIN = '1.16.0';
+/** (v1.120.0) How long after its own time a request to the bridge is ended here, where Tampermonkey no longer ends it. */
+var IWDIE_CB_GUARD_MS = 5000;
+
+/** (v1.120.0) One request to the bridge, as Tampermonkey makes it: no page can, it needs a header a page cannot send
+ *  unasked. -> Promise<{status, json}>
+ *
+ *  Every request asks for early headers (X-IWDIE-Early). Tampermonkey 5.5.1 adds `origin: null` to every
+ *  GM_xmlhttpRequest (its default "Allow headers to be modified by scripts: Yes"), and a request with such a header takes
+ *  one lock for the whole browser, held until that request's response headers arrive. The bridge's poll got its headers
+ *  only with Claude's next call, so an attached VectorCraft tab held the lock for up to 25 s at a time, and every
+ *  userscript request in the browser waited behind it - measured on plant 2349 (2026-11-20) with Modpoll Console's
+ *  bridge, which polled the same way. A 1.16.0 server sends a poll's headers at once and its body when the poll ends, so
+ *  the lock is free again within milliseconds; an older one ignores the header and answers as before.
+ *
+ *  Tampermonkey stops its own timeout once the headers are in, so a guard here ends a request whose body never comes,
+ *  IWDIE_CB_GUARD_MS after its time. */
+function iwdieCbHttp(base, session, method, path, body, timeout) {
+  return new Promise(function (resolve, reject) {
+    var headers = { 'X-IWDIE-Bridge': String(IWDIE_CB_PROTOCOL), 'X-IWDIE-Early': '1' };
+    if (session) headers['X-IWDIE-Session'] = session;
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    var limit = timeout || 10000, settled = false, guard = null;
+    var settle = function (fn, value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      fn(value);
+    };
+    var late = function () { settle(reject, new Error('the bridge did not answer in time')); };
+    var handle = GM_xmlhttpRequest({
+      method: method, url: base + path, headers: headers, data: body === undefined ? undefined : JSON.stringify(body), timeout: limit, anonymous: true,
+      onload: function (r) { var j = null; try { j = JSON.parse(r.responseText || 'null'); } catch (e) {} settle(resolve, { status: r.status, json: j }); },
+      onerror: function () { settle(reject, new Error('the bridge did not answer')); },
+      ontimeout: late,
+      onabort: late
+    });
+    if (!settled) {
+      guard = setTimeout(function () {
+        if (settled) return;
+        try { if (handle && typeof handle.abort === 'function') handle.abort(); } catch (e) {}
+        late();
+      }, limit + IWDIE_CB_GUARD_MS);
+    }
+  });
+}
+
+/** (v1.120.0) What the bridge's answer to a poll says: null when it brings Claude's next call or none, else why this tab
+ *  was let go - {error, away}, `away` when another VectorCraft tab took Claude over. A poll whose headers went out at once
+ *  (a 1.16.0 server, iwdieCbHttp) has a refusal in the body of a 200, where the server said 409 before; both read the
+ *  same. */
+function iwdieCbPollRefusal(r) {
+  var status = r ? r.status : 0, error = r && r.json && r.json.error;
+  if (status === 200 && !error) return null;
+  return { error: String(error || ('HTTP ' + status)), away: (status === 409 || status === 200) && /another VectorCraft tab/.test(String(error || '')) };
+}
 
 /** A Maskin picture's circuits: name, colour as production Maskin pictures draw it (the kit's
  *  maskin-drawing-method.txt, section 3), and the words that name it. */
@@ -27347,12 +27404,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       // `away`: another tab took Claude over; this one does not take it back by itself, so two open edits never trade
       // Claude to and fro and Claude never edits a panel it did not just read
       var away = false, timer = null;
+      // (v1.120.0) whether the server sends a poll's headers at once: its hello says `early`
+      var serverEarly = true;
       try { port = parseInt(GM_getValue('iwdie.vc.bridge.port', IWDIE_CB_PORT), 10) || IWDIE_CB_PORT; } catch (e) {}
       var base = 'http://127.0.0.1:' + port, snap = null, revisions = [], rev = 0, cidNext = 1;
-      // (v1.111.0) a server older than this script knows: said on the row, the newer calls cost a round trip more there
+      // (v1.111.0) a server older than this script knows: said on the row, the newer calls cost a round trip more there;
+      // (v1.120.0) and one that does not send a poll's headers at once holds up every Tampermonkey request in the browser
       var oldServer = function () {
         return serverVersion && iwdieVcVersionLess(serverVersion, IWDIE_CB_SERVER_MIN) ? ' · <span title="The iwmac-vectorcraft MCP server is ' + esc2(serverVersion) +
-          '; this script works best with ' + IWDIE_CB_SERVER_MIN + ' or later: pull tampermonkey-scripts and restart Claude Code.">server ' + esc2(serverVersion) + ' is old</span>' : '';
+          '; this script works best with ' + IWDIE_CB_SERVER_MIN + ' or later: pull tampermonkey-scripts and restart Claude Code.' +
+          (serverEarly ? '' : ' Until then, while this tab waits for Claude, every Tampermonkey request in this browser waits up to 25 s.') +
+          '">server ' + esc2(serverVersion) + ' is old</span>' : '';
       };
       var line = function (how) {
         api.row(how === 'busy' ? 'working: ' + esc2(working) + '…'
@@ -27364,20 +27426,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       };
       var later = function (ms) { clearTimeout(timer); timer = setTimeout(hello, ms); };
       if (api.on) api.on('cbtake', function () { away = false; later(0); });
-      // one request to the bridge, as Tampermonkey makes it: no page can, it needs a header a page cannot send unasked
-      var req = function (method, path, body, timeout) {
-        return new Promise(function (resolve, reject) {
-          var headers = { 'X-IWDIE-Bridge': String(IWDIE_CB_PROTOCOL) };
-          if (session) headers['X-IWDIE-Session'] = session;
-          if (body !== undefined) headers['Content-Type'] = 'application/json';
-          GM_xmlhttpRequest({
-            method: method, url: base + path, headers: headers, data: body === undefined ? undefined : JSON.stringify(body), timeout: timeout || 10000, anonymous: true,
-            onload: function (r) { var j = null; try { j = JSON.parse(r.responseText || 'null'); } catch (e) {} resolve({ status: r.status, json: j }); },
-            onerror: function () { reject(new Error('the bridge did not answer')); },
-            ontimeout: function () { reject(new Error('the bridge did not answer in time')); }
-          });
-        });
-      };
+      // one request to the bridge, as Tampermonkey makes it: no page can, it needs a header a page cannot send unasked;
+      // (v1.120.0) asking for a poll's headers at once, with a guard of its own (iwdieCbHttp)
+      var req = function (method, path, body, timeout) { return iwdieCbHttp(base, session, method, path, body, timeout); };
       // (v1.111.0) whether the tab shows: one behind another tab draws nothing, so VectorCraft neither saves the drawing
       // (to read it) nor opens a version there - a call that needs either says so at once, not after its time runs out
       var shown = function () { return document.visibilityState === 'visible'; };
@@ -27401,6 +27452,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         req('GET', '/bridge/hello', undefined, 2500).then(function (r) {
           if (r.status !== 200 || !r.json || r.json.server !== 'iwmac-vc-mcp') throw new Error('not the bridge');
           serverVersion = String(r.json.version || '');
+          // (v1.120.0) a server that does not send a poll's headers at once still holds Tampermonkey's lock: the row says so
+          serverEarly = r.json.early === true;
           // Claude is with the tab that took it over: wait until that one lets go, or the user brings Claude here
           if (away && r.json.attached) { line('away'); later(15000); return; }
           var L = library();
@@ -27434,10 +27487,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       var poll = function () {
         if (stopped || !session) return;
         req('GET', '/bridge/next?wait=25&vis=' + (shown() ? 1 : 0), undefined, 40000).then(function (r) {
-          if (r.status !== 200) {
+          // (v1.120.0) a poll whose headers went out at once says a refusal in a 200's body, where the server said 409
+          var no = iwdieCbPollRefusal(r);
+          if (no) {
             // another tab took Claude over; or the bridge let this one go, or started anew: look for it again
             session = null;
-            if (r.status === 409 && r.json && /another VectorCraft tab/.test(String(r.json.error || ''))) away = true;
+            if (no.away) away = true;
             line(away ? 'away' : 'off');
             later(away ? 15000 : 3000);
             return;
@@ -34077,6 +34132,9 @@ if (typeof module !== 'undefined' && module.exports) {
     CB_PILL_SYMBOLS: IWDIE_CB_PILL_SYMBOLS,
     cbTextWidth: iwdieCbTextWidth,
     CB_SERVER_MIN: IWDIE_CB_SERVER_MIN,
+    CB_GUARD_MS: IWDIE_CB_GUARD_MS,
+    cbHttp: iwdieCbHttp,
+    cbPollRefusal: iwdieCbPollRefusal,
     cbCircuit: iwdieCbCircuit,
     cbCircuitOfColour: iwdieCbCircuitOfColour,
     cbPortsOf: iwdieCbPortsOf,

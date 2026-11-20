@@ -534,6 +534,27 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### A VectorCraft tab with Claude no longer holds up every Tampermonkey request (v1.120.0, server 1.16.0)
+
+While a VectorCraft tab was attached to the Claude bridge, every userscript request in the browser could wait up to
+25 s: this script's own PANG folder lookup, Modpoll Console's Toolbox queries, Rocketlane, Zendesk, any tab.
+- **Why:** Tampermonkey 5.5.1 lets its requests out one at a time, each holding one lock for the whole browser until
+  its response headers arrive. That is its default *Allow headers to be modified by scripts: Yes*, which adds
+  `origin: null` to every request. The tab's poll (`/bridge/next?wait=25`) got its headers only with Claude's next
+  call, so it held the lock for up to 25 s at a time. Proven on plant 2349 on 2026-11-20 with Modpoll Console's
+  bridge, which polled the same way. Modpoll Console 1.73.0 fixed its own.
+- **The fix:** every request to the bridge now sends `X-IWDIE-Early: 1`. The 1.16.0 server then sends a poll's
+  headers at once and the body when the poll ends, so the lock is free again within milliseconds. A takeover or the
+  tab's own leaving is then a 200 with `error` in the body, and the script reads it as it read the 409
+  (`iwdieCbPollRefusal`).
+- **The guard:** Tampermonkey stops its own timeout once the headers are in, so `iwdieCbHttp` aborts a request 5 s
+  after its time limit.
+- **Both halves are needed.** An older server ignores the header. The Claude row then says *server 1.15.x is old*,
+  because the script now asks for 1.16.0 (`IWDIE_CB_SERVER_MIN`). The server is updated by restarting the Claude Code
+  session that started it.
+- **Tests:** the kit's `tests/test-bridge-early.js` polls the real server as this script and an older one would, and
+  checks the script's side. The 1.15.2 server fails 9 of its checks.
+
 ### An Oversikt's case stands clear of its wall's stroke (v1.119.11)
 
 The bridge's `case` op now stands a case 2 px off its wall's line, into the store, before its cluster is laid out.

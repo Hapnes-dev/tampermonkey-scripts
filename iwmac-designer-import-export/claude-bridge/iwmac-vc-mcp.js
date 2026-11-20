@@ -25,7 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const NAME = 'iwmac-vectorcraft', VERSION = '1.15.2', PROTOCOL = 1;
+const NAME = 'iwmac-vectorcraft', VERSION = '1.16.0', PROTOCOL = 1;
 // the userscript that answers an edit's check and preview in the same call, and says whether its tab shows; and (1.10.0)
 // the one that opens a file and gives the drawing as a panel file
 const TAB_MIN = '1.111.0', OPEN_MIN = '1.112.0';
@@ -90,6 +90,10 @@ function portNote() {
 
 function reply(res, status, obj) {
   const body = JSON.stringify(obj);
+  // (1.16.0) A poll that got its headers at once (see /bridge/next) has already said 200. Whatever ends it now - a
+  // command, the idle reply, a newer poll, a takeover - goes in the body, and a refusal is the body's `error`, which the
+  // userscript (1.120.0) reads exactly as it reads a 409.
+  if (res.headersSent) { res.end(body); return; }
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(body);
 }
@@ -176,8 +180,9 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   const mine = page && req.headers['x-iwdie-session'] === page.session;
   if (req.method === 'GET' && url.pathname === '/bridge/hello') {
-    // `tool`: another session's server may send its calls here (1.9.0)
-    reply(res, 200, { server: 'iwmac-vc-mcp', version: VERSION, protocol: PROTOCOL, attached: !!page, tool: true, pid: process.pid });
+    // `tool`: another session's server may send its calls here (1.9.0); `early`: this server sends a poll's headers at
+    // once when the tab asks (1.16.0) - an older one says nothing
+    reply(res, 200, { server: 'iwmac-vc-mcp', version: VERSION, protocol: PROTOCOL, attached: !!page, tool: true, pid: process.pid, early: true });
     return;
   }
   // (1.9.0) another Claude Code session's call, sent by its own server of this file: with the key this one wrote
@@ -215,6 +220,22 @@ const server = http.createServer((req, res) => {
     page.working = '';
     if (page.waiting) { reply(page.waiting, 200, { cmd: null }); clearTimeout(page.waitTimer); }
     page.waiting = res;
+    /*
+     * (1.16.0) The headers go out now and the body when the poll ends. Tampermonkey 5.5.1 adds `origin: null` to every
+     * GM_xmlhttpRequest (its default "Allow headers to be modified by scripts: Yes"), and a request with such a header
+     * takes one lock for the whole browser, held until that request's response headers arrive. A poll whose headers
+     * waited for its command held that lock for up to 25 s, and every userscript request in the browser - the
+     * userscript's own PANG folder lookup, Modpoll Console's Toolbox queries, any tab's - waited behind it (measured on
+     * plant 2349, 2026-11-20, with Modpoll Console's bridge, which polled the same way). With the headers out at once
+     * the lock is free again in milliseconds, and the open body costs nothing.
+     *
+     * Only a tab that asks for it gets this: up to 1.119 the userscript read a refusal from the status code alone, and
+     * would have taken an `error` in a 200 body for an empty poll.
+     */
+    if (req.headers['x-iwdie-early'] === '1') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.flushHeaders();
+    }
     const wait = Math.max(1, Math.min(30, parseInt(url.searchParams.get('wait') || '25', 10)));
     page.waitTimer = setTimeout(() => { if (page && page.waiting === res) { page.waiting = null; reply(res, 200, { cmd: null }); } }, wait * 1000);
     req.on('close', () => { if (page && page.waiting === res) { page.waiting = null; clearTimeout(page.waitTimer); } });
