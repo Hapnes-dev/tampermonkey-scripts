@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.69.0
+// @version      1.70.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -59,7 +59,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.64.1';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.70.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -83,6 +83,11 @@
     // meant to run.
     const CHAIN_CHARS = 420;
     const MARK = '#mpc';
+    // Every line also carries its run's two tags (1.70.0), one at each end. The
+    // one in front always sat outside this budget; the one at the end is taken
+    // out of it, so no line sent is longer than the lines sent before 1.70.
+    const END_TAG_CHARS = (' & echo ' + MARK + ':e' + 'zzzz').length;
+    const CHAIN_BUDGET = CHAIN_CHARS - END_TAG_CHARS;
 
     // 32-bit formats consume two registers per value, and -c counts values rather
     // than registers. The endian flag is per format: -i for integers, -f for floats.
@@ -490,7 +495,8 @@
         { re: /can'?t reach slave/i, level: 'fatal', text: "Can't reach slave — check the IP address" },
         { re: /invalid count parameter/i, level: 'fatal', text: 'Invalid count parameter — the count cap is 99, not 100' },
         { re: /invalid reference parameter/i, level: 'fatal', text: 'Invalid reference parameter — -r counts from 1, and stops at 65536' },
-        // Both spellings are the binary's own: it prints "Unknwon" and "Progam".
+        // "Unknwon" is the binary's own spelling. ("Progam stopped with exit
+        // code", the other misspelling, is Plant Term's: see RE_LINE_FAILED.)
         { re: /unkn[wo]{2}n error/i, level: 'error', text: 'Unknown error — on TCP this is usually a slave address the gateway does not serve' },
         { re: /unrecognized option|missing option parameter/i, level: 'fatal', text: 'Unrecognized option — this build does not take that flag' },
         { re: /send time-?out/i, level: 'error', text: 'Send time-out' },
@@ -695,19 +701,6 @@
         }
     }
 
-    /**
-     * Run one command and return only the lines it printed. The transcript is read
-     * by child index rather than by string length, so nothing has to be cleared
-     * between runs and a line rewritten in place cannot shift the cursor.
-     *
-     * A remote shell gives no completion signal, so a command counts as finished
-     * when its output has stopped growing for settleMs. modpoll answers in well
-     * under a second; the default leaves room for a slow bus without making every
-     * block wait on the timeout.
-     */
-    // Lines that mean this command is over: a device exception, a rejected
-    // argument, or the process reporting its exit ("Progam" is the binary's typo).
-    const RE_FINAL_ERROR = /exception response|unkn[wo]{2}n error|invalid \w+ parameter|unrecognized option|prog(r)?am stopped with exit code/i;
     const RE_NOT_FOUND = /is not recognized as an internal or external command|cannot find the path/i;
     const countValueLines = text => (String(text).match(/\[\d+\]\s*:/g) || []).length;
     // Refusals as they land, for progress: each is a block the device has just
@@ -716,7 +709,103 @@
     // Probe markers, whole lines only — the echoed command line carries every
     // marker of a chained run at once, and must not count as any of them.
     const countMarkerLines = text => (String(text).match(new RegExp('^\\s*' + MARK + ':\\d+:\\d+\\s*$', 'gm')) || []).length;
-    let runCounter = 0;
+    // A bare shell prompt: what the terminal shows when a line is done.
+    const RE_PROMPT_LINE = /^[A-Za-z]:\\[^>]*>$/;
+    // What Plant Term itself prints, in red, when the last program on a line
+    // ends with an error ("Progam" is its typo, not modpoll's). The console's
+    // lines end with an echo, which never fails, so on one of them this means
+    // the line was cut short on its way through the shell.
+    const RE_LINE_FAILED = /^prog(r)?am stopped with exit code/i;
+    // A run's tags are numbered from a random start, so a copy of the script
+    // evaluated into a page whose terminal still shows an earlier copy's tags
+    // cannot take one of those for its own.
+    let runCounter = 46656 + Math.floor(Math.random() * 1500000);
+    // How long a run that printed neither a value nor an error waits past its
+    // end tag for an error line the frame relays a moment late.
+    const STRAGGLER_MS = 400;
+
+    /*
+     * Which lines of the transcript belong to one run (1.70.0). Every line the
+     * console sends is
+     *
+     *     echo #mpc:r<id> & <command> & echo #mpc:e<id>
+     *
+     * and the run's output is what stands between those two tags, each on a
+     * line of its own. Whole lines only: the command line is echoed too — by the
+     * shell, or by the terminal as it is sent — and that echo carries both tags.
+     * Nothing before the start tag counts, however new: the tail of the line
+     * before this one, its prompt, this line's own echo. The end tag prints once
+     * the last program on the line has exited, so it is a completion signal. Up
+     * to 1.69 there was none, and a run ended when its output had been still for
+     * 300 ms — which a serial poll can be, between its banner and its answer. The
+     * run ended before modpoll had said anything, the next one took this one's
+     * tail for its own output and ended early too, and the values that arrived
+     * during it were dropped as text already on screen: a healthy meter read back
+     * to back on plant 10275 (2026-11-20) came back empty, as "refused".
+     *
+     * The transcript is trimmed from the top on a long sweep. A run whose start
+     * tag has scrolled away carries on from the last lines it took, found again
+     * by their text; `gap` says when that could not be done for certain.
+     */
+    function runCollector(startTag, endTag) {
+        let lines = [];
+        const state = { started: false, ended: false, cut: false, gap: false };
+        const isTag = (line, tag) => line.trim() === tag;
+        // Where the lines already taken go on in `all`, by their last dozen.
+        const resumeAt = all => {
+            const tail = lines.slice(-12);
+            if (!tail.length) return -1;
+            let found = -1;
+            let matches = 0;
+            for (let k = all.length - tail.length; k >= 0; k--) {
+                let same = true;
+                for (let j = 0; j < tail.length && same; j++) same = all[k + j] === tail[j];
+                if (same) { if (found < 0) found = k + tail.length; matches++; }
+            }
+            if (matches !== 1) state.gap = true;
+            return found;
+        };
+        return {
+            state,
+            text: () => lines.join('\n'),
+            take(all) {
+                if (state.ended) return;
+                let at = -1;
+                for (let k = all.length - 1; k >= 0; k--) if (isTag(all[k], startTag)) { at = k; break; }
+                let from;
+                if (at >= 0) { state.started = true; lines = []; from = at + 1; }
+                else if (!state.started) return;   // the shell has not reached this line yet
+                else { from = resumeAt(all); if (from < 0) { state.gap = true; from = 0; } }
+                for (let k = from; k < all.length; k++) {
+                    const line = all[k];
+                    const text = line.trim();
+                    if (text === endTag) { state.ended = true; return; }
+                    // The line finished without its end tag: it was cut short.
+                    if (RE_LINE_FAILED.test(text) || RE_PROMPT_LINE.test(text)) { state.ended = true; state.cut = true; return; }
+                    lines.push(line);
+                }
+            },
+            /*
+             * Error lines that landed after the end tag. modpoll writes its errors
+             * the moment they happen and its other output as it exits; a frame that
+             * relays the two streams separately can put an error just past the
+             * tag. Only lines that are an error modpoll prints are taken, and only
+             * up to the next command line.
+             */
+            late(all) {
+                let at = -1;
+                for (let k = all.length - 1; k >= 0; k--) if (isTag(all[k], endTag)) { at = k; break; }
+                if (at < 0) return [];
+                const out = [];
+                for (let k = at + 1; k < all.length; k++) {
+                    const text = all[k].trim();
+                    if (/^[A-Za-z]:\\[^>]*>./.test(text) || text.indexOf(MARK + ':r') === 0) break;
+                    if (DIAGNOSTICS.some(d => d.re.test(text))) out.push(all[k]);
+                }
+                return out;
+            },
+        };
+    }
 
     /*
      * What a scan costs, counted where every command passes: one entry per
@@ -760,7 +849,21 @@
         ledger.otherErrors += count(/Unkn[wo]{2}n error|Can'?t reach slave|CRC|Invalid frame|checksum/gi);
     }
 
-    async function termRun(command, opts) {
+    /*
+     * One line at a time (1.70.0). Plant Term runs one anyway; the console now
+     * waits its turn as well, so two callers — Poll and the API, a bridge sweep
+     * and a read typed into the page, two API calls started together — never
+     * have one line's output read as the other's.
+     */
+    let termTurn = Promise.resolve();
+
+    function termRun(command, opts) {
+        const turn = termTurn.then(() => termRunMeasured(command, opts));
+        termTurn = turn.catch(() => { /* the next line runs whatever became of this one */ });
+        return turn;
+    }
+
+    async function termRunMeasured(command, opts) {
         const started = performance.now();
         let output;
         try {
@@ -771,13 +874,22 @@
         }
     }
 
+    /**
+     * Run one command line and return what it printed: the lines between the
+     * run's two tags (runCollector). The line returns when its end tag has
+     * printed — when the last program on it has exited and let go of its port —
+     * and not before, so the next line never starts on a shell still busy with
+     * this one, and no reply is cut off for arriving late.
+     *
+     * opts.info, when given, is filled in with how the line ended: `ended`
+     * (its end tag came), `cut` (the shell finished it without the end tag),
+     * `incomplete` (still running at timeoutMs) and `gap` (its start scrolled
+     * out of the terminal and the lines in between could not all be found
+     * again). Any of them means the output is not the whole answer.
+     */
     async function termRunInner(command, opts) {
-        const options = Object.assign({ timeoutMs: 25000, settleMs: 300 }, opts || {});
-        // modpoll writes its errors to stderr at once and flushes its banner only
-        // when the process exits, so a run that stops at the first error line has
-        // the truth but not the whole of it. A command run as typed is read for
-        // what it printed, not only for its values, and waits for all of it.
-        if (options.fullOutput) options.settleMs = Math.max(options.settleMs, 1500);
+        const options = Object.assign({ timeoutMs: 25000 }, opts || {});
+        const info = options.info || {};
         const state = await ensureTerminal();
         const outEl = state.outEl;
         // The terminal renders every space as a non-breaking one, so innerText hands
@@ -787,58 +899,25 @@
         // so the character is stated once and cannot be mangled by an editor.
         const NBSP = String.fromCharCode(160);
         const clean = text => String(text).split(NBSP).join(' ').split('\r').join('');
-
-        /*
-         * Where this run's output starts has to be marked in the transcript
-         * itself. Anchoring on the element that was last before the command
-         * fails once jQuery Terminal trims its oldest lines — the anchor is gone,
-         * and reading "everything" then returns values from earlier commands as
-         * if they were this command's answer. Echoing a tag unique to this run
-         * and reading after its last occurrence cannot be confused that way.
-         */
-        const runTag = MARK + ':r' + (++runCounter);
-        const readAll = () => {
+        const readLines = () => {
             const parts = [];
             let node = outEl.firstElementChild;
             while (node) { parts.push(node.innerText); node = node.nextElementSibling; }
-            return clean(parts.join('\n'));
+            return clean(parts.join('\n')).split('\n');
         };
 
         /*
-         * Output is accumulated as it arrives, not read once at the end. A long
-         * chained run prints more lines than the terminal keeps, so by the time
-         * it finishes its first block may already have scrolled out of the
-         * buffer — and on a plant that is exactly the sweep worth doing. Lines
-         * are collected on every poll and deduplicated, so trimming costs
-         * nothing as long as a line survives one polling interval.
+         * Where this run's output starts and ends is marked in the transcript
+         * itself. Anchoring on the element that was last before the command
+         * fails once jQuery Terminal trims its oldest lines — the anchor is gone,
+         * and reading "everything" then returns values from earlier commands as
+         * if they were this command's answer. Tags unique to this run cannot be
+         * confused that way.
          */
-        const before = new Set(readAll().split('\n').map(l => l.trim()).filter(Boolean));
-        let collected = '';
-        let previous = '';
-        const absorbNewLines = text => {
-            // Degraded path: keep whatever was not on screen when the run began.
-            // Two commands in one run can legitimately print the same line, so
-            // this is only used when growth can no longer be tracked.
-            const kept = String(text).split('\n').filter(line => {
-                const key = line.trim();
-                return key && !before.has(key) && collected.indexOf(line) < 0;
-            });
-            if (kept.length) collected += (collected ? '\n' : '') + kept.join('\n');
-        };
-        const harvest = () => {
-            const all = readAll();
-            const at = all.lastIndexOf(runTag);
-            if (at < 0) { absorbNewLines(all); return; }
-            const chunk = all.slice(at + runTag.length);
-            if (chunk.indexOf(previous) === 0) {
-                // Normal path: the run's own output, still whole, has grown.
-                collected += chunk.slice(previous.length);
-            } else {
-                absorbNewLines(chunk);
-            }
-            previous = chunk;
-        };
-        const readChunk = () => { harvest(); return collected; };
+        const id = (++runCounter).toString(36);
+        const startTag = MARK + ':r' + id;
+        const endTag = MARK + ':e' + id;
+        const run = runCollector(startTag, endTag);
 
         // The command as the terminal shows it; a chained line, run by run as its
         // output arrives (mirrorTerminal), without the console's markers.
@@ -848,59 +927,63 @@
         // ports (1.64) - leaves the log alone altogether.
         const quiet = options.silent || (!chain.length && !logCommand(command));
         const mirror = text => { if (!options.silent) mirrorTerminal(text, chain, quiet); };
-        state.t.exec('echo ' + runTag + ' & ' + command);
+        state.t.exec('echo ' + startTag + ' & ' + command + ' & echo ' + endTag);
         const deadline = Date.now() + options.timeoutMs;
-        let lastLength = -1;
-        let stableSince = Date.now();
-        let grew = false;
-        // The run tag's own echo is not output. Counting it as output starts the
-        // settle window before the device has said anything, which a TCP poll
-        // survives — it answers inside the window — and a serial one does not:
-        // 19200 baud with a second of turnaround looked like a command that
-        // printed nothing at all.
-        const deviceOutput = text => String(text).split('\n')
-            .filter(line => line.trim() && line.trim().indexOf(MARK) !== 0).join('\n');
-        let lastChunkLength = -1;
-        while (Date.now() < deadline) {
+        let shown = -1;
+        while (!run.state.ended && Date.now() < deadline) {
             await sleep(60);
-            const chunk = readChunk();
-            const body = deviceOutput(chunk);
-            if (body.length !== lastLength) { lastLength = body.length; stableSince = Date.now(); }
-            if (body.length) grew = true;
+            run.take(readLines());
             // Whoever is waiting can watch the output arrive. A chained line of
             // probes on a strict device is several refusals at ~630 ms each,
             // and the markers between them say which one the shell is on — a
             // caller showing progress gets that instead of one update per line.
-            if (options.onOutput && chunk.length !== lastChunkLength) {
-                lastChunkLength = chunk.length;
-                try { options.onOutput(chunk); } catch (e) { /* a progress callback must not stop a poll */ }
+            const text = run.text();
+            if (options.onOutput && text.length !== shown) {
+                shown = text.length;
+                try { options.onOutput(text); } catch (e) { /* a progress callback must not stop a poll */ }
             }
-            // Knowing how many values were asked for turns the wait into a real
-            // completion signal: a poll answers in about 130 ms, so waiting out a
-            // settle window is most of what a block used to cost.
-            if (options.expect && countValueLines(chunk) >= options.expect) { mirror(chunk); return chunk; }
-            // This plant does not resolve a bare "modpoll": say so once, take the
-            // full path, and run the same command again.
-            if (exePath === EXE_BARE && RE_NOT_FOUND.test(chunk)) {
-                exePath = EXE_FULL;
-                log('modpoll is not on this plant\'s PATH — using ' + EXE_FULL, 'warn');
-                return termRunInner(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
+        }
+        if (!run.state.started) {
+            // A shell that answers nothing at all is usually a dead session rather
+            // than a slow device — the page keeps its prompt either way, so silence
+            // is the only symptom. Reload the frame once and try again.
+            if (options.reconnect !== false) {
+                log('Plant Term answered nothing — reconnecting', 'warn');
+                await reconnectTerminal();
+                return termRunInner(command, Object.assign({}, options, { reconnect: false }));
             }
-            if (options.stopOnError !== false && !options.fullOutput && RE_FINAL_ERROR.test(chunk)) { mirror(chunk); return chunk; }
-            if (grew && Date.now() - stableSince > options.settleMs) { mirror(chunk); return chunk; }
+            throw new Error('Plant Term did not start the command within ' + Math.round(options.timeoutMs / 1000) +
+                ' s, before and after reconnecting. Another session may be flooding it.');
         }
-        const chunk = readChunk();
-        if (grew) { mirror(chunk); return chunk; }
-        // A shell that answers nothing at all is usually a dead session rather
-        // than a slow device — the page keeps its prompt either way, so silence
-        // is the only symptom. Reload the frame once and try again.
-        if (options.reconnect !== false) {
-            log('Plant Term answered nothing — reconnecting', 'warn');
-            await reconnectTerminal();
-            return termRunInner(command, Object.assign({}, options, { reconnect: false }));
+        let text = run.text();
+        // A run that printed neither a value nor an error has not said what
+        // happened. Give an error line relayed just past the end tag the moment
+        // it needs; a run that said something pays nothing for this.
+        if (run.state.ended && !run.state.cut && !countValueLines(text) &&
+            !text.split('\n').some(line => DIAGNOSTICS.some(d => d.re.test(line)))) {
+            const until = Date.now() + STRAGGLER_MS;
+            for (;;) {
+                const late = run.late(readLines());
+                if (late.length) { text += (text ? '\n' : '') + late.join('\n'); break; }
+                if (Date.now() >= until) break;
+                await sleep(60);
+            }
         }
-        throw new Error('Plant Term printed nothing within ' + Math.round(options.timeoutMs / 1000) +
-            ' s of running the command, before and after reconnecting. Another session may be flooding it.');
+        info.ended = run.state.ended;
+        info.cut = run.state.cut;
+        info.gap = run.state.gap;
+        info.incomplete = !run.state.ended;
+        // This plant does not resolve a bare "modpoll": say so once, take the
+        // full path, and run the same command again.
+        if (exePath === EXE_BARE && RE_NOT_FOUND.test(text)) {
+            exePath = EXE_FULL;
+            log('modpoll is not on this plant\'s PATH — using ' + EXE_FULL, 'warn');
+            return termRunInner(command.split(EXE_BARE + ' ').join(EXE_FULL + ' '), options);
+        }
+        if (run.state.cut) log('Plant Term finished a line without its end tag: it was cut short on its way through the shell', 'warn');
+        if (!run.state.ended) log('Plant Term was still running a line after ' + Math.round(options.timeoutMs / 1000) + ' s — what it printed so far is used, and the next line waits for it', 'warn');
+        mirror(text);
+        return text;
     }
 
     // -------------------------------------------------------- polling engine
@@ -943,9 +1026,30 @@
     function chainableCount(spec, blocks, limit) {
         const max = Math.min(limit || CHAIN_MAX, blocks.length);
         for (let n = max; n > 1; n--) {
-            if (chainBlocks(spec, blocks.slice(0, n)).length <= CHAIN_CHARS) return n;
+            if (chainBlocks(spec, blocks.slice(0, n)).length <= CHAIN_BUDGET) return n;
         }
         return 1;
+    }
+
+    /*
+     * Why the runs on one command line that brought back no value at all came
+     * back empty (1.70.0). modpoll's errors cannot be tied to a run by where
+     * they stand in a chained line, but they can be counted: as many exception
+     * replies as empty runs, and nothing else, is the device refusing each of
+     * them; as many time-outs, and nothing else, is no answer at all. Anything
+     * else — fewer error lines than empty runs, a mix, a damaged reply, a line
+     * that did not finish — says nothing for certain about any one run, and is
+     * asked again on a line of its own.
+     */
+    function whyEmpty(raw, emptyRuns, info) {
+        if (!emptyRuns) return null;
+        if (info && (info.cut || info.incomplete || info.gap)) return 'unknown';
+        const count = re => (String(raw || '').match(re) || []).length;
+        const refused = count(/exception response/gi);
+        const silent = count(/time-?out/gi);
+        if (refused >= emptyRuns && !silent) return 'refused';
+        if (silent >= emptyRuns && !refused) return 'silent';
+        return 'unknown';
     }
 
     async function readRegisters(input, onProgress) {
@@ -959,7 +1063,9 @@
 
         const step = formatOf(spec.format).step;
         const missingRuns = [];  // parts of a block that did not come back
-        const unreadable = [];   // single references the device refuses
+        const unreadable = [];   // references the device refuses: it answered with an exception
+        const noAnswer = [];     // references modpoll had no reply for — its time-out, not a refusal
+        const unsettled = [];    // references with no clear answer: no value, no exception, no time-out, even alone
         const notes = [];        // anything printed that was neither a value nor a known error
 
         // What a block asked for, against what arrived. A gap can mean the device
@@ -988,11 +1094,7 @@
             if (abortRequested) { diagnostics.push({ level: 'warn', text: 'Stopped by user', line: '' }); break; }
             const group = blocks.slice(bi, bi + chainableCount(spec, blocks.slice(bi)));
             bi += group.length;
-            let expect = 0;
-            for (const b of group) {
-                commands.push(buildCommand(spec, { ref: b.ref, count: b.count }));
-                expect += b.count;
-            }
+            for (const b of group) commands.push(buildCommand(spec, { ref: b.ref, count: b.count }));
             const line = chainBlocks(spec, group);
             const announced = {
                 // bi has already moved past this group, so it is the count done.
@@ -1004,12 +1106,11 @@
             if (onProgress) onProgress(announced);
             let raw;
             try {
-                // One error must not cut a chained run short: the later blocks in
-                // the same line are still coming. While it runs, the same caller
-                // hears what has arrived so far — marked partial, so it is
-                // progress to show and not a new command to count.
+                // The line is read to its end tag, every block on it. While it
+                // runs, the same caller hears what has arrived so far — marked
+                // partial, so it is progress to show and not a new command to count.
                 raw = await termRun(line, {
-                    timeoutMs: spec.timeoutMs, expect, stopOnError: group.length === 1,
+                    timeoutMs: spec.timeoutMs,
                     onOutput: onProgress ? chunk => onProgress(Object.assign({}, announced, {
                         partial: true, arriving: countValueLines(chunk), refusals: countRefusalLines(chunk),
                     })) : undefined,
@@ -1039,23 +1140,31 @@
 
         /*
          * Ask again for whatever is missing. A gap that comes back on the second
-         * attempt was a dropped line; a gap that stays empty is the device
-         * refusing, and halving isolates which references it refuses. Modbus
-         * refuses a read whole, so a single unmapped register otherwise costs its
-         * entire 99-register block. Each refusal costs about half a second on the
-         * wire, so the budget is a hard stop rather than a suggestion.
+         * attempt was a lost line. A run that comes back empty again is halved,
+         * since Modbus refuses a read whole and a single unmapped register
+         * otherwise costs its entire 99-register block, until single references
+         * are left — and a single reference is only called refused when the
+         * device said so (whyEmpty): an exception is a refusal, a time-out is no
+         * answer, and a reply that left no trace at all is asked again on a line
+         * of its own, then reported as unsettled. Each refusal costs about half a
+         * second on the wire, so the budget is a hard stop rather than a suggestion.
          */
         let budget = spec.recover === false ? 0 : 40;
         let queue = missingRuns.slice();
+        const refsOf = run => Array.from({ length: run.count }, (_, n) => run.ref + n * step);
         while (queue.length && budget > 0 && !abortRequested && !fatal) {
-            const attempt = queue.splice(0, chainableCount(spec, queue));
+            // A run marked alone goes on a line of its own, where whatever
+            // modpoll says can only be about it.
+            const firstAlone = queue.findIndex(r => r.alone);
+            const attempt = queue.splice(0, queue[0].alone ? 1 : chainableCount(spec, firstAlone < 0 ? queue : queue.slice(0, firstAlone)));
             budget -= attempt.length;
             const announced = { recovering: attempt.length, command: 're-asking for ' + attempt.length + ' gap(s)' };
             if (onProgress) onProgress(announced);
             let raw;
+            const info = {};
             try {
                 raw = await termRun(chainBlocks(spec, attempt), {
-                    timeoutMs: spec.timeoutMs, stopOnError: false,
+                    timeoutMs: spec.timeoutMs, info,
                     onOutput: onProgress ? chunk => onProgress(Object.assign({}, announced, {
                         partial: true, arriving: countValueLines(chunk), refusals: countRefusalLines(chunk),
                     })) : undefined,
@@ -1063,27 +1172,57 @@
             } catch (e) { diagnostics.push({ level: 'warn', text: 'Recovery stopped: ' + e.message, line: '' }); break; }
             const parsed = parseModpoll(raw);
             mergeValues(parsed.values);
+            for (const d of parsed.diagnostics) if (!diagnostics.some(x => x.text === d.text)) diagnostics.push(d);
+            // A port that stopped opening says nothing about any register: say
+            // so (above) and stop asking, keeping what the first pass read.
+            if (parsed.fatal) break;
             const have = new Set(parsed.values.map(v => v.i));
+            const empty = [];
             for (const run of attempt) {
                 const stillMissing = gapsOf(run, have);
                 if (!stillMissing.length) continue;
-                if (run.count === 1) { unreadable.push(run.ref); continue; }
-                // Nothing at all came back: halve, so a single refused reference
-                // inside the run can be found. Otherwise chase the gaps.
-                if (stillMissing.length === 1 && stillMissing[0].count === run.count) {
+                if (stillMissing.length === 1 && stillMissing[0].count === run.count) empty.push(run);
+                else for (const gap of stillMissing) queue.push(gap);   // lines lost: ask for what is missing
+            }
+            const why = whyEmpty(raw, empty.length, info);
+            // Asked twice, timed out twice, and nothing in this read has answered:
+            // the device is not there at this address, baud rate or wiring, and
+            // halving would only pay a time-out per half.
+            const absent = why === 'silent' && !values.length && empty.length === attempt.length;
+            for (const run of empty) {
+                if (absent) { noAnswer.push(...refsOf(run)); continue; }
+                if (run.count > 1) {
                     const left = Math.floor(run.count / 2);
                     queue.push({ ref: run.ref, count: left }, { ref: run.ref + left * step, count: run.count - left });
+                } else if (why === 'refused') {
+                    unreadable.push(run.ref);
+                } else if (why === 'silent') {
+                    noAnswer.push(run.ref);
+                } else if (attempt.length > 1 || !run.alone) {
+                    queue.push({ ref: run.ref, count: 1, alone: true });
+                } else if (!run.again) {
+                    queue.push({ ref: run.ref, count: 1, alone: true, again: true });
                 } else {
-                    for (const gap of stillMissing) queue.push(gap);
+                    unsettled.push(run.ref);
                 }
             }
         }
+        const refList = list => list.length + ' reference' + (list.length === 1 ? '' : 's');
+        const shownList = list => list.slice().sort((a, b) => a - b).slice(0, 8).join(', ') + (list.length > 8 ? '…' : '') + ' (printed index)';
         if (unreadable.length) {
+            diagnostics.push({ level: 'warn', text: refList(unreadable) + ' the device refuses: ' + shownList(unreadable), line: '' });
+        }
+        if (noAnswer.length) {
             diagnostics.push({
                 level: 'warn',
-                text: unreadable.length + ' reference' + (unreadable.length === 1 ? '' : 's') +
-                    ' the device refuses: ' + unreadable.slice(0, 8).join(', ') +
-                    (unreadable.length > 8 ? '…' : '') + ' (printed index)',
+                text: refList(noAnswer) + ' with no answer — modpoll timed out waiting for the device, which says nothing about its map: ' + shownList(noAnswer),
+                line: '',
+            });
+        }
+        if (unsettled.length) {
+            diagnostics.push({
+                level: 'warn',
+                text: refList(unsettled) + ' with no clear answer — asked again on a line of its own, still no value, and neither an exception nor a reply modpoll gave up waiting for: read again: ' + shownList(unsettled),
                 line: '',
             });
         }
@@ -1117,9 +1256,17 @@
                 if (named.writable) extra.writable = true;
                 return extra;
             })())),
-            // References the device refuses outright, isolated by halving a
-            // refused block. An empty list means nothing was refused.
+            // References the device refuses outright — it answered with an
+            // exception — isolated by halving a refused block. An empty list
+            // means nothing was refused.
             unreadable,
+            // References modpoll got no reply for at all (its time-out): the
+            // device did not answer, which says nothing about its map (1.70.0).
+            noAnswer,
+            // References with no clear answer: asked again on a line of their
+            // own, still no value, no exception and no time-out — a lost or
+            // damaged reply, or a gateway's own error. Read them again (1.70.0).
+            unsettled,
             // Kept for the case that matters most: a poll that returned nothing and
             // said nothing this code recognises.
             notes,
@@ -1183,7 +1330,7 @@
                 const segment = ['echo ' + MARK + ':' + probe.table + ':' + probe.ref,
                     buildCommand(Object.assign({}, spec, { table: probe.table }), { ref: probe.ref, count: 1 })];
                 const wouldBe = parts.concat(segment).join(' & ').length;
-                if (group.length && wouldBe > CHAIN_CHARS) break;
+                if (group.length && wouldBe > CHAIN_BUDGET) break;
                 parts.push(segment[0], segment[1]);
                 group.push(probe);
                 i++;
@@ -1202,7 +1349,7 @@
                 finished = done;
                 onProgress(from + done, list.length, { answered: answered + countValueLines(chunk), partial: true });
             } : undefined;
-            let raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false, onOutput: watch });
+            let raw = await termRun(line, { timeoutMs: spec.timeoutMs, onOutput: watch });
             // A port that will not open is no answer from anything: every probe
             // after it would fail the same way, and a scan counting them as
             // refusals would end by reporting a device that answers nothing.
@@ -1210,7 +1357,7 @@
             // Every probe echoes its own marker, so a missing marker means output
             // was lost rather than refused. One retry settles which it was.
             const markers = (raw.match(new RegExp(MARK + ':\\d+:\\d+', 'g')) || []).length;
-            if (markers < group.length) raw = await termRun(line, { timeoutMs: spec.timeoutMs, stopOnError: false, onOutput: watch });
+            if (markers < group.length) raw = await termRun(line, { timeoutMs: spec.timeoutMs, onOutput: watch });
             let current = null;
             for (const rawLine of String(raw).split(/\r?\n/)) {
                 const line2 = rawLine.trim();
@@ -1996,6 +2143,8 @@
             'answered: ' + asRanges(rows.map(r => r.ref)) + ' (' + rows.length + ' of ' + (result.summary ? result.summary.requested : rows.length) + ')',
         ];
         if (result.unreadable && result.unreadable.length) tail.push('refused by the device: ' + asRanges(result.unreadable));
+        if (result.noAnswer && result.noAnswer.length) tail.push('no answer (modpoll timed out): ' + asRanges(result.noAnswer));
+        if (result.unsettled && result.unsettled.length) tail.push('no clear answer (no value, exception or time-out; read again): ' + asRanges(result.unsettled));
         if (zeros.length) tail.push('read zero: ' + asRanges(zeros));
         if (unnamed.length) tail.push('no name known: ' + asRanges(unnamed));
         if (Object.keys(scales).length) {
@@ -2844,6 +2993,9 @@
                 table: '4 holding registers (function 3), 3 input registers (function 4), 1 discrete inputs (function 2), 0 coils (function 1)',
                 raw: 'the 16-bit value modpoll printed, signed; hex is the same bits',
                 shown: 'the value IWMAC displayed for a parameter when the unit\'s parameters were read',
+                refused: 'references the device refused with an exception reply: it answered, and they are outside its map',
+                noAnswer: 'references modpoll got no reply for before its time-out: the device did not answer, which says nothing about its map',
+                unsettled: 'references with no clear answer: asked again on their own, still no value, no exception and no time-out — read them again',
                 'plant[].driverId': 'IWMAC\'s parameter id: <plant>_<driver>_<regulator type>_<unit address>_0_<function>_<addr>[.<bit>]',
                 'plant[].iwmac.states': 'the texts IWMAC shows for each value (format_extra); stateNow is the one the register holds now',
                 'plant[].iwmac.logging': 'how the Plant Server logs the value (save_data, save_freq): on change, every N min …',
@@ -2933,6 +3085,9 @@
                 ranges: asRanges(readings.map(r => r.ref)),
             },
             refused: asRanges((result && result.unreadable) || []),
+            // Only when the poll had any (1.70.0): see the fieldGuide.
+            ...(result && result.noAnswer && result.noAnswer.length ? { noAnswer: asRanges(result.noAnswer) } : {}),
+            ...(result && result.unsettled && result.unsettled.length ? { unsettled: asRanges(result.unsettled) } : {}),
             readZero: asRanges(readings.filter(r => r.raw === 0).map(r => r.ref)),
             unnamed: asRanges(readings.filter(r => !r.name).map(r => r.ref)),
             impliedScales: scales,
@@ -4380,6 +4535,8 @@
             firstAddr: first ? first.addr : null,
             contiguous: result.values.every((v, idx) => !idx || v.i === result.values[idx - 1].i + 1),
             unreadable: result.unreadable || [],
+            noAnswer: result.noAnswer || [],
+            unsettled: result.unsettled || [],
             v: result.values.map(v => v.v),
             diagnostics: result.diagnostics.map(d => d.level + ': ' + d.text),
         };
@@ -4643,6 +4800,8 @@
         const ranges = planPointRanges(wordPlan, 8, OFFSET_WINDOW);
         const readings = new Map();      // table|ref -> the word as modpoll printed it
         const refused = new Set();       // table|ref
+        const silent = new Set();        // table|ref modpoll timed out on (1.70.0)
+        const lost = new Set();          // table|ref with no clear answer, even asked alone (1.70.0)
         const commands = [];
         const diagnostics = [];
 
@@ -4663,6 +4822,8 @@
             }
             for (const value of result.values) readings.set(range.table + '|' + value.i, value.v);
             for (const ref of result.unreadable || []) refused.add(range.table + '|' + ref);
+            for (const ref of result.noAnswer || []) silent.add(range.table + '|' + ref);
+            for (const ref of result.unsettled || []) lost.add(range.table + '|' + ref);
             for (const command of result.commands) commands.push(command);
             for (const d of result.diagnostics) if (!diagnostics.some(x => x.text === d.text)) diagnostics.push(d);
             // A port that will not open fails every range after it the same way.
@@ -4691,7 +4852,12 @@
             const refs = [];
             for (let k = 0; k < (p.decoded.step || 1); k++) refs.push(p.decoded.table + '|' + (p.ref + k));
             if (refs.some(k => refused.has(k))) return { point: p, status: 'refused', note: 'the device refuses this reference' };
-            if (refs.some(k => !readings.has(k))) return { point: p, status: 'no answer', note: 'no value came back for this reference' };
+            if (refs.some(k => !readings.has(k))) {
+                const note = refs.some(k => silent.has(k)) ? 'the device did not answer: modpoll timed out waiting, which says nothing about its map'
+                    : (refs.some(k => lost.has(k)) ? 'no clear answer: no value, no exception and no time-out, even asked alone — read it again'
+                        : 'no value came back for this reference');
+                return { point: p, status: 'no answer', note };
+            }
             const raw = valueAt(p, 0);
             if (raw === undefined) {
                 const d = decodeWords(wordsAt(p, 0), p.decoded.rawType, p.decoded.swap);
@@ -5746,7 +5912,7 @@
      */
     async function probeBinary(force) {
         if (_usageCache && !force) return _usageCache;
-        const raw = await termRun(exePath + ' -h', { timeoutMs: 15000, settleMs: 900 });
+        const raw = await termRun(exePath + ' -h', { timeoutMs: 15000 });
         _usageCache = {
             usage: raw.trim(),
             hasTcpPortFlag: /-p\s+#?\s*(tcp\s+)?port/i.test(raw),
@@ -6391,8 +6557,7 @@
         const kind = RE_MIRROR_FAIL.test(text) ? ' fail' : (RE_MIRROR_GOOD.test(text) ? ' good' : '');
         return el('div', { className: 'mirror' + kind, textContent: text });
     }
-    // A bare shell prompt: what the terminal prints when a command is done.
-    const RE_PROMPT_LINE = /^[A-Za-z]:\\[^>]*>$/;
+    // RE_PROMPT_LINE, a bare shell prompt, is with the Plant Term driver.
 
     /**
      * A command line as the runs it chains (1.62.3). The console puts several
@@ -8458,7 +8623,7 @@
                 }
                 if (command !== typed) ui.cmd.value = command;
                 assertReadOnly(command);
-                const raw = await termRun(command, { timeoutMs: readForm().timeoutMs, fullOutput: true });
+                const raw = await termRun(command, { timeoutMs: readForm().timeoutMs });
                 const parsed = parseModpoll(raw);
                 // What the typed command asked for, read off its own tokens, so the
                 // grid, the detail view and the export take the table and the
@@ -8597,7 +8762,7 @@
         comPortsLoading = (async () => {
             termState.busy = true;
             try {
-                const raw = await termRun('reg query HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM', { timeoutMs: 10000, fullOutput: true, silent: true });
+                const raw = await termRun('reg query HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM', { timeoutMs: 10000, silent: true });
                 comPortsCache = parseComPorts(raw);
                 fillComList(comPortsCache);
                 log(comPortsCache.length
@@ -9650,7 +9815,7 @@
             const command = ensureDevicePath(pollOnce);
             if (command !== pollOnce) log('Wrote the COM port as \\\\.\\COMn — Windows opens ports above COM9 only by that name', 'warn');
             assertReadOnly(command);
-            const raw = await termRun(command, { timeoutMs: 25000, fullOutput: true });
+            const raw = await termRun(command, { timeoutMs: 25000 });
             const parsed = parseModpoll(raw);
             return { ok: parsed.values.length > 0 && !parsed.fatal, command, values: parsed.values, diagnostics: parsed.diagnostics, raw };
         },
@@ -9944,7 +10109,10 @@
     }
 
     /**
-     * One register, one pass. Returns { value, name }, or null when the device refused it.
+     * One register, one pass. Returns { value, name } when it answered, or { miss } saying why it did not (1.70.0):
+     * 'refused' when the device answered with an exception, 'no answer' when modpoll timed out waiting for it, and
+     * 'unknown' for anything else - a reply lost twice, a port that did not open. Up to 1.69 every one of them came
+     * back as a refusal.
      *
      * The name comes off the same grid row the value does, so reporting it costs no extra read and no sixth console
      * method: the plant's own name for a register is what makes a scan readable.
@@ -9954,9 +10122,13 @@
         const st = await api.run();
         const row = ((st && st.grid && st.grid.rows) || [])[0];
         const last = String((((st && st.log) || []).slice(-1)[0]) || '');
-        if (/refuses/i.test(last) || !row) return null;
-        const v = (row.value !== undefined && row.value !== null) ? row.value : row.raw;
-        return (v === undefined) ? null : { value: v, name: row.name || null };
+        const v = row ? ((row.value !== undefined && row.value !== null) ? row.value : row.raw) : undefined;
+        if (/refuses/i.test(last) || v === undefined) {
+            if (/refuses/i.test(last)) return { miss: 'refused' };
+            if (/no clear answer/i.test(last)) return { miss: 'unknown' };
+            return { miss: /with no answer|time-?out|no response/i.test(last) ? 'no answer' : 'unknown' };
+        }
+        return { value: v, name: row.name || null };
     }
 
     /**
@@ -10016,11 +10188,13 @@
     /**
      * Read a set of (table, ref) over several passes and say what each one did. The distinction the caller needs is
      * never answered / sometimes answered / always answered, plus whether the bus itself was alive: a pass where the
-     * control register also refused proves nothing about anything else read in it.
+     * control register did not answer either proves nothing about anything else read in it. A row that missed says
+     * why, pass by pass (1.70.0): refused (the device answered with an exception), no answer (modpoll timed out) or
+     * unknown - which are three different things to conclude from.
      */
     async function bridgeSweep(unit, targets, repeats, control, controlTable) {
         await api.useUnit(unit);
-        const seen = new Map(targets.map(t => [t.table + '|' + t.ref, { table: t.table, ref: t.ref, label: t.label || null, values: [] }]));
+        const seen = new Map(targets.map(t => [t.table + '|' + t.ref, { table: t.table, ref: t.ref, label: t.label || null, values: [], misses: {} }]));
         // A verify sweeps four tables at once, so the control needs its own: reading it in whichever table happened
         // to come first would check a register the caller never named.
         const ctlTable = controlTable || (targets.length ? targets[0].table : 'input');
@@ -10031,25 +10205,27 @@
         for (let pass = 0; pass < Math.max(1, repeats || 1); pass++) {
             let controlOk = null;
             if (control !== undefined && control !== null) {
-                controlOk = (await bridgeReadOne(ctlTable, control)) !== null;
+                controlOk = !(await bridgeReadOne(ctlTable, control)).miss;
             }
             /*
-             * A refusal costs about 630 ms, so a device that is simply not reachable turns a 55-point list over three
-             * passes into two minutes spent proving nothing. When the control has refused and not one register has
-             * answered yet, more reading cannot change the answer - stop and say why.
+             * A read that brings nothing back costs 630 ms to a second, so a device that is simply not reachable turns a
+             * 55-point list over three passes into two minutes spent proving nothing. When the control has not answered
+             * and not one register has either, more reading cannot change the answer - stop and say why.
              */
             // No "pass:" in these messages. TEXT_SECRETS redacts whatever follows a bare "pass" and a colon wherever
             // it appears, free text included, so "on the first pass: the control ..." came back with "the" withheld.
             if (controlOk === false && !anyAnswered && pass > 0) {
-                aborted = `stopped after ${pass} complete round(s) - the control register refused and nothing else answered either`;
+                aborted = `stopped after ${pass} complete round(s) - the control register did not answer and nothing else did either`;
                 break;
             }
-            let refusedRunning = 0;
+            let missedRunning = 0;
             const record = (table, ref, got) => {
                 const row = seen.get(table + '|' + ref);
                 if (!row) return;                        // a block can span a gap the caller never named
-                row.values.push(got ? got.value : null);
-                if (got) { anyAnswered = true; if (!row.label && got.name) row.label = got.name; }
+                const answered = !!got && !got.miss;
+                row.values.push(answered ? got.value : null);
+                if (answered) { anyAnswered = true; if (!row.label && got.name) row.label = got.name; }
+                else { const why = (got && got.miss) || 'unknown'; row.misses[why] = (row.misses[why] || 0) + 1; }
             };
             /*
              * One read per register made a 40-register scan forty modpoll runs, and a 55-point list over three passes
@@ -10064,14 +10240,14 @@
                     const block = slice.length > 1 ? await bridgeReadBlock(run.table, slice[0], slice.length) : null;
                     if (block) {
                         slice.forEach((ref, n) => record(run.table, ref, block[n]));
-                        refusedRunning = 0;
+                        missedRunning = 0;
                     } else {
                         for (const ref of slice) {
                             const got = await bridgeReadOne(run.table, ref);
                             record(run.table, ref, got);
-                            if (got) refusedRunning = 0; else refusedRunning++;
-                            if (controlOk === false && !anyAnswered && refusedRunning >= 5) {
-                                aborted = 'stopped during the first round - the control register refused and so did the first five read after it';
+                            if (!got.miss) missedRunning = 0; else missedRunning++;
+                            if (controlOk === false && !anyAnswered && missedRunning >= 5) {
+                                aborted = 'stopped during the first round - the control register did not answer and neither did the first five read after it';
                                 break;
                             }
                             // One at a time is the slow path, so listen for a cancel inside it, not only after it.
@@ -10096,6 +10272,8 @@
                 answered: got.length, of: r.values.length,
                 verdict: got.length === 0 ? 'never' : (got.length === r.values.length ? 'always' : 'sometimes'),
                 values: r.values,
+                // How often each kind of miss happened, for never and sometimes: { refused: 2 }, { 'no answer': 1 }.
+                ...(got.length === r.values.length ? {} : { missed: r.misses }),
             };
         });
         const busAlive = passes.some(p => p.controlOk !== false);

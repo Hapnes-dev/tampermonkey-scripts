@@ -89,9 +89,19 @@ rebuilt.
   there is one.
 - **Recovers what a refused block still holds.** Modbus refuses a read whole, so
   one unmapped register inside a 99-register block returns nothing. The block is
-  halved until the readable part comes back, and the references the device will
-  not serve are listed as `result.unreadable`. Capped at 40 attempts, since every
-  refusal is paid for on the wire; `read({recover: false})` turns it off.
+  halved until the readable part comes back. Capped at 40 attempts, since every
+  refusal is paid for on the wire; `read({recover: false})` turns it off. Since
+  1.70.0 a reference that stays empty is sorted by what modpoll said about it:
+  - `result.unreadable` lists the references the device refuses: it answered with
+    an exception.
+  - `result.noAnswer` lists the ones modpoll timed out on. The device did not
+    answer, which says nothing about its map. A read where nothing at all answers
+    stops after the second time-out rather than halving its way through them.
+  - `result.unsettled` lists the ones with no clear answer. Even asked alone on a
+    line of its own, each brought back no value, no exception and no time-out:
+    a lost or damaged reply, or a gateway's own error. Read them again.
+
+  Up to 1.69 all three went into `unreadable` and were reported as refused.
 - **Scans a device.** *Scan device* asks all four tables a ladder of references
   placed where maps actually begin — 1, the round hundreds and thousands, and one
   past each, since "address 1000" in a document is reference 1001 — then treats
@@ -516,9 +526,10 @@ FieldTalk build the plants carry.
 | 272 registers, three blocks | ~300 ms total |
 
 Those numbers shape the tool: blocks go out four to a chained command line, and a
-poll returns as soon as the values asked for have arrived rather than waiting out
-a settle window. The same numbers explain why a device scan takes seconds — it is
-paying for refusals, not round trips.
+poll returns the moment its line's end tag prints — the moment its last modpoll
+has exited — rather than waiting out a settle window (see *Reads back to back*
+below). The same numbers explain why a device scan takes seconds — it is paying
+for refusals, not round trips.
 
 The build also turned out to support more than the memo said:
 
@@ -529,8 +540,10 @@ The build also turned out to support more than the memo said:
   nothing here can switch to zero-based addressing; `-r` is 1-based, always.
 - `-r 0` is rejected outright ("Invalid reference parameter!"), and `-c 100` is
   rejected too, although `-h` claims 1-100.
-- Two of its messages are misspelled — "Unknwon error!" (on TCP, usually a slave
-  the gateway does not serve) and "Progam stopped with exit code".
+- One of its messages is misspelled: "Unknwon error!" (on TCP, usually a slave
+  the gateway does not serve). The red "Progam stopped with exit code 1" is not
+  modpoll's but Plant Term's. Plant Term prints it after a command line whose last
+  program failed, in jQuery Terminal's own colour markup.
 
 And one thing about the device rather than the binary: **it refuses printed
 reference 1 — protocol address 0 — in every table**, while answering 0 for
@@ -549,8 +562,8 @@ before 1.46.0 changed anything:
 | One **refused** read, on its own (`raw()`) | ~4.0 s |
 | Whole scan, four tables | 223 s |
 
-A one-off command waits out a settle window a scan's reads do not, so those
-first two numbers overstate what a scan pays. `test/scan-simulation.py` carries
+Up to 1.69 a one-off command waited out a settle window a scan's reads did not,
+so those first two numbers overstate what a scan pays. `test/scan-simulation.py` carries
 V01's map and prices every run on a model calibrated on the real scan — a shell
 line ~0.5 s, an answered run ~0.1 s more, a refusal ~0.63 s (what a refusal
 cost on plant 2313 too) — which reproduces the 223 s within seconds. It says
@@ -1018,6 +1031,67 @@ plant's first Toolbox call goes out. There is no third-party code — no
 repository's `main` (`@updateURL`), so whoever can push to it decides what runs on
 the plant pages.
 
+## Reads back to back (1.70.0)
+
+**Reads need no spacing.** Call `read()`, `raw()`, Poll or the bridge as often and
+as close together as the job needs. Each one waits for the line before it.
+
+**What went wrong before.** On plant 10275 (2026-11-20) an EM270 energy meter at
+slave 1 on COM1 was read three times in a row, with the Plant Server stopped.
+`read({ slave: 1, start: 1, count: 2 })` returned 2392 and 0 the first time. The
+second and third times it returned no value, no error and no note, and the result
+said *2 references the device refuses: 1, 2*. With a 6 s pause between reads,
+every read answered.
+
+The fault was in how the console read the shell. It reported those reads before
+modpoll had said anything about them: an answer, a refusal and a time-out each
+print a line, and those results had none. Plant Term gives no sign that a command
+is finished, so up to 1.69 the console guessed:
+- A read ended as soon as the values it asked for were on screen. Plant Term was
+  still finishing the line then.
+- Any other run ended once its output had been still for 300 ms. A serial poll
+  can be still for longer than that between modpoll's banner and the device's
+  answer. Why the second and third reads were slower than the first was not
+  measured. A COM port opened again a moment after it was let go fits, since a
+  6 s pause cured it, and the simulation in `test/terminal-check.js` models that.
+- The next read then took the tail of the line before it for its own output, and
+  ended in that same silence.
+- The re-ask that followed collected only lines that were not already on screen.
+  A meter whose values had not changed printed exactly the lines it printed the
+  time before, so its reply was dropped.
+- The empty reference that was left was booked as refused.
+
+A typed command, a scan's probes and Run's passes went through the same code.
+
+**What 1.70.0 does:**
+- **Each line is tagged at both ends.** Every command line is sent as
+  `echo #mpc:r<id> & <command> & echo #mpc:e<id>`. The run's output is what stands
+  between the two tags, each on a line of its own. The end tag prints once the
+  last modpoll on the line has exited, so the line is over when it appears and not
+  before. Everything printed before the start tag is ignored: the tail of the line
+  before, its prompt, and the echo of this command line, which carries both tags.
+- **One line at a time.** Lines are sent one at a time, so two callers can no
+  longer have their output read as each other's. That covers Poll and the API, a
+  bridge sweep and a hand-typed read, or two API calls started together.
+- **Errors that arrive late are still read.** A run that printed neither a value
+  nor an error waits up to 400 ms past its end tag for a late error line. A frame
+  that relays modpoll's two output streams separately can put that line just
+  after the tag.
+- **A truncated line is reported.** A line that finishes without its end tag was
+  cut short on its way through the shell. Plant Term's red *Progam stopped with
+  exit code* line, or a bare prompt, marks its end, and the console says so in the
+  log.
+- **Lines stay the length they were.** The end tag comes out of the 420-character
+  budget for a chained line, so no line is longer than the lines sent before 1.70.
+
+A reference that never comes back is called refused only when the device sent an
+exception for it. A time-out is *no answer*. A reference that brings back no
+value, no exception and no time-out, even asked alone, is *unsettled* (see
+*Recovers what a refused block still holds*).
+
+`test/terminal-check.js` reproduces the 10275 reads against a simulated Plant Term
+and checks them on each variant of what is not known about it (see *Tests*).
+
 ## The API for an agent
 
 `window.__modpoll` is exposed on the page. `__modpoll.help()` prints the list.
@@ -1091,9 +1165,12 @@ __modpoll.views();                         // [{ table, ref, view, scale }]
 __modpoll.clearViews();                    // every register as read, listed and scaled again
 ```
 
-A full result is `{ ok, plant, at, spec, values, summary, diagnostics, commands }`,
-where each value is `{ i, addr, v }` — `i` as modpoll printed it, `addr` the
-protocol address. `readCompact` returns the values as a plain array with the first
+A full result is `{ ok, plant, at, spec, values, unreadable, noAnswer, unsettled,
+notes, summary, diagnostics, commands }`, where each value is `{ i, addr, v }` —
+`i` as modpoll printed it, `addr` the protocol address. `unreadable` lists the
+references the device refused, `noAnswer` the ones modpoll timed out on and
+`unsettled` the ones with no clear answer (1.70.0). Reads need no spacing between
+them; see *Reads back to back*. `readCompact` returns the values as a plain array with the first
 index and address as anchors and a `contiguous` flag, which is far cheaper to carry
 in a conversation than a few hundred objects.
 
@@ -1208,6 +1285,38 @@ server, so a change cannot quietly stop being the thing under test.
   `window.__poll`, `__verify`, `__detail`, `__dragGrip`, `__toggleZeroFilter` and
   `__probe` are the hooks, and `window.__api` is the API, `state()` and `card()`
   reading back what the hooks drew.
+- `node test/terminal-check.js` — the console's own Plant Term driver, polling
+  engine, probes and typed-command path (1.70.0), in Node, against a simulated
+  Plant Term. The simulation runs lines one at a time in the order sent and
+  relays output in batches. Its serial devices are slow to open a COM port let go
+  a moment earlier. The checks:
+  - plant 10275's three back-to-back reads of an EM270, which must return
+    2392,0 every time;
+  - a slave that never answers, which must come back as `noAnswer` and never as
+    refused, with the meter answering right after it;
+  - a strict device refusing 61–64 and answering 55–60;
+  - two reads started together;
+  - 300 registers on chained lines, twice in a row;
+  - probes and a typed command, each twice in a row.
+
+  The same checks run on variants of what is not known for certain about Plant
+  Term:
+  - the command echoed by the shell, by the terminal as it is sent, or when it
+    starts;
+  - stdout as printed, or only at exit;
+  - a fast or a slow relay;
+  - errors relayed after the end tag;
+  - a terminal that keeps only 150 lines.
+
+  `--quick` runs the main model only, in under a minute; the full run takes
+  three to four. `--src <file>` runs another copy of the script. 1.69.0 fails all
+  ten of the main model's checks, and its three back-to-back reads fail with
+  10275's own signature: 2392,0, then twice *2 references the device refuses:
+  1, 2*.
+- `node test/bridge-sweep.js` — the bridge's sweep, sliced out of the script, on
+  a stand-in console: a block read and its fallback to single registers, a dead
+  device's early stop, a cancel mid-sweep, and since 1.70.0 the reason a row
+  missed. A time-out is `no answer` everywhere and is never called refused.
 - `node test/bridge-transport.js` — the Claude bridge's request function (1.69.0),
   sliced out of the script and run against a stand-in for Tampermonkey. Every
   request is anonymous, so Tampermonkey sends it from its service worker. An old

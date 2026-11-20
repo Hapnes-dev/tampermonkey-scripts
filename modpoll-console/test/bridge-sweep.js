@@ -21,7 +21,8 @@ const BRIDGE_TABLE = { coil: '0', discrete: '1', input: '3', hold: '4' };
 
 /**
  * A console that answers according to `rule`, counting every modpoll run.
- * rule(table, start, count) -> array of values, or null for a refusal.
+ * rule(table, start, count) -> array of values, null for a refusal, or 'silent' for no answer at all (a time-out),
+ * each logged the way the console's own last line says it.
  */
 function makeApi(rule, log) {
   let form = null;
@@ -31,8 +32,12 @@ function makeApi(rule, log) {
     async run() {
       const table = Object.keys(BRIDGE_TABLE).find(k => BRIDGE_TABLE[k] === form.table);
       const values = rule(table, form.start, form.count);
-      log.push({ table, start: form.start, count: form.count, ok: values !== null });
-      if (values === null) return { log: ['the host refuses'], grid: { rows: [] } };
+      log.push({ table, start: form.start, count: form.count, ok: Array.isArray(values) });
+      if (values === null) return { log: ['WARN: 1 reference the device refuses: ' + form.start + ' (printed index)'], grid: { rows: [] } };
+      if (values === 'silent') {
+        return { log: ['WARN: 1 reference with no answer — modpoll timed out waiting for the device, which says nothing about its map: ' +
+          form.start + ' (printed index)'], grid: { rows: [] } };
+      }
       return {
         log: ['ok'],
         grid: { rows: values.map((v, i) => ({ value: String(v), name: 'reg' + (form.start + i) })) },
@@ -141,6 +146,37 @@ function report(name, log, res, expectRuns) {
     console.log(`${stopped ? 'OK  ' : 'FEIL'}  avbrutt midt i tilbakefallet`);
     console.log(`        modpoll-kjøringer: ${log.length} (av 42), avbrutt: ${res.aborted}`);
     allOk &= stopped;
+  }
+
+  // 7. A device that times out is "no answer", never "refused" - in the rows and in the reason the sweep stopped.
+  {
+    const log = [];
+    const api = makeApi(() => 'silent', log);
+    const { bridgeSweep } = load(api, log);
+    const res = await bridgeSweep('V01', targets, 2, 1, 'input');
+    const said = JSON.stringify(res);
+    const read = res.never.filter(r => r.of > 0);   // an aborted sweep lists the registers it never got to as well
+    const honest = !!res.aborted && !/refus/i.test(said) && read.length > 0 &&
+      read.every(r => r.missed && r.missed['no answer'] === r.of);
+    console.log(`${honest ? 'OK  ' : 'FEIL'}  tidsavbrudd blir "no answer", aldri "refused"`);
+    console.log(`        avbrutt: ${res.aborted}; never[0].missed: ${JSON.stringify(res.never[0] && res.never[0].missed)}`);
+    allOk &= honest;
+  }
+
+  // 8. A register the device refuses keeps saying so.
+  {
+    const log = [];
+    const bad = 17;
+    const api = makeApi((t, s, c) => {
+      const refs = Array.from({ length: c }, (_, i) => s + i);
+      return refs.includes(bad) ? null : refs.map(r => 100 + r);
+    }, log);
+    const { bridgeSweep } = load(api, log);
+    const res = await bridgeSweep('V01', targets, 1, 1, 'input');
+    const refused = res.never.length === 1 && res.never[0].missed && res.never[0].missed.refused === 1;
+    console.log(`${refused ? 'OK  ' : 'FEIL'}  et nektet register står som refused`);
+    console.log(`        never: ${JSON.stringify(res.never.map(r => ({ ref: r.ref, missed: r.missed })))}`);
+    allOk &= refused;
   }
 
   console.log(allOk ? '\nAlle bestått.' : '\nNoe feilet.');

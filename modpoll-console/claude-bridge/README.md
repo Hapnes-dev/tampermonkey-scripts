@@ -21,8 +21,20 @@ interception breaks the user's own file pickers.
 
 The loops run on the server side of that link. A sweep of forty registers, or five repeats
 of one, is a single tool call and a single answer rather than a round trip per read against
-an evaluate timeout. That is the point: on a shared RS-485 bus a single refusal means the
-bus was busy, not that the register is absent, and only repetition separates the two.
+an evaluate timeout. That is the point: where the bus is shared — a gateway the Plant Server
+also polls — a single time-out can mean the bus was busy rather than that the register does
+not answer, and only repetition separates the two. A refusal is different: it is the device
+answering with an exception, and it says the register is outside its map.
+
+**Reads need no spacing (Modpoll Console 1.70.0).** Up to 1.69 a read that followed another
+closely could come back empty. The console took 300 ms of quiet as the end of a command, and
+a serial poll can be quiet for longer than that before the device's answer. The console
+stopped listening before modpoll had said anything, and the reply that came afterwards was
+lost. The empty read was then reported as a refusal. On plant 10275 (2026-11-20) a healthy EM270 read three times in a row answered
+only the first time, and a 6 s pause between reads hid the fault. Since 1.70.0 every
+command line ends with an end tag of its own, and the next line is not sent before that tag
+has printed. A row that did not answer says why in `missed`: `refused`, `no answer` (modpoll
+timed out) or `unknown`.
 
 Consecutive registers go in one modpoll run, which takes `-c` up to 99. Scanning V01 on
 plant 2349 is `modpoll … -r 1 -c 40`, one run returning forty registers, where reading them

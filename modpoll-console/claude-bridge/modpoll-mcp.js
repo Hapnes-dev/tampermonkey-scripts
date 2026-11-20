@@ -14,8 +14,14 @@
  *
  * What it buys over driving the tab from outside: the loops run HERE. A sweep of forty registers, or five repeats of
  * one, is a single tool call and a single answer, instead of forty round trips against a 45-second evaluate ceiling.
- * That matters on a shared RS-485 bus, where one refusal proves nothing and only repetition separates "this register
- * does not exist" from "the bus was busy".
+ * That matters on a shared bus - a gateway the Plant Server also polls - where one time-out proves nothing and only
+ * repetition separates "this register does not answer" from "the bus was busy". A refusal (an exception reply) is the
+ * device answering; since Modpoll Console 1.70.0 a row that missed says which of the two it was.
+ *
+ * Reads need no spacing. Up to Modpoll Console 1.69 a read that followed another closely could come back empty -
+ * the console took 300 ms of quiet as the end of a command, stopped listening before a serial device's answer and
+ * lost the reply - and that was reported as a refusal. Since 1.70.0 every command line ends with its own end tag and the next is not sent
+ * before it prints.
  *
  * Who may talk to the port: only the userscript. A request must arrive at 127.0.0.1 or localhost by that very name
  * (no DNS rebinding), carry X-MODPOLL-BRIDGE (a web page cannot send it without a CORS preflight, which is refused)
@@ -412,10 +418,13 @@ const TOOLS = [
   {
     name: 'modpoll_read',
     description:
-      'Read Modbus registers from one unit. Set repeats above 1 on a shared RS-485 bus: a single refusal there means ' +
-      'the bus was busy, not that the register is absent, and only repetition tells the two apart. A control register ' +
-      'known to answer is read alongside each pass, so a run where everything refuses is reported as such rather ' +
-      'than as a map full of holes.',
+      'Read Modbus registers from one unit. Reads need no spacing: call it as often and as close together as needed ' +
+      '(Modpoll Console 1.70.0 or newer). A row that did not answer says why in missed: refused (the device answered ' +
+      'with an exception: the register is outside its map), no answer (modpoll timed out: says nothing about the map) ' +
+      'or unknown. Set repeats above 1 where the bus is shared, as on a gateway the Plant Server also polls: a time-out ' +
+      'there can be the bus being busy, and only repetition tells that from a register that never answers. A control ' +
+      'register known to answer is read alongside each pass, so a run where nothing answers is reported as such ' +
+      'rather than as a map full of holes.',
     inputSchema: {
       type: 'object',
       required: ['unit', 'table', 'start'],
@@ -424,7 +433,7 @@ const TOOLS = [
         table: { type: 'string', enum: ['coil', 'discrete', 'input', 'hold'], description: 'Which Modbus table.' },
         start: { type: 'integer', description: 'First register, as the PRINTED 1-based reference modpoll takes (-r).' },
         count: { type: 'integer', default: 1, description: 'How many, read one at a time.' },
-        repeats: { type: 'integer', default: 1, description: 'Passes over the range. 3 to 5 settles a flaky bus.' },
+        repeats: { type: 'integer', default: 1, description: 'Passes over the range. 3 to 5 settles a shared or flaky bus; one is enough on a bus nothing else polls.' },
         control: { type: 'integer', description: 'A printed reference known to answer, read once per pass as a control.' },
         control_table: {
           type: 'string', enum: ['coil', 'discrete', 'input', 'hold'],
