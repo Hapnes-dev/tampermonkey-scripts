@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         IWMAC Designer Import/Export
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
-// @version      1.119.10
+// @version      1.119.11
 // @description  Export the current panel as JSON / insert panel JSON into the canvas on the IWMAC Designer (legacy.iwmac.local) — copy a panel's look between panels and plants, with driver-id rebinding and embedded background image + parameter-selector Excel export
 // @author       hapnes-dev
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -34,7 +34,7 @@
 
 'use strict';
 
-var IWDIE_VERSION = '1.119.10';
+var IWDIE_VERSION = '1.119.11';
 var IWDIE_FORMAT = 'iwmac-designer-panel';
 var IWDIE_FORMAT_VERSION = 1;
 
@@ -14851,6 +14851,39 @@ function iwdieOvKeepThickness(b, wall) {
   return { x: wall === 'right' ? b.x + b.w - 29 : wall === 'left' ? b.x : iwdieOvRhu(b.x + (b.w - 29) / 2), y: b.y, w: 29, h: b.h };
 }
 
+/** (v1.119.11) A case standing on a wall (`wall` top, bottom, left, right) with its side on that wall `gap` px (2) off
+ *  the wall's line, into the store, where the wall runs along that side within reach: from 4 px beyond the line (the
+ *  case crossed it) to less than `gap` short of it, its runs at that line covering 40 % of the side. The side lands on a
+ *  whole pixel away from the line. Thomas, 2026-11-20, on plant 10275: "some disk was ontop of wall" - the house's wall
+ *  is a 2 px stroke, and he moved each case whose back lay on its centre line 1-2 px off by hand. A side with no wall in
+ *  reach stays, and so does a case already `gap` px or more off. oversikt.py's clear_of_wall is the same.
+ *  `runs` as iwdieOvWallRuns gives them. -> {x, y, w, h} */
+function iwdieOvClearOfWall(b, wall, runs, gap) {
+  gap = gap === undefined ? 2 : gap;
+  if (['top', 'bottom', 'left', 'right'].indexOf(wall) < 0 || !runs || !runs.length) return b;
+  var vertical = wall === 'left' || wall === 'right';
+  var edge = wall === 'top' ? b.y : wall === 'bottom' ? b.y + b.h : wall === 'left' ? b.x : b.x + b.w;
+  var lo = vertical ? b.y : b.x, hi = vertical ? b.y + b.h : b.x + b.w;
+  var into = wall === 'top' || wall === 'left' ? 1 : -1;
+  var lines = [];
+  runs.forEach(function (r) {
+    if (vertical && Math.abs(r[0] - r[2]) < 0.5) lines.push([r[0], Math.min(r[1], r[3]), Math.max(r[1], r[3])]);
+    else if (!vertical && Math.abs(r[1] - r[3]) < 0.5) lines.push([r[1], Math.min(r[0], r[2]), Math.max(r[0], r[2])]);
+  });
+  var best = null;
+  lines.forEach(function (l) {
+    var off = (edge - l[0]) * into;
+    if (off < -4 || off >= gap) return;
+    var cover = 0;
+    lines.forEach(function (q) { if (Math.abs(q[0] - l[0]) <= 1.5) cover += Math.max(0, Math.min(hi, q[2]) - Math.max(lo, q[1])); });
+    if (cover >= 0.4 * (hi - lo) && (best === null || Math.abs(off) < Math.abs((edge - best) * into))) best = l[0];
+  });
+  if (best === null) return b;
+  var near = into > 0 ? Math.ceil(best + gap - 1e-6) : Math.floor(best - gap + 1e-6);
+  var pos = into > 0 ? near : near - (vertical ? b.w : b.h);
+  return vertical ? { x: pos, y: b.y, w: b.w, h: b.h } : { x: b.x, y: pos, w: b.w, h: b.h };
+}
+
 /** (v1.107.3) The walls a drawing has in Bakgrunn as straight runs [x0, y0, x1, y1, half their width]: each item's runs,
  *  2 px wide unless the item says otherwise (`strokeWidth`), as oversikt.py draws a spec's walls. */
 function iwdieOvWallRuns(items) {
@@ -16062,8 +16095,9 @@ function iwdieCbPlan(ops, scene, ctx) {
         if (!cbx) { fail(i, 'a case needs rect [x, y, w, h], or at with w and h'); break; }
         // (v1.107.3) a walk-in room's box read off the walls it nearly meets (its `more` boxes stay as given); (v1.107.4)
         // every other case 29 px thick, however it came
+        // (v1.119.11) its side on its wall clear of the wall's 2 px stroke, before its cluster is laid out
         if (o.room) cbx = iwdieOvSnapToWalls(cbx, iwdieOvWallRuns(items));
-        else cbx = iwdieOvKeepThickness(cbx, o.wall);
+        else cbx = iwdieOvClearOfWall(iwdieOvKeepThickness(cbx, o.wall), o.wall, iwdieOvWallRuns(items));
         var key2 = o.ref !== undefined && o.ref !== null && o.ref !== '' ? 'ref:' + o.ref : 'op' + (i + 1);
         var cro2 = iwdieOvRolesOf(o.roles, key2, fail, i);
         if (cro2 === false) break;

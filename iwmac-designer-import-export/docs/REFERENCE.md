@@ -534,6 +534,17 @@ Measured in the stub on the hosted 0.14.0 build: View, Window, Help and IWMAC st
 capitals start on Help's row. The menu that opens under it keeps its earlier grey panel colours. Not run in the live
 Designer.
 
+### An Oversikt's case stands clear of its wall's stroke (v1.119.11)
+
+The bridge's `case` op now stands a case 2 px off its wall's line, into the store, before its cluster is laid out.
+This applies to a case that has a `wall` (top, bottom, left or right), with the wall running along that side.
+- **Why:** the house's wall is a 2 px stroke. A case whose back lay on the wall's centre line had the stroke over it.
+  On plant 10275, on 2026-11-20, Thomas moved each such case 1–2 px off by hand: *"some disk was ontop of wall"*.
+- **The rule:** `iwdieOvClearOfWall` takes a wall from 4 px beyond the case's side to less than 2 px short of it,
+  where the wall covers 40 % of that side. The side lands on a whole pixel. A case already 2 px or more off stays.
+- **The same in the kit:** the Copilot kit's `oversikt.py` (`clear_of_wall`) does the same, and its check says
+  SK-OV23 for a case box under a wall's stroke.
+
 ### Vectorize image works again on a picture with two pills or more (v1.119.10)
 
 Vectorize image reads the picture in a worker, which holds only the helpers `iwdieVzWorkerDeps()` lists.
