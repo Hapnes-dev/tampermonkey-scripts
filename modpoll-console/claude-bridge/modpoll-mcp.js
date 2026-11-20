@@ -424,7 +424,9 @@ const TOOLS = [
       'or unknown. Set repeats above 1 where the bus is shared, as on a gateway the Plant Server also polls: a time-out ' +
       'there can be the bus being busy, and only repetition tells that from a register that never answers. A control ' +
       'register known to answer is read alongside each pass, so a run where nothing answers is reported as such ' +
-      'rather than as a map full of holes.',
+      'rather than as a map full of holes. A value that looks like a placeholder code (0x8000, 0x7FFF, -999 ...) carries ' +
+      'suspect: a lead to check, not a verdict. A held COM port or an unreachable host ends the read with what it is ' +
+      '(1.72.0). Reads no longer fill the person\'s form; they queue behind the person\'s own polls instead of failing.',
     inputSchema: {
       type: 'object',
       required: ['unit', 'table', 'start'],
@@ -440,6 +442,48 @@ const TOOLS = [
           description: 'Which table the control lives in. Defaults to the table being read.',
         },
         timeout_ms: { type: 'integer', default: 240000 },
+      },
+    },
+  },
+  {
+    name: 'modpoll_diagnose',
+    description:
+      'Why a unit does not answer, and with which settings it does (Modpoll Console 1.72.0+). Read-only: one register at ' +
+      'a time, nothing written, slave 0 never addressed, the Plant Server never stopped. It reads the register as ' +
+      'configured. On an exception (the device is there) it tries the sibling table, the registers either side (a list ' +
+      'counted from the other base reads one off) and one IWMAC reads. On a held COM port it tries the bus\'s gateway in ' +
+      'ENC on ports 4001-4004. On silence it asks a neighbouring unit on the same bus (a dead bus or a wrong address?), ' +
+      'the common serial settings and other addresses. At most 16 reads or 120 s. Returns a verdict, findings with what ' +
+      'each rests on, a suggestion with its confidence (high only when a read answered with exactly those settings), ' +
+      'next steps and every read made. Call it before concluding anything from a unit that does not answer.',
+    inputSchema: {
+      type: 'object',
+      required: ['unit'],
+      properties: {
+        unit: { type: 'string', description: 'Unit id as the plant knows it, e.g. V02.' },
+        table: { type: 'string', enum: ['coil', 'discrete', 'input', 'hold'], description: 'Table of the register to start from. Default: one IWMAC reads from this unit, else hold.' },
+        start: { type: 'integer', description: 'PRINTED 1-based reference to start from. Default: one IWMAC reads from this unit, else 1.' },
+        timeout_ms: { type: 'integer', default: 300000 },
+      },
+    },
+  },
+  {
+    name: 'modpoll_discover',
+    description:
+      'Scan the whole unit as the console\'s Scan device button does (Modpoll Console 1.72.0+): every table, every region ' +
+      'it answers in, the edges of its map, everything found read twice, 32-bit formats and word order judged. A unit ' +
+      'scanned in full before is read from the map that scan found, in seconds; rediscover forces a full scan. The person ' +
+      'sees it in the console. Returns the answering ranges per table, the formats with their confidence and evidence, ' +
+      'the registers that moved between the two reads (values being measured, not setpoints), values that look like ' +
+      'placeholder codes, what IWMAC names and shows, and IWMAC\'s view of the unit. A full scan of a strict device ' +
+      'takes a minute or more; over RTU the Plant Server has to be stopped first, which is the person\'s decision.',
+    inputSchema: {
+      type: 'object',
+      required: ['unit'],
+      properties: {
+        unit: { type: 'string', description: 'Unit id as the plant knows it, e.g. V02.' },
+        rediscover: { type: 'boolean', default: false, description: 'Look for the map from scratch instead of reading the one the last full scan found.' },
+        timeout_ms: { type: 'integer', default: 900000 },
       },
     },
   },
@@ -628,8 +672,14 @@ async function callTool(name, args) {
     } else if (shape === 'list') {
       out.units = units.map((u) => [
         u.unit_id, u.unit_name, u.driver_type, u.connection,
-        u.host ? u.host + (u.slave === undefined || u.slave === null ? '' : ' slave ' + u.slave) : null,
+        u.host ? u.host + (u.slave === undefined || u.slave === null ? '' : ' slave ' + u.slave) +
+          (u.serial ? ' ' + u.serial : '') + (u.gateway ? ' (bus gateway ' + u.gateway + ')' : '') : null,
       ].filter(Boolean).join(' · '));
+      // A serial unit cannot be read while the Plant Server holds its port; saying so here saves a failed read.
+      if (units.some((u) => u.serial)) {
+        out.serial_note = 'Serial units need the Plant Server stopped (the person\'s decision, never Claude\'s), or ENC through their ' +
+                          'bus gateway: modpoll_diagnose finds out which one works.';
+      }
     } else {
       const tally = {};
       for (const u of units) {
@@ -659,6 +709,16 @@ async function callTool(name, args) {
       unit: a.unit, points: pts, repeats: a.repeats, subtract_one: subtractOne,
       control: a.control, control_table: a.control_table,
     }, a.timeout_ms);
+  }
+
+  if (name === 'modpoll_diagnose') {
+    const a = Object.assign({ timeout_ms: 300000 }, args);
+    return ask('diagnose', { unit: a.unit, table: a.table, start: a.start }, a.timeout_ms);
+  }
+
+  if (name === 'modpoll_discover') {
+    const a = Object.assign({ timeout_ms: 900000 }, args);
+    return ask('discover', { unit: a.unit, rediscover: !!a.rediscover }, a.timeout_ms);
   }
 
   if (name === 'modpoll_scan') {

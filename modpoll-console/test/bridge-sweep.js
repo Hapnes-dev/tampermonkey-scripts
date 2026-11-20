@@ -11,7 +11,8 @@ const SRC = path.join(__dirname, '..', 'Modpoll-Console.user.js');
 // A Windows checkout (core.autocrlf) has CRLF; the markers below are written with \n.
 const text = fs.readFileSync(SRC, 'utf8').replace(/\r\n/g, '\n');
 
-const START = '    /**\n     * One register, one pass. Returns { value, name }';
+// From the bridge's unit context (1.72.0) to the end of bridgeSweep: everything a sweep runs.
+const START = '    /*\n     * A unit as the bridge reads it (1.72.0)';
 const END = '    /** A modbusgen datatype names its Modbus table;';
 const a = text.indexOf(START);
 const b = text.indexOf(END);
@@ -21,29 +22,32 @@ const code = text.slice(a, b);
 const BRIDGE_TABLE = { coil: '0', discrete: '1', input: '3', hold: '4' };
 
 /**
- * A console that answers according to `rule`, counting every modpoll run.
- * rule(table, start, count) -> array of values, null for a refusal, or 'silent' for no answer at all (a time-out),
- * each logged the way the console's own last line says it.
+ * The console's readRegisters as the bridge sees it (1.72.0), answering according to `rule` and counting every modpoll
+ * run. rule(table, start, count) -> array of values, null for a refusal, 'silent' for no answer at all (a time-out) or
+ * 'held' for a COM port the Plant Server holds. A block read (recover: false) comes back as modpoll left it; a single
+ * register comes back judged, as the console's own recovery judges it.
  */
-function makeApi(rule, log) {
-  let form = null;
-  return {
-    async useUnit() {},
-    setForm(f) { form = f; },
-    async run() {
-      const table = Object.keys(BRIDGE_TABLE).find(k => BRIDGE_TABLE[k] === form.table);
-      const values = rule(table, form.start, form.count);
-      log.push({ table, start: form.start, count: form.count, ok: Array.isArray(values) });
-      if (values === null) return { log: ['WARN: 1 reference the device refuses: ' + form.start + ' (printed index)'], grid: { rows: [] } };
-      if (values === 'silent') {
-        return { log: ['WARN: 1 reference with no answer — modpoll timed out waiting for the device, which says nothing about its map: ' +
-          form.start + ' (printed index)'], grid: { rows: [] } };
-      }
-      return {
-        log: ['ok'],
-        grid: { rows: values.map((v, i) => ({ value: String(v), name: 'reg' + (form.start + i) })) },
-      };
-    },
+function makeEngine(rule, log) {
+  const tableName = digit => Object.keys(BRIDGE_TABLE).find(k => BRIDGE_TABLE[k] === digit);
+  return async function readRegisters(spec) {
+    const table = tableName(spec.table);
+    const values = rule(table, spec.start, spec.count);
+    log.push({ table, start: spec.start, count: spec.count, ok: Array.isArray(values) });
+    const result = { values: [], diagnostics: [], unreadable: [], noAnswer: [], unsettled: [] };
+    const judged = spec.recover !== false && spec.count === 1;
+    if (values === 'held') {
+      result.diagnostics.push({ level: 'fatal', text: 'Serial port already open — the Plant Server holds this COM port', line: 'Serial port already open!' });
+    } else if (values === null) {
+      result.diagnostics.push({ level: 'warn', text: 'Illegal data address exception — device answered, register is outside its map', line: 'Illegal Data Address exception response!' });
+      if (judged) result.unreadable.push(spec.start);
+    } else if (values === 'silent') {
+      result.diagnostics.push({ level: 'error', text: 'No response from device (timeout)', line: 'Reply time-out!' });
+      if (judged) result.noAnswer.push(spec.start);
+    } else {
+      result.values = values.map((v, i) => Object.assign({ i: spec.start + i, addr: spec.start + i - 1, v },
+        v === -32768 ? { suspect: { code: '0x8000', why: 'the lowest signed 16-bit value', strength: 'strong' } } : {}));
+    }
+    return result;
   };
 }
 
@@ -51,14 +55,22 @@ function makeApi(rule, log) {
  * `cancelAfter` makes /bridge/cancelled start answering true once that many reads have happened, which is how a
  * modpoll_cancel reaches a sweep already running. Left null, the bridge is never asked to stop.
  */
-function load(api, log, cancelAfter) {
+function load(readRegisters, log, cancelAfter) {
   const bridgeHttp = async (method, path) => {
     if (path !== '/bridge/cancelled') throw new Error('the harness only answers /bridge/cancelled');
     return { cancelled: cancelAfter !== null && cancelAfter !== undefined && log.length >= cancelAfter };
   };
-  const f = new Function('api', 'BRIDGE_TABLE', 'bridgeHttp', code + '\n;return { bridgeSweep, bridgeRuns };');
-  return f(api, BRIDGE_TABLE, bridgeHttp);
+  const fetchUnits = async () => [{ unit_id: 'V01', mode: 'tcp', host: '192.168.10.100', slave: 1, baudrate: '9600', parity: 'none', databits: '8', stopbits: '1' }];
+  const fetchPlantNames = async () => ({ unitId: 'V01', byRef: new Map(Array.from({ length: 400 }, (_, i) => ['3||' + (i + 1), [{ name: 'reg' + (i + 1) }]])) });
+  const portProblem = raw => (/serial port already open/i.test(raw) ? 'the port is held — by the Plant Server while it runs. Nothing was read.' : null);
+  const normaliseSpec = s => s;
+  // Up to 1.71 the bridge filled the person's form and pressed Poll. Any touch of the console's API now throws.
+  const api = new Proxy({}, { get: (t, k) => () => { throw new Error('the bridge touched the console form: api.' + String(k)); } });
+  const f = new Function('api', 'BRIDGE_TABLE', 'bridgeHttp', 'fetchUnits', 'fetchPlantNames', 'readRegisters', 'portProblem', 'normaliseSpec',
+    code + '\n;return { bridgeSweep, bridgeRuns };');
+  return f(api, BRIDGE_TABLE, bridgeHttp, fetchUnits, fetchPlantNames, readRegisters, portProblem, normaliseSpec);
 }
+const makeApi = makeEngine;   // the cases below name the fake by what it stood for
 
 const targets = [];
 for (let r = 1; r <= 40; r++) targets.push({ table: 'input', ref: r });
@@ -178,6 +190,31 @@ function report(name, log, res, expectRuns) {
     console.log(`${refused ? 'OK  ' : 'FEIL'}  et nektet register står som refused`);
     console.log(`        never: ${JSON.stringify(res.never.map(r => ({ ref: r.ref, missed: r.missed })))}`);
     allOk &= refused;
+  }
+
+  // 9. A held COM port ends the sweep with what it is, rather than a column of "unknown" (1.72.0).
+  {
+    const log = [];
+    const api = makeApi(() => 'held', log);
+    const { bridgeSweep } = load(api, log);
+    let said = null;
+    try { await bridgeSweep('V01', targets, 2, 1, 'input'); } catch (e) { said = e.message; }
+    const ended = !!said && /held/i.test(said) && log.length === 1;
+    console.log(`${ended ? 'OK  ' : 'FEIL'}  en holdt COM-port avslutter med grunnen, etter én lesing`);
+    console.log(`        modpoll-kjøringer: ${log.length}, sa: ${said}`);
+    allOk &= ended;
+  }
+
+  // 10. A placeholder value carries its flag through the block path (1.72.0).
+  {
+    const log = [];
+    const api = makeApi((t, s, c) => Array.from({ length: c }, (_, i) => (s + i === 5 ? -32768 : 100 + s + i)), log);
+    const { bridgeSweep } = load(api, log);
+    const res = await bridgeSweep('V01', targets, 1, 1, 'input');
+    const flagged = res.always_rows.filter(r => r.suspect);
+    const ok = flagged.length === 1 && flagged[0].ref === 5 && flagged[0].suspect === '0x8000';
+    console.log(`${ok ? 'OK  ' : 'FEIL'}  plassholderverdi flagges: ${JSON.stringify(flagged)}`);
+    allOk &= ok;
   }
 
   console.log(allOk ? '\nAlle bestått.' : '\nNoe feilet.');

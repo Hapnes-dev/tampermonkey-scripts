@@ -56,6 +56,9 @@ function loadConsole(plantTerm, env) {
         lift("    const EXE_BARE = 'modpoll';", '    // ---------------------------------------------------- Plant Term driver'),
         lift('    const termState = {', '    // -------------------------------------------------------- polling engine'),
         lift('    let abortRequested = false;', '    /*\n     * The map a full scan found'),
+        // 1.72.0: a value that looks like a placeholder, and Diagnose.
+        lift('    function suspectValue(v, format) {', '    /** Runs of consecutive numbers as "430-445, 448". */'),
+        lift('    // ------------------------------------------------------------ diagnosis', '    // ------------------------------------------------ what may leave the browser'),
     ].join('\n');
     const factory = new Function('plantTerm', 'globalThis', 'setTimeout', 'clearTimeout', 'Worker', [
         "const window = globalThis; const location = { hostname: '10275.plants.iwmac.local' };",
@@ -74,7 +77,7 @@ function loadConsole(plantTerm, env) {
         '    const parsed = parseModpoll(out);',
         '    return { ok: parsed.values.length > 0 && !parsed.fatal, values: parsed.values, diagnostics: parsed.diagnostics, raw: out };',
         '}',
-        'return { readRegisters, probeRefs, termRun, raw, logged, termState };',
+        'return { readRegisters, probeRefs, termRun, raw, logged, termState, diagnoseDevice, suspectValue, DIAG_MAX_ATTEMPTS };',
     ].join('\n'));
     return factory(plantTerm, globalThis, e.setTimeout, e.clearTimeout, e.Worker);
 }
@@ -134,6 +137,8 @@ function makePlantTerm(opts) {
         refuseMs: 600,        // a device saying no
         timeoutMs: 1000,      // modpoll's own reply time-out
         observer: true,       // the frame's window has a MutationObserver (false: a page without one)
+        route: null,          // (where) -> what a modpoll pointed there meets (1.72.0, Diagnose): { device }, { held },
+                              // { noPort }, { unreachable } or { garbled }; null: DEVICES by slave, as before
     }, opts || {});
     const lines = [];
     /*
@@ -209,11 +214,34 @@ function makePlantTerm(opts) {
         say('Data type: 16-bit register, output (holding) register table');
         say('');
         await sleep(60 + (Date.now() - (portClosedAt[host] || 0) < o.restMs ? o.restPenaltyMs : 0));
+        // Where the command is pointed decides what it meets (1.72.0).
+        const mode = arg('-m') || 'rtu';
+        const serial = mode === 'rtu' || mode === 'ascii';
+        const where = {
+            mode, host, slave, table,
+            port: serial ? null : Number(arg('-p') || 502),
+            baud: serial ? String(arg('-b') || '19200') : null,
+            parity: serial ? String(arg('-p') || 'even') : null,
+            stop: serial ? String(arg('-s') || '1') : null,
+        };
+        stats.where = (stats.where || []).concat([Object.assign({ segment }, where)]);
+        const route = o.route ? (o.route(where) || {}) : { device: DEVICES[slave] };
+        let code = 0;
+        if (route.held || route.noPort || route.unreachable) {
+            err.push(route.held ? 'Serial port already open!' : (route.noPort ? 'Port or socket open error!' : "Can't reach slave!"));
+            code = 1;
+            for (const line of err) emit(line, 'err');
+            await sleep(30);
+            if (o.stdout === 'exit') for (const line of stdout) emit(line);
+            return code;
+        }
         say('Protocol opened successfully.');
         say('Polling slave (Ctrl-C to stop) ...');
-        const device = DEVICES[slave];
-        let code = 0;
-        if (!device) {
+        const device = route.device;
+        if (route.garbled) {
+            await sleep(o.replyMs);
+            err.push('Checksum error!');
+        } else if (!device) {
             await sleep(o.timeoutMs);
             err.push('Reply time-out!');
         } else {
@@ -221,6 +249,9 @@ function makePlantTerm(opts) {
             for (let n = 0; n < count; n++) values.push(device(table, ref + n));
             if (values.includes('lose')) {
                 await sleep(o.replyMs);   // modpoll goes quiet: no value, no error line, as if its reply were lost
+            } else if (values.includes('illegal function')) {
+                await sleep(o.refuseMs);
+                err.push('Illegal Function exception response!');
             } else if (values.includes('refuse')) {
                 await sleep(o.refuseMs);
                 err.push('Illegal Data Address exception response!');
@@ -435,12 +466,124 @@ async function scenarioHidden(label, model) {
     });
 }
 
+/*
+ * Diagnose (1.72.0) against a small plant whose every fault is known, one case per cause. What it must get right:
+ * the verdict, a suggestion only from a read that answered with it, and nothing but one-register reads on the way.
+ */
+async function scenarioDiagnose(label) {
+    const COM1_BUS = { 1: (t, r) => (t === '4' && r >= 1 && r <= 120 ? (r === 1 ? 2392 : 0) : 'refuse'), 4: (t, r) => 3 * r };
+    const route = w => {
+        if (w.mode === 'rtu') {
+            const port = String(w.host).replace(/^\\\\\.\\/, '').toUpperCase();
+            if (port === 'COM2') return { held: true };                            // the Plant Server's
+            if (['COM1', 'COM3', 'COM4'].indexOf(port) < 0) return { noPort: true };
+            if (port === 'COM1') return w.baud === '9600' && w.parity === 'none' ? { device: COM1_BUS[w.slave] } : {};
+            if (port === 'COM3') {                                                 // a device reset to 19200 8E1
+                if (w.slave !== 7 || w.baud !== '19200') return {};
+                return w.parity === 'even' ? { device: (t, r) => 700 + r } : { garbled: true };
+            }
+            return {};                                                             // COM4: nothing on it at all
+        }
+        if (w.host === '192.168.10.100') {                                         // input registers only
+            if (w.port !== 502) return { unreachable: true };
+            return { device: (t, r) => (t === '3' && r >= 1 && r <= 50 ? 100 + r : (t === '4' ? 'illegal function' : 'refuse')) };
+        }
+        if (w.host === '192.168.10.30' && w.mode === 'enc') {                      // COM2's gateway, serial port 2
+            return w.port === 4002 ? { device: w.slave === 5 ? (t, r) => 500 + r : null } : { unreachable: true };
+        }
+        if (w.host === '192.168.10.50') return { device: w.slave === 2 ? (t, r) => 50 + r : null };   // a gateway: only unit 2
+        return { unreachable: true };
+    };
+    const term = makePlantTerm({ route, timeoutMs: 150, replyMs: 20, refuseMs: 40, lineMs: 15, relayMs: 20, restMs: 0 });
+    const c = loadConsole(term);
+    const rtu = (host, slave, more) => Object.assign({ mode: 'rtu', host, slave, table: '4', start: 1, baudrate: '9600', parity: 'none', databits: '8', stopbits: '1' }, more || {});
+    const tcp = (host, slave, more) => Object.assign({ mode: 'tcp', host, port: 502, slave, table: '4', start: 1 }, more || {});
+    const units = [
+        { unit_id: 'E01', mode: 'rtu', host: 'COM1', slave: 1, baudrate: '9600', parity: 'none', databits: '8', stopbits: '1', driver_addr: '1', bus: { com: 'COM1', gateway: '', serial: true } },
+        { unit_id: 'X09', mode: 'rtu', host: 'COM1', slave: 9, baudrate: '9600', parity: 'none', databits: '8', stopbits: '1', driver_addr: '4_9', bus: { com: 'COM1', gateway: '', serial: true } },
+        { unit_id: 'P05', mode: 'rtu', host: 'COM2', slave: 5, baudrate: '9600', parity: 'none', databits: '8', stopbits: '1', driver_addr: '5', bus: { com: 'COM2', gateway: '192.168.10.30', serial: true } },
+    ];
+    const run = (spec, unitId, more) => c.diagnoseDevice(spec, Object.assign({
+        units, unit: units.find(u => u.unit_id === unitId) || null, comPorts: async () => [{ port: 'COM1' }, { port: 'COM2' }, { port: 'COM3' }, { port: 'COM4' }],
+    }, more || {}));
+    const said = d => d.verdict + ' | ' + d.headline + ' | ' + (d.suggestion ? JSON.stringify(d.suggestion) : 'no suggestion') + ' | ' +
+        d.attempts.map(a => a.n + ':' + a.outcome).join(' ');
+    try {
+        let d = await run(rtu('COM1', 1), 'E01');
+        check(label + ': a healthy meter answers on the first read, and nothing more is tried',
+            d.verdict === 'answers' && d.tried === 1 && d.confidence === 'high', said(d));
+
+        d = await run(rtu('COM1', 1, { start: 121 }), 'E01');
+        check(label + ': a register just past the map: refused, the one before it answers - a lead with low confidence, not a fact',
+            d.verdict === 'register refused, neighbour answers' && d.suggestion && d.suggestion.start === 120 && d.confidence === 'low', said(d));
+
+        d = await run(tcp('192.168.10.100', 1, { table: '4', start: 10 }), null);
+        check(label + ': holding refused as an illegal function, the input table answers: wrong table, high confidence',
+            d.verdict === 'wrong table' && d.suggestion && d.suggestion.table === '3' && d.confidence === 'high', said(d));
+
+        d = await run(rtu('COM2', 5), 'P05');
+        check(label + ': a COM port the Plant Server holds: its gateway in ENC answers on 4002 - suggested, with the caveat',
+            d.verdict === 'reachable through the gateway' && d.suggestion && d.suggestion.mode === 'enc' && d.suggestion.port === 4002 &&
+            d.suggestion.host === '192.168.10.30' && d.confidence === 'medium' && d.next.some(n => /another device/i.test(n)), said(d));
+
+        d = await run(rtu('COM9', 1), null);
+        check(label + ': a COM port that does not exist: said, with the ports this plant server has',
+            d.verdict === 'port did not open' && d.tried === 1 && (d.comPorts || []).join(',') === 'COM1,COM2,COM3,COM4', said(d));
+
+        d = await run(rtu('COM3', 7), null);
+        check(label + ': a device answering at 19200 8E1, not 9600 8N1: found, and the settings suggested with high confidence',
+            d.verdict === 'found at other settings' && d.suggestion && d.suggestion.baudrate === '19200' && d.suggestion.parity === 'even' && d.confidence === 'high', said(d));
+
+        d = await run(rtu('COM1', 9), 'X09');
+        check(label + ': a silent address on a working bus: the neighbour proves the bus, and the address in the plant\'s own string answers',
+            d.verdict === 'found at another address' && d.suggestion && d.suggestion.slave === 4 &&
+            d.findings.some(f => /The bus works/.test(f)), said(d));
+
+        d = await run(tcp('192.168.10.99', 1), null);
+        check(label + ': nothing takes a connection: unreachable, one read, no suggestion', d.verdict === 'unreachable' && d.tried === 1 && !d.suggestion, said(d));
+
+        d = await run(tcp('192.168.10.100', 1, { port: 503, table: '3', start: 10 }), null);
+        check(label + ': the wrong TCP port: 502 answers, suggested with high confidence',
+            d.verdict === 'wrong port' && d.suggestion && d.suggestion.port === 502 && d.confidence === 'high', said(d));
+
+        d = await run(tcp('192.168.10.50', 1), null);
+        check(label + ': a gateway that serves unit 2 only: the connection works, unit 2 answers - medium confidence, it could be another device',
+            d.verdict === 'found at another address' && d.suggestion && d.suggestion.slave === 2 && d.confidence === 'medium', said(d));
+
+        d = await run(rtu('COM4', 3), null);
+        check(label + ': a bus with nothing on it: silent, within the budget of ' + c.DIAG_MAX_ATTEMPTS + ' reads',
+            d.verdict === 'silent' && d.tried <= c.DIAG_MAX_ATTEMPTS && !d.suggestion, said(d));
+
+        // Every command any diagnosis sent: one register, polled once, never slave 0, nothing after the host.
+        const sent = (term.stats.where || []).map(w => w.segment);
+        const unsafe = sent.filter(s => {
+            const tokens = s.trim().split(/\s+/);
+            const at = flag => tokens.indexOf(flag);
+            return at('-1') < 0 || tokens[at('-c') + 1] !== '1' || tokens[at('-a') + 1] === '0' ||
+                at('-a') < 0 || /^-/.test(tokens[tokens.length - 1]);
+        });
+        check(label + ': every one of the ' + sent.length + ' commands reads one register once: -1, -c 1, never slave 0',
+            sent.length > 0 && unsafe.length === 0, unsafe.slice(0, 3).join('\n        '));
+
+        check(label + ': a value at the ends of the signed range, or all bits set in hex, is a placeholder; an ordinary one is not',
+            !!c.suspectValue(-32768, '') && c.suspectValue(-32768, '').code === '0x8000' && c.suspectValue(32767, '').code === '0x7FFF' &&
+            c.suspectValue(65535, 'hex').code === '0xFFFF' && c.suspectValue(-999, '').strength === 'weak' &&
+            !c.suspectValue(2392, '') && !c.suspectValue(-4010, '') && !c.suspectValue(-1, '') && !c.suspectValue(23.5, 'float') &&
+            c.suspectValue(2147483647, 'int').strength === 'strong',
+            JSON.stringify([c.suspectValue(-32768, ''), c.suspectValue(-1, ''), c.suspectValue(65535, 'hex')]));
+    } finally {
+        await idle(term);
+        term.stop();
+    }
+}
+
 (async () => {
     console.log('terminal-check: ' + path.relative(process.cwd(), SRC));
     const main = { echo: 'shell', stdout: 'live', relayMs: 150 };
     await scenarioBackToBack('plant-like', main);
     await scenarioWide('plant-like', main);
     await scenarioHidden('plant-like', main);
+    await scenarioDiagnose('diagnose');
     if (!quick) {
         await scenarioBackToBack('a page without MutationObserver', { echo: 'shell', stdout: 'live', relayMs: 150, observer: false });
         await scenarioHidden('errors relayed after stdout', { echo: 'shell', stdout: 'exit', relayMs: 300, stderrLast: true });

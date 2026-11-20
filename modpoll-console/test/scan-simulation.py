@@ -47,6 +47,9 @@ def bundle(src, label):
     js += "const log = () => {}; const mirrorTerminal = () => {};\n"
     js += "const enrichValue = () => ({}); const pointForReading = () => null; const plantNamesFor = () => null;\n"
     js += lift(src, "    const EXE_BARE", "    // ---------------------------------------------------- Plant Term driver")
+    # 1.72.0 flags placeholder values as they are read; an older copy has no such function.
+    if "    function suspectValue(v, format) {" in src:
+        js += lift(src, "    function suspectValue(v, format) {", "    /** Runs of consecutive numbers")
     js += lift(src, "    /** Runs of consecutive numbers", "    function impliedScale")
     js += "const COST = { lines: 0, invocations: 0, refusals: 0, kinds: {} };\n"
     js += "let DEVICE = null; let plantNames = null; let pointList = null;\n"

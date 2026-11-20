@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.71.0
+// @version      1.72.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -59,7 +59,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.71.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.72.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -1382,6 +1382,9 @@
                 if (named.shown !== '' && named.shown !== null) extra.shown = named.shown;
                 if (named.type) extra.type = named.type;
                 if (named.writable) extra.writable = true;
+                // A placeholder code rather than a reading, by the value alone (1.72.0).
+                const suspect = suspectValue(v.v, spec.format);
+                if (suspect) extra.suspect = suspect;
                 return extra;
             })())),
             // References the device refuses outright — it answered with an
@@ -1955,6 +1958,50 @@
             bits: fromPlant ? fromPlant.filter(e => e.bit !== null).length : 0,
             source: point ? 'list' : (entry ? 'plant' : ''),
         };
+    }
+
+    /*
+     * A raw value that looks like a device's placeholder rather than a reading (1.72.0). A controller writes a fixed
+     * code into a register it has nothing for - a sensor that is missing, broken or not configured - and the codes
+     * are few: the ends of the signed range, all bits set, and round numbers such as -999. A flag is a lead to
+     * check, never a verdict: 32767 can be a real count and -999 a real offset. Strength says how often the code is
+     * a placeholder in practice - strong for the ends of the range, weak for the round numbers - and the reading is
+     * reported as it came either way.
+     */
+    function suspectValue(v, format) {
+        if (typeof v !== 'number') return null;
+        if (!Number.isFinite(v)) return { code: String(v), why: 'not a finite number', strength: 'strong' };
+        const f = formatOf(format).value;
+        if (f === 'float') {
+            return Math.abs(v) >= 1e30
+                ? { code: String(v), why: 'a float at the edge of its range, which devices write for "no value"', strength: 'strong' }
+                : null;
+        }
+        if (f === 'mod') return null;
+        if (f === 'int') {
+            return (v === 2147483647 || v === -2147483648 || v === -2147483647)
+                ? { code: String(v), why: 'an end of the 32-bit signed range, which devices write for "no value"', strength: 'strong' }
+                : null;
+        }
+        // The register's sixteen bits, whether modpoll printed them signed or as hex.
+        const word = ((Math.round(v) % 65536) + 65536) % 65536;
+        if (word === 0x8000) {
+            return { code: '0x8000', why: 'the lowest signed 16-bit value (-32768): devices write it into a register they have no reading for, such as a missing or broken sensor', strength: 'strong' };
+        }
+        if (word === 0x7FFF) {
+            return { code: '0x7FFF', why: 'the highest signed 16-bit value (32767): often "not available", or a sensor out of range', strength: 'strong' };
+        }
+        if (word === 0x8001) {
+            return { code: '0x8001', why: 'one above the lowest signed 16-bit value (-32767): some controllers mark a sensor error with it', strength: 'medium' };
+        }
+        if (f === 'hex' && word === 0xFFFF) {
+            return { code: '0xFFFF', why: 'all sixteen bits set: the usual "not available" of an unsigned register', strength: 'medium' };
+        }
+        const signed = word >= 32768 ? word - 65536 : word;
+        if (signed === -999 || signed === -9999 || signed === 9999) {
+            return { code: String(signed), why: 'a round code controllers commonly write for "no value" - check the vendor\'s register list', strength: 'weak' };
+        }
+        return null;
     }
 
     /** Runs of consecutive numbers as "430-445, 448". */
@@ -3245,6 +3292,357 @@
         });
     }
 
+    // ------------------------------------------------------------ diagnosis
+
+    /*
+     * Why a device does not answer, worked out the way a person would at the terminal (1.72.0), and stopped well
+     * before a person would give up. Every attempt is one modpoll run reading one register: nothing is written,
+     * slave 0 (broadcast) is never addressed, and the Plant Server is never touched - a COM port it holds is a
+     * finding, not an obstacle to remove. The old modpoll has no time-out flag, so a silent attempt costs whatever
+     * the binary waits; the budget caps attempts and time rather than trusting a number this side cannot set.
+     *
+     * The order is the one that separates causes cheapest:
+     *   1. the register asked about, as configured - an answer ends it;
+     *   2. an exception proves the device is there and the settings reach it: the sibling table (input for
+     *      holding), the neighbours of the register (a list counted from the other base reads one off), a register
+     *      known to answer;
+     *   3. a held port: the gateway the bus label names, in ENC, on the usual ports - the same bus, nothing stopped;
+     *   4. silence on a serial bus: a neighbouring unit on the same port at its own address tells a dead bus from a
+     *      wrong address; then the common serial settings; then other addresses;
+     *   5. silence, or a gateway's own error, over TCP: other unit ids.
+     * Each finding says what it rests on, and a suggestion comes only from an attempt that answered with it.
+     */
+    const DIAG_MAX_ATTEMPTS = 16;
+    const DIAG_MAX_MS = 120000;
+    // Most common first: the plants' own buses and the vendors' factory defaults.
+    const DIAG_SERIAL_TRIES = [
+        { baudrate: '9600', parity: 'none' }, { baudrate: '9600', parity: 'even' },
+        { baudrate: '19200', parity: 'none' }, { baudrate: '19200', parity: 'even' },
+        { baudrate: '38400', parity: 'none' }, { baudrate: '38400', parity: 'even' },
+        { baudrate: '4800', parity: 'none' }, { baudrate: '9600', parity: 'odd' }, { baudrate: '115200', parity: 'none' },
+    ];
+    const DIAG_SERIAL_MAX = 6;
+    const DIAG_SLAVE_MAX = 5;
+    // A serial gateway in TCP-server mode: 4001 upwards, one per serial port.
+    const DIAG_GATEWAY_PORTS = [4001, 4002, 4003, 4004];
+    const SIBLING_TABLE = { '4': '3', '3': '4', '0': '1', '1': '0' };
+    const TABLE_WORD = { '4': 'holding', '3': 'input', '1': 'discrete input', '0': 'coil' };
+    // The device itself answered: with a value, or with an exception about the request.
+    const DEVICE_SPOKE = new Set(['answered', 'illegal function', 'illegal address', 'illegal value']);
+
+    /** One read's outcome in a word or two, from what modpoll printed (1.72.0). */
+    function attemptOutcome(result) {
+        if (result && result.values && result.values.length) return 'answered';
+        // What modpoll itself printed, where there is a line: the console's own explanations mention other messages
+        // ("... a port the Plant Server holds says Serial port already open instead"), and matching those read a port
+        // that does not exist as a held one.
+        const said = ((result && result.diagnostics) || []).map(d => d.line || d.text).join('\n');
+        if (/serial port already open/i.test(said)) return 'port held';
+        if (/port or socket open error/i.test(said)) return 'port did not open';
+        if (/can'?t reach slave/i.test(said)) return 'unreachable';
+        if (/modpoll not found|is not recognized as an internal or external command|cannot find the path/i.test(said)) return 'no modpoll';
+        if (/illegal function/i.test(said)) return 'illegal function';
+        if (/illegal data address/i.test(said)) return 'illegal address';
+        if (/illegal data value/i.test(said)) return 'illegal value';
+        if (/checksum/i.test(said)) return 'checksum';
+        if (/unkn[wo]{2}n error/i.test(said)) return 'gateway error';   // "Unknwon" is the binary's own spelling
+        if (/time-?out/i.test(said)) return 'silent';
+        return 'unclear';
+    }
+
+    function parityWord(parity) { return { none: 'N', even: 'E', odd: 'O' }[String(parity || 'none')] || 'N'; }
+
+    /** "RTU COM1 9600 8N1 slave 2, holding 1" / "TCP 192.168.10.100:502 slave 1, input 17". */
+    function settingsText(s) {
+        const where = isSerialMode(s.mode)
+            ? s.mode.toUpperCase() + ' ' + s.host + ' ' + s.baudrate + ' ' + s.databits + parityWord(s.parity) + s.stopbits
+            : s.mode.toUpperCase() + ' ' + s.host + ':' + (s.port || 502);
+        return where + ' slave ' + s.slave + ', ' + (TABLE_WORD[s.table] || 'table ' + s.table) + ' ' + printedRef(s);
+    }
+
+    /**
+     * Other addresses worth asking, best first: the other numbers in the plant's own address string ("12_3" was read
+     * as slave 3, but 12 may be it), 1 (most devices' factory default), 255 over TCP (some answer nothing else), the
+     * numbers either side of the configured one, and a few common ones. Never an address another unit on the same
+     * bus uses: an answer there is that unit's.
+     */
+    function slaveCandidates(base, unit, taken) {
+        const max = base.mode === 'tcp' ? 255 : 247;
+        const ids = [];
+        const add = n => {
+            n = Number(n);
+            if (Number.isInteger(n) && n >= 1 && n <= max && n !== Number(base.slave) && !taken.has(n) && ids.indexOf(n) < 0) ids.push(n);
+        };
+        if (unit && unit.driver_addr) for (const part of String(unit.driver_addr).split(/[^0-9]+/)) if (part) add(part);
+        add(1);
+        if (base.mode === 'tcp') add(255);
+        add(Number(base.slave) + 1);
+        add(Number(base.slave) - 1);
+        add(2);
+        add(247);
+        add(10);
+        return ids.slice(0, DIAG_SLAVE_MAX);
+    }
+
+    /**
+     * Why the device does not answer, and what does. options: units (the plant's unit list, for the neighbours on a
+     * bus), unit (the unit being diagnosed, for its bus and its address string), known ([{ table, ref, source }]
+     * registers known to answer), comPorts (async, the plant server's COM ports), onProgress (each attempt).
+     */
+    async function diagnoseDevice(input, opts) {
+        const options = opts || {};
+        const given = normaliseSpec(Object.assign({}, input, { count: 1 }));
+        const base = Object.assign({}, given, { base: 'printed', start: printedRef(given), format: '', count: 1 });
+        const units = options.units || [];
+        const unit = options.unit || null;
+        const known = (options.known || []).filter(k => !(String(k.table) === base.table && Number(k.ref) === base.start));
+        const started = performance.now();
+        const attempts = [];
+        const findings = [];
+        const next = [];
+        let outOfBudget = false;
+        const tell = options.onProgress || (() => {});
+        const there = 'slave ' + base.slave + ', ' + TABLE_WORD[base.table] + ' ' + base.start;
+
+        const attempt = async (overrides, why) => {
+            if (attempts.length >= DIAG_MAX_ATTEMPTS || performance.now() - started > DIAG_MAX_MS) { outOfBudget = true; return null; }
+            if (abortRequested) return null;
+            const s = Object.assign({}, base, overrides, { count: 1, format: '', base: 'printed', recover: false });
+            if (!(Number(s.slave) >= 1 && Number(s.slave) <= (s.mode === 'tcp' ? 255 : 247))) return null;
+            const t0 = performance.now();
+            let result;
+            try { result = await readRegisters(s); } catch (e) { result = { values: [], diagnostics: [{ level: 'fatal', text: String(e && e.message || e) }], commands: [] }; }
+            const outcome = attemptOutcome(result);
+            const entry = { n: attempts.length + 1, why, outcome, settings: settingsText(s), ms: Math.round(performance.now() - t0) };
+            if (outcome === 'answered') entry.value = result.values[0].v;
+            const said = (result.diagnostics || []).map(d => String(d.text).split(' — ')[0]).filter(Boolean);
+            if (said.length) entry.said = said.slice(0, 2);
+            if (result.commands && result.commands[0]) entry.command = result.commands[0];
+            Object.defineProperty(entry, 'spec', { value: s, enumerable: false });
+            attempts.push(entry);
+            tell(entry);
+            return entry;
+        };
+        // Each in turn until one satisfies done; that attempt, or null.
+        const firstOf = async (list, done) => {
+            for (const item of list) {
+                const got = await attempt(item.overrides, item.why);
+                if (!got) { if (outOfBudget || abortRequested) return null; continue; }
+                if (done(got)) return got;
+            }
+            return null;
+        };
+        const changesFrom = s => {
+            const out = {};
+            for (const k of ['mode', 'host', 'port', 'slave', 'baudrate', 'parity', 'databits', 'stopbits', 'table', 'start']) {
+                if (k === 'port' && isSerialMode(s.mode)) continue;
+                if (String(s[k]) !== String(base[k])) out[k] = s[k];
+            }
+            return out;
+        };
+        const report = (verdict, headline, extra) => {
+            if (outOfBudget) next.push('Stopped at the budget of ' + DIAG_MAX_ATTEMPTS + ' reads or ' + Math.round(DIAG_MAX_MS / 1000) + ' s; anything not listed above was not tried.');
+            if (abortRequested) next.push('Stopped by user before the end.');
+            return Object.assign({
+                verdict, headline, target: settingsText(base), findings, next,
+                suggestion: null, confidence: null,
+                attempts: attempts.slice(), tried: attempts.length, ms: Math.round(performance.now() - started),
+            }, extra || {});
+        };
+        const suggest = (got, confidence, why) => ({ suggestion: Object.assign(changesFrom(got.spec), { why, settings: got.settings }), confidence });
+        const spoke = got => (got.outcome === 'answered' ? 'read ' + got.value : 'answered with "' + got.outcome + '"');
+
+        const first = await attempt({}, 'the register asked about, with the settings as they are');
+        if (!first) return report('not run', abortRequested ? 'Stopped before the first read.' : 'Nothing could be tried with these settings.');
+
+        // 1. It answered.
+        if (first.outcome === 'answered') {
+            findings.push(first.settings + ' read ' + first.value + ' in ' + first.ms + ' ms: the connection, the address and the settings are right.');
+            const odd = suspectValue(first.value, '');
+            if (odd) findings.push('The value itself looks like a placeholder (' + odd.code + '): ' + odd.why + '.');
+            return report('answers', 'The device answers with the settings as they are.', { confidence: 'high' });
+        }
+
+        // 2. The device spoke, but refused the request: it is there, and the settings reach it.
+        if (DEVICE_SPOKE.has(first.outcome)) {
+            findings.push('The device answered with "' + first.outcome + '" for ' + there + ': it is there, and the connection, the address and the settings reach it.');
+            const tries = [];
+            const sib = SIBLING_TABLE[base.table];
+            const sibling = sib ? { overrides: { table: sib }, why: 'the same number in the ' + TABLE_WORD[sib] + ' table' } : null;
+            if (first.outcome === 'illegal function' && sibling) tries.push(sibling);
+            if (base.start > 1) tries.push({ overrides: { start: base.start - 1 }, why: 'one register lower: a list counted from the other base reads one off' });
+            tries.push({ overrides: { start: base.start + 1 }, why: 'one register higher: a list counted from the other base reads one off' });
+            if (first.outcome !== 'illegal function' && sibling) tries.push(sibling);
+            for (const k of known.slice(0, 2)) tries.push({ overrides: { table: String(k.table), start: Number(k.ref) }, why: k.source || 'a register known to answer' });
+            const found = await firstOf(tries, got => got.outcome === 'answered');
+            if (found && found.spec.table !== base.table && found.spec.start === base.start) {
+                findings.push(found.settings + ' read ' + found.value + '.');
+                return report('wrong table', 'The device answers this number in the ' + TABLE_WORD[found.spec.table] + ' table, not the ' + TABLE_WORD[base.table] + ' table.',
+                    suggest(found, first.outcome === 'illegal function' ? 'high' : 'medium',
+                        first.outcome === 'illegal function' ? 'the device refused the function and answered the other table' : 'the other table answers at the same number; check it is the same parameter'));
+            }
+            if (found && found.spec.table === base.table && Math.abs(found.spec.start - base.start) === 1) {
+                findings.push(found.settings + ' read ' + found.value + ', where ' + base.start + ' is refused: an address counted from the other base (printed reference against protocol address) lands exactly one off.');
+                next.push('Compare against a value you know - a setpoint on the controller\'s display - before moving the address: a neighbour answering does not prove it is the parameter meant.');
+                return report('register refused, neighbour answers', 'The device answers, but not for ' + base.start + '; ' + found.spec.start + ' answers next to it.',
+                    suggest(found, 'low', 'the register next to it answers; only a known value can confirm it is the one meant'));
+            }
+            if (found) findings.push(found.why + ': ' + found.settings + ' read ' + found.value + '.');
+            next.push('The register asked about is outside the device\'s map. Scan the device to see its map, or check the vendor\'s list against IWMAC\'s parameter for it.');
+            return report('register refused', found ? 'The device answers, but not for this register.' : 'The device answers, but refused every register tried.',
+                { confidence: found ? 'high' : 'medium' });
+        }
+
+        // 3. The COM port is held.
+        if (first.outcome === 'port held') {
+            findings.push(base.host + ' is held - by the Plant Server, which polls this bus and keeps its COM port open while it runs.');
+            const gateway = unit && unit.bus && unit.bus.gateway;
+            if (gateway && RE_NETWORK_HOST.test(gateway)) {
+                const found = await firstOf(DIAG_GATEWAY_PORTS.map(port => ({
+                    overrides: { mode: 'enc', host: gateway, port },
+                    why: 'the gateway ' + gateway + ' in ENC (RTU over TCP) on port ' + port + ': the same bus, with nothing stopped',
+                })), got => DEVICE_SPOKE.has(got.outcome));
+                if (found) {
+                    findings.push('Through the gateway: ' + found.settings + ' ' + spoke(found) + '.');
+                    next.push('Make sure it is this device: a gateway port can lead to another bus, where another device may use the same address. Read a register whose value you know both ways.');
+                    return report('reachable through the gateway', 'The device can be read through its gateway in ENC, with the Plant Server running.',
+                        suggest(found, 'medium', 'ENC through the bus\'s gateway answered at the unit\'s address'));
+                }
+                findings.push('The gateway ' + gateway + ' did not answer in ENC on port ' + DIAG_GATEWAY_PORTS.join(', ') + '.');
+            }
+            next.push('Reading it over ' + base.host + ' needs the Plant Server stopped. That stops logging and alarms, so it is the plant owner\'s decision; run Diagnose again after the stop, and start the Plant Server again afterwards.');
+            return report('port held', 'The COM port is held by the Plant Server.', { confidence: 'high' });
+        }
+
+        // 4. The COM port did not open.
+        if (first.outcome === 'port did not open' && isSerialMode(base.mode)) {
+            let ports = [];
+            try { ports = options.comPorts ? (await options.comPorts()) || [] : []; } catch (e) { /* the registry could not be read */ }
+            const names = ports.map(p => String(p.port || p).toUpperCase());
+            const asked = String(base.host).toUpperCase().replace(/^\\\\\.\\/, '');
+            findings.push(base.host + ' did not open. ' + (names.length ? 'This plant server has ' + names.join(', ') + '.' : 'Its list of COM ports could not be read.'));
+            if (names.length && names.indexOf(asked) < 0) next.push('Pick one of ' + names.join(', ') + ': ' + asked + ' is not among them.');
+            else next.push(asked + ' exists but did not open: a program other than the Plant Server may hold it.');
+            return report('port did not open', base.host + ' did not open.', { confidence: 'high', comPorts: names });
+        }
+
+        // 5. No connection over the network.
+        if (first.outcome === 'unreachable' || first.outcome === 'port did not open') {
+            findings.push('No connection to ' + base.host + ':' + base.port + '.');
+            if (Number(base.port) !== 502 || base.mode !== 'tcp') {
+                const found = await firstOf([{ overrides: { mode: 'tcp', port: 502 }, why: 'Modbus TCP on its own port, 502' }], got => DEVICE_SPOKE.has(got.outcome));
+                if (found) {
+                    findings.push(found.settings + ' ' + spoke(found) + '.');
+                    return report('wrong port', 'The device answers Modbus TCP on port 502.', suggest(found, found.outcome === 'answered' ? 'high' : 'medium', 'port 502 answered'));
+                }
+            }
+            next.push('Check that ' + base.host + ' is the device\'s address, and that it is powered and on the network.');
+            next.push('Many Modbus TCP devices take one or two connections at a time; while IWMAC\'s own driver holds them, a second master is turned away. Compare with the unit\'s state in IWMAC.');
+            return report('unreachable', 'Nothing took a Modbus connection at ' + base.host + ':' + base.port + '.', { confidence: 'medium' });
+        }
+
+        if (first.outcome === 'no modpoll') {
+            next.push('modpoll.exe is neither on the PATH nor at ' + EXE_FULL + ' on this plant server.');
+            return report('no modpoll', 'modpoll could not be started on this plant server.', { confidence: 'high' });
+        }
+
+        // 6. Silence, a damaged reply or a gateway's own error: the port opened, and nothing usable came back.
+        if (first.outcome === 'unclear') {
+            const again = await attempt({}, 'the same read again: the first said nothing this console recognises');
+            if (again && again.outcome === 'answered') {
+                findings.push('The second read answered (' + again.value + '): the first reply was lost.');
+                return report('answers', 'The device answers; one reply was lost on the way.', { confidence: 'medium' });
+            }
+        }
+        const sameBus = u => u.mode === base.mode && String(u.host).toUpperCase() === String(base.host).toUpperCase();
+        const taken = new Set(units.filter(u => sameBus(u) && Number(u.slave) !== Number(base.slave)).map(u => Number(u.slave)));
+        if (isSerialMode(base.mode)) {
+            findings.push(base.host + ' opened, and slave ' + base.slave + ' ' + (first.outcome === 'checksum' ? 'sent back a reply that failed its checksum' : 'did not answer') + '.');
+            // A neighbour on the same port, at its own address and with its own settings.
+            const neighbours = units.filter(u => sameBus(u) && Number(u.slave) !== Number(base.slave)).slice(0, 2);
+            let alive = null;
+            for (const nb of neighbours) {
+                const got = await attempt({
+                    slave: nb.slave, baudrate: nb.baudrate || base.baudrate, parity: nb.parity || base.parity,
+                    databits: nb.databits || base.databits, stopbits: nb.stopbits || base.stopbits, table: '4', start: 1,
+                }, 'a neighbour on the same port: ' + nb.unit_id + ' at slave ' + nb.slave);
+                if (!got) break;
+                if (DEVICE_SPOKE.has(got.outcome)) { alive = { unit: nb, got }; break; }
+            }
+            if (alive) {
+                findings.push('The bus works: ' + alive.unit.unit_id + ' at slave ' + alive.unit.slave + ' ' + spoke(alive.got) + ' on the same port. The fault is this device: its address, its own settings, its wiring or its power.');
+            } else if (neighbours.length) {
+                findings.push('The neighbours on ' + base.host + ' (' + neighbours.map(n => n.unit_id + ' at ' + n.slave).join(', ') + ') did not answer either: the bus as a whole is silent - the converter, the wiring, the termination, or settings every device here shares.');
+            }
+            // A damaged frame is parity or stop bits more often than speed: those first.
+            const settingTries = [];
+            if (first.outcome === 'checksum') settingTries.push({ overrides: { stopbits: base.stopbits === '1' ? '2' : '1' }, why: 'the same speed with ' + (base.stopbits === '1' ? 2 : 1) + ' stop bits: the reply arrived damaged' });
+            for (const t of DIAG_SERIAL_TRIES) {
+                if (t.baudrate === String(base.baudrate) && t.parity === base.parity) continue;
+                settingTries.push({ overrides: t, why: 'slave ' + base.slave + ' at ' + t.baudrate + ' ' + base.databits + parityWord(t.parity) + base.stopbits });
+            }
+            const bySettings = await firstOf(settingTries.slice(0, DIAG_SERIAL_MAX), got => DEVICE_SPOKE.has(got.outcome));
+            if (bySettings) {
+                findings.push(bySettings.settings + ' ' + spoke(bySettings) + '.');
+                if (alive) next.push('Every device on one bus has to use the same settings. This one differs from ' + alive.unit.unit_id + ': it was probably reset or replaced, and it needs setting to the bus\'s settings, not the other way round.');
+                return report('found at other settings', 'Slave ' + base.slave + ' answers at ' + bySettings.spec.baudrate + ' ' + base.databits + parityWord(bySettings.spec.parity) + bySettings.spec.stopbits + ', not at the settings configured.',
+                    suggest(bySettings, bySettings.outcome === 'answered' ? 'high' : 'medium', 'the device answered with these settings'));
+            }
+        } else {
+            findings.push(first.outcome === 'gateway error'
+                ? 'The connection works, but the other end answered with an error of its own: typically a gateway that does not serve slave ' + base.slave + '.'
+                : 'The connection works, but slave ' + base.slave + ' did not answer before modpoll gave up waiting.');
+        }
+        const bySlave = await firstOf(slaveCandidates(base, unit, taken).map(id => ({
+            overrides: { slave: id }, why: 'another address: slave ' + id,
+        })), got => DEVICE_SPOKE.has(got.outcome));
+        if (bySlave) {
+            findings.push(bySlave.settings + ' ' + spoke(bySlave) + '.');
+            next.push('Make sure it is this device and not another one at that address: read a register whose value you know.');
+            return report('found at another address', 'A device answers at slave ' + bySlave.spec.slave + ', not at ' + base.slave + '.',
+                suggest(bySlave, 'medium', 'a device answered at that address'));
+        }
+        if (isSerialMode(base.mode)) {
+            next.push('Check the device\'s address and serial settings on its own display, its power, and the A/B wiring and termination of the bus.');
+        } else {
+            next.push(first.outcome === 'gateway error'
+                ? 'Check the gateway\'s serial side - its baud rate, and the device\'s address - in the gateway\'s own settings.'
+                : 'Check that the device speaks Modbus TCP on this port, and its unit id in its own settings.');
+        }
+        return report('silent', 'Nothing answered: not with the settings configured, and not with the others tried.', { confidence: 'medium' });
+    }
+
+    /**
+     * Registers known to answer on this device: its stored map first, then what the plant reads from the unit.
+     * names: the unit's parameter names (fetchPlantNames); the console's loaded ones when left out.
+     */
+    function knownAnswersFor(spec, unit, namesGiven) {
+        const names = namesGiven || plantNames;
+        const out = [];
+        try {
+            const stored = storedMapFor(normaliseSpec(Object.assign({}, spec, { count: 1 })));
+            if (stored) {
+                for (const table of SCAN_TABLES) {
+                    const first = parseRanges(stored.tables[table])[0];
+                    if (first) out.push({ table, ref: first[0], source: 'the first register the last scan of this device found in the ' + TABLE_WORD[table] + ' table' });
+                }
+            }
+        } catch (e) { /* no map */ }
+        if (names && names.byRef && (!unit || !names.unitId || names.unitId === unit.unit_id)) {
+            const refs = [...names.byRef.keys()].map(k => String(k).split('||'))
+                .filter(p => p.length === 2 && /^[0134]$/.test(p[0]) && Number(p[1]) >= 1)
+                .map(([table, ref]) => ({ table, ref: Number(ref) }))
+                .sort((a, b) => a.ref - b.ref);
+            for (const table of SCAN_TABLES) {
+                const first = refs.find(p => p.table === table);
+                if (first && !out.some(o => o.table === table && o.ref === first.ref)) {
+                    out.push({ table, ref: first.ref, source: 'a register IWMAC reads from this unit (' + TABLE_WORD[table] + ' ' + first.ref + ')' });
+                }
+            }
+        }
+        return out;
+    }
+
     // ------------------------------------------------ what may leave the browser
     /*
      * Everything a file, a report or the export API hands out passes through
@@ -4354,7 +4752,7 @@
         const highest = list => list.reduce((m, r) => (m === null || r > m ? r : m), null);
         return {
             table,
-            answered: found.length,
+            answered: values.length,   // found is a Map: its .length was always undefined (fixed 1.72.0)
             nonZero: nonZero.length,
             first: lowest(refs),
             last: highest(refs),
@@ -5403,10 +5801,23 @@
         // Communication error, Communication status — and is the unit's health
         // as IWMAC sees it: kept, not only counted.
         const system = [];
-        for (const group of groups) {
-            const result = await plantRpc('get_parameters', {
-                plant: plantId, unit_id: unitId, group: group.id, preffered_group: '',
-            }) || {};
+        // One request per group, up to six at a time (1.72.0). One after another they took most of half a minute
+        // for a unit of 994 parameters on plant 2349, before a scan could start. Read in the groups' own order, so
+        // the names come out exactly as before.
+        const results = new Array(groups.length);
+        let nextGroup = 0;
+        const fetchGroups = async () => {
+            while (nextGroup < groups.length) {
+                const at = nextGroup++;
+                results[at] = (await plantRpc('get_parameters', {
+                    plant: plantId, unit_id: unitId, group: groups[at].id, preffered_group: '',
+                })) || {};
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(6, groups.length) }, fetchGroups));
+        for (let gi = 0; gi < groups.length; gi++) {
+            const group = groups[gi];
+            const result = results[gi];
             for (const side of ['read', 'write']) {
                 for (const line of String(result[side] || '').split('\n')) {
                     const text = line.trim();
@@ -5854,32 +6265,65 @@
         const ctx = { unitId, collectedAt: new Date().toISOString(), unavailable: [] };
         const miss = (what, e) => ctx.unavailable.push(what + ': ' + (e && e.message ? e.message : String(e)));
         const plantId = Number(plantIdFromHost());
+        /*
+         * Every Toolbox query goes through Tampermonkey, and there one costs 10 to 20 s where the same query costs
+         * half a second from a command line (plant 2349, 2026-11-20): eleven of them one after another made this
+         * 222 s, more than three times as long as the scan it follows. Queries that do not need each other's
+         * answers now go together (1.72.0): what the unit is and what the plant shows; then everything the driver
+         * and the table name open up; then the other drivers on the same COM port. The context is the same as
+         * before, and so is the order its parts are filled in - only the waiting overlaps.
+         */
+        const settle = p => Promise.resolve(p).then(v => ({ ok: true, v }), e => ({ ok: false, e }));
+        const query = sql => settle(plantSql(sql));
 
         // Status and last contact, from the plant's own list — no permission needed.
-        try {
+        const statusP = settle((async () => {
             const regs = ((await plantRpc('get_regulators', { plant: plantId })) || {}).regulators || {};
-            const r = Object.values(regs).find(x => x.unit_id === unitId);
+            return Object.values(regs).find(x => x.unit_id === unitId) || null;
+        })());
+        // Registration, and through it the driver and the parameter table.
+        const registrationP = settle((async () => {
+            if (!RE_SQL_VALUE.test(String(unitId == null ? '' : unitId))) throw new Error('"' + String(unitId).slice(0, 40) + '" is not a plain unit id, so it was not sent to SQL');
+            return plantSql("SELECT unit_id, unit_name, driver_type, driver_addr, grp_name, active, regulator_type, order_no FROM iw_plant_server3.iw_sys_plant_units WHERE unit_id = '" + sqlText(unitId) + "'");
+        })());
+        // Neither needs the registration, so they are asked at the same time.
+        const genP = settle(fetchGenRows({ unitId }));
+        const processesP = settle(fetchPlantProcesses());
+
+        const status = await statusP;
+        if (status.ok) {
+            const r = status.v;
             // unit_type is the regulator family ("OJ"), not the parameter table.
             if (r) ctx.status = { unitStatus: r.unit_status || null, lastComm: r.last_comm || null, unitAddr: r.unit_addr || null, unitType: r.unit_type || null, order: r.unit_order };
-        } catch (e) { miss('unit status (get_regulators)', e); }
+        } else miss('unit status (get_regulators)', status.e);
 
-        // Registration, and through it the driver and the parameter table.
         let owner = null, table = null;
-        try {
-            if (!RE_SQL_VALUE.test(String(unitId == null ? '' : unitId))) throw new Error('"' + String(unitId).slice(0, 40) + '" is not a plain unit id, so it was not sent to SQL');
-            const rows = await plantSql("SELECT unit_id, unit_name, driver_type, driver_addr, grp_name, active, regulator_type, order_no FROM iw_plant_server3.iw_sys_plant_units WHERE unit_id = '" + sqlText(unitId) + "'");
+        const registration = await registrationP;
+        if (registration.ok) {
+            const rows = registration.v;
             if (rows[0]) {
                 const u = rows[0];
                 owner = RE_SQL_NAME.test(u.driver_type || '') ? u.driver_type : null;
                 table = RE_SQL_NAME.test(u.grp_name || '') ? u.grp_name : null;
                 ctx.registration = { unitId: u.unit_id, unitName: u.unit_name, driver: u.driver_type, driverAddr: u.driver_addr, table: u.grp_name, active: String(u.active) === '1', regulatorType: u.regulator_type || '', orderNo: u.order_no || '' };
             } else ctx.registration = null;
-        } catch (e) { miss('unit registration (Toolbox plant-SQL)', e); }
+        } else miss('unit registration (Toolbox plant-SQL)', registration.e);
+
+        // Everything the driver's name and the table's name open up, asked together. The driver log needs only the
+        // driver's name to be fetched; what it needs to be read comes from the parameter view, which is on its way.
+        const settingsP = owner ? query("SELECT setting, value FROM iw_plant_server3.iw_sys_plant_settings WHERE owner = '" + owner + "' ORDER BY setting") : null;
+        const processRowP = owner ? query("SELECT process_name, path, man_start FROM iw_plant_server3.iw_sys_processes WHERE process_name = '" + owner + "'") : null;
+        const unitsOnDriverP = owner ? query("SELECT unit_id, unit_name, driver_addr, grp_name, active FROM iw_plant_server3.iw_sys_plant_units WHERE driver_type = '" + owner + "' ORDER BY driver_addr") : null;
+        const definitionsP = table ? query('SELECT element_id, driver_id, driver_id_extra, att, eng_unit, format, scale, raw_min, raw_max, eng_min, eng_max, parameter_type, application FROM iw_plant_server3.iw_par_' + table + '_param') : null;
+        const setRowsP = table ? query('SELECT element_id, active, onl_ind, update_freq, alarm_type FROM iw_plant_server3.iw_set_' + table) : null;
+        const logP = owner ? settle(fetchDriverLog(owner)) : null;
 
         if (owner) {
             ctx.driver = { owner };
+            const driverSettings = await settingsP;
             try {
-                const rows = await plantSql("SELECT setting, value FROM iw_plant_server3.iw_sys_plant_settings WHERE owner = '" + owner + "' ORDER BY setting");
+                if (!driverSettings.ok) throw driverSettings.e;
+                const rows = driverSettings.v;
                 const settings = {};
                 for (const r of rows) settings[r.setting] = r.value;
                 // The connection is read from the settings as they are; what is
@@ -5888,30 +6332,38 @@
                 ctx.driver.connection = describeDriverConnection(settings, ctx.registration && ctx.registration.driverAddr);
                 ctx.driver.settings = redactSettings(settings);
             } catch (e) { miss('driver settings (Toolbox plant-SQL)', e); }
+            const processRow = await processRowP;
             try {
-                const rows = await plantSql("SELECT process_name, path, man_start FROM iw_plant_server3.iw_sys_processes WHERE process_name = '" + owner + "'");
+                if (!processRow.ok) throw processRow.e;
+                const rows = processRow.v;
                 ctx.driver.process = rows[0] ? { name: rows[0].process_name, path: rows[0].path, manualStart: String(rows[0].man_start) === '1' } : null;
             } catch (e) { miss('driver process registration (Toolbox plant-SQL)', e); }
+            const processInfo = await processesP;
             try {
-                const processes = await fetchPlantProcesses();
+                if (!processInfo.ok) throw processInfo.e;
+                const processes = processInfo.v;
                 const m = processes.modules.find(x => x.module === owner);
                 ctx.driver.module = m ? { running: m.running, stateTime: m.since === undefined ? null : m.since } : { running: false, note: 'no module of this name among the Plant Server\'s processes' };
                 const master = processes.modules.find(x => x.module === 'MASTER');
                 ctx.driver.plantServerRunning = master ? master.running : null;
             } catch (e) { miss('module status (process_info)', e); }
+            const unitsOnDriver = await unitsOnDriverP;
             try {
                 ctx.bus = { unitsOnDriver: [], driversOnSamePort: [] };
-                const units = await plantSql("SELECT unit_id, unit_name, driver_addr, grp_name, active FROM iw_plant_server3.iw_sys_plant_units WHERE driver_type = '" + owner + "' ORDER BY driver_addr");
+                if (!unitsOnDriver.ok) throw unitsOnDriver.e;
+                const units = unitsOnDriver.v;
                 ctx.bus.unitsOnDriver = units.map(u => ({ unitId: u.unit_id, unitName: u.unit_name, driverAddr: u.driver_addr, table: u.grp_name, active: String(u.active) === '1' }));
                 const conn = ctx.driver.connection;
                 if (conn && conn.serial && conn.comPort !== null && RE_SQL_VALUE.test(String(conn.comPortRaw || ''))) {
                     const others = await plantSql("SELECT owner, value FROM iw_plant_server3.iw_sys_plant_settings WHERE setting = 'comm_port' AND owner <> '" + owner + "' AND value = '" + sqlText(conn.comPortRaw) + "'");
-                    for (const o of others) {
-                        if (!RE_SQL_NAME.test(o.owner || '')) continue;
-                        const mode = await plantSql("SELECT value FROM iw_plant_server3.iw_sys_plant_settings WHERE owner = '" + o.owner + "' AND setting = 'mb_mode'");
-                        const active = await plantSql("SELECT COUNT(*) AS n FROM iw_plant_server3.iw_sys_plant_units WHERE driver_type = '" + o.owner + "' AND active = '1'");
-                        ctx.bus.driversOnSamePort.push({ owner: o.owner, mbMode: mode[0] ? mode[0].value : null, activeUnits: Number(active[0] && active[0].n) || 0 });
-                    }
+                    // Each other driver's mode and active units: two questions per driver, every driver at once.
+                    ctx.bus.driversOnSamePort = await Promise.all(others.filter(o => RE_SQL_NAME.test(o.owner || '')).map(async o => {
+                        const [mode, active] = await Promise.all([
+                            plantSql("SELECT value FROM iw_plant_server3.iw_sys_plant_settings WHERE owner = '" + o.owner + "' AND setting = 'mb_mode'"),
+                            plantSql("SELECT COUNT(*) AS n FROM iw_plant_server3.iw_sys_plant_units WHERE driver_type = '" + o.owner + "' AND active = '1'"),
+                        ]);
+                        return { owner: o.owner, mbMode: mode[0] ? mode[0].value : null, activeUnits: Number(active[0] && active[0].n) || 0 };
+                    }));
                 }
             } catch (e) { miss('bus (Toolbox plant-SQL)', e); }
         }
@@ -5919,8 +6371,10 @@
         // How IWMAC defines every parameter of the unit's table, and whether it polls it.
         if (table) {
             ctx.parameters = { table, definitions: {} };
+            const definitions = await definitionsP;
             try {
-                const rows = await plantSql('SELECT element_id, driver_id, driver_id_extra, att, eng_unit, format, scale, raw_min, raw_max, eng_min, eng_max, parameter_type, application FROM iw_plant_server3.iw_par_' + table + '_param');
+                if (!definitions.ok) throw definitions.e;
+                const rows = definitions.v;
                 for (const r of rows) {
                     ctx.parameters.definitions[r.driver_id] = {
                         elementId: r.element_id, access: r.att, unit: r.eng_unit, format: r.format,
@@ -5931,8 +6385,10 @@
                 }
                 ctx.parameters.count = rows.length;
             } catch (e) { miss('parameter definitions iw_par_' + table + '_param (Toolbox plant-SQL)', e); }
+            const setRows = await setRowsP;
             try {
-                const rows = await plantSql('SELECT element_id, active, onl_ind, update_freq, alarm_type FROM iw_plant_server3.iw_set_' + table);
+                if (!setRows.ok) throw setRows.e;
+                const rows = setRows.v;
                 const byElement = {};
                 for (const r of rows) byElement[r.element_id] = r;
                 let inactive = 0;
@@ -5953,8 +6409,10 @@
         // The Plant Server's own view of the unit's parameters: what the two
         // tables above say, plus each parameter's log number, state texts,
         // logging and alarm settings. Nothing above depends on it.
+        const genRows = await genP;
         try {
-            const rows = await fetchGenRows({ unitId });
+            if (!genRows.ok) throw genRows.e;
+            const rows = genRows.v;
             if (rows.length) {
                 ctx.parameters = ctx.parameters || { table, definitions: {} };
                 ctx.parameters.gen = {};
@@ -5982,8 +6440,10 @@
             // The log names a write by the parameter's number: "Param write: 19655 = 3".
             const idNos = {};
             for (const r of Object.values((ctx.parameters && ctx.parameters.gen) || {})) if (r.driver_id_no) idNos[String(r.driver_id_no)] = r.driver_id;
+            const fetchedLog = await logP;
             try {
-                ctx.log = readDriverLog(await fetchDriverLog(owner), {
+                if (!fetchedLog.ok) throw fetchedLog.e;
+                ctx.log = readDriverLog(fetchedLog.v, {
                     owner, unitId, table, unitPrefix,
                     tablePrefix: unitPrefix && regulatorPrefix && unitPrefix.indexOf(regulatorPrefix) === 0 ? regulatorPrefix : null,
                     idNos: Object.keys(idNos).length ? idNos : null,
@@ -6085,6 +6545,24 @@
     #${PANEL_ID} .mpc-runstats .bad{color:#cf222e;font-weight:600}
     #${PANEL_ID} .mpc-rsdot{width:9px;height:9px;border-radius:50%;background:#c3c7cf;flex:0 0 auto}
     #${PANEL_ID} .mpc-rsdot.ok{background:#2da44e}#${PANEL_ID} .mpc-rsdot.warn{background:#d4a72c}#${PANEL_ID} .mpc-rsdot.err{background:#cf222e}
+    /* Diagnose (1.72.0): the verdict, what it rests on, and a suggestion that can be applied. */
+    #${PANEL_ID} .mpc-diag{grid-column:span 12;border:1px solid #d0d7de;border-left:4px solid #8c959f;border-radius:4px;
+        padding:6px 9px;font-size:12px;color:#24292f;background:#f6f8fa}
+    #${PANEL_ID} .mpc-diag.ok{border-left-color:#2da44e}#${PANEL_ID} .mpc-diag.warn{border-left-color:#d4a72c}
+    #${PANEL_ID} .mpc-diag.err{border-left-color:#cf222e}
+    #${PANEL_ID} .mpc-diag h4{margin:0 0 3px;font-size:12.5px}
+    #${PANEL_ID} .mpc-diag ul{margin:2px 0 4px 16px;padding:0}
+    #${PANEL_ID} .mpc-diag li{margin:1px 0}
+    #${PANEL_ID} .mpc-diag .sug{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:4px}
+    #${PANEL_ID} .mpc-diag details{margin-top:3px;color:#57606a}
+    #${PANEL_ID} .mpc-diag table{border-collapse:collapse;font-size:11px}
+    #${PANEL_ID} .mpc-diag td{padding:1px 8px 1px 0;vertical-align:top}
+    /* Claude at work through the bridge (1.72.0) */
+    #${PANEL_ID} .mpc-claude{grid-column:span 12;font-size:11.5px;color:#6639ba;background:#fbefff;border:1px solid #d8b9ff;
+        border-radius:4px;padding:3px 8px}
+    /* A value that looks like a placeholder code, and a register that gave no value (1.72.0). */
+    #${PANEL_ID} td.mpc-suspect{background:#fff8c5}
+    #${PANEL_ID} tr.mpc-missed td{color:#cf222e;font-style:italic}
     /* The table's own corner control, past the last column heading. The zone is
        only there to give it something to be pinned to: absolute inside the
        scrolling table would scroll away with the rows. The right offset is set
@@ -8562,7 +9040,29 @@
         const onlyNonZero = ui.filterZero.checked;
         const rows = result.values.filter(v => !onlyNonZero || v.v !== 0);
         const shown = rows.slice(0, 2000);
-        if (!shown.length) {
+        // The registers that gave no value keep their place in the table (1.72.0): up to 1.71 they were simply not
+        // there, and a gap in the printed column was the only sign - easy to read past, and it did not say why.
+        const missedWhy = {
+            refused: { text: 'refused', title: 'The device answered with an exception: this register is outside its map' },
+            noAnswer: { text: 'no answer', title: 'modpoll timed out waiting for the device - which says nothing about its map' },
+            unsettled: { text: 'no clear answer', title: 'No value, no exception and no time-out, even asked on its own: read it again' },
+        };
+        const missed = [].concat(
+            (result.unreadable || []).map(i => ({ i, why: missedWhy.refused })),
+            (result.noAnswer || []).map(i => ({ i, why: missedWhy.noAnswer })),
+            (result.unsettled || []).map(i => ({ i, why: missedWhy.unsettled })),
+        ).sort((a, b) => a.i - b.i);
+        const missedRow = m => {
+            const named = plantNamesFor(table, format, m.i);
+            const point = pointForReading(table, format, m.i);
+            const label = point ? point.name : (named ? named[0].name : '');
+            const cells = [String(m.i), String(m.i - 1), label, m.why.text];
+            while (cells.length < (isBitTable ? BIT_COLUMNS : REGISTER_COLUMNS).length) cells.push('');
+            return el('tr', { className: 'mpc-missed', title: m.why.title }, cells.map((text, k) => el('td', {
+                textContent: text, style: k === 2 ? 'text-align:left' : '', title: k === 3 ? m.why.title : text,
+            })));
+        };
+        if (!shown.length && !missed.length) {
             const allZero = result.values.length > 0;
             renderEmptyGrid(allZero ? 'Every register in this range read 0' : 'Nothing came back — see the log');
             ui.summary.textContent = allZero
@@ -8674,6 +9174,13 @@
                 { text: sourceLabel, align: 'left' },
             ];
             const scaleView = !isBitTable && scaleOverrides.has(table + '|' + v.i);
+            // A placeholder code rather than a reading (1.72.0) - marked, never hidden or changed.
+            const suspect = isBitTable || view ? null : (v.suspect || suspectValue(v.v, format));
+            if (suspect) {
+                cells[3].className = ((cells[3].className || '') + ' mpc-suspect').trim();
+                cells[3].title = 'Looks like a placeholder (' + suspect.code + ', ' + suspect.strength + '): ' + suspect.why;
+            }
+            while (missed.length && missed[0].i < v.i) frag.appendChild(missedRow(missed.shift()));
             const tr = el('tr', { className: 'mpc-clickable' + (view || scaleView ? ' mpc-viewed' : ''), title: 'Click to put this register in the command box, and to see every reading of it' },
                 cells.map(c => el('td', {
                     textContent: c.text, className: c.className || '',
@@ -8714,15 +9221,109 @@
             });
             frag.appendChild(tr);
         }
+        while (missed.length) frag.appendChild(missedRow(missed.shift()));
         ui.gridBody.appendChild(frag);
         const s = result.summary;
+        const gaveNone = [['refused', result.unreadable], ['no answer', result.noAnswer], ['no clear answer', result.unsettled]]
+            .filter(([, list]) => list && list.length).map(([what, list]) => list.length + ' ' + what);
+        const placeholders = result.values.filter(v => v.suspect).length;
         ui.summary.textContent = s.returned + ' of ' + s.requested + ' registers, ' + s.nonZero + ' non-zero, ' +
+            (gaveNone.length ? gaveNone.join(', ') + ', ' : '') +
+            (placeholders ? placeholders + ' that look like placeholder codes, ' : '') +
             (s.returned ? 'range ' + s.min + '…' + s.max + ', ' : '') + s.blocks + ' command' + (s.blocks === 1 ? '' : 's') +
             ', ' + s.elapsedMs + ' ms' +
             (named ? ' · ' + named + ' named from the list' : (pointList ? ' · none matched the loaded list' : '')) +
             (rows.length > shown.length ? ' — showing the first 2000 rows' : '');
         appendViewNote();
         placeExpandButton();
+    }
+
+    /*
+     * Diagnose (1.72.0): why the device the form points at does not answer, and what does - see diagnoseDevice. The
+     * form is left as it is; a suggestion comes with the evidence behind it, and Apply puts it in the form.
+     */
+    let lastDiagnosis = null;
+    async function runDiagnosis(spec, options) {
+        if (termState.busy) throw new Error('Busy: a poll, scan or verification is running — Stop ends it');
+        const opts = options || {};
+        const form = Object.assign({}, ui.mode ? readForm() : {}, spec || {});
+        let units = [];
+        try { units = await fetchUnits(); } catch (e) { /* the plant's unit list helps, and is not needed */ }
+        const unit = opts.unit ? (units.find(u => String(u.unit_id) === String(opts.unit)) || null) : unitAtForm(units, form);
+        // The unit's names, for the registers known to answer - fetched (and cached) without swapping the names the
+        // grid is showing, which may be another unit's.
+        let names = opts.names || null;
+        if (!names && unit) {
+            if (plantNames && plantNames.unitId === unit.unit_id) names = plantNames;
+            else { try { names = await fetchPlantNames(unit.unit_id); } catch (e) { /* names help, and are not needed */ } }
+        }
+        termState.busy = true;
+        abortRequested = false;
+        if (ui.run) { ui.run.disabled = true; ui.stop.disabled = false; }
+        if (ui.diagBtn) ui.diagBtn.disabled = true;
+        setDot('warn');
+        try {
+            log('Diagnose' + (unit ? ' ' + unit.unit_id : '') + ': one register at a time, nothing written, the Plant Server left as it is');
+            const report = await diagnoseDevice(form, {
+                units, unit, known: knownAnswersFor(form, unit, names),
+                comPorts: async () => comPortsCache || parseComPorts(await termRun('reg query HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM', { timeoutMs: 10000, silent: true })),
+                onProgress: a => {
+                    log('  ' + a.n + '. ' + a.why + ' — ' + a.settings + ': ' + a.outcome + (a.value !== undefined ? ' (' + a.value + ')' : '') + ', ' + a.ms + ' ms',
+                        a.outcome === 'answered' ? 'ok' : '');
+                    showProgress(Math.min(0.97, a.n / DIAG_MAX_ATTEMPTS), 'Diagnose: ' + a.n + ' read' + (a.n === 1 ? '' : 's') + ' — ' + a.outcome);
+                },
+            });
+            if (unit) report.unit = unit.unit_id;
+            lastDiagnosis = report;
+            renderDiagnosis(report);
+            log('Diagnose: ' + report.headline + (report.suggestion ? ' Suggested: ' + report.suggestion.settings + ' (confidence ' + report.confidence + ')' : ''),
+                report.verdict === 'answers' ? 'ok' : 'warn');
+            setDot(report.verdict === 'answers' ? 'ok' : (report.suggestion ? 'warn' : 'err'));
+            return report;
+        } catch (e) {
+            setDot('err');
+            throw e;
+        } finally {
+            termState.busy = false;
+            hideProgress(1200);
+            if (ui.run) { ui.run.disabled = !!repeatTimer; ui.stop.disabled = !repeatTimer; }
+            if (ui.diagBtn) ui.diagBtn.disabled = false;
+        }
+    }
+
+    function renderDiagnosis(report) {
+        if (!ui.diag) return;
+        const tone = report.verdict === 'answers' ? 'ok' : (report.suggestion ? 'warn' : 'err');
+        ui.diag.className = 'mpc-diag ' + tone;
+        ui.diag.textContent = '';
+        ui.diag.appendChild(el('h4', { textContent: report.headline }));
+        if (report.findings.length) ui.diag.appendChild(el('ul', {}, report.findings.map(f => el('li', { textContent: f }))));
+        if (report.suggestion) {
+            const s = report.suggestion;
+            const apply = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Apply', title: 'Put these settings in the form. Nothing is polled until you poll' });
+            apply.addEventListener('click', () => {
+                const values = {};
+                for (const k of ['mode', 'host', 'port', 'slave', 'baudrate', 'parity', 'databits', 'stopbits', 'table', 'start']) if (s[k] !== undefined) values[k] = s[k];
+                if (values.start !== undefined) values.base = 'printed';
+                values.bigEndian = !!(ui.bigEndian && ui.bigEndian.checked);
+                applyForm(values);
+                ui.cmdDirty = false;
+                refreshPreview();
+                log('Applied the suggestion: ' + s.settings, 'ok');
+            });
+            ui.diag.appendChild(el('div', { className: 'sug' }, [
+                el('span', { textContent: 'Suggested: ' + s.settings + ' — ' + s.why + ' (confidence ' + report.confidence + ')' }), apply,
+            ]));
+        }
+        if (report.next.length) ui.diag.appendChild(el('ul', {}, report.next.map(n => el('li', { textContent: '→ ' + n }))));
+        const rows = report.attempts.map(a => el('tr', {}, [
+            el('td', { textContent: String(a.n) }), el('td', { textContent: a.why }), el('td', { textContent: a.settings }),
+            el('td', { textContent: a.outcome + (a.value !== undefined ? ' (' + a.value + ')' : '') }), el('td', { textContent: a.ms + ' ms' }),
+        ]));
+        ui.diag.appendChild(el('details', {}, [
+            el('summary', { textContent: report.tried + ' read' + (report.tried === 1 ? '' : 's') + ' in ' + (report.ms / 1000).toFixed(1) + ' s' }),
+            el('table', {}, rows),
+        ]));
     }
 
     async function runOnce() {
@@ -8818,7 +9419,10 @@
             // The dot as ModpollTool's: green for an answer, yellow for a checksum
             // error, red for silence or a port that did not open.
             const outcome = passOutcome(result);
-            setDot(outcome.checksum ? 'warn' : (outcome.responded ? 'ok' : 'err'));
+            // Green only when everything asked for answered (1.72.0): some registers refused or silent, an exception
+            // alone or a damaged reply is amber, as the device's answer was only partly an answer.
+            const partial = outcome.answered && [result.unreadable, result.noAnswer, result.unsettled].some(list => list && list.length);
+            setDot(outcome.checksum || partial || (outcome.exception && !outcome.answered) ? 'warn' : (outcome.responded ? 'ok' : 'err'));
             if (result.ok && !repeating) log('OK — ' + result.summary.returned + ' registers', 'ok');
             if (repeating) tallyPass(result, performance.now() - passStarted);
         } catch (e) {
@@ -9102,10 +9706,25 @@
      * export. `used` is the connection modpoll talked to the device with — the
      * scan's, or the last poll's — so a driver set differently is said at once.
      */
-    async function attachIwmacContext(report, used) {
+    /*
+     * IWMAC's side of the unit, collected while the scan runs rather than after it (1.72.0): it needs the plant's
+     * database, not the device, and through Tampermonkey it cost 222 s against a 65 s scan on plant 2349. pending is
+     * that collection, already under way; it reflects the unit as it was when the scan began.
+     */
+    function startIwmacContext() {
+        if (!plantNames) return null;
+        const unitId = plantNames.unitId;
+        const pending = collectIwmacContext(unitId).then(ctx => ctx, e => { throw e; });
+        pending.catch(() => {});   // read where it is awaited; never an unhandled rejection meanwhile
+        return { unitId, pending };
+    }
+
+    async function attachIwmacContext(report, used, started) {
         if (!plantNames) return null;
         try {
-            iwmacContext = await collectIwmacContext(plantNames.unitId);
+            iwmacContext = started && started.unitId === plantNames.unitId
+                ? await started.pending
+                : await collectIwmacContext(plantNames.unitId);
             if (report) report.iwmac = iwmacContext;
         } catch (e) {
             log('Could not read IWMAC\'s setup for ' + plantNames.unitId + ': ' + e.message, 'warn');
@@ -9447,6 +10066,8 @@
                 // without a separate click nobody remembers to make.
                 showProgress(0, 'Reading the plant\'s parameter names for this unit');
                 await ensureNamesFor(readForm());
+                // IWMAC's side of the unit, read from its database while the device is read (1.72.0).
+                const iwmacStarted = startIwmacContext();
                 startCostLedger();
                 const report = await scanDevice(form, true, p => {
                     // The bar moves on every tick sweepForValues makes, several
@@ -9463,7 +10084,7 @@
                 report.cost = finishCostLedger();
                 lastScan = report;
                 showProgress(0.995, 'Reading IWMAC\'s own setup for this unit');
-                await attachIwmacContext(report);
+                await attachIwmacContext(report, undefined, iwmacStarted);
                 for (const table of Object.keys(report.tables)) {
                     const t = report.tables[table];
                     const name = (REGISTER_TABLES.find(r => r.value === table) || {}).label || table;
@@ -9514,14 +10135,34 @@
                 ui.stop.disabled = !repeatTimer;
             }
         });
+        // Why the device does not answer, and what does (1.72.0): read-only, a few reads, nothing stopped.
+        ui.diagBtn = el('button', { className: 'w2ui-btn mpc-b', textContent: 'Diagnose',
+            title: 'Find out why this device does not answer, and with which settings it does: one register at a time, nothing written, ' +
+                'the Plant Server never stopped. Tries the table next door, the registers either side, the gateway in ENC, ' +
+                'a neighbour on the same bus, the common serial settings and other addresses, and stops after ' + DIAG_MAX_ATTEMPTS + ' reads' });
+        ui.diagBtn.addEventListener('click', () => runDiagnosis().catch(e => log('ERROR: ' + e.message, 'err')));
+        // Ctrl+Enter polls once from anywhere in the form, Esc stops what is running (1.72.0). Enter alone in a field
+        // still starts Run, as before.
+        form.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.stopPropagation(); runOnce(); }
+            else if (e.key === 'Escape' && (termState.busy || repeatTimer)) { e.preventDefault(); stopAll(); log('Stopped (Esc)'); }
+        }, true);
         form.appendChild(el('div', { className: 'mpc-actions' }, [
             ui.run, ui.stop, pollOnceBtn, field('Every s', ui.every, 2),
-            el('span', { className: 'mpc-spacer' }), scanBtn, rediscover, saveBtn, reconnectBtn,
+            el('span', { className: 'mpc-spacer' }), ui.diagBtn, scanBtn, rediscover, saveBtn, reconnectBtn,
         ]));
         // Run's tally, under the buttons (1.64)
         ui.runStats = el('div', { className: 'mpc-runstats mpc-hidden' });
         ui.runStats.setAttribute('role', 'status');
         form.appendChild(ui.runStats);
+        // What Claude is doing through the bridge, while it does it (1.72.0).
+        ui.claude = el('div', { className: 'mpc-claude mpc-hidden' });
+        ui.claude.setAttribute('role', 'status');
+        form.appendChild(ui.claude);
+        // Diagnose's verdict, under the buttons until the next one (1.72.0).
+        ui.diag = el('div', { className: 'mpc-diag mpc-hidden' });
+        ui.diag.setAttribute('role', 'status');
+        form.appendChild(ui.diag);
         ui.progressFill = el('div');
         ui.progressText = el('span', { className: 'mpc-ptext' });
         ui.progress = el('div', { className: 'mpc-progress mpc-hidden' }, [
@@ -9822,6 +10463,8 @@
                 '__modpoll.scaleAs(table, ref, "x0.1")     show one register under another scaling: a preset, a key or "raw 0..1000 -> 0..100" ("" clears)',
                 '__modpoll.scalePresets(2000)              a reading under every IWMAC scaling, with its four numbers',
                 '__modpoll.views() / clearViews()          the registers shown another way / show them as read and listed again',
+                'await __modpoll.diagnose(spec, {unit})    why a device does not answer and with which settings it does: a verdict,',
+                '                                          findings, a suggestion with its confidence, every read made (read-only)',
                 'await __modpoll.scan({host, slave})       every register the device answers for, read twice; names the unit first',
                 '__modpoll.loadList(projectJson)           adopt a modbusgen project: points and system.comm',
                 'await __modpoll.verify()                  poll every point in that list and judge the answers',
@@ -9834,7 +10477,8 @@
                 '__modpoll.exportParts()                   the same split into files under the knowledge-file ceiling, [{name, text}]',
                 '__modpoll.stop()                          abort a running sweep',
                 '',
-                'Every value row carries i (the index modpoll printed) and addr (i - 1, the protocol address).',
+                'Every value row carries i (the index modpoll printed) and addr (i - 1, the protocol address),',
+                'and suspect when the value looks like a placeholder code (0x8000, 0x7FFF, -999 ...): a lead, never a verdict.',
             ].join('\n');
         },
         /**
@@ -9959,15 +10603,25 @@
             // export that follows carry what IWMAC reads — unless the caller
             // has loaded names itself.
             if (!plantNames) { try { await ensureNamesFor(Object.assign(readForm(), spec || {})); } catch (e) { /* the scan stands without names */ } }
+            // IWMAC's side of the unit, read from its database while the device is read (1.72.0).
+            const iwmacStarted = startIwmacContext();
             startCostLedger();
             let report;
             try { report = await scanDevice(spec, deep !== false, null, { rediscover: !!(options && options.rediscover) }); }
             finally { const cost = finishCostLedger(); if (report) report.cost = cost; }
             lastScan = report;
-            await attachIwmacContext(report);
+            await attachIwmacContext(report, undefined, iwmacStarted);
             try { renderScan(report); } catch (e) { /* panel not built */ }
             return report;
         },
+        /**
+         * Why a device does not answer, and with which settings it does (1.72.0): one register at a time, nothing
+         * written, the Plant Server never touched. spec as read() takes it, over what the form says; options.unit
+         * names the plant's unit, for its bus, its gateway and its neighbours. Returns the verdict, the findings and
+         * what each rests on, a suggestion with its confidence, and every read made.
+         */
+        async diagnose(spec, options) { return runDiagnosis(spec, options); },
+        lastDiagnosis() { return lastDiagnosis; },
         /**
          * Name registers from the plant's own parameter list for a unit — alias
          * text, engineering unit, group, the value the plant currently shows, and
@@ -10236,27 +10890,56 @@
         });
     }
 
-    /**
-     * One register, one pass. Returns { value, name } when it answered, or { miss } saying why it did not (1.70.0):
-     * 'refused' when the device answered with an exception, 'no answer' when modpoll timed out waiting for it, and
-     * 'unknown' for anything else - a reply lost twice, a port that did not open. Up to 1.69 every one of them came
-     * back as a refusal.
-     *
-     * The name comes off the same grid row the value does, so reporting it costs no extra read and no sixth console
-     * method: the plant's own name for a register is what makes a scan readable.
+    /*
+     * A unit as the bridge reads it (1.72.0): its own address and serial settings from the plant database, and its
+     * parameter names - without the form. Up to 1.71 every bridge read filled the form the person was looking at,
+     * ran it as the Poll button does, and read the answer back off the grid and the log: it overwrote their form,
+     * failed with "Busy" whenever they were polling themselves, and depended on the wording of a log line. Plant
+     * Term still runs one line at a time, so the bridge's reads queue behind theirs instead.
      */
-    async function bridgeReadOne(table, ref) {
-        api.setForm({ table: BRIDGE_TABLE[table], start: ref, count: 1 });
-        const st = await api.run();
-        const row = ((st && st.grid && st.grid.rows) || [])[0];
-        const last = String((((st && st.log) || []).slice(-1)[0]) || '');
-        const v = row ? ((row.value !== undefined && row.value !== null) ? row.value : row.raw) : undefined;
-        if (/refuses/i.test(last) || v === undefined) {
-            if (/refuses/i.test(last)) return { miss: 'refused' };
-            if (/no clear answer/i.test(last)) return { miss: 'unknown' };
-            return { miss: /with no answer|time-?out|no response/i.test(last) ? 'no answer' : 'unknown' };
+    async function bridgeContext(unitId) {
+        const units = await fetchUnits();
+        const unit = units.find(u => String(u.unit_id) === String(unitId));
+        if (!unit) throw new Error('No unit ' + unitId + ' in the plant database — modpoll_status lists them');
+        if (!unit.host) throw new Error(unitId + ' has no address or COM port in the plant database');
+        let names = null;
+        try { names = await fetchPlantNames(unit.unit_id); } catch (e) { /* names make a scan readable; they are not needed for it */ }
+        return {
+            unitId: unit.unit_id, unit, names,
+            spec: { mode: unit.mode, host: unit.host, port: 502, slave: unit.slave, baudrate: unit.baudrate, parity: unit.parity, databits: unit.databits, stopbits: unit.stopbits },
+        };
+    }
+    function bridgeName(ctx, table, ref) {
+        const found = ctx.names && ctx.names.byRef ? ctx.names.byRef.get(BRIDGE_TABLE[table] + '||' + ref) : null;
+        return found && found[0] ? found[0].name : null;
+    }
+    // A port that is held or did not open, or a host that cannot be reached, is not a register that failed: it ends
+    // the read with what it is, rather than coming back as a column of "unknown".
+    function bridgeFatal(result, ctx) {
+        const fatal = (result.diagnostics || []).find(d => d.level === 'fatal');
+        if (!fatal) return;
+        const said = (result.diagnostics || []).map(d => d.line || d.text).join('\n');
+        throw new Error(portProblem(said, normaliseSpec(Object.assign({}, ctx.spec, { count: 1 }))) || (ctx.unitId + ': ' + fatal.text));
+    }
+
+    /**
+     * One register, one pass. Returns { value, name, suspect } when it answered, or { miss } saying why it did not
+     * (1.70.0): 'refused' when the device answered with an exception, 'no answer' when modpoll timed out waiting for
+     * it, and 'unknown' for anything else - a reply lost twice. Up to 1.69 every one of them came back as a refusal.
+     * The name is the plant's own for the register, which is what makes a scan readable.
+     */
+    async function bridgeReadOne(ctx, table, ref) {
+        // A single register keeps the console's own recovery (1.70.0): asked again on its own when the first answer
+        // said nothing, and judged refused, no answer or unsettled by what modpoll printed.
+        const r = await readRegisters(Object.assign({}, ctx.spec, { table: BRIDGE_TABLE[table], start: ref, count: 1, base: 'printed', format: '' }));
+        bridgeFatal(r, ctx);
+        if (r.values.length) {
+            const v = r.values[0];
+            return { value: v.v, name: bridgeName(ctx, table, ref), suspect: v.suspect ? v.suspect.code : undefined };
         }
-        return { value: v, name: row.name || null };
+        if ((r.unreadable || []).length) return { miss: 'refused' };
+        if ((r.noAnswer || []).length) return { miss: 'no answer' };
+        return { miss: 'unknown' };
     }
 
     /**
@@ -10281,17 +10964,19 @@
      * block as a whole - which it does if any single register in the range is illegal, and which is exactly why the
      * caller has to fall back to reading them one at a time rather than condemn the whole range.
      */
-    async function bridgeReadBlock(table, start, count) {
-        api.setForm({ table: BRIDGE_TABLE[table], start, count });
-        const st = await api.run();
-        const last = String((((st && st.log) || []).slice(-1)[0]) || '');
-        if (/refuses/i.test(last)) return null;
-        const rows = ((st && st.grid && st.grid.rows) || []);
-        if (rows.length !== count) return null;          // a short answer is not an answer about the whole range
-        return rows.map(row => {
-            const v = (row.value !== undefined && row.value !== null) ? row.value : row.raw;
-            return (v === undefined) ? null : { value: v, name: row.name || null };
-        });
+    async function bridgeReadBlock(ctx, table, start, count) {
+        // No recovery here: a block that is not answered whole is read one register at a time by the caller.
+        const r = await readRegisters(Object.assign({}, ctx.spec, { table: BRIDGE_TABLE[table], start, count, base: 'printed', format: '', recover: false }));
+        bridgeFatal(r, ctx);
+        if (r.values.length !== count) return null;          // a short answer is not an answer about the whole range
+        const byRef = new Map(r.values.map(v => [v.i, v]));
+        const out = [];
+        for (let n = 0; n < count; n++) {
+            const v = byRef.get(start + n);
+            if (!v) return null;
+            out.push({ value: v.v, name: bridgeName(ctx, table, start + n), suspect: v.suspect ? v.suspect.code : undefined });
+        }
+        return out;
     }
 
     /** The targets as consecutive runs within a table, which is what can be asked for in one read. */
@@ -10321,8 +11006,8 @@
      * unknown - which are three different things to conclude from.
      */
     async function bridgeSweep(unit, targets, repeats, control, controlTable) {
-        await api.useUnit(unit);
-        const seen = new Map(targets.map(t => [t.table + '|' + t.ref, { table: t.table, ref: t.ref, label: t.label || null, values: [], misses: {} }]));
+        const ctx = await bridgeContext(unit);
+        const seen = new Map(targets.map(t => [t.table + '|' + t.ref, { table: t.table, ref: t.ref, label: t.label || null, values: [], misses: {}, suspect: null }]));
         // A verify sweeps four tables at once, so the control needs its own: reading it in whichever table happened
         // to come first would check a register the caller never named.
         const ctlTable = controlTable || (targets.length ? targets[0].table : 'input');
@@ -10333,7 +11018,7 @@
         for (let pass = 0; pass < Math.max(1, repeats || 1); pass++) {
             let controlOk = null;
             if (control !== undefined && control !== null) {
-                controlOk = !(await bridgeReadOne(ctlTable, control)).miss;
+                controlOk = !(await bridgeReadOne(ctx, ctlTable, control)).miss;
             }
             /*
              * A read that brings nothing back costs 630 ms to a second, so a device that is simply not reachable turns a
@@ -10352,7 +11037,7 @@
                 if (!row) return;                        // a block can span a gap the caller never named
                 const answered = !!got && !got.miss;
                 row.values.push(answered ? got.value : null);
-                if (answered) { anyAnswered = true; if (!row.label && got.name) row.label = got.name; }
+                if (answered) { anyAnswered = true; if (!row.label && got.name) row.label = got.name; if (got.suspect) row.suspect = got.suspect; }
                 else { const why = (got && got.miss) || 'unknown'; row.misses[why] = (row.misses[why] || 0) + 1; }
             };
             /*
@@ -10365,13 +11050,13 @@
             for (const run of runs) {
                 for (let i = 0; i < run.refs.length && !aborted; i += BRIDGE_BLOCK_MAX) {
                     const slice = run.refs.slice(i, i + BRIDGE_BLOCK_MAX);
-                    const block = slice.length > 1 ? await bridgeReadBlock(run.table, slice[0], slice.length) : null;
+                    const block = slice.length > 1 ? await bridgeReadBlock(ctx, run.table, slice[0], slice.length) : null;
                     if (block) {
                         slice.forEach((ref, n) => record(run.table, ref, block[n]));
                         missedRunning = 0;
                     } else {
                         for (const ref of slice) {
-                            const got = await bridgeReadOne(run.table, ref);
+                            const got = await bridgeReadOne(ctx, run.table, ref);
                             record(run.table, ref, got);
                             if (!got.miss) missedRunning = 0; else missedRunning++;
                             if (controlOk === false && !anyAnswered && missedRunning >= 5) {
@@ -10402,6 +11087,8 @@
                 values: r.values,
                 // How often each kind of miss happened, for never and sometimes: { refused: 2 }, { 'no answer': 1 }.
                 ...(got.length === r.values.length ? {} : { missed: r.misses }),
+                // A value that looks like a placeholder code (1.72.0): 0x8000, 0x7FFF, -999 ... a lead, not a verdict.
+                ...(r.suspect ? { suspect: r.suspect } : {}),
             };
         });
         const busAlive = passes.some(p => p.controlOk !== false);
@@ -10420,11 +11107,11 @@
             never: rows.filter(r => r.verdict === 'never'),
             sometimes: rows.filter(r => r.verdict === 'sometimes'),
             always: always.length,
-            always_rows: always.map(r => ({
+            always_rows: always.map(r => Object.assign({
                 ref: r.ref,
                 value: r.values.filter(v => v !== null).slice(-1)[0],
                 label: r.label,
-            })),
+            }, r.suspect ? { suspect: r.suspect } : {})),
         };
     }
 
@@ -10445,6 +11132,71 @@
         return out;
     }
 
+    /** Shown in the panel while Claude works through the bridge, so the person can see what is being read and why the terminal is busy (1.72.0). */
+    function bridgeBanner(text) {
+        if (!ui.claude) return;
+        ui.claude.textContent = text || '';
+        ui.claude.classList.toggle('mpc-hidden', !text);
+    }
+
+    // Diagnose and a whole-device scan use the console's own busy flag, as the buttons do; wait for a poll of the
+    // person's to finish rather than fail on it.
+    async function bridgeWaitIdle(ms) {
+        const until = Date.now() + (ms || 30000);
+        while (termState.busy && Date.now() < until) await sleep(250);
+        if (termState.busy) {
+            throw new Error('the console is busy with ' + (repeatTimer ? 'Run, which polls until someone presses Stop' : 'a poll, scan or verification of its own') + '. Try again when it ends.');
+        }
+    }
+
+    /** A whole-device scan as an agent needs it: the map, the formats, what moved, what looks wrong, what IWMAC names (1.72.0). */
+    function compactScan(report, unitId) {
+        const TABLE_NAME = { '4': 'hold', '3': 'input', '1': 'discrete', '0': 'coil' };
+        const tables = {};
+        for (const t of Object.keys(report.tables || {})) {
+            const tt = report.tables[t];
+            const sw = report.sweep && report.sweep[t];
+            tables[TABLE_NAME[t] || t] = tt.answers
+                ? { ranges: sw ? sw.ranges : '', registers: sw ? sw.answered : null, holding_a_value: sw ? sw.nonZero : null, with_values: sw ? sw.withValues || '' : '' }
+                : 'no answer';
+        }
+        const formats = [];
+        for (const t of Object.keys(report.formats || {})) {
+            for (const r of report.formats[t].regions || []) {
+                formats.push({ table: TABLE_NAME[t] || t, from: r.from, to: r.to, format: r.format, word_order: r.wordOrder || null, confidence: r.confidence, evidence: r.evidence });
+            }
+        }
+        const values = report.values || [];
+        const suspects = values.map(v => ({ v, s: suspectValue(v.v, '') })).filter(x => x.s)
+            .slice(0, 25).map(x => ({ table: TABLE_NAME[x.v.table] || x.v.table, ref: x.v.i, value: x.v.v, code: x.s.code, strength: x.s.strength }));
+        const named = [];
+        for (const v of values) {
+            const found = plantNamesFor(v.table, '', v.i);
+            if (found && named.length < 40) named.push({ table: TABLE_NAME[v.table] || v.table, ref: v.i, value: v.v, name: found[0].name, plant_shows: found[0].plantValue, unit: found[0].unit || '' });
+        }
+        const ctx = report.iwmac;
+        return {
+            unit: unitId,
+            mode: report.mapFrom ? 'known map (read from the map the last full scan found)' : 'full discovery',
+            seconds: Math.round((report.elapsedMs || 0) / 1000),
+            tables,
+            formats,
+            // Registers that moved between the sweep and the second read: values being measured, not setpoints.
+            moved: report.reread ? report.reread.changedRanges : null,
+            suspect: suspects,
+            named_by_iwmac: named,
+            suggested_poll: report.suggestedSpec || null,
+            cost: report.cost ? { modpoll_runs: report.cost.modpollRuns, refusals: report.cost.exceptions, timeouts: report.cost.timeouts, ms: report.cost.ms } : null,
+            iwmac: ctx ? {
+                driver: ctx.driver ? ctx.driver.owner : null,
+                driver_running: ctx.driver && ctx.driver.module ? ctx.driver.module.running : null,
+                unit_status: ctx.status ? ctx.status.unitStatus : null,
+                log_trouble: ctx.log && ctx.log.current ? ctx.log.current.counts || null : null,
+                not_read: ctx.unavailable && ctx.unavailable.length ? ctx.unavailable : undefined,
+            } : null,
+        };
+    }
+
     async function bridgeRun(name, args) {
         if (name === 'status') {
             const devices = await api.devices();
@@ -10453,25 +11205,63 @@
                 units: (devices || []).map(d => ({
                     unit_id: d.unit_id, unit_name: d.unit_name, slave: d.slave,
                     connection: d.connection, host: d.host, driver_type: d.driver_type,
+                    // How it is reached (1.72.0): serial settings, and the gateway a serial bus sits behind.
+                    mode: d.mode,
+                    serial: isSerialMode(d.mode) ? d.baudrate + ' ' + d.databits + parityWord(d.parity) + d.stopbits : undefined,
+                    gateway: d.bus && d.bus.gateway && isSerialMode(d.mode) ? d.bus.gateway : undefined,
                 })),
             };
         }
-        if (name === 'read') {
-            const targets = [];
-            for (let i = 0; i < Math.max(1, args.count || 1); i++) targets.push({ table: args.table, ref: args.start + i });
-            return bridgeSweep(args.unit, targets, args.repeats, args.control, args.control_table);
+        const what = {
+            read: () => 'reading ' + args.unit + ' ' + args.table + ' ' + args.start + ((args.count || 1) > 1 ? '–' + (args.start + args.count - 1) : ''),
+            scan: () => 'sweeping ' + args.unit + ' ' + args.table + ' ' + args.start + '–' + args.end,
+            verify: () => 'checking ' + ((args.points || []).length) + ' points of a list against ' + args.unit,
+            diagnose: () => 'diagnosing ' + args.unit + ': why it does not answer, and what does',
+            discover: () => 'scanning the whole of ' + args.unit,
+        }[name];
+        if (!what) throw new Error('unknown bridge command: ' + name);
+        bridgeBanner('Claude is ' + what() + ' — through the Claude bridge, read-only');
+        const started = Date.now();
+        try {
+            let out;
+            if (name === 'read') {
+                const targets = [];
+                for (let i = 0; i < Math.max(1, args.count || 1); i++) targets.push({ table: args.table, ref: args.start + i });
+                out = await bridgeSweep(args.unit, targets, args.repeats, args.control, args.control_table);
+            } else if (name === 'verify') {
+                const targets = bridgeTargetsFromPoints(args.points || [], !!args.subtract_one);
+                if (!targets.length) throw new Error('no point in that project maps to a Modbus table');
+                out = await bridgeSweep(args.unit, targets, args.repeats, args.control, args.control_table);
+            } else if (name === 'scan') {
+                const targets = [];
+                for (let ref = args.start; ref <= args.end; ref++) targets.push({ table: args.table, ref });
+                out = await bridgeSweep(args.unit, targets, args.repeats, args.control, args.control_table);
+            } else if (name === 'diagnose') {
+                await bridgeWaitIdle(30000);
+                const ctx = await bridgeContext(args.unit);
+                const spec = Object.assign({}, ctx.spec, { count: 1, base: 'printed', format: '' });
+                // The register to start from: the one asked about, else one IWMAC reads from this unit, else holding 1.
+                const known = knownAnswersFor(spec, ctx.unit, ctx.names);
+                if (args.table) spec.table = BRIDGE_TABLE[args.table];
+                if (args.start) spec.start = args.start;
+                if (!args.table && !args.start) { spec.table = known[0] ? String(known[0].table) : '4'; spec.start = known[0] ? known[0].ref : 1; }
+                else if (!args.start) spec.start = 1;
+                else if (!args.table) spec.table = '4';
+                const report = await runDiagnosis(spec, { unit: args.unit, names: ctx.names });
+                out = Object.assign({}, report, { attempts: report.attempts.map(a => Object.assign({}, a)) });
+            } else if (name === 'discover') {
+                await bridgeWaitIdle(30000);
+                // A whole-device scan is the person's scan too: the unit goes into the form and the grid shows what
+                // is found, as the Scan device button would.
+                await api.useUnit(args.unit);
+                const report = await api.scan(readForm(), true, { rediscover: !!args.rediscover });
+                out = compactScan(report, args.unit);
+            }
+            log('Claude ' + what() + ' — done in ' + Math.round((Date.now() - started) / 1000) + ' s');
+            return out;
+        } finally {
+            bridgeBanner('');
         }
-        if (name === 'verify') {
-            const targets = bridgeTargetsFromPoints(args.points || [], !!args.subtract_one);
-            if (!targets.length) throw new Error('no point in that project maps to a Modbus table');
-            return bridgeSweep(args.unit, targets, args.repeats, args.control, args.control_table);
-        }
-        if (name === 'scan') {
-            const targets = [];
-            for (let ref = args.start; ref <= args.end; ref++) targets.push({ table: args.table, ref });
-            return bridgeSweep(args.unit, targets, args.repeats, args.control, args.control_table);
-        }
-        throw new Error('unknown bridge command: ' + name);
     }
 
     async function bridgeLoop() {
