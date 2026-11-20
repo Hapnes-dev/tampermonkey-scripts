@@ -1070,6 +1070,11 @@ A typed command, a scan's probes and Run's passes went through the same code.
   last modpoll on the line has exited, so the line is over when it appears and not
   before. Everything printed before the start tag is ignored: the tail of the line
   before, its prompt, and the echo of this command line, which carries both tags.
+  Plant Term prints the first line of a command's output behind the working
+  directory and an arrow: `C:\iwmac\sys_tools\plant_term->#mpc:r1a2b`. A tag counts
+  alone on its line or behind such a prompt, never inside the echoed command line.
+  1.70.0 took whole lines only and missed every start tag on a real plant, so every
+  command timed out. 1.70.1 fixed it the same day, after the live test on 10275.
 - **One line at a time.** Lines are sent one at a time, so two callers can no
   longer have their output read as each other's. That covers Poll and the API, a
   bridge sweep and a hand-typed read, or two API calls started together.
@@ -1288,8 +1293,9 @@ server, so a change cannot quietly stop being the thing under test.
 - `node test/terminal-check.js` — the console's own Plant Term driver, polling
   engine, probes and typed-command path (1.70.0), in Node, against a simulated
   Plant Term. The simulation runs lines one at a time in the order sent and
-  relays output in batches. Its serial devices are slow to open a COM port let go
-  a moment earlier. The checks:
+  relays output in batches. It prints a command's first line behind `<cwd>->`, as
+  plant 10275's Plant Term does. Its serial devices are slow to open a COM port let
+  go a moment earlier. The checks:
   - plant 10275's three back-to-back reads of an EM270, which must return
     2392,0 every time;
   - a slave that never answers, which must come back as `noAnswer` and never as
@@ -1302,7 +1308,7 @@ server, so a change cannot quietly stop being the thing under test.
   The same checks run on variants of what is not known for certain about Plant
   Term:
   - the command echoed by the shell, by the terminal as it is sent, or when it
-    starts;
+    starts, and one variant without the `<cwd>->` prefix;
   - stdout as printed, or only at exit;
   - a fast or a slow relay;
   - errors relayed after the end tag;

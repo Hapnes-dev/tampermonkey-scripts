@@ -92,6 +92,8 @@ function makePlantTerm(opts) {
         stdout: 'live',       // 'live': as printed; 'exit': stdout only at exit, stderr at once and ahead of it
         relayMs: 150,         // how often the frame hands new output to the terminal
         stderrLast: false,    // a relay batch puts stderr after stdout - an error can land past the end tag
+        firstPrefix: true,    // the first line a command prints comes behind "<cwd>->", as on plant 10275:
+                              // "C:\iwmac\sys_tools\plant_term->#mpc:r..." - 1.70.0 missed exactly this
         lineMs: 120,          // from a line being sent to the shell starting it
         limit: 0,             // keep only the newest N lines (0: everything)
         restMs: 3000,         // a COM port closed less than this ago ... (a model: on 10275 a 6 s pause hid the fault)
@@ -114,7 +116,12 @@ function makePlantTerm(opts) {
         if (o.limit && lines.length > o.limit) lines.splice(0, lines.length - o.limit);
     };
     let pending = [];
-    const emit = (text, kind) => pending.push({ text, kind: kind || 'out' });
+    let fresh = false;   // the next line printed is the command's first
+    const emit = (text, kind) => {
+        if (fresh && o.firstPrefix) text = PROMPT.slice(0, -1) + '->' + text;
+        fresh = false;
+        pending.push({ text, kind: kind || 'out' });
+    };
     const relay = setInterval(() => {
         if (!pending.length) return;
         let batch = pending;
@@ -184,6 +191,7 @@ function makePlantTerm(opts) {
         if (o.echo === 'start') append([PROMPT + cmd]);
         await sleep(o.lineMs);
         if (o.echo === 'shell') emit(PROMPT + cmd);
+        fresh = true;
         let code = 0;
         const segments = cmd.split(' & ');
         for (let k = 0; k < segments.length; k++) {
@@ -307,7 +315,7 @@ async function scenarioWide(label, model) {
     if (!quick) {
         await scenarioBackToBack('echoed on send', { echo: 'send', stdout: 'live', relayMs: 150 });
         await scenarioBackToBack('echoed when it starts, stdout at exit', { echo: 'start', stdout: 'exit', relayMs: 250 });
-        await scenarioBackToBack('no echo, fast relay', { echo: 'none', stdout: 'live', relayMs: 40 });
+        await scenarioBackToBack('no echo, no prefix, fast relay', { echo: 'none', stdout: 'live', relayMs: 40, firstPrefix: false });
         await scenarioBackToBack('stdout at exit, slow relay', { echo: 'shell', stdout: 'exit', relayMs: 400 });
         await scenarioBackToBack('errors relayed after stdout', { echo: 'shell', stdout: 'exit', relayMs: 300, stderrLast: true });
         await scenarioWide('a terminal that keeps 150 lines', { echo: 'shell', stdout: 'live', relayMs: 150, limit: 150 });

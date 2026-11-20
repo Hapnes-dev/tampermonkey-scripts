@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.70.0
+// @version      1.70.1
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -59,7 +59,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.70.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.70.1';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -750,7 +750,18 @@
     function runCollector(startTag, endTag) {
         let lines = [];
         const state = { started: false, ended: false, cut: false, gap: false };
-        const isTag = (line, tag) => line.trim() === tag;
+        // A tag stands alone on its line, or behind the prompt and arrow Plant
+        // Term puts in front of the first line a command prints:
+        // "C:\iwmac\sys_tools\plant_term->#mpc:r1a2b" (plant 10275,
+        // 2026-11-20; 1.70.0 took whole lines only and never saw a run start).
+        // The echoed command line carries both tags as well, but never behind
+        // a ">", and it holds the " & " between its commands.
+        const isTag = (line, tag) => {
+            const text = line.trim();
+            if (text === tag) return true;
+            if (!text.endsWith(tag) || text.indexOf(' & ') >= 0) return false;
+            return text.slice(0, -tag.length).trimEnd().endsWith('>');
+        };
         // Where the lines already taken go on in `all`, by their last dozen.
         const resumeAt = all => {
             const tail = lines.slice(-12);
@@ -779,7 +790,7 @@
                 for (let k = from; k < all.length; k++) {
                     const line = all[k];
                     const text = line.trim();
-                    if (text === endTag) { state.ended = true; return; }
+                    if (isTag(line, endTag)) { state.ended = true; return; }
                     // The line finished without its end tag: it was cut short.
                     if (RE_LINE_FAILED.test(text) || RE_PROMPT_LINE.test(text)) { state.ended = true; state.cut = true; return; }
                     lines.push(line);
