@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Modpoll Console
-// @version      1.72.1
+// @version      1.73.0
 // @description  Run modpoll from the IWMAC sys_tools page: pick a unit from the plant database, build a safe read-only command, poll through Plant Term in blocks of 99, and get the registers back as a table — plus a window.__modpoll API so an AI driving the browser gets structured JSON instead of terminal text
 // @namespace    https://github.com/hapnes-dev/tampermonkey-scripts
 // @homepageURL  https://github.com/hapnes-dev/tampermonkey-scripts
@@ -59,7 +59,7 @@
     // the export file, the report and the API can never say one number while the
     // header says another — which they did, for ten releases. The literal is
     // only for a copy evaluated straight into a page.
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.72.1';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.73.0';
     const PANEL_ID = 'mpc-panel';
     const HOST_ID = 'mpc-host';
     const SIDEBAR_ID = 'modpoll_console';
@@ -6272,6 +6272,10 @@
          * answers now go together (1.72.0): what the unit is and what the plant shows; then everything the driver
          * and the table name open up; then the other drivers on the same COM port. The context is the same as
          * before, and so is the order its parts are filled in - only the waiting overlaps.
+         *
+         * (1.73.0) The 10 to 20 s was the Claude bridge's own poll: Tampermonkey runs every request in the browser
+         * through one lock, held until the response headers arrive, and the poll held it for up to 25 s (bridgeHttp).
+         * With a 1.73.0 bridge server a query costs about 0.5 s here. Tampermonkey still sends them one at a time.
          */
         const settle = p => Promise.resolve(p).then(v => ({ ok: true, v }), e => ({ ok: false, e }));
         const query = sql => settle(plantSql(sql));
@@ -10827,6 +10831,8 @@
          */
         legacyTransport: false,
         legacyNoted: false,
+        // (1.73.0) Said once in the console when the server is older than 1.73.0 and so still holds the browser's lock.
+        slowNoted: false,
     };
     const BRIDGE_TABLE = { coil: '0', discrete: '1', input: '3', hold: '4' };   // modpoll -t, by Modicon prefix
 
@@ -10855,18 +10861,41 @@
      * From the service worker the request carries Tampermonkey's own Origin (chrome-extension://...), which a bridge
      * server older than 1.69.0 refuses as "not for you". Then this falls back to the old road for as long as that
      * server runs, and says so once in the console.
+     *
+     * (1.73.0) The anonymous road did not end the wait; it came back on 2026-11-20, 9.8 s for one Toolbox query and
+     * 19.6 s for three on plant 2349. Both roads share one lock. Tampermonkey 5.5.1 adds `origin: null` to every
+     * request (its default "Allow headers to be modified by scripts: Yes"), and a request with such a header waits
+     * for that lock and holds it, for the whole browser, until its own response headers arrive. A poll whose headers
+     * come with its command held it for up to 25 s. Measured: queries from another tab took 0.5 s or up to a full
+     * 25 s, three together went through one at a time once the poll ended, and answering the poll early every 7 s
+     * let each stalled query through 0.45-0.92 s later. So this asks the server for the poll's headers at once
+     * (X-MODPOLL-EARLY); a 1.73.0 server sends them straight away and the body when the poll ends, and the lock is
+     * free again within milliseconds. An older server ignores the header and keeps the old way, and the console
+     * says so once (bridgeLoop).
+     *
+     * Tampermonkey stops its own timeout once the headers are in, so a guard here ends a poll whose body never comes.
      */
     function bridgeHttp(method, path, body, timeoutMs) {
         return new Promise((resolve, reject) => {
             if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('GM_xmlhttpRequest not granted')); return; }
             const headers = { 'Content-Type': 'application/json' };
             headers['X-MODPOLL-BRIDGE'] = String(BRIDGE.protocol);
+            headers['X-MODPOLL-EARLY'] = '1';
             if (BRIDGE.session) headers['X-MODPOLL-SESSION'] = BRIDGE.session;
             const anonymous = !BRIDGE.legacyTransport;
-            GM_xmlhttpRequest({
+            const limit = timeoutMs || 30000;
+            let settled = false;
+            let guard = null;
+            const settle = (fn, value) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(guard);
+                fn(value);
+            };
+            const handle = GM_xmlhttpRequest({
                 method, url: 'http://127.0.0.1:' + BRIDGE.port + path, headers,
                 data: body === undefined ? undefined : JSON.stringify(body),
-                timeout: timeoutMs || 30000,
+                timeout: limit,
                 anonymous,
                 onload: r => {
                     let parsed = null;
@@ -10881,20 +10910,30 @@
                                          'Claude Code session that started it to update it, or close this tab when Claude ' +
                                          'is not using it.');
                         }
+                        if (settled) return;
+                        settled = true;
+                        clearTimeout(guard);
                         bridgeHttp(method, path, body, timeoutMs).then(resolve, reject);
                         return;
                     }
-                    if (r.status >= 200 && r.status < 300) resolve(parsed || {});
-                    else reject(Object.assign(new Error((parsed && parsed.error) || ('HTTP ' + r.status)), { status: r.status }));
+                    if (r.status >= 200 && r.status < 300) settle(resolve, parsed || {});
+                    else settle(reject, Object.assign(new Error((parsed && parsed.error) || ('HTTP ' + r.status)), { status: r.status }));
                 },
                 onerror: () => {
                     // The server has gone; the next one may be newer.
                     BRIDGE.legacyTransport = false;
                     BRIDGE.legacyNoted = false;
-                    reject(new Error('bridge unreachable'));
+                    BRIDGE.slowNoted = false;
+                    settle(reject, new Error('bridge unreachable'));
                 },
-                ontimeout: () => reject(new Error('bridge timed out')),
+                ontimeout: () => settle(reject, new Error('bridge timed out')),
+                onabort: () => settle(reject, new Error('bridge timed out')),
             });
+            guard = setTimeout(() => {
+                if (settled) return;
+                try { if (handle && typeof handle.abort === 'function') handle.abort(); } catch (e) { /* already over */ }
+                settle(reject, new Error('bridge timed out'));
+            }, limit + 5000);
         });
     }
 
@@ -11292,8 +11331,18 @@
                     BRIDGE.session = at.session;
                     BRIDGE.backoff = 1000;
                     console.info('[Modpoll Console] attached to the Claude bridge on 127.0.0.1:' + BRIDGE.port);
+                    // (1.73.0) A server that does not send a poll's headers at once still holds Tampermonkey's lock.
+                    if (!hello.early && !BRIDGE.slowNoted) {
+                        BRIDGE.slowNoted = true;
+                        console.info('[Modpoll Console] the Claude bridge on 127.0.0.1:' + BRIDGE.port + ' is older than ' +
+                                     '1.73.0: while this tab waits for Claude, every Tampermonkey request in this browser ' +
+                                     'waits up to 25 s. Restart the Claude Code session that started it to update it, or ' +
+                                     'close this tab when Claude is not using it.');
+                    }
                 }
                 const next = await bridgeHttp('GET', '/bridge/next', undefined, 40000);
+                // (1.73.0) A poll that got its headers at once says a refusal in its body, where the server said 409.
+                if (next && next.error) throw Object.assign(new Error(String(next.error)), { status: 409 });
                 BRIDGE.backoff = 1000;                                  // the link works; forget any earlier trouble
                 if (!next || !next.cmd) continue;                       // idle poll came back empty; ask again
                 let payload;

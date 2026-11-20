@@ -173,6 +173,76 @@ and says so once in the browser console. The slowdown then lasts until the Claud
 session that started that server is restarted. `test/bridge-transport.js` runs the real
 request function against a new, an old and a missing server.
 
+**This did not end the wait** — see the next section. The two roads share one lock. The
+last bullet above did not show otherwise: on 2026-11-20 every new connection to the IWDIE
+and KUDL ports came from other Claude sessions' MCP servers (`iwmac-vc-mcp.js`,
+`kudl-mcp.js`), about one a second, and none from Chrome. A netstat sampler cannot tell the
+two apart.
+
+### Why the poll's headers go out at once (console 1.73.0)
+
+**The cause.** Tampermonkey 5.5.1 runs every `GM_xmlhttpRequest` in the browser through one
+lock:
+
+- With its default *Allow headers to be modified by scripts: Yes*, it adds `origin: null`
+  to every request, so that the browser's `Origin` is taken off.
+- `origin` is one of the headers a page may not set. Tampermonkey removes it with a
+  temporary declarativeNetRequest rule that matches *all* of its own requests, so it lets
+  only one such request out at a time.
+- That request holds the lock until its response headers arrive (`dp` in its
+  `background.js`).
+
+Anonymous or not, service worker or offscreen document: every request waits for the one
+before it to get its headers. A poll whose headers wait for its command holds the lock for
+up to 25 s, and every userscript request in the browser — this console's own Toolbox
+queries, Rocketlane, Zendesk, any tab — waits behind it.
+
+**Measured on plant 2349, 2026-11-20, Tampermonkey 5.5.1, console 1.72.x:**
+
+- Toolbox SQL:
+  - The Toolbox's own log (`/plant-sql/admin/stats`) shows each query taking 0.2–3 s on
+    the server.
+  - During the slow runs, the queries arrived 25–26 s apart, which is one poll cycle.
+  - From curl: 0.4–0.5 s, one at a time or three together.
+- From a second sys_tools tab, while the first held the poll:
+  - Queries one after another took 11.3, 0.54, 25.5, 0.51, 25.5 and 0.60 s.
+  - Three sent together took 25.5, 25.9 and 26.4 s, then went through one at a time.
+- Answering the poll early, every 7 s through `/bridge/call`, let each stalled query through
+  0.45–0.92 s later. Not one finished before its poll was answered.
+
+**The fix.** A 1.73.0 console sends `X-MODPOLL-EARLY: 1`. For such a poll the server writes
+the status line and headers at once, and the body when the poll ends:
+
+- `{cmd}` when a command comes;
+- `{cmd: null}` at the 25 s idle reply;
+- `{error}` when a newer poll replaces it or another tab takes over. This is a 200, where
+  the server used to send a 409. The console reads that `error` exactly as it reads a 409.
+
+With the headers out, the lock is free again within milliseconds, and the open body costs
+nothing. Tampermonkey stops its own timeout once the headers are in, so the console keeps a
+guard of its own: a request is aborted 5 s after its time limit.
+
+**Old pages and old servers.**
+
+- A console older than 1.73.0 does not send the header, so it gets exactly the old answers.
+  It reads a refusal from the status code alone, and an `error` in a 200 body would have
+  sent it round in a tight loop.
+- A server older than 1.73.0 ignores the header. The console says so once in the browser
+  console: its `hello` has no `early: true`.
+- **The fix takes effect only when the server on port 47921 is a 1.73.0 one.** That means
+  restarting the Claude Code session that started the server. Until then, closing the
+  sys_tools tab when Claude is not using it frees the browser.
+
+`test/bridge-early.js` polls the real server as both consoles would.
+`test/bridge-transport.js` checks the console's side:
+
+- the header;
+- the guard;
+- the loop reading a refusal from a 200 body.
+
+The IWDIE VectorCraft and KUDL bridges poll the same way (`/bridge/next?wait=25`), so an
+attached VectorCraft or KUDL tab slows every request in the browser just as this one did.
+
 The client is in `Modpoll-Console.user.js` under *Claude bridge*. It is built from five
 console methods and no more — `api.devices`, `api.useUnit`, `api.setForm`, `api.run`,
 `api.state` — because each one it leans on is another thing that breaks the bridge when the

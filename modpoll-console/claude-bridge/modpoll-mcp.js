@@ -42,6 +42,7 @@ const PORT = Number(process.env.MODPOLL_BRIDGE_PORT || 47921);
 const PROTOCOL = 1;
 const HDR_BRIDGE = 'x-modpoll-bridge';
 const HDR_SESSION = 'x-modpoll-session';
+const HDR_EARLY = 'x-modpoll-early';   // console 1.73.0+: "send the poll's headers at once"; see /bridge/next
 const TAKEN = 'another tab attached';
 
 const ATTACH_GRACE_MS = 30000;   // a page re-attaches on a backoff; 10-20 s measured after a server restart
@@ -58,6 +59,12 @@ let cancelRequested = false;     // the page reads this between chunks and stops
 
 function reply(res, status, obj) {
   const body = JSON.stringify(obj);
+  /*
+   * A poll that got its headers at once (see /bridge/next) has already said 200. Whatever ends it now - a command,
+   * the idle reply, a newer poll, a takeover - goes in the body, and a refusal is the body's `error` field, which the
+   * console reads exactly as it reads a 409.
+   */
+  if (res.headersSent) { res.end(body); return; }
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
   res.end(body);
 }
@@ -214,8 +221,10 @@ const server = http.createServer(async (req, res) => {
   /*
    * A page's Origin is a web origin; refusing it keeps any site that guesses the port out. The userscript sends none
    * from Tampermonkey's offscreen document, and the extension's own from its service worker - the road Modpoll
-   * Console 1.69.0 takes, because on the other one this server's 25 s poll held up every Tampermonkey request in the
-   * browser (2026-11-18). An extension origin is no web page, and the header and the session token still apply.
+   * Console 1.69.0 takes. (That change was meant to stop this server's 25 s poll holding up every Tampermonkey
+   * request in the browser; it did not, because both roads share one lock. What does is the early headers on
+   * /bridge/next, console 1.73.0.) An extension origin is no web page, and the header and the session token still
+   * apply.
    */
   const okOrigin = !origin || origin === 'null' || /^(chrome|moz|safari-web)-extension:\/\//.test(String(origin));
   if (!okHost || !okOrigin || req.headers[HDR_BRIDGE] !== String(PROTOCOL) || req.method === 'OPTIONS') {
@@ -224,7 +233,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/bridge/hello') {
-    reply(res, 200, { ok: true, protocol: PROTOCOL, attached: !!page, plant: page && page.plant });
+    // `early`: this server sends a poll's headers at once when asked (console 1.73.0); an older one says nothing.
+    reply(res, 200, { ok: true, protocol: PROTOCOL, attached: !!page, plant: page && page.plant, early: true });
     return;
   }
 
@@ -270,6 +280,22 @@ const server = http.createServer(async (req, res) => {
     }
     if (page.waiting) { reply(page.waiting, 409, { error: 'replaced by a newer poll' }); clearTimeout(page.waitTimer); }
     page.waiting = res;
+    /*
+     * (console 1.73.0) The headers go out now and the body when the poll ends. Tampermonkey 5.5.1 adds
+     * `origin: null` to every GM_xmlhttpRequest (its default "Allow headers to be modified by scripts: Yes"), and a
+     * request with such a header takes one lock for the whole browser, held until that request's response headers
+     * arrive. A poll whose headers waited for its command held that lock for up to 25 s, and every userscript request
+     * in the browser - this console's own Toolbox queries, Rocketlane, Zendesk, any tab - waited behind it: 9.8 s for
+     * one Toolbox query and 19.6 s for three on plant 2349 (2026-11-20), against 0.4-0.5 s from curl. With the
+     * headers out at once the lock is free again in milliseconds, and the open body costs nothing.
+     *
+     * Only a console that asks for it gets this: up to 1.72 the console read a refusal from the status code alone,
+     * so an `error` in a 200 body would have been taken for an empty poll and asked again at once, in a tight loop.
+     */
+    if (req.headers[HDR_EARLY] === '1') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.flushHeaders();
+    }
     /*
      * A closed tab takes its long poll down with it. Without noticing, the bridge went on believing a tab was there
      * and the next call sat until its own timeout - up to fifteen minutes on a verify - instead of saying the tab

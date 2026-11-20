@@ -1251,6 +1251,9 @@ tags of 1.70. The rest of the time went into the Toolbox:
 - IWMAC's side of a unit was eleven queries, one after another.
 - Three queries at once took 19.6 s in all.
 
+Why a query cost that much through Tampermonkey was found afterwards: the
+bridge's own poll. See *Tampermonkey's one lock and the bridge's poll (1.73.0)*.
+
 What 1.72.0 changes:
 - IWMAC's side of a unit is asked in three rounds of queries that run in
   parallel: what the unit is; what its driver and its table open up; the other
@@ -1298,6 +1301,50 @@ settings and bus gateway.
 
 Ctrl+Enter polls once from anywhere in the form, and Esc stops what is running.
 Enter in a field still starts Run.
+
+## Tampermonkey's one lock and the bridge's poll (1.73.0)
+
+**What was wrong.** Tampermonkey 5.5.1 runs every userscript request in the
+browser through one lock, held until that request's response headers arrive.
+With its default *Allow headers to be modified by scripts: Yes*, every request
+takes it, anonymous or not.
+
+The Claude bridge's poll waits up to 25 s at the server for a command, and its
+headers came with the command. So while a sys_tools tab was attached, every
+userscript request in the browser waited up to 25 s:
+- this console's Toolbox queries;
+- Rocketlane, Zendesk, Younium and Oneflow from the other scripts;
+- any other tab.
+
+1.69.0 moved the poll to Tampermonkey's other road, which did not help, because
+both roads share the lock.
+
+**Measured on 2349, 2026-11-20:**
+- The Toolbox's own log showed each query taking 0.2–3 s on the server, while
+  the queries arrived 25–26 s apart.
+- From a second tab, queries took either about 0.5 s or a whole poll cycle:
+  11.3, 0.54, 25.5, 0.51, 25.5 and 0.60 s.
+- Answering the poll early, every 7 s, let each stalled query through
+  0.45–0.92 s later.
+
+**What changed.** The console asks for the poll's headers at once
+(`X-MODPOLL-EARLY`). A 1.73.0 bridge server sends them straight away and the
+command in the body later, so the lock is free again within milliseconds:
+- A refusal that used to be a 409 comes in the body of a 200, and the console
+  reads it the same way.
+- A guard of the console's own ends a poll whose body never comes, because
+  Tampermonkey stops its timeout once the headers are in.
+
+**When it takes effect.** Both halves are needed:
+- this console, 1.73.0, in Tampermonkey;
+- a 1.73.0 bridge server on port 47921. Restart the Claude Code session that
+  started the server, or close that session.
+
+With an older server the console says so once in the browser console, and
+closing the sys_tools tab when Claude is not using it frees the browser.
+
+Details and the protocol: `claude-bridge/README.md`, *Why the poll's headers
+go out at once*.
 
 ## The API for an agent
 
@@ -1569,10 +1616,27 @@ server, so a change cannot quietly stop being the thing under test.
   and keep to the old way until that server goes. Any other refusal is passed
   on unchanged. Why: `claude-bridge/README.md`, *Why every request is
   anonymous*.
+
+  Since 1.73.0 it also checks three things:
+  - every request asks for early headers;
+  - a request whose body never comes is aborted by the console's guard 5 s
+    after its limit;
+  - the bridge loop, sliced out too, reads a refusal from a 200 poll's body as
+    it reads a 409, and names an older server once in the console.
 - `node test/bridge-origin.js` — the real bridge server on a spare port, asked
   as the userscript, a web page and a rebinding attempt would ask. It lets in no
   Origin, `null` and an extension's own Origin, and refuses web origins, a
   missing or wrong bridge header and a foreign Host.
+- `node test/bridge-early.js` (1.73.0) — the real bridge server on a spare
+  port, polled as a 1.73.0 console and as an older one.
+  - **The 1.73.0 console** gets the headers within 300 ms, before any command.
+    The command, a newer poll's refusal or a takeover follow in the body, with
+    status 200.
+  - **An older console** gets nothing while the poll waits, and a 409 for a
+    refusal, as before.
+
+  The server of 1.72.1 fails seven of its checks. Why:
+  `claude-bridge/README.md`, *Why the poll's headers go out at once*.
 
 None of them touches a plant. What only a plant can prove — Plant Term, the unit
 list, the names — is still proven on a plant.

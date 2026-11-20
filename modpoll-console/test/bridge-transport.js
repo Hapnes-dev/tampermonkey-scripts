@@ -8,6 +8,12 @@
  *   again the old way, once noted in the console, and later requests go the old way straight away.
  * - When the server goes away, the next one is tried on the fast road again.
  *
+ * Since 1.73.0 (claude-bridge/README.md, "Why the poll's headers go out at once"):
+ * - Every request asks for early headers (X-MODPOLL-EARLY), and a request whose answer never ends is aborted by the
+ *   console's own guard, since Tampermonkey stops its timeout once the headers are in.
+ * - The bridge loop reads a refusal from a 200 poll's body exactly as it reads a 409, and says once in the console
+ *   when the server is older than 1.73.0.
+ *
  * Run: node test/bridge-transport.js
  */
 'use strict';
@@ -108,6 +114,88 @@ const OLD = (d) => (d.anonymous ? { status: 403, body: { error: 'not for you' } 
     let err = null;
     try { await c.bridgeHttp('GET', '/bridge/hello', undefined, 4000); } catch (e) { err = e; }
     check('another 403: not retried', err && c.calls.length === 1 && c.BRIDGE.legacyTransport === false);
+  }
+
+  // (1.73.0) Every request asks for the poll's headers at once.
+  {
+    const c = client(NEW);
+    await c.bridgeHttp('GET', '/bridge/hello', undefined, 4000);
+    c.BRIDGE.session = 'S1';
+    await c.bridgeHttp('GET', '/bridge/next', undefined, 40000);
+    check('1.73.0: every request carries X-MODPOLL-EARLY: 1',
+      c.calls.length === 2 && c.calls.every((x) => x.headers['X-MODPOLL-EARLY'] === '1'), JSON.stringify(c.calls.map((x) => x.headers)));
+  }
+
+  // (1.73.0) Headers in, body never: Tampermonkey's timeout no longer counts, so the console's guard ends it.
+  {
+    let aborted = 0;
+    const GM_xmlhttpRequest = () => ({ abort() { aborted++; } });   // answers nothing, ever
+    const console = { info() {}, log() {}, warn() {} };
+    const make = new Function('GM_xmlhttpRequest', 'console', 'self', code + '\nreturn { BRIDGE, bridgeHttp };');
+    const api = make(GM_xmlhttpRequest, console, globalThis);
+    const t0 = Date.now();
+    let err = null;
+    try { await api.bridgeHttp('GET', '/bridge/next', undefined, 10); } catch (e) { err = e; }
+    const took = Date.now() - t0;
+    check('guard: a poll that never ends is aborted and rejected', err && err.message === 'bridge timed out' && aborted === 1,
+      JSON.stringify({ err: err && err.message, aborted }));
+    check('guard: after its own limit plus 5 s', took >= 5000 && took < 7000, String(took));
+  }
+
+  // (1.73.0) The bridge loop: a refusal in a 200 poll's body is a refusal, and an old server is named once.
+  {
+    const loopCode = slice('    async function bridgeLoop() {', '    // ------------------------------------------------------------------ init');
+    const run = async (answers) => {
+      const notes = [];
+      const asked = [];
+      let n = 0;
+      const GM_xmlhttpRequest = (d) => {
+        const path = d.url.replace(/^http:\/\/127\.0\.0\.1:\d+/, '');
+        asked.push(path);
+        const a = answers[Math.min(n++, answers.length - 1)];
+        setTimeout(() => d.onload({ status: a.status || 200, responseText: JSON.stringify(a.body) }), 0);
+        return { abort() {} };
+      };
+      const console = { info: (m) => notes.push(String(m)), log() {}, warn() {} };
+      const make = new Function('GM_xmlhttpRequest', 'console', 'self', 'sleep', 'bridgeRun', 'sanitizeDeep', 'bridgePlantId',
+        code + loopCode + '\nreturn { BRIDGE, bridgeLoop };');
+      let api = null;
+      const sleep = () => { if (n >= answers.length) api.BRIDGE.stop = true; return Promise.resolve(); };
+      api = make(GM_xmlhttpRequest, console, globalThis, sleep, async () => ({}), (x) => x, () => '1');
+      // The loop ends when the scripted answers run out: the next sleep stops it.
+      const done = api.bridgeLoop();
+      const stopper = setInterval(() => { if (n >= answers.length) api.BRIDGE.stop = true; }, 5);
+      await done;
+      clearInterval(stopper);
+      return { BRIDGE: api.BRIDGE, notes, asked };
+    };
+
+    const taken = await run([
+      { body: { ok: true, protocol: 1, attached: false, early: true } },
+      { body: { session: 'S1', protocol: 1 } },
+      { body: { error: 'another tab attached' } },                       // 200: the early poll's refusal
+    ]);
+    check('loop: "another tab attached" in a 200 body lets the session go and waits as a displaced tab',
+      taken.BRIDGE.session === null && taken.BRIDGE.displaced === true, JSON.stringify({ s: taken.BRIDGE.session, d: taken.BRIDGE.displaced }));
+    check('loop: a 1.73.0 server is not called old', !taken.notes.some((m) => /older than 1\.73\.0/.test(m)), JSON.stringify(taken.notes));
+
+    const replaced = await run([
+      { body: { ok: true, protocol: 1, attached: false } },              // no `early`: a server older than 1.73.0
+      { body: { session: 'S2', protocol: 1 } },
+      { body: { error: 'replaced by a newer poll' } },
+    ]);
+    check('loop: "replaced by a newer poll" in a 200 body keeps the session and backs off',
+      replaced.BRIDGE.session === 'S2' && replaced.BRIDGE.backoff > 1000, JSON.stringify({ s: replaced.BRIDGE.session, b: replaced.BRIDGE.backoff }));
+    check('loop: an older server is named once in the console',
+      replaced.notes.filter((m) => /older than 1\.73\.0/.test(m)).length === 1, JSON.stringify(replaced.notes));
+
+    const old409 = await run([
+      { body: { ok: true, protocol: 1, attached: false } },
+      { body: { session: 'S3', protocol: 1 } },
+      { status: 409, body: { error: 'no such session' } },              // an old server's refusal, as before
+    ]);
+    check('loop: a 409 still lets the session go', old409.BRIDGE.session === null && old409.BRIDGE.displaced !== true,
+      JSON.stringify({ s: old409.BRIDGE.session, d: old409.BRIDGE.displaced }));
   }
 
   console.log(failed ? failed + ' failed' : 'all passed');
