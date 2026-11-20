@@ -66,12 +66,44 @@ working, and the console backs off and keeps offering the tab.
 
 | Tool | What it answers |
 |---|---|
-| `modpoll_status` | Is a tab attached, which plant, which units |
+| `modpoll_status` | Is a tab attached, which plant, which units — with each serial unit's settings and bus gateway (1.72.0) |
+| `modpoll_diagnose` | Why does this unit not answer, and with which settings does it (console 1.72.0) |
 | `modpoll_read` | What does this register hold — with `repeats` and a `control` register |
+| `modpoll_discover` | What does this whole device hold: the *Scan device* scan, compact (console 1.72.0) |
 | `modpoll_verify_list` | Which points of a modbusgen project does the device not answer |
 | `modpoll_scan` | What does this address range actually contain |
 | `toolbox_plant_sql` | What is configured and bound on the plant (SELECT only) |
 | `toolbox_sql` | The Toolbox's own database (SELECT only) |
+
+**`modpoll_diagnose`** is the first call for a unit that does not answer. It is read-only:
+one register at a time, nothing written, slave 0 never addressed, and the Plant Server
+never stopped. It stops after 16 reads or 120 s.
+
+It reads the register as configured, then follows what came back:
+- an exception (the device is there): the sibling table, the registers either side, and
+  one IWMAC reads;
+- a held COM port: the bus gateway in ENC on 4001–4004;
+- silence on a serial bus: a neighbouring unit on the same port, the common serial
+  settings, other addresses;
+- silence over TCP: other unit ids.
+
+It returns a `verdict`, `findings` with what each rests on, a `suggestion` whose
+`confidence` is high only when a read answered with exactly those settings, `next` steps,
+and every read made.
+
+**`modpoll_discover`** runs the whole-device scan the person would get from *Scan device*,
+and they see it in the console. A unit scanned in full before is read from its stored map
+in seconds; `rediscover` forces a full scan. Over RTU the Plant Server has to be stopped
+first, and that is the person's decision.
+
+**Reads no longer fill the person's form (1.72.0).** They go straight to the console's
+engine with the unit's own settings from the plant database, and queue behind the
+person's own polls instead of failing with *Busy*. A held COM port or an unreachable host
+ends a read with its reason. Every row carries `suspect` when its value looks like a
+placeholder code: 0x8000, 0x7FFF, −999 and so on.
+
+The new tools need console 1.72.0 in the tab. They reach Claude only after a Claude Code
+restart, because the MCP server is read once per session.
 
 `control` is the lesson from plant 5689 built in. Give it a register known to answer, and
 each pass reads it alongside the rest; a pass where the control also refused proves nothing

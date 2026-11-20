@@ -1148,6 +1148,138 @@ page timers were waiting 60 s each by then:
   sees no change looks again after a second. Where the page has no
   MutationObserver, it looks every 60 ms, as before.
 
+## Diagnose, placeholder values and a faster scan (1.72.0)
+
+### Diagnose: why a device does not answer, and what does
+
+*Diagnose*, next to *Scan device*, works out why the device in the form does
+not answer, and with which settings it does. It does what a person would do at
+the terminal, in the order that separates the causes cheapest. It stops after
+16 reads or 120 s.
+
+| What came back | What it tries next |
+|---|---|
+| a value | nothing: the settings are right |
+| an exception: the device is there | the sibling table (input for holding), the registers either side, one known to answer |
+| *Serial port already open* | the bus gateway in ENC, on ports 4001–4004 |
+| *Port or socket open error* on a COM port | lists the plant server's COM ports |
+| *Can't reach slave* | Modbus TCP on port 502 |
+| silence on a serial bus | a neighbouring unit on the same port, then the common serial settings, then other addresses |
+| silence, or a gateway's own error, over TCP | other unit ids |
+
+**Safety.** Every attempt reads one register:
+- nothing is written;
+- slave 0 (broadcast) is never addressed;
+- the Plant Server is never stopped. A held port is a finding, and stopping
+  the Plant Server stays the plant owner's decision.
+
+**Suggestions.** A suggestion comes only from a read that answered with exactly
+those settings. *Apply* puts it in the form without polling. Its confidence is:
+- **high** when the device answered with a value under these settings;
+- **medium** when something answered but it could be another device: another
+  address, or a gateway port that may lead to another bus;
+- **low** when a neighbouring register answered where the one asked about was
+  refused. An address counted from the other base explains that, but only a
+  known value can confirm it.
+
+**The neighbour check** tells a dead bus from a wrong address. If another unit
+on the same COM port answers at its own address, the bus, the converter and the
+settings are fine, and the fault is in this device. A device that answers at
+other serial settings than its neighbours was usually reset or replaced, so the
+finding says to set it to the bus's settings, not the other way round.
+
+`__modpoll.diagnose(spec, { unit })` returns the same as JSON: `verdict`,
+`headline`, `findings`, `suggestion`, `confidence`, `next`, and every read made
+with its settings, outcome and time. Over the bridge it is `modpoll_diagnose`.
+
+### Values that look like placeholders
+
+A controller writes a fixed code into a register it has nothing for, such as a
+missing, broken or unconfigured sensor. The grid marks those values (yellow,
+with the reason on hover), and every result carries
+`suspect: { code, why, strength }` for them:
+
+| Code | Strength |
+|---|---|
+| 0x8000 (−32768), 0x7FFF (32767) | strong |
+| 0x8001 (−32767), 0xFFFF read as hex | medium |
+| −999, −9999, 9999 | weak |
+| 32-bit 2147483647, −2147483647 and −2147483648; a float at ±1e30 or beyond | strong |
+
+A flag is a lead to check, never a verdict, and the value is shown as it came.
+
+−4010 on plant 2349's V01 is deliberately not flagged. It is a disconnected
+temperature sensor at 1/100 °C, but −40.10 °C is a real reading in a
+low-temperature refrigeration plant. Only the unit's own range can tell the two
+apart.
+
+### Refused and silent registers keep their row
+
+Up to 1.71, a register that gave no value was simply missing from the grid.
+Now it keeps its row, saying *refused*, *no answer* or *no clear answer*, and
+the summary counts each.
+
+The status dot is green only when everything asked for answered. A partial
+answer, an exception or a checksum error makes it amber.
+
+### A full scan, measured: 5½ minutes, of which 65 s on the device
+
+A full rediscovery scan of plant 2349's V01 with 1.71.0, on 2026-11-20:
+
+| Part | Time |
+|---|---|
+| the unit's parameter names, before the scan | 27.6 s |
+| the scan itself: 182 modpoll runs, 3116 values, 112 refusals | 64.7 s |
+| IWMAC's side of the unit, after the scan | 236.6 s |
+
+The scan itself had already halved since 1.49's modelled 141 s, through the end
+tags of 1.70. The rest of the time went into the Toolbox:
+- Through Tampermonkey one query took 9.8 s on its own, where the same query
+  from a command line takes 0.4–2.4 s.
+- IWMAC's side of a unit was eleven queries, one after another.
+- Three queries at once took 19.6 s in all.
+
+What 1.72.0 changes:
+- IWMAC's side of a unit is asked in three rounds of queries that run in
+  parallel: what the unit is; what its driver and its table open up; the other
+  drivers on its COM port.
+- Those queries start when the scan starts, so they are read while the device
+  is.
+- A unit's parameter names are fetched six groups at a time.
+
+The context collected is the same as before, but it reflects the unit as it was
+when the scan began.
+
+### The bridge, off the person's form
+
+**What changed.** Up to 1.71, every bridge read filled the form, pressed Poll,
+and read the answer back off the grid and the log. That overwrote the person's
+form, failed with *Busy* whenever they were polling themselves, and depended on
+the wording of a log line.
+
+Now reads go straight to the engine, with the unit's own settings from the
+plant database:
+- Plant Term still runs one line at a time, so they queue behind the person's
+  own polls.
+- A held COM port or an unreachable host ends a read with its reason, instead
+  of a column of *unknown*.
+- A banner in the panel says what Claude is doing while it does it.
+
+**New tools:**
+- `modpoll_diagnose`, described above.
+- `modpoll_discover`: the whole-device scan the *Scan device* button does. It
+  returns the answering ranges per table, the formats with their confidence,
+  the registers that moved between the two reads, placeholder values, what
+  IWMAC names, and IWMAC's view of the unit.
+
+**Also:** rows carry `suspect`, and `modpoll_status` shows each serial unit's
+settings and bus gateway.
+
+### Keyboard
+
+Ctrl+Enter polls once from anywhere in the form, and Esc stops what is running.
+Enter in a field still starts Run.
+
 ## The API for an agent
 
 `window.__modpoll` is exposed on the page. `__modpoll.help()` prints the list.
@@ -1198,6 +1330,9 @@ await __modpoll.read({                     // full result
   recover: true                            // halve a refused block, default on
 });
 await __modpoll.scan({ host: '10.0.0.5', slave: 1 });   // every register that answers, read twice; names the unit first
+await __modpoll.diagnose(spec, { unit: 'ID01' });       // why it does not answer, and what does (1.72.0): verdict,
+                                                        //   findings, suggestion + confidence, next, every read made
+__modpoll.lastDiagnosis();                              // the last one
 
 await __modpoll.units();                  // the plant's own unit list
 await __modpoll.names('ID01');            // name registers from the plant database
@@ -1223,7 +1358,8 @@ __modpoll.clearViews();                    // every register as read, listed and
 
 A full result is `{ ok, plant, at, spec, values, unreadable, noAnswer, unsettled,
 notes, summary, diagnostics, commands }`, where each value is `{ i, addr, v }` —
-`i` as modpoll printed it, `addr` the protocol address. `unreadable` lists the
+`i` as modpoll printed it, `addr` the protocol address — plus `suspect` when the
+value looks like a placeholder code (1.72.0). `unreadable` lists the
 references the device refused, `noAnswer` the ones modpoll timed out on and
 `unsettled` the ones with no clear answer (1.70.0). Reads need no spacing between
 them; see *Reads back to back*. `readCompact` returns the values as a plain array with the first
@@ -1363,7 +1499,25 @@ server, so a change cannot quietly stop being the thing under test.
     keep time, and in a hidden one with no worker. Hidden, a step may take no
     longer than visible, give or take the relay's phase. Without the worker that
     holds for every step that prints a value or an error; the reply that leaves no
-    trace only has to come back right.
+    trace only has to come back right;
+  - Diagnose (1.72.0), on a small plant whose every fault is known, one case per
+    cause:
+    - a healthy meter, answered on the first read;
+    - a register just past the map, with the one before it suggested at low
+      confidence;
+    - holding refused as an illegal function, and the input table answering;
+    - a COM port the Plant Server holds, with its gateway answering in ENC on
+      4002;
+    - a COM port that does not exist;
+    - a device reset to 19200 8E1;
+    - a silent address on a working bus, found through the plant's own address
+      string;
+    - a host that takes no connection;
+    - the wrong TCP port;
+    - a gateway serving one unit id;
+    - a bus with nothing on it, within the budget;
+    - every command sent reads one register once and never addresses slave 0;
+    - the placeholder codes.
 
   The same checks run on variants of what is not known for certain about Plant
   Term:
@@ -1383,9 +1537,12 @@ server, so a change cannot quietly stop being the thing under test.
   timing checks: a read of the EM270 that takes 0.5–1 s visible takes 3 s
   hidden, and the reply that leaves no trace 30 s instead of 9.
 - `node test/bridge-sweep.js` — the bridge's sweep, sliced out of the script, on
-  a stand-in console: a block read and its fallback to single registers, a dead
+  a stand-in engine: a block read and its fallback to single registers, a dead
   device's early stop, a cancel mid-sweep, and since 1.70.0 the reason a row
   missed. A time-out is `no answer` everywhere and is never called refused.
+  Since 1.72.0 the stand-in throws if the sweep touches the console's form. Two
+  more cases: a held COM port ends the sweep with its reason after one read,
+  and a placeholder value keeps its `suspect` flag.
 - `node test/bridge-transport.js` — the Claude bridge's request function (1.69.0),
   sliced out of the script and run against a stand-in for Tampermonkey. Every
   request is anonymous, so Tampermonkey sends it from its service worker. An old
