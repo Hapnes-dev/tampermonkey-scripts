@@ -18,7 +18,8 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "Modpoll-Console.user.js"
 OUT = Path(__file__).with_name("harness.html")
 
-src = io.open(SRC, encoding="utf-8", newline="").read()
+# A Windows checkout (core.autocrlf) has CRLF; the markers and the pattern below are written with \n.
+src = io.open(SRC, encoding="utf-8", newline="").read().replace("\r\n", "\n")
 version = re.search(r"@version\s+(\S+)", src).group(1)
 
 

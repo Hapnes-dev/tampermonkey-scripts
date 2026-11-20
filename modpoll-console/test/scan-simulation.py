@@ -356,7 +356,9 @@ def bundle(src, label):
     return js
 
 
-new_src = io.open(SRC, encoding="utf-8", newline="").read()
+# A Windows checkout (core.autocrlf) has CRLF; the markers lift() looks for are written with \n.
+# The previous copy comes out of git, which holds LF, so it needs nothing.
+new_src = io.open(SRC, encoding="utf-8", newline="").read().replace("\r\n", "\n")
 old_src = subprocess.run(["git", "-C", str(HERE.parent.parent), "show", old_ref + ":" + REL],
                          capture_output=True, text=True, encoding="utf-8").stdout
 

@@ -24,7 +24,8 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "Modpoll-Console.user.js"
 
-src = io.open(SRC, encoding="utf-8", newline="").read()
+# A Windows checkout (core.autocrlf) has CRLF; a marker that spans lines is written with \n.
+src = io.open(SRC, encoding="utf-8", newline="").read().replace("\r\n", "\n")
 
 
 def lift(start, end):

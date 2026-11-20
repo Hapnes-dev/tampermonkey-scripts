@@ -8,7 +8,8 @@ const fs = require('fs');
 
 const path = require('path');
 const SRC = path.join(__dirname, '..', 'Modpoll-Console.user.js');
-const text = fs.readFileSync(SRC, 'utf8');
+// A Windows checkout (core.autocrlf) has CRLF; the markers below are written with \n.
+const text = fs.readFileSync(SRC, 'utf8').replace(/\r\n/g, '\n');
 
 const START = '    /**\n     * One register, one pass. Returns { value, name }';
 const END = '    /** A modbusgen datatype names its Modbus table;';
